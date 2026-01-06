@@ -176,6 +176,9 @@ Options:
 - `--dry-run` - show what would be converted without creating files
 - `--open` - open the generated archive in your default browser
 - `-q, --quiet` - suppress all output except errors
+- `--no-search-index` - skip generating the search index for faster/smaller output
+- `--format FORMAT` - output format: `html` (default), `duckdb`, or `both`
+- `--include-thinking` - include thinking blocks in DuckDB export (opt-in)
 
 Examples:
 
@@ -191,7 +194,56 @@ claude-code-transcripts all -o ./my-archive
 
 # Include agent sessions
 claude-code-transcripts all --include-agents
+
+# Export to DuckDB for SQL analytics
+claude-code-transcripts all --format duckdb -o ./my-archive
+
+# Export both HTML and DuckDB
+claude-code-transcripts all --format both -o ./my-archive
 ```
+
+### DuckDB export
+
+The `--format duckdb` option exports your transcripts to a DuckDB database (`archive.duckdb`) for SQL-based analytics. This is useful for querying patterns across sessions, analyzing tool usage, or building custom reports.
+
+The database contains four tables:
+
+- `sessions` - session metadata (project, timestamps, message counts)
+- `messages` - all user and assistant messages with content
+- `tool_calls` - tool invocations with inputs and outputs
+- `thinking` - Claude's thinking blocks (only with `--include-thinking`)
+
+Example queries:
+
+```sql
+-- Connect to the database
+-- duckdb ./my-archive/archive.duckdb
+
+-- Count messages by type
+SELECT type, COUNT(*) FROM messages GROUP BY type;
+
+-- Most used tools
+SELECT tool_name, COUNT(*) as uses
+FROM tool_calls
+GROUP BY tool_name
+ORDER BY uses DESC
+LIMIT 10;
+
+-- Search message content
+SELECT session_id, type, LEFT(content, 100)
+FROM messages
+WHERE content LIKE '%error%';
+
+-- Sessions with most tool calls
+SELECT s.session_id, s.project_name, COUNT(t.tool_use_id) as tool_count
+FROM sessions s
+JOIN tool_calls t ON s.session_id = t.session_id
+GROUP BY s.session_id, s.project_name
+ORDER BY tool_count DESC
+LIMIT 10;
+```
+
+Use `--include-thinking` to also export Claude's thinking blocks (these can be 10KB+ each, so they're opt-in).
 
 ## Development
 

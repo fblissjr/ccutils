@@ -13,3 +13,9 @@ All notable changes to this project will be documented in this file.
   - Mobile-friendly responsive design
 - New CLI option `--no-search-index` to skip search index generation for faster/smaller output
 - New functions: `extract_searchable_content()`, `extract_snippet()` for search indexing
+- DuckDB export for structured analytics on transcript data
+  - Export sessions, messages, tool calls, and thinking blocks to a single DuckDB database
+  - Query your transcripts with SQL for analytics and insights
+  - New CLI option `--format` to choose output format: `html` (default), `duckdb`, or `both`
+  - New CLI option `--include-thinking` to include thinking blocks in DuckDB export (opt-in, can be large)
+  - New functions: `create_duckdb_schema()`, `export_session_to_duckdb()`, `generate_duckdb_archive()`
