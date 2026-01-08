@@ -1039,6 +1039,974 @@ def generate_duckdb_archive(
     }
 
 
+# =============================================================================
+# Star Schema DuckDB Implementation
+# =============================================================================
+
+import hashlib
+
+
+def generate_dimension_key(*natural_keys):
+    """Generate a dimension key from natural key(s) using MD5 hash.
+
+    This creates a consistent surrogate key for dimension tables based on
+    the natural business key(s). Using a hash allows for:
+    - Deterministic key generation (same input = same key)
+    - No sequence coordination needed
+    - Natural deduplication in dimensions
+
+    Args:
+        *natural_keys: One or more values that form the natural key.
+                       Multiple values are joined with '|' separator.
+
+    Returns:
+        32-character lowercase hex string (MD5 hash)
+    """
+    # Convert all values to strings, handle None
+    key_parts = [str(k) if k is not None else "NULL" for k in natural_keys]
+    combined = "|".join(key_parts)
+    return hashlib.md5(combined.encode("utf-8")).hexdigest()
+
+
+# Tool category mapping for dim_tool
+TOOL_CATEGORIES = {
+    # File operations
+    "Read": "file_operations",
+    "Write": "file_operations",
+    "Edit": "file_operations",
+    "MultiEdit": "file_operations",
+    "NotebookEdit": "file_operations",
+    "Glob": "file_operations",
+    # Search tools
+    "Grep": "search",
+    "WebSearch": "search",
+    # Execution tools
+    "Bash": "execution",
+    "BashOutput": "execution",
+    "KillShell": "execution",
+    # Web tools
+    "WebFetch": "web",
+    # Task management
+    "Task": "task_management",
+    "TodoWrite": "task_management",
+    # Planning tools
+    "EnterPlanMode": "planning",
+    "ExitPlanMode": "planning",
+    # Other
+    "Skill": "other",
+    "SlashCommand": "other",
+    "AskUserQuestion": "interaction",
+}
+
+
+def get_tool_category(tool_name):
+    """Get the category for a tool name."""
+    return TOOL_CATEGORIES.get(tool_name, "other")
+
+
+def get_model_family(model_name):
+    """Extract the model family from a model name.
+
+    Args:
+        model_name: Full model name like 'claude-opus-4-5-20251101'
+
+    Returns:
+        Model family: 'opus', 'sonnet', 'haiku', or 'unknown'
+    """
+    if model_name is None:
+        return "unknown"
+    model_lower = model_name.lower()
+    if "opus" in model_lower:
+        return "opus"
+    elif "sonnet" in model_lower:
+        return "sonnet"
+    elif "haiku" in model_lower:
+        return "haiku"
+    return "unknown"
+
+
+def get_time_of_day(hour):
+    """Get time of day label from hour.
+
+    Args:
+        hour: Hour of day (0-23)
+
+    Returns:
+        Time of day label: 'night', 'morning', 'afternoon', 'evening'
+    """
+    if hour < 6:
+        return "night"
+    elif hour < 12:
+        return "morning"
+    elif hour < 18:
+        return "afternoon"
+    else:
+        return "evening"
+
+
+def create_star_schema(db_path):
+    """Create DuckDB database with star schema for transcript analytics.
+
+    This creates a dimensional model with:
+    - Staging table for raw data
+    - Dimension tables with hash-based surrogate keys
+    - Fact tables for messages, tool calls, content blocks, and session summaries
+
+    No hard PK/FK constraints are used - relies on soft business rules.
+
+    Args:
+        db_path: Path to the DuckDB database file
+
+    Returns:
+        duckdb.Connection to the database
+    """
+    conn = duckdb.connect(str(db_path))
+
+    # =========================================================================
+    # Staging Table - holds raw extracted data before ETL transforms
+    # =========================================================================
+    conn.execute(
+        """
+        CREATE OR REPLACE TABLE stg_raw_messages (
+            session_id VARCHAR,
+            project_name VARCHAR,
+            project_path VARCHAR,
+            message_id VARCHAR,
+            parent_id VARCHAR,
+            message_type VARCHAR,
+            timestamp TIMESTAMP,
+            model VARCHAR,
+            cwd VARCHAR,
+            git_branch VARCHAR,
+            version VARCHAR,
+            content_json JSON,
+            content_text TEXT
+        )
+    """
+    )
+
+    # =========================================================================
+    # Dimension Tables
+    # =========================================================================
+
+    # dim_tool - Tool dimension with category classification
+    conn.execute(
+        """
+        CREATE OR REPLACE TABLE dim_tool (
+            tool_key VARCHAR,
+            tool_name VARCHAR,
+            tool_category VARCHAR
+        )
+    """
+    )
+
+    # dim_model - Model dimension with family classification
+    conn.execute(
+        """
+        CREATE OR REPLACE TABLE dim_model (
+            model_key VARCHAR,
+            model_name VARCHAR,
+            model_family VARCHAR
+        )
+    """
+    )
+
+    # dim_project - Project dimension
+    conn.execute(
+        """
+        CREATE OR REPLACE TABLE dim_project (
+            project_key VARCHAR,
+            project_path VARCHAR,
+            project_name VARCHAR
+        )
+    """
+    )
+
+    # dim_session - Session dimension with metadata
+    conn.execute(
+        """
+        CREATE OR REPLACE TABLE dim_session (
+            session_key VARCHAR,
+            session_id VARCHAR,
+            project_key VARCHAR,
+            cwd VARCHAR,
+            git_branch VARCHAR,
+            version VARCHAR,
+            first_timestamp TIMESTAMP,
+            last_timestamp TIMESTAMP
+        )
+    """
+    )
+
+    # dim_date - Standard date dimension
+    conn.execute(
+        """
+        CREATE OR REPLACE TABLE dim_date (
+            date_key INTEGER,
+            full_date DATE,
+            year INTEGER,
+            month INTEGER,
+            day INTEGER,
+            day_of_week INTEGER,
+            day_name VARCHAR,
+            month_name VARCHAR,
+            quarter INTEGER,
+            is_weekend BOOLEAN
+        )
+    """
+    )
+
+    # dim_time - Time of day dimension (granularity: minute)
+    conn.execute(
+        """
+        CREATE OR REPLACE TABLE dim_time (
+            time_key INTEGER,
+            hour INTEGER,
+            minute INTEGER,
+            time_of_day VARCHAR
+        )
+    """
+    )
+
+    # dim_message_type - User vs Assistant dimension
+    conn.execute(
+        """
+        CREATE OR REPLACE TABLE dim_message_type (
+            message_type_key VARCHAR,
+            message_type VARCHAR
+        )
+    """
+    )
+
+    # dim_content_block_type - Types of content blocks
+    conn.execute(
+        """
+        CREATE OR REPLACE TABLE dim_content_block_type (
+            content_block_type_key VARCHAR,
+            block_type VARCHAR
+        )
+    """
+    )
+
+    # =========================================================================
+    # Fact Tables
+    # =========================================================================
+
+    # fact_messages - One row per message
+    conn.execute(
+        """
+        CREATE OR REPLACE TABLE fact_messages (
+            message_id VARCHAR,
+            session_key VARCHAR,
+            project_key VARCHAR,
+            message_type_key VARCHAR,
+            model_key VARCHAR,
+            date_key INTEGER,
+            time_key INTEGER,
+            parent_message_id VARCHAR,
+            timestamp TIMESTAMP,
+            content_length INTEGER,
+            content_block_count INTEGER,
+            has_tool_use BOOLEAN,
+            has_tool_result BOOLEAN,
+            has_thinking BOOLEAN,
+            content_text TEXT,
+            content_json JSON
+        )
+    """
+    )
+
+    # fact_content_blocks - One row per content block within a message
+    conn.execute(
+        """
+        CREATE OR REPLACE TABLE fact_content_blocks (
+            content_block_id VARCHAR,
+            message_id VARCHAR,
+            session_key VARCHAR,
+            content_block_type_key VARCHAR,
+            date_key INTEGER,
+            time_key INTEGER,
+            block_index INTEGER,
+            content_length INTEGER,
+            content_text TEXT,
+            content_json JSON
+        )
+    """
+    )
+
+    # fact_tool_calls - One row per tool invocation (linked to result)
+    conn.execute(
+        """
+        CREATE OR REPLACE TABLE fact_tool_calls (
+            tool_call_id VARCHAR,
+            session_key VARCHAR,
+            tool_key VARCHAR,
+            date_key INTEGER,
+            time_key INTEGER,
+            invoke_message_id VARCHAR,
+            result_message_id VARCHAR,
+            timestamp TIMESTAMP,
+            input_char_count INTEGER,
+            output_char_count INTEGER,
+            is_error BOOLEAN,
+            input_json JSON,
+            input_summary TEXT,
+            output_text TEXT
+        )
+    """
+    )
+
+    # fact_session_summary - Aggregate facts per session
+    conn.execute(
+        """
+        CREATE OR REPLACE TABLE fact_session_summary (
+            session_key VARCHAR,
+            project_key VARCHAR,
+            date_key INTEGER,
+            total_messages INTEGER,
+            user_messages INTEGER,
+            assistant_messages INTEGER,
+            total_tool_calls INTEGER,
+            total_thinking_blocks INTEGER,
+            total_content_blocks INTEGER,
+            session_duration_seconds INTEGER,
+            first_timestamp TIMESTAMP,
+            last_timestamp TIMESTAMP
+        )
+    """
+    )
+
+    # Pre-populate dim_message_type with known values
+    for msg_type in ["user", "assistant"]:
+        key = generate_dimension_key(msg_type)
+        conn.execute(
+            "INSERT INTO dim_message_type (message_type_key, message_type) VALUES (?, ?)",
+            [key, msg_type],
+        )
+
+    # Pre-populate dim_content_block_type with known values
+    for block_type in ["text", "tool_use", "tool_result", "thinking", "image"]:
+        key = generate_dimension_key(block_type)
+        conn.execute(
+            "INSERT INTO dim_content_block_type (content_block_type_key, block_type) VALUES (?, ?)",
+            [key, block_type],
+        )
+
+    return conn
+
+
+def run_star_schema_etl(
+    conn, session_path, project_name, include_thinking=False, truncate_output=2000
+):
+    """Run ETL to populate star schema from a session file.
+
+    This function:
+    1. Extracts raw data from the session file
+    2. Transforms and loads dimension tables (with deduplication)
+    3. Transforms and loads fact tables
+
+    Args:
+        conn: DuckDB connection
+        session_path: Path to the JSONL session file
+        project_name: Name of the project
+        include_thinking: Whether to include thinking blocks
+        truncate_output: Max characters for tool output (default 2000)
+    """
+    session_path = Path(session_path)
+
+    # ==========================================================================
+    # Phase 1: Extract - Parse session file and collect raw data
+    # ==========================================================================
+    session_id = session_path.stem
+    session_key = generate_dimension_key(session_id)
+    project_path = str(session_path.parent)
+    project_key = generate_dimension_key(project_path)
+
+    # Session metadata (from first entry)
+    cwd = None
+    git_branch = None
+    version = None
+    first_timestamp = None
+    last_timestamp = None
+
+    # Counters
+    user_count = 0
+    assistant_count = 0
+    total_content_blocks = 0
+    thinking_count = 0
+
+    # Tracking structures
+    messages_data = []
+    content_blocks_data = []
+    tool_use_map = {}  # tool_use_id -> tool info
+    tool_calls_data = []
+    models_seen = set()
+    tools_seen = set()
+    dates_seen = set()  # Set of date_key integers
+
+    with open(session_path, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+
+            try:
+                entry = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+
+            entry_type = entry.get("type")
+            if entry_type not in ("user", "assistant"):
+                continue
+
+            # Extract metadata from first entry
+            if cwd is None:
+                cwd = entry.get("cwd")
+                git_branch = entry.get("gitBranch")
+                version = entry.get("version")
+
+            message_id = entry.get("uuid", "")
+            parent_id = entry.get("parentUuid")
+            timestamp_str = entry.get("timestamp", "")
+            message_data = entry.get("message", {})
+            model = message_data.get("model")
+
+            # Parse timestamp
+            timestamp = None
+            date_key = None
+            time_key = None
+            if timestamp_str:
+                try:
+                    timestamp = datetime.fromisoformat(
+                        timestamp_str.replace("Z", "+00:00")
+                    )
+                    if first_timestamp is None:
+                        first_timestamp = timestamp
+                    last_timestamp = timestamp
+
+                    # Generate date and time keys
+                    date_key = int(timestamp.strftime("%Y%m%d"))
+                    time_key = int(timestamp.strftime("%H%M"))
+                    dates_seen.add(date_key)
+                except (ValueError, TypeError):
+                    pass
+
+            # Track model
+            if model:
+                models_seen.add(model)
+
+            # Process content
+            content = message_data.get("content", "")
+            has_tool_use = False
+            has_tool_result = False
+            has_thinking = False
+            text_content = ""
+            content_json = json.dumps(content)
+            content_block_count = 0
+
+            if isinstance(content, str):
+                text_content = content
+                content_block_count = 1
+                # Single text block
+                block_id = f"{message_id}-0"
+                content_blocks_data.append(
+                    {
+                        "content_block_id": block_id,
+                        "message_id": message_id,
+                        "session_key": session_key,
+                        "content_block_type_key": generate_dimension_key("text"),
+                        "date_key": date_key,
+                        "time_key": time_key,
+                        "block_index": 0,
+                        "content_length": len(content),
+                        "content_text": content[:truncate_output] if content else "",
+                        "content_json": json.dumps({"type": "text", "text": content}),
+                    }
+                )
+                total_content_blocks += 1
+
+            elif isinstance(content, list):
+                texts = []
+                for idx, block in enumerate(content):
+                    if not isinstance(block, dict):
+                        continue
+
+                    block_type = block.get("type")
+                    content_block_count += 1
+
+                    # Determine if we should track this block
+                    should_track = True
+                    if block_type == "thinking" and not include_thinking:
+                        should_track = False
+
+                    if block_type == "text":
+                        text = block.get("text", "")
+                        texts.append(text)
+                        if should_track:
+                            block_id = f"{message_id}-{idx}"
+                            content_blocks_data.append(
+                                {
+                                    "content_block_id": block_id,
+                                    "message_id": message_id,
+                                    "session_key": session_key,
+                                    "content_block_type_key": generate_dimension_key(
+                                        "text"
+                                    ),
+                                    "date_key": date_key,
+                                    "time_key": time_key,
+                                    "block_index": idx,
+                                    "content_length": len(text),
+                                    "content_text": (
+                                        text[:truncate_output] if text else ""
+                                    ),
+                                    "content_json": json.dumps(block),
+                                }
+                            )
+                            total_content_blocks += 1
+
+                    elif block_type == "tool_use":
+                        has_tool_use = True
+                        tool_use_id = block.get("id")
+                        tool_name = block.get("name", "unknown")
+                        tool_input = block.get("input", {})
+                        tools_seen.add(tool_name)
+
+                        # Store for later linking
+                        input_json = json.dumps(tool_input)
+                        input_summary = input_json[:truncate_output]
+                        tool_use_map[tool_use_id] = {
+                            "message_id": message_id,
+                            "tool_name": tool_name,
+                            "tool_key": generate_dimension_key(tool_name),
+                            "input_json": input_json,
+                            "input_summary": input_summary,
+                            "input_char_count": len(input_json),
+                            "timestamp": timestamp,
+                            "date_key": date_key,
+                            "time_key": time_key,
+                        }
+
+                        if should_track:
+                            block_id = f"{message_id}-{idx}"
+                            content_blocks_data.append(
+                                {
+                                    "content_block_id": block_id,
+                                    "message_id": message_id,
+                                    "session_key": session_key,
+                                    "content_block_type_key": generate_dimension_key(
+                                        "tool_use"
+                                    ),
+                                    "date_key": date_key,
+                                    "time_key": time_key,
+                                    "block_index": idx,
+                                    "content_length": len(input_json),
+                                    "content_text": input_summary,
+                                    "content_json": json.dumps(block),
+                                }
+                            )
+                            total_content_blocks += 1
+
+                    elif block_type == "tool_result":
+                        has_tool_result = True
+                        tool_use_id = block.get("tool_use_id")
+                        result_content = block.get("content", "")
+                        is_error = block.get("is_error", False)
+
+                        if isinstance(result_content, list):
+                            result_text = " ".join(
+                                str(item.get("text", ""))
+                                for item in result_content
+                                if isinstance(item, dict)
+                            )
+                        else:
+                            result_text = str(result_content)
+
+                        output_text = result_text[:truncate_output]
+                        output_char_count = len(result_text)
+
+                        # Link to tool_use and create tool call record
+                        if tool_use_id and tool_use_id in tool_use_map:
+                            tool_info = tool_use_map[tool_use_id]
+                            tool_calls_data.append(
+                                {
+                                    "tool_call_id": tool_use_id,
+                                    "session_key": session_key,
+                                    "tool_key": tool_info["tool_key"],
+                                    "date_key": tool_info["date_key"],
+                                    "time_key": tool_info["time_key"],
+                                    "invoke_message_id": tool_info["message_id"],
+                                    "result_message_id": message_id,
+                                    "timestamp": tool_info["timestamp"],
+                                    "input_char_count": tool_info["input_char_count"],
+                                    "output_char_count": output_char_count,
+                                    "is_error": is_error,
+                                    "input_json": tool_info["input_json"],
+                                    "input_summary": tool_info["input_summary"],
+                                    "output_text": output_text,
+                                }
+                            )
+
+                        if should_track:
+                            block_id = f"{message_id}-{idx}"
+                            content_blocks_data.append(
+                                {
+                                    "content_block_id": block_id,
+                                    "message_id": message_id,
+                                    "session_key": session_key,
+                                    "content_block_type_key": generate_dimension_key(
+                                        "tool_result"
+                                    ),
+                                    "date_key": date_key,
+                                    "time_key": time_key,
+                                    "block_index": idx,
+                                    "content_length": output_char_count,
+                                    "content_text": output_text,
+                                    "content_json": json.dumps(block),
+                                }
+                            )
+                            total_content_blocks += 1
+
+                    elif block_type == "thinking":
+                        has_thinking = True
+                        thinking_count += 1
+                        thinking_text = block.get("thinking", "")
+
+                        if should_track:
+                            block_id = f"{message_id}-{idx}"
+                            content_blocks_data.append(
+                                {
+                                    "content_block_id": block_id,
+                                    "message_id": message_id,
+                                    "session_key": session_key,
+                                    "content_block_type_key": generate_dimension_key(
+                                        "thinking"
+                                    ),
+                                    "date_key": date_key,
+                                    "time_key": time_key,
+                                    "block_index": idx,
+                                    "content_length": len(thinking_text),
+                                    "content_text": (
+                                        thinking_text[:truncate_output]
+                                        if thinking_text
+                                        else ""
+                                    ),
+                                    "content_json": json.dumps(block),
+                                }
+                            )
+                            total_content_blocks += 1
+
+                    elif block_type == "image":
+                        if should_track:
+                            block_id = f"{message_id}-{idx}"
+                            content_blocks_data.append(
+                                {
+                                    "content_block_id": block_id,
+                                    "message_id": message_id,
+                                    "session_key": session_key,
+                                    "content_block_type_key": generate_dimension_key(
+                                        "image"
+                                    ),
+                                    "date_key": date_key,
+                                    "time_key": time_key,
+                                    "block_index": idx,
+                                    "content_length": 0,
+                                    "content_text": "[image]",
+                                    "content_json": json.dumps(
+                                        {"type": "image", "note": "content omitted"}
+                                    ),
+                                }
+                            )
+                            total_content_blocks += 1
+
+                text_content = " ".join(texts)
+
+            # Update counters
+            if entry_type == "user":
+                user_count += 1
+            else:
+                assistant_count += 1
+
+            # Build message record
+            message_type_key = generate_dimension_key(entry_type)
+            model_key = generate_dimension_key(model) if model else None
+
+            messages_data.append(
+                {
+                    "message_id": message_id,
+                    "session_key": session_key,
+                    "project_key": project_key,
+                    "message_type_key": message_type_key,
+                    "model_key": model_key,
+                    "date_key": date_key,
+                    "time_key": time_key,
+                    "parent_message_id": parent_id,
+                    "timestamp": timestamp,
+                    "content_length": len(text_content),
+                    "content_block_count": content_block_count,
+                    "has_tool_use": has_tool_use,
+                    "has_tool_result": has_tool_result,
+                    "has_thinking": has_thinking,
+                    "content_text": (
+                        text_content[:truncate_output] if text_content else ""
+                    ),
+                    "content_json": content_json,
+                }
+            )
+
+    # ==========================================================================
+    # Phase 2: Transform & Load - Populate dimensions and facts
+    # ==========================================================================
+
+    # Load dim_project (upsert pattern - check if exists first)
+    existing = conn.execute(
+        "SELECT 1 FROM dim_project WHERE project_key = ?", [project_key]
+    ).fetchone()
+    if not existing:
+        conn.execute(
+            """INSERT INTO dim_project (project_key, project_path, project_name)
+               VALUES (?, ?, ?)""",
+            [project_key, project_path, project_name],
+        )
+
+    # Load dim_session
+    existing = conn.execute(
+        "SELECT 1 FROM dim_session WHERE session_key = ?", [session_key]
+    ).fetchone()
+    if not existing:
+        conn.execute(
+            """INSERT INTO dim_session
+               (session_key, session_id, project_key, cwd, git_branch, version,
+                first_timestamp, last_timestamp)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            [
+                session_key,
+                session_id,
+                project_key,
+                cwd,
+                git_branch,
+                version,
+                first_timestamp,
+                last_timestamp,
+            ],
+        )
+
+    # Load dim_tool
+    for tool_name in tools_seen:
+        tool_key = generate_dimension_key(tool_name)
+        existing = conn.execute(
+            "SELECT 1 FROM dim_tool WHERE tool_key = ?", [tool_key]
+        ).fetchone()
+        if not existing:
+            category = get_tool_category(tool_name)
+            conn.execute(
+                """INSERT INTO dim_tool (tool_key, tool_name, tool_category)
+                   VALUES (?, ?, ?)""",
+                [tool_key, tool_name, category],
+            )
+
+    # Load dim_model
+    for model_name in models_seen:
+        model_key = generate_dimension_key(model_name)
+        existing = conn.execute(
+            "SELECT 1 FROM dim_model WHERE model_key = ?", [model_key]
+        ).fetchone()
+        if not existing:
+            family = get_model_family(model_name)
+            conn.execute(
+                """INSERT INTO dim_model (model_key, model_name, model_family)
+                   VALUES (?, ?, ?)""",
+                [model_key, model_name, family],
+            )
+
+    # Load dim_date
+    day_names = [
+        "Monday",
+        "Tuesday",
+        "Wednesday",
+        "Thursday",
+        "Friday",
+        "Saturday",
+        "Sunday",
+    ]
+    month_names = [
+        "January",
+        "February",
+        "March",
+        "April",
+        "May",
+        "June",
+        "July",
+        "August",
+        "September",
+        "October",
+        "November",
+        "December",
+    ]
+
+    for date_key in dates_seen:
+        existing = conn.execute(
+            "SELECT 1 FROM dim_date WHERE date_key = ?", [date_key]
+        ).fetchone()
+        if not existing:
+            # Parse date_key back to date
+            year = date_key // 10000
+            month = (date_key // 100) % 100
+            day = date_key % 100
+            try:
+                full_date = datetime(year, month, day)
+                day_of_week = full_date.weekday()
+                quarter = (month - 1) // 3 + 1
+                is_weekend = day_of_week >= 5
+
+                conn.execute(
+                    """INSERT INTO dim_date
+                       (date_key, full_date, year, month, day, day_of_week,
+                        day_name, month_name, quarter, is_weekend)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    [
+                        date_key,
+                        full_date.date(),
+                        year,
+                        month,
+                        day,
+                        day_of_week,
+                        day_names[day_of_week],
+                        month_names[month - 1],
+                        quarter,
+                        is_weekend,
+                    ],
+                )
+            except ValueError:
+                pass
+
+    # Load dim_time (for all unique times seen)
+    times_seen = set()
+    for msg in messages_data:
+        if msg["time_key"]:
+            times_seen.add(msg["time_key"])
+
+    for time_key in times_seen:
+        existing = conn.execute(
+            "SELECT 1 FROM dim_time WHERE time_key = ?", [time_key]
+        ).fetchone()
+        if not existing:
+            hour = time_key // 100
+            minute = time_key % 100
+            time_of_day = get_time_of_day(hour)
+            conn.execute(
+                """INSERT INTO dim_time (time_key, hour, minute, time_of_day)
+                   VALUES (?, ?, ?, ?)""",
+                [time_key, hour, minute, time_of_day],
+            )
+
+    # Load fact_messages
+    for msg in messages_data:
+        conn.execute(
+            """INSERT INTO fact_messages
+               (message_id, session_key, project_key, message_type_key, model_key,
+                date_key, time_key, parent_message_id, timestamp, content_length,
+                content_block_count, has_tool_use, has_tool_result, has_thinking,
+                content_text, content_json)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            [
+                msg["message_id"],
+                msg["session_key"],
+                msg["project_key"],
+                msg["message_type_key"],
+                msg["model_key"],
+                msg["date_key"],
+                msg["time_key"],
+                msg["parent_message_id"],
+                msg["timestamp"],
+                msg["content_length"],
+                msg["content_block_count"],
+                msg["has_tool_use"],
+                msg["has_tool_result"],
+                msg["has_thinking"],
+                msg["content_text"],
+                msg["content_json"],
+            ],
+        )
+
+    # Load fact_content_blocks
+    for block in content_blocks_data:
+        conn.execute(
+            """INSERT INTO fact_content_blocks
+               (content_block_id, message_id, session_key, content_block_type_key,
+                date_key, time_key, block_index, content_length, content_text, content_json)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            [
+                block["content_block_id"],
+                block["message_id"],
+                block["session_key"],
+                block["content_block_type_key"],
+                block["date_key"],
+                block["time_key"],
+                block["block_index"],
+                block["content_length"],
+                block["content_text"],
+                block["content_json"],
+            ],
+        )
+
+    # Load fact_tool_calls
+    for tc in tool_calls_data:
+        conn.execute(
+            """INSERT INTO fact_tool_calls
+               (tool_call_id, session_key, tool_key, date_key, time_key,
+                invoke_message_id, result_message_id, timestamp, input_char_count,
+                output_char_count, is_error, input_json, input_summary, output_text)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            [
+                tc["tool_call_id"],
+                tc["session_key"],
+                tc["tool_key"],
+                tc["date_key"],
+                tc["time_key"],
+                tc["invoke_message_id"],
+                tc["result_message_id"],
+                tc["timestamp"],
+                tc["input_char_count"],
+                tc["output_char_count"],
+                tc["is_error"],
+                tc["input_json"],
+                tc["input_summary"],
+                tc["output_text"],
+            ],
+        )
+
+    # Load fact_session_summary
+    session_duration = 0
+    if first_timestamp and last_timestamp:
+        session_duration = int((last_timestamp - first_timestamp).total_seconds())
+
+    first_date_key = None
+    if first_timestamp:
+        first_date_key = int(first_timestamp.strftime("%Y%m%d"))
+
+    conn.execute(
+        """INSERT INTO fact_session_summary
+           (session_key, project_key, date_key, total_messages, user_messages,
+            assistant_messages, total_tool_calls, total_thinking_blocks,
+            total_content_blocks, session_duration_seconds, first_timestamp, last_timestamp)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        [
+            session_key,
+            project_key,
+            first_date_key,
+            user_count + assistant_count,
+            user_count,
+            assistant_count,
+            len(tool_calls_data),
+            thinking_count,
+            total_content_blocks,
+            session_duration,
+            first_timestamp,
+            last_timestamp,
+        ],
+    )
+
+
 def parse_session_file(filepath):
     """Parse a session file and return normalized data.
 
