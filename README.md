@@ -245,6 +245,12 @@ LIMIT 10;
 
 Use `--include-thinking` to also export Claude's thinking blocks (these can be 10KB+ each, so they're opt-in).
 
+### Star Schema Analytics (Advanced)
+
+For advanced analytics, the library provides a comprehensive star schema data model with dimension and fact tables. This enables dimensional analysis across tools, models, time periods, files, code blocks, and more—all queryable via SQL or Python.
+
+See [docs/STAR_SCHEMA.md](docs/STAR_SCHEMA.md) for the complete schema documentation, example queries, and LLM enrichment pipeline.
+
 ## Development
 
 To contribute to this tool, first checkout the code. You can run the tests using `uv run`:

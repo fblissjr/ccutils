@@ -1,0 +1,810 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Claude Code Analytics Dashboard</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/duckdb@1.0.0/dist/duckdb-browser.mjs" type="module"></script>
+    <style>
+        .tab-active { border-bottom: 2px solid #6366f1; color: #6366f1; }
+        .card { @apply bg-white rounded-lg shadow-md p-4; }
+        .schema-table { @apply border border-gray-300 rounded-lg overflow-hidden text-xs; }
+        .schema-header { @apply px-2 py-1 font-semibold text-white; }
+        .schema-row { @apply px-2 py-0.5 border-b border-gray-200 flex justify-between; }
+        .schema-row:last-child { @apply border-b-0; }
+        .dim-table .schema-header { @apply bg-indigo-600; }
+        .fact-table .schema-header { @apply bg-green-600; }
+        .stg-table .schema-header { @apply bg-yellow-600; }
+        .dim-table { @apply bg-blue-50; }
+        .fact-table { @apply bg-green-50; }
+        .stg-table { @apply bg-yellow-50; }
+        pre { @apply bg-gray-900 text-green-400 p-4 rounded-lg overflow-x-auto text-sm; }
+        .loader { @apply animate-spin h-8 w-8 border-4 border-indigo-600 border-t-transparent rounded-full; }
+        .kpi-card { @apply bg-white rounded-lg shadow-md p-4 text-center; }
+        .kpi-value { @apply text-2xl font-bold; }
+        .kpi-label { @apply text-xs text-gray-500 mt-1; }
+    </style>
+</head>
+<body class="bg-gray-100 min-h-screen">
+    <!-- Header -->
+    <header class="bg-indigo-700 text-white shadow-lg">
+        <div class="max-w-7xl mx-auto px-4 py-4">
+            <div class="flex items-center justify-between">
+                <div>
+                    <h1 class="text-2xl font-bold">Star Schema Analytics</h1>
+                    <p class="text-indigo-200 text-sm">Schema-Aware Dashboard</p>
+                </div>
+                <div class="flex items-center gap-4">
+                    <div id="db-status" class="flex items-center gap-2">
+                        <span class="h-3 w-3 rounded-full bg-yellow-400"></span>
+                        <span class="text-sm">No database loaded</span>
+                    </div>
+                    <label class="bg-indigo-600 hover:bg-indigo-500 px-4 py-2 rounded-lg cursor-pointer transition">
+                        <span>Load Database</span>
+                        <input type="file" id="db-file-input" accept=".duckdb,.db" class="hidden">
+                    </label>
+                </div>
+            </div>
+        </div>
+    </header>
+
+    <!-- Navigation Tabs -->
+    <nav class="bg-white shadow">
+        <div class="max-w-7xl mx-auto px-4">
+            <div class="flex space-x-8">
+                <button onclick="showTab('schema')" id="tab-schema" class="tab-btn py-4 px-2 font-medium text-gray-600 hover:text-indigo-600 tab-active">
+                    Schema
+                </button>
+                <button onclick="showTab('analytics')" id="tab-analytics" class="tab-btn py-4 px-2 font-medium text-gray-600 hover:text-indigo-600">
+                    Analytics
+                </button>
+                <button onclick="showTab('explorer')" id="tab-explorer" class="tab-btn py-4 px-2 font-medium text-gray-600 hover:text-indigo-600">
+                    Data Explorer
+                </button>
+                <button onclick="showTab('query')" id="tab-query" class="tab-btn py-4 px-2 font-medium text-gray-600 hover:text-indigo-600">
+                    SQL Query
+                </button>
+            </div>
+        </div>
+    </nav>
+
+    <!-- Loading Overlay -->
+    <div id="loading-overlay" class="hidden fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+        <div class="bg-white p-6 rounded-lg flex items-center gap-4">
+            <div class="loader"></div>
+            <span>Loading...</span>
+        </div>
+    </div>
+
+    <!-- Main Content -->
+    <main class="max-w-7xl mx-auto px-4 py-6">
+        <!-- Schema Tab -->
+        <div id="content-schema" class="tab-content">
+            <div class="bg-white rounded-lg shadow-md p-6">
+                <div class="flex justify-between items-center mb-4">
+                    <h2 class="text-xl font-bold text-gray-800">Discovered Schema</h2>
+                    <div class="text-sm text-gray-500">
+                        <span id="schema-stats">Load a database to view schema</span>
+                    </div>
+                </div>
+
+                <!-- Dynamic Schema Diagram -->
+                <div id="schema-diagram" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
+                    <div class="text-gray-500 text-center py-12 col-span-full">
+                        Load a DuckDB file to discover and visualize the schema
+                    </div>
+                </div>
+
+                <!-- Legend -->
+                <div class="flex gap-6 mt-6 pt-4 border-t">
+                    <div class="flex items-center gap-2">
+                        <div class="w-4 h-4 bg-blue-50 border border-blue-300 rounded"></div>
+                        <span class="text-sm text-gray-600">Dimension (dim_*)</span>
+                    </div>
+                    <div class="flex items-center gap-2">
+                        <div class="w-4 h-4 bg-green-50 border border-green-300 rounded"></div>
+                        <span class="text-sm text-gray-600">Fact (fact_*)</span>
+                    </div>
+                    <div class="flex items-center gap-2">
+                        <div class="w-4 h-4 bg-yellow-50 border border-yellow-300 rounded"></div>
+                        <span class="text-sm text-gray-600">Staging (stg_*)</span>
+                    </div>
+                    <div class="flex items-center gap-2">
+                        <div class="w-4 h-4 bg-gray-50 border border-gray-300 rounded"></div>
+                        <span class="text-sm text-gray-600">Other</span>
+                    </div>
+                </div>
+
+                <!-- Relationships -->
+                <div id="relationships-section" class="mt-6 pt-4 border-t hidden">
+                    <h3 class="font-bold text-gray-800 mb-3">Detected Relationships</h3>
+                    <div id="relationships-list" class="text-sm text-gray-600 grid grid-cols-2 lg:grid-cols-3 gap-2"></div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Analytics Tab -->
+        <div id="content-analytics" class="tab-content hidden">
+            <!-- Dynamic KPI Cards -->
+            <div id="kpi-container" class="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-4 mb-6">
+                <div class="text-gray-500 text-center py-8 col-span-full bg-white rounded-lg shadow-md">
+                    Load a database to view analytics
+                </div>
+            </div>
+
+            <!-- Dynamic Filters -->
+            <div id="filters-container" class="bg-white rounded-lg shadow-md p-4 mb-6 hidden">
+                <h3 class="font-bold text-gray-800 mb-3">Filters</h3>
+                <div id="dynamic-filters" class="grid grid-cols-2 md:grid-cols-4 gap-4"></div>
+            </div>
+
+            <!-- Dynamic Charts -->
+            <div id="charts-container" class="grid grid-cols-1 md:grid-cols-2 gap-6 mb-6">
+            </div>
+
+            <!-- Top Records Table -->
+            <div id="top-records-container" class="bg-white rounded-lg shadow-md p-4 hidden">
+                <h3 class="font-bold text-gray-800 mb-3">Sample Data</h3>
+                <div id="top-records-content" class="overflow-x-auto"></div>
+            </div>
+        </div>
+
+        <!-- Data Explorer Tab -->
+        <div id="content-explorer" class="tab-content hidden">
+            <div class="grid grid-cols-4 gap-6">
+                <!-- Table List -->
+                <div class="bg-white rounded-lg shadow-md p-4">
+                    <h3 class="font-bold text-gray-800 mb-3">Tables</h3>
+                    <div id="table-list" class="space-y-1 max-h-96 overflow-y-auto">
+                        <div class="text-gray-500 text-sm">Load a database</div>
+                    </div>
+                </div>
+
+                <!-- Table Data -->
+                <div class="col-span-3 bg-white rounded-lg shadow-md p-4">
+                    <div class="flex justify-between items-center mb-3">
+                        <h3 class="font-bold text-gray-800">
+                            <span id="selected-table-name">Select a table</span>
+                            <span id="table-row-count" class="text-sm font-normal text-gray-500 ml-2"></span>
+                        </h3>
+                        <div class="flex gap-2">
+                            <button onclick="prevPage()" id="prev-btn" class="px-3 py-1 bg-gray-200 rounded disabled:opacity-50" disabled>Prev</button>
+                            <span id="page-info" class="px-3 py-1">-</span>
+                            <button onclick="nextPage()" id="next-btn" class="px-3 py-1 bg-gray-200 rounded disabled:opacity-50" disabled>Next</button>
+                        </div>
+                    </div>
+                    <div class="overflow-x-auto">
+                        <table class="w-full text-sm">
+                            <thead id="table-header" class="bg-gray-50"></thead>
+                            <tbody id="table-body"></tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- SQL Query Tab -->
+        <div id="content-query" class="tab-content hidden">
+            <div class="bg-white rounded-lg shadow-md p-4 mb-4">
+                <div class="flex justify-between items-center mb-3">
+                    <h3 class="font-bold text-gray-800">SQL Query</h3>
+                    <div class="flex gap-2">
+                        <select id="query-templates" class="border rounded-lg px-3 py-2 text-sm" onchange="loadQueryTemplate()">
+                            <option value="">Load Template...</option>
+                        </select>
+                        <button onclick="executeQuery()" class="bg-indigo-600 text-white px-4 py-2 rounded-lg hover:bg-indigo-500">
+                            Execute
+                        </button>
+                    </div>
+                </div>
+                <textarea id="sql-input" class="w-full h-32 border rounded-lg p-3 font-mono text-sm" placeholder="SELECT * FROM ..."></textarea>
+            </div>
+
+            <div class="bg-white rounded-lg shadow-md p-4">
+                <div class="flex justify-between items-center mb-3">
+                    <h3 class="font-bold text-gray-800">Results</h3>
+                    <span id="query-time" class="text-sm text-gray-500"></span>
+                </div>
+                <div id="query-results" class="overflow-x-auto">
+                    <div class="text-gray-500">Execute a query to see results</div>
+                </div>
+            </div>
+        </div>
+    </main>
+
+    <script type="module">
+        import * as duckdb from 'https://cdn.jsdelivr.net/npm/duckdb@1.0.0/dist/duckdb-browser.mjs';
+
+        let db = null;
+        let conn = null;
+        let schema = { tables: [], columns: {}, relationships: [] };
+        let charts = {};
+        let currentTable = null;
+        let currentPage = 0;
+        const pageSize = 50;
+
+        // Initialize DuckDB
+        async function initDuckDB() {
+            const bundle = await duckdb.selectBundle({
+                asyncDefault: { mainModule: 'https://cdn.jsdelivr.net/npm/duckdb@1.0.0/dist/duckdb.wasm', mainWorker: 'https://cdn.jsdelivr.net/npm/duckdb@1.0.0/dist/duckdb-browser-async.worker.js' }
+            });
+            const logger = new duckdb.ConsoleLogger();
+            db = new duckdb.AsyncDuckDB(logger, new Worker(bundle.asyncDefault.mainWorker));
+            await db.instantiate(bundle.asyncDefault.mainModule);
+        }
+
+        // Load database file
+        async function loadDatabase(file) {
+            showLoading(true);
+            try {
+                const buffer = await file.arrayBuffer();
+                await db.registerFileBuffer(file.name, new Uint8Array(buffer));
+                conn = await db.connect();
+                await conn.query(`ATTACH '${file.name}' AS loaded_db`);
+
+                // Discover schema
+                await discoverSchema();
+
+                updateStatus('connected', `Connected: ${file.name}`);
+
+                // Refresh all views
+                await refreshTableList();
+                await renderSchemaDiagram();
+                await generateAnalytics();
+                await generateQueryTemplates();
+
+            } catch (e) {
+                console.error('Error loading database:', e);
+                updateStatus('error', 'Error loading database');
+            }
+            showLoading(false);
+        }
+
+        // Discover schema from database
+        async function discoverSchema() {
+            schema = { tables: [], columns: {}, relationships: [] };
+
+            // Get all tables
+            const tablesResult = await conn.query(`
+                SELECT table_name
+                FROM information_schema.tables
+                WHERE table_schema = 'main' OR table_schema = 'loaded_db'
+                ORDER BY table_name
+            `);
+            schema.tables = tablesResult.toArray().map(r => r.table_name);
+
+            // Get columns for each table
+            for (const table of schema.tables) {
+                const columnsResult = await conn.query(`
+                    SELECT column_name, data_type, is_nullable
+                    FROM information_schema.columns
+                    WHERE table_name = '${table}'
+                    ORDER BY ordinal_position
+                `);
+                schema.columns[table] = columnsResult.toArray().map(r => ({
+                    name: r.column_name,
+                    type: r.data_type,
+                    nullable: r.is_nullable === 'YES'
+                }));
+            }
+
+            // Detect relationships based on column naming conventions
+            for (const table of schema.tables) {
+                const columns = schema.columns[table] || [];
+                for (const col of columns) {
+                    if (col.name.endsWith('_key') || col.name.endsWith('_id')) {
+                        // Look for matching dimension table
+                        const baseName = col.name.replace(/_key$/, '').replace(/_id$/, '');
+                        const dimTable = schema.tables.find(t =>
+                            t === `dim_${baseName}` ||
+                            t === baseName ||
+                            t.endsWith(`_${baseName}`)
+                        );
+                        if (dimTable && dimTable !== table) {
+                            schema.relationships.push({
+                                from: table,
+                                fromCol: col.name,
+                                to: dimTable,
+                                toCol: col.name
+                            });
+                        }
+                    }
+                }
+            }
+
+            // Update stats
+            const dims = schema.tables.filter(t => t.startsWith('dim_')).length;
+            const facts = schema.tables.filter(t => t.startsWith('fact_')).length;
+            const stg = schema.tables.filter(t => t.startsWith('stg_')).length;
+            document.getElementById('schema-stats').textContent =
+                `${schema.tables.length} tables (${dims} dim, ${facts} fact, ${stg} staging)`;
+        }
+
+        // Render schema diagram dynamically
+        async function renderSchemaDiagram() {
+            const container = document.getElementById('schema-diagram');
+            container.innerHTML = '';
+
+            // Group tables by type
+            const dims = schema.tables.filter(t => t.startsWith('dim_'));
+            const facts = schema.tables.filter(t => t.startsWith('fact_'));
+            const stg = schema.tables.filter(t => t.startsWith('stg_'));
+            const other = schema.tables.filter(t => !t.startsWith('dim_') && !t.startsWith('fact_') && !t.startsWith('stg_'));
+
+            // Render fact tables first (they're the center of star schema)
+            for (const table of facts) {
+                container.appendChild(createTableCard(table, 'fact'));
+            }
+
+            // Then dimensions
+            for (const table of dims) {
+                container.appendChild(createTableCard(table, 'dim'));
+            }
+
+            // Then staging
+            for (const table of stg) {
+                container.appendChild(createTableCard(table, 'stg'));
+            }
+
+            // Then other
+            for (const table of other) {
+                container.appendChild(createTableCard(table, 'other'));
+            }
+
+            // Render relationships
+            if (schema.relationships.length > 0) {
+                const relSection = document.getElementById('relationships-section');
+                const relList = document.getElementById('relationships-list');
+                relSection.classList.remove('hidden');
+                relList.innerHTML = schema.relationships.map(r =>
+                    `<div class="bg-gray-100 px-2 py-1 rounded text-xs">
+                        <span class="font-mono">${r.from}</span>
+                        <span class="text-gray-400">→</span>
+                        <span class="font-mono">${r.to}</span>
+                        <span class="text-gray-400 ml-1">(${r.fromCol})</span>
+                    </div>`
+                ).join('');
+            }
+        }
+
+        // Create a table card for schema diagram
+        function createTableCard(tableName, type) {
+            const columns = schema.columns[tableName] || [];
+            const div = document.createElement('div');
+
+            const typeClass = type === 'fact' ? 'fact-table' :
+                              type === 'dim' ? 'dim-table' :
+                              type === 'stg' ? 'stg-table' : 'bg-gray-50';
+
+            // Determine which columns to show (max 6 for readability)
+            const displayColumns = columns.slice(0, 6);
+            const hasMore = columns.length > 6;
+
+            div.innerHTML = `
+                <div class="schema-table ${typeClass}" onclick="window.selectTable('${tableName}')">
+                    <div class="schema-header cursor-pointer hover:opacity-90">${tableName}</div>
+                    ${displayColumns.map(col => `
+                        <div class="schema-row">
+                            <span class="truncate" title="${col.name}">${col.name}</span>
+                            <span class="text-gray-400 ml-2">${col.type}</span>
+                        </div>
+                    `).join('')}
+                    ${hasMore ? `<div class="schema-row text-gray-400 italic">+${columns.length - 6} more</div>` : ''}
+                </div>
+            `;
+            return div;
+        }
+
+        // Generate analytics dynamically based on schema
+        async function generateAnalytics() {
+            await generateKPIs();
+            await generateFilters();
+            await generateCharts();
+        }
+
+        // Generate KPIs from fact tables
+        async function generateKPIs() {
+            const container = document.getElementById('kpi-container');
+            container.innerHTML = '';
+
+            const kpis = [];
+
+            // Count rows in each fact table
+            for (const table of schema.tables.filter(t => t.startsWith('fact_'))) {
+                try {
+                    const result = await conn.query(`SELECT COUNT(*) as cnt FROM ${table}`);
+                    const count = Number(result.toArray()[0].cnt);
+                    kpis.push({
+                        label: table.replace('fact_', '').replace(/_/g, ' '),
+                        value: formatNumber(count),
+                        color: 'text-green-600'
+                    });
+                } catch (e) {
+                    console.error(`Error counting ${table}:`, e);
+                }
+            }
+
+            // Count unique values in key dimensions
+            for (const table of schema.tables.filter(t => t.startsWith('dim_')).slice(0, 4)) {
+                try {
+                    const result = await conn.query(`SELECT COUNT(*) as cnt FROM ${table}`);
+                    const count = Number(result.toArray()[0].cnt);
+                    kpis.push({
+                        label: table.replace('dim_', '').replace(/_/g, ' '),
+                        value: formatNumber(count),
+                        color: 'text-indigo-600'
+                    });
+                } catch (e) {
+                    console.error(`Error counting ${table}:`, e);
+                }
+            }
+
+            // Render KPIs
+            for (const kpi of kpis.slice(0, 8)) {
+                const div = document.createElement('div');
+                div.className = 'kpi-card';
+                div.innerHTML = `
+                    <div class="kpi-value ${kpi.color}">${kpi.value}</div>
+                    <div class="kpi-label">${kpi.label}</div>
+                `;
+                container.appendChild(div);
+            }
+        }
+
+        // Generate filters from dimension tables
+        async function generateFilters() {
+            const container = document.getElementById('dynamic-filters');
+            const filtersContainer = document.getElementById('filters-container');
+            container.innerHTML = '';
+
+            const dims = schema.tables.filter(t => t.startsWith('dim_'));
+            if (dims.length === 0) {
+                filtersContainer.classList.add('hidden');
+                return;
+            }
+
+            filtersContainer.classList.remove('hidden');
+
+            // Create filters for dimension tables with categorical columns
+            for (const dim of dims.slice(0, 4)) {
+                const columns = schema.columns[dim] || [];
+                // Find a good column to use as filter (prefer *_name, *_type, *_category)
+                const filterCol = columns.find(c =>
+                    c.name.endsWith('_name') ||
+                    c.name.endsWith('_type') ||
+                    c.name.endsWith('_category')
+                ) || columns.find(c => c.type === 'VARCHAR' && !c.name.endsWith('_key'));
+
+                if (filterCol) {
+                    try {
+                        const result = await conn.query(`
+                            SELECT DISTINCT ${filterCol.name} as val
+                            FROM ${dim}
+                            WHERE ${filterCol.name} IS NOT NULL
+                            ORDER BY ${filterCol.name}
+                            LIMIT 20
+                        `);
+                        const values = result.toArray().map(r => r.val);
+
+                        if (values.length > 0 && values.length <= 20) {
+                            const div = document.createElement('div');
+                            div.innerHTML = `
+                                <label class="text-xs text-gray-600">${dim.replace('dim_', '')}</label>
+                                <select class="w-full border rounded-lg px-3 py-2 text-sm">
+                                    <option value="">All</option>
+                                    ${values.map(v => `<option value="${v}">${v}</option>`).join('')}
+                                </select>
+                            `;
+                            container.appendChild(div);
+                        }
+                    } catch (e) {
+                        console.error(`Error generating filter for ${dim}:`, e);
+                    }
+                }
+            }
+        }
+
+        // Generate charts from fact tables
+        async function generateCharts() {
+            const container = document.getElementById('charts-container');
+            container.innerHTML = '';
+
+            // Destroy existing charts
+            Object.values(charts).forEach(c => c.destroy());
+            charts = {};
+
+            // Generate charts for fact tables with dimension joins
+            let chartCount = 0;
+            for (const factTable of schema.tables.filter(t => t.startsWith('fact_'))) {
+                if (chartCount >= 4) break;
+
+                const columns = schema.columns[factTable] || [];
+
+                // Find a dimension key to group by
+                const dimKey = columns.find(c => c.name.endsWith('_key') && !c.name.startsWith('date_') && !c.name.startsWith('time_'));
+                if (!dimKey) continue;
+
+                // Find the matching dimension table
+                const baseName = dimKey.name.replace(/_key$/, '');
+                const dimTable = schema.tables.find(t => t === `dim_${baseName}` || t.endsWith(`_${baseName}`));
+                if (!dimTable) continue;
+
+                // Find a display column in the dimension
+                const dimCols = schema.columns[dimTable] || [];
+                const displayCol = dimCols.find(c =>
+                    c.name.endsWith('_name') ||
+                    c.name.endsWith('_type') ||
+                    c.name === baseName
+                );
+                if (!displayCol) continue;
+
+                try {
+                    const result = await conn.query(`
+                        SELECT d.${displayCol.name} as label, COUNT(*) as cnt
+                        FROM ${factTable} f
+                        JOIN ${dimTable} d ON f.${dimKey.name} = d.${dimKey.name}
+                        GROUP BY d.${displayCol.name}
+                        ORDER BY cnt DESC
+                        LIMIT 10
+                    `);
+                    const data = result.toArray();
+
+                    if (data.length > 0) {
+                        const chartDiv = document.createElement('div');
+                        chartDiv.className = 'bg-white rounded-lg shadow-md p-4';
+                        const chartId = `chart-${chartCount}`;
+                        chartDiv.innerHTML = `
+                            <h3 class="font-bold text-gray-800 mb-4">${factTable.replace('fact_', '')} by ${displayCol.name}</h3>
+                            <canvas id="${chartId}" height="200"></canvas>
+                        `;
+                        container.appendChild(chartDiv);
+
+                        const ctx = document.getElementById(chartId).getContext('2d');
+                        charts[chartId] = new Chart(ctx, {
+                            type: chartCount % 2 === 0 ? 'bar' : 'doughnut',
+                            data: {
+                                labels: data.map(r => r.label || 'Unknown'),
+                                datasets: [{
+                                    data: data.map(r => Number(r.cnt)),
+                                    backgroundColor: ['#6366f1', '#22c55e', '#f59e0b', '#ef4444', '#8b5cf6', '#06b6d4', '#f97316', '#84cc16', '#ec4899', '#14b8a6']
+                                }]
+                            },
+                            options: {
+                                responsive: true,
+                                plugins: {
+                                    legend: { display: chartCount % 2 !== 0, position: 'right' }
+                                }
+                            }
+                        });
+
+                        chartCount++;
+                    }
+                } catch (e) {
+                    console.error(`Error generating chart for ${factTable}:`, e);
+                }
+            }
+        }
+
+        // Generate query templates based on schema
+        async function generateQueryTemplates() {
+            const select = document.getElementById('query-templates');
+            select.innerHTML = '<option value="">Load Template...</option>';
+
+            // Basic select for each table
+            for (const table of schema.tables.slice(0, 10)) {
+                const opt = document.createElement('option');
+                opt.value = `SELECT * FROM ${table} LIMIT 100`;
+                opt.textContent = `${table} - Sample`;
+                select.appendChild(opt);
+            }
+
+            // Generate join queries for fact tables
+            for (const factTable of schema.tables.filter(t => t.startsWith('fact_')).slice(0, 5)) {
+                const columns = schema.columns[factTable] || [];
+                const dimKeys = columns.filter(c => c.name.endsWith('_key'));
+
+                if (dimKeys.length > 0) {
+                    const dimKey = dimKeys[0];
+                    const baseName = dimKey.name.replace(/_key$/, '');
+                    const dimTable = schema.tables.find(t => t === `dim_${baseName}`);
+
+                    if (dimTable) {
+                        const dimCols = schema.columns[dimTable] || [];
+                        const displayCol = dimCols.find(c => c.name.endsWith('_name')) || dimCols[1];
+
+                        if (displayCol) {
+                            const opt = document.createElement('option');
+                            opt.value = `SELECT d.${displayCol.name}, COUNT(*) as count
+FROM ${factTable} f
+JOIN ${dimTable} d ON f.${dimKey.name} = d.${dimKey.name}
+GROUP BY d.${displayCol.name}
+ORDER BY count DESC
+LIMIT 20`;
+                            opt.textContent = `${factTable} by ${baseName}`;
+                            select.appendChild(opt);
+                        }
+                    }
+                }
+            }
+        }
+
+        // Refresh table list
+        async function refreshTableList() {
+            const container = document.getElementById('table-list');
+            container.innerHTML = '';
+
+            for (const table of schema.tables) {
+                const isDim = table.startsWith('dim_');
+                const isFact = table.startsWith('fact_');
+                const isStg = table.startsWith('stg_');
+                const bgClass = isDim ? 'bg-blue-50 hover:bg-blue-100' :
+                               isFact ? 'bg-green-50 hover:bg-green-100' :
+                               isStg ? 'bg-yellow-50 hover:bg-yellow-100' : 'hover:bg-gray-50';
+
+                const btn = document.createElement('button');
+                btn.className = `w-full text-left px-3 py-2 rounded text-sm ${bgClass} transition`;
+                btn.textContent = table;
+                btn.onclick = () => window.selectTable(table);
+                container.appendChild(btn);
+            }
+        }
+
+        // Select and display table
+        window.selectTable = async function(tableName) {
+            if (!conn) return;
+
+            currentTable = tableName;
+            currentPage = 0;
+
+            document.getElementById('selected-table-name').textContent = tableName;
+
+            try {
+                const countResult = await conn.query(`SELECT COUNT(*) as cnt FROM ${tableName}`);
+                const rowCount = Number(countResult.toArray()[0].cnt);
+                document.getElementById('table-row-count').textContent = `${rowCount.toLocaleString()} rows`;
+            } catch (e) {
+                document.getElementById('table-row-count').textContent = '';
+            }
+
+            await loadTablePage();
+
+            // Switch to explorer tab
+            showTab('explorer');
+        };
+
+        // Load table page
+        async function loadTablePage() {
+            if (!conn || !currentTable) return;
+
+            try {
+                const offset = currentPage * pageSize;
+                const result = await conn.query(`SELECT * FROM ${currentTable} LIMIT ${pageSize} OFFSET ${offset}`);
+                const data = result.toArray();
+                const columns = result.schema.fields.map(f => f.name);
+
+                // Header
+                const header = document.getElementById('table-header');
+                header.innerHTML = `<tr>${columns.map(col =>
+                    `<th class="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">${col}</th>`
+                ).join('')}</tr>`;
+
+                // Body
+                const body = document.getElementById('table-body');
+                body.innerHTML = data.map(row =>
+                    `<tr class="hover:bg-gray-50">${columns.map(col => {
+                        let val = row[col];
+                        if (val === null) val = '<span class="text-gray-400">NULL</span>';
+                        else if (typeof val === 'object') val = '<span class="text-gray-400">[JSON]</span>';
+                        else if (typeof val === 'string' && val.length > 50) val = val.substring(0, 50) + '...';
+                        return `<td class="px-4 py-2 text-sm text-gray-900 whitespace-nowrap">${val}</td>`;
+                    }).join('')}</tr>`
+                ).join('');
+
+                // Pagination
+                const countResult = await conn.query(`SELECT COUNT(*) as cnt FROM ${currentTable}`);
+                const totalRows = Number(countResult.toArray()[0].cnt);
+                const totalPages = Math.ceil(totalRows / pageSize);
+
+                document.getElementById('prev-btn').disabled = currentPage === 0;
+                document.getElementById('next-btn').disabled = currentPage >= totalPages - 1;
+                document.getElementById('page-info').textContent = `Page ${currentPage + 1} of ${totalPages}`;
+            } catch (e) {
+                console.error('Error loading table:', e);
+            }
+        }
+
+        window.prevPage = function() { currentPage--; loadTablePage(); };
+        window.nextPage = function() { currentPage++; loadTablePage(); };
+
+        // Execute SQL query
+        window.executeQuery = async function() {
+            if (!conn) return;
+
+            const sql = document.getElementById('sql-input').value.trim();
+            if (!sql) return;
+
+            const startTime = performance.now();
+            try {
+                const result = await conn.query(sql);
+                const endTime = performance.now();
+                const data = result.toArray();
+                const columns = result.schema.fields.map(f => f.name);
+
+                document.getElementById('query-time').textContent =
+                    `${data.length} rows in ${(endTime - startTime).toFixed(0)}ms`;
+
+                const container = document.getElementById('query-results');
+                container.innerHTML = `
+                    <table class="w-full text-sm">
+                        <thead class="bg-gray-50">
+                            <tr>${columns.map(col =>
+                                `<th class="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">${col}</th>`
+                            ).join('')}</tr>
+                        </thead>
+                        <tbody>
+                            ${data.slice(0, 100).map(row =>
+                                `<tr class="hover:bg-gray-50">${columns.map(col => {
+                                    let val = row[col];
+                                    if (val === null) val = '<span class="text-gray-400">NULL</span>';
+                                    else if (typeof val === 'object') val = JSON.stringify(val).substring(0, 50);
+                                    else if (typeof val === 'string' && val.length > 100) val = val.substring(0, 100) + '...';
+                                    return `<td class="px-4 py-2 text-gray-900">${val}</td>`;
+                                }).join('')}</tr>`
+                            ).join('')}
+                        </tbody>
+                    </table>
+                    ${data.length > 100 ? '<div class="text-sm text-gray-500 mt-2">Showing first 100 rows</div>' : ''}
+                `;
+            } catch (e) {
+                document.getElementById('query-results').innerHTML =
+                    `<div class="text-red-600">${e.message}</div>`;
+                document.getElementById('query-time').textContent = '';
+            }
+        };
+
+        window.loadQueryTemplate = function() {
+            const select = document.getElementById('query-templates');
+            if (select.value) {
+                document.getElementById('sql-input').value = select.value;
+            }
+        };
+
+        // Tab switching
+        window.showTab = function(tabName) {
+            document.querySelectorAll('.tab-content').forEach(el => el.classList.add('hidden'));
+            document.querySelectorAll('.tab-btn').forEach(el => el.classList.remove('tab-active'));
+            document.getElementById(`content-${tabName}`).classList.remove('hidden');
+            document.getElementById(`tab-${tabName}`).classList.add('tab-active');
+        };
+
+        // UI helpers
+        function showLoading(show) {
+            document.getElementById('loading-overlay').classList.toggle('hidden', !show);
+        }
+
+        function updateStatus(status, text) {
+            const el = document.getElementById('db-status');
+            const color = status === 'connected' ? 'bg-green-400' :
+                          status === 'error' ? 'bg-red-400' : 'bg-yellow-400';
+            el.innerHTML = `<span class="h-3 w-3 rounded-full ${color}"></span><span class="text-sm">${text}</span>`;
+        }
+
+        function formatNumber(num) {
+            if (num >= 1000000) return (num / 1000000).toFixed(1) + 'M';
+            if (num >= 1000) return (num / 1000).toFixed(1) + 'K';
+            return num.toLocaleString();
+        }
+
+        // File input handler
+        document.getElementById('db-file-input').addEventListener('change', async (e) => {
+            const file = e.target.files[0];
+            if (file) loadDatabase(file);
+        });
+
+        // Initialize
+        initDuckDB();
+    </script>
+</body>
+</html>
