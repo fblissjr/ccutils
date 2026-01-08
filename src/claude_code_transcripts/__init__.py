@@ -1312,6 +1312,8 @@ def create_star_schema(db_path):
             has_thinking BOOLEAN,
             word_count INTEGER,
             estimated_tokens INTEGER,
+            response_time_seconds FLOAT,
+            conversation_depth INTEGER,
             content_text TEXT,
             content_json JSON
         )
@@ -1474,6 +1476,218 @@ def create_star_schema(db_path):
     """
     )
 
+    # =========================================================================
+    # Entity Extraction Tables
+    # =========================================================================
+
+    # dim_entity_type - Types of entities extracted from text
+    conn.execute(
+        """
+        CREATE OR REPLACE TABLE dim_entity_type (
+            entity_type_key VARCHAR,
+            entity_type VARCHAR,
+            extraction_method VARCHAR
+        )
+    """
+    )
+
+    # fact_entity_mentions - Entities mentioned in messages
+    conn.execute(
+        """
+        CREATE OR REPLACE TABLE fact_entity_mentions (
+            mention_id VARCHAR,
+            message_id VARCHAR,
+            session_key VARCHAR,
+            entity_type_key VARCHAR,
+            entity_text VARCHAR,
+            entity_normalized VARCHAR,
+            context_snippet TEXT,
+            position_start INTEGER,
+            position_end INTEGER
+        )
+    """
+    )
+
+    # =========================================================================
+    # Tool Chain / Workflow Tracking
+    # =========================================================================
+
+    # fact_tool_chain_steps - Sequential tool call patterns
+    conn.execute(
+        """
+        CREATE OR REPLACE TABLE fact_tool_chain_steps (
+            chain_step_id VARCHAR,
+            session_key VARCHAR,
+            chain_id VARCHAR,
+            tool_call_id VARCHAR,
+            tool_key VARCHAR,
+            step_position INTEGER,
+            prev_tool_key VARCHAR,
+            time_since_prev_seconds FLOAT
+        )
+    """
+    )
+
+    # =========================================================================
+    # LLM Enrichment Tables (populated by separate enrichment pass)
+    # =========================================================================
+
+    # dim_intent - User intent classifications
+    conn.execute(
+        """
+        CREATE OR REPLACE TABLE dim_intent (
+            intent_key VARCHAR,
+            intent_name VARCHAR,
+            intent_category VARCHAR,
+            description TEXT
+        )
+    """
+    )
+
+    # dim_topic - Domain/topic tags
+    conn.execute(
+        """
+        CREATE OR REPLACE TABLE dim_topic (
+            topic_key VARCHAR,
+            topic_name VARCHAR,
+            topic_category VARCHAR
+        )
+    """
+    )
+
+    # dim_sentiment - Sentiment/tone classifications
+    conn.execute(
+        """
+        CREATE OR REPLACE TABLE dim_sentiment (
+            sentiment_key VARCHAR,
+            sentiment_name VARCHAR,
+            valence FLOAT
+        )
+    """
+    )
+
+    # fact_message_enrichment - LLM-assigned labels per message
+    conn.execute(
+        """
+        CREATE OR REPLACE TABLE fact_message_enrichment (
+            enrichment_id VARCHAR,
+            message_id VARCHAR,
+            session_key VARCHAR,
+            intent_key VARCHAR,
+            sentiment_key VARCHAR,
+            complexity_score FLOAT,
+            confidence_score FLOAT,
+            enrichment_model VARCHAR,
+            enriched_at TIMESTAMP
+        )
+    """
+    )
+
+    # fact_message_topics - Many-to-many message-topic relationships
+    conn.execute(
+        """
+        CREATE OR REPLACE TABLE fact_message_topics (
+            message_topic_id VARCHAR,
+            message_id VARCHAR,
+            topic_key VARCHAR,
+            relevance_score FLOAT
+        )
+    """
+    )
+
+    # fact_session_insights - LLM-generated session summaries
+    conn.execute(
+        """
+        CREATE OR REPLACE TABLE fact_session_insights (
+            insight_id VARCHAR,
+            session_key VARCHAR,
+            summary_text TEXT,
+            key_decisions TEXT,
+            outcome_status VARCHAR,
+            task_completed BOOLEAN,
+            primary_intent_key VARCHAR,
+            complexity_score FLOAT,
+            enrichment_model VARCHAR,
+            enriched_at TIMESTAMP
+        )
+    """
+    )
+
+    # Pre-populate dim_entity_type with known types
+    entity_types = [
+        ("file_path", "regex"),
+        ("url", "regex"),
+        ("function_name", "regex"),
+        ("class_name", "regex"),
+        ("variable_name", "regex"),
+        ("package_name", "regex"),
+        ("error_code", "regex"),
+        ("git_ref", "regex"),
+    ]
+    for entity_type, method in entity_types:
+        key = generate_dimension_key(entity_type)
+        conn.execute(
+            "INSERT INTO dim_entity_type (entity_type_key, entity_type, extraction_method) VALUES (?, ?, ?)",
+            [key, entity_type, method],
+        )
+
+    # Pre-populate dim_intent with common intents
+    intents = [
+        ("bug_fix", "problem_solving", "Fix a bug or error"),
+        ("feature", "development", "Add new functionality"),
+        ("refactor", "development", "Improve code structure"),
+        ("question", "inquiry", "Ask about code or concepts"),
+        ("explain", "inquiry", "Request explanation"),
+        ("review", "analysis", "Review or analyze code"),
+        ("test", "quality", "Write or run tests"),
+        ("debug", "problem_solving", "Debug an issue"),
+        ("config", "setup", "Configuration or setup"),
+        ("docs", "documentation", "Documentation work"),
+    ]
+    for intent_name, category, desc in intents:
+        key = generate_dimension_key(intent_name)
+        conn.execute(
+            "INSERT INTO dim_intent (intent_key, intent_name, intent_category, description) VALUES (?, ?, ?, ?)",
+            [key, intent_name, category, desc],
+        )
+
+    # Pre-populate dim_sentiment
+    sentiments = [
+        ("neutral", 0.0),
+        ("positive", 0.5),
+        ("negative", -0.5),
+        ("frustrated", -0.8),
+        ("satisfied", 0.8),
+        ("confused", -0.3),
+        ("curious", 0.3),
+    ]
+    for sentiment_name, valence in sentiments:
+        key = generate_dimension_key(sentiment_name)
+        conn.execute(
+            "INSERT INTO dim_sentiment (sentiment_key, sentiment_name, valence) VALUES (?, ?, ?)",
+            [key, sentiment_name, valence],
+        )
+
+    # Pre-populate dim_topic with common topics
+    topics = [
+        ("frontend", "domain"),
+        ("backend", "domain"),
+        ("database", "domain"),
+        ("api", "domain"),
+        ("auth", "domain"),
+        ("testing", "practice"),
+        ("deployment", "practice"),
+        ("security", "concern"),
+        ("performance", "concern"),
+        ("architecture", "design"),
+    ]
+    for topic_name, category in topics:
+        key = generate_dimension_key(topic_name)
+        conn.execute(
+            "INSERT INTO dim_topic (topic_key, topic_name, topic_category) VALUES (?, ?, ?)",
+            [key, topic_name, category],
+        )
+
     # Pre-populate dim_message_type with known values
     for msg_type in ["user", "assistant"]:
         key = generate_dimension_key(msg_type)
@@ -1531,6 +1745,119 @@ LANGUAGE_EXTENSIONS = {
 import re
 
 CODE_BLOCK_PATTERN = re.compile(r"```(\w*)\n(.*?)```", re.DOTALL)
+
+# Entity extraction patterns
+ENTITY_PATTERNS = {
+    "file_path": re.compile(
+        r'(?:^|[\s"\'])(/[a-zA-Z0-9_\-./]+\.[a-zA-Z0-9]+|'
+        r"[a-zA-Z]:\\[a-zA-Z0-9_\-\\./]+\.[a-zA-Z0-9]+|"
+        r"\./[a-zA-Z0-9_\-./]+\.[a-zA-Z0-9]+)"
+    ),
+    "url": re.compile(r"https?://[a-zA-Z0-9\-._~:/?#\[\]@!$&'()*+,;=%]+"),
+    "function_name": re.compile(
+        r"\bdef\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*\(|"
+        r"\bfunction\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*\(|"
+        r"\bconst\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*=\s*(?:async\s*)?\(|"
+        r"\bfunc\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*\("
+    ),
+    "class_name": re.compile(
+        r"\bclass\s+([A-Z][a-zA-Z0-9_]*)|"
+        r"\binterface\s+([A-Z][a-zA-Z0-9_]*)|"
+        r"\bstruct\s+([A-Z][a-zA-Z0-9_]*)"
+    ),
+    "package_name": re.compile(
+        r"\bimport\s+([a-zA-Z_][a-zA-Z0-9_]*(?:\.[a-zA-Z_][a-zA-Z0-9_]*)*)|"
+        r"\bfrom\s+([a-zA-Z_][a-zA-Z0-9_]*(?:\.[a-zA-Z_][a-zA-Z0-9_]*)*)\s+import|"
+        r'\brequire\s*\(\s*["\']([a-zA-Z0-9@/_\-]+)["\']\s*\)'
+    ),
+    "error_code": re.compile(
+        r"\b(E[0-9]{4}|ERR_[A-Z_]+|[A-Z]+Error|[A-Z]+Exception)\b"
+    ),
+    "git_ref": re.compile(
+        r"\b([a-f0-9]{7,40})\b|"
+        r"\b(HEAD~?\d*|main|master|develop|feature/[a-zA-Z0-9_\-]+|"
+        r"release/[a-zA-Z0-9._\-]+|hotfix/[a-zA-Z0-9_\-]+)\b"
+    ),
+}
+
+
+def extract_entities(text, message_id, session_key):
+    """Extract entities from text using regex patterns.
+
+    Args:
+        text: Text content to extract entities from
+        message_id: ID of the message containing this text
+        session_key: Session key for linking
+
+    Returns:
+        List of entity mention dicts
+    """
+    if not text:
+        return []
+
+    mentions = []
+    for entity_type, pattern in ENTITY_PATTERNS.items():
+        entity_type_key = generate_dimension_key(entity_type)
+
+        for match in pattern.finditer(text):
+            # Get the matched text (handle groups)
+            matched_text = match.group(0)
+            # For patterns with capturing groups, get the actual captured value
+            groups = [g for g in match.groups() if g]
+            if groups:
+                matched_text = groups[0]
+
+            # Skip very short matches or common false positives
+            if len(matched_text) < 2:
+                continue
+            if entity_type == "git_ref" and matched_text in ("HEAD", "main", "master"):
+                # Only include these if they look like actual refs
+                if not re.search(
+                    r"git|branch|checkout|merge|rebase",
+                    text[: match.start()].split("\n")[-1],
+                    re.I,
+                ):
+                    continue
+
+            # Extract context snippet (50 chars before and after)
+            start = max(0, match.start() - 50)
+            end = min(len(text), match.end() + 50)
+            context = text[start:end]
+
+            mention_id = generate_dimension_key(
+                message_id, entity_type, str(match.start())
+            )
+            mentions.append(
+                {
+                    "mention_id": mention_id,
+                    "message_id": message_id,
+                    "session_key": session_key,
+                    "entity_type_key": entity_type_key,
+                    "entity_text": matched_text[:500],  # Truncate long matches
+                    "entity_normalized": matched_text.lower()[:500],
+                    "context_snippet": context[:200],
+                    "position_start": match.start(),
+                    "position_end": match.end(),
+                }
+            )
+
+    return mentions
+
+
+def calculate_conversation_depth(message_id, parent_id, depth_map):
+    """Calculate conversation depth for a message.
+
+    Args:
+        message_id: Current message ID
+        parent_id: Parent message ID
+        depth_map: Dict mapping message_id to depth
+
+    Returns:
+        Depth as integer (0 for root messages)
+    """
+    if parent_id is None or parent_id not in depth_map:
+        return 0
+    return depth_map[parent_id] + 1
 
 
 def extract_file_info(file_path):
@@ -1801,6 +2128,15 @@ def run_star_schema_etl(
     errors_data = []
     languages_seen = set()
 
+    # Conversation tracking
+    message_timestamps = {}  # message_id -> timestamp
+    depth_map = {}  # message_id -> conversation depth
+    entity_mentions_data = []
+
+    # Tool chain tracking
+    tool_chain_data = []
+    prev_tool_call = None  # (tool_call_id, tool_key, timestamp)
+
     with open(session_path, "r", encoding="utf-8") as f:
         for line in f:
             line = line.strip()
@@ -1976,6 +2312,33 @@ def run_star_schema_etl(
                                 }
                             )
 
+                        # Track tool chain (sequential tool calls)
+                        tool_key = generate_dimension_key(tool_name)
+                        chain_id = f"{session_key}-chain"
+                        step_position = len(tool_chain_data)
+
+                        time_since_prev = None
+                        prev_tool_key_val = None
+                        if prev_tool_call and timestamp:
+                            prev_ts = prev_tool_call[2]
+                            if prev_ts:
+                                time_since_prev = (timestamp - prev_ts).total_seconds()
+                            prev_tool_key_val = prev_tool_call[1]
+
+                        tool_chain_data.append(
+                            {
+                                "chain_step_id": f"{chain_id}-{step_position}",
+                                "session_key": session_key,
+                                "chain_id": chain_id,
+                                "tool_call_id": tool_use_id,
+                                "tool_key": tool_key,
+                                "step_position": step_position,
+                                "prev_tool_key": prev_tool_key_val,
+                                "time_since_prev_seconds": time_since_prev,
+                            }
+                        )
+                        prev_tool_call = (tool_use_id, tool_key, timestamp)
+
                         if should_track:
                             block_id = f"{message_id}-{idx}"
                             content_blocks_data.append(
@@ -2149,6 +2512,10 @@ def run_star_schema_etl(
                         }
                     )
 
+                # Extract entities from text content
+                entities = extract_entities(text_content, message_id, session_key)
+                entity_mentions_data.extend(entities)
+
             # Update counters
             if entry_type == "user":
                 user_count += 1
@@ -2158,6 +2525,23 @@ def run_star_schema_etl(
             # Calculate token and word counts
             word_cnt = count_words(text_content)
             token_est = estimate_tokens(text_content)
+
+            # Calculate response time (time since parent message)
+            response_time = None
+            if parent_id and parent_id in message_timestamps and timestamp:
+                parent_ts = message_timestamps[parent_id]
+                if parent_ts:
+                    response_time = (timestamp - parent_ts).total_seconds()
+
+            # Calculate conversation depth
+            conversation_depth = calculate_conversation_depth(
+                message_id, parent_id, depth_map
+            )
+            depth_map[message_id] = conversation_depth
+
+            # Track timestamp for future response time calculations
+            if timestamp:
+                message_timestamps[message_id] = timestamp
 
             # Build message record
             message_type_key = generate_dimension_key(entry_type)
@@ -2181,6 +2565,8 @@ def run_star_schema_etl(
                     "has_thinking": has_thinking,
                     "word_count": word_cnt,
                     "estimated_tokens": token_est,
+                    "response_time_seconds": response_time,
+                    "conversation_depth": conversation_depth,
                     "content_text": (
                         text_content[:truncate_output] if text_content else ""
                     ),
@@ -2341,8 +2727,9 @@ def run_star_schema_etl(
                (message_id, session_key, project_key, message_type_key, model_key,
                 date_key, time_key, parent_message_id, timestamp, content_length,
                 content_block_count, has_tool_use, has_tool_result, has_thinking,
-                word_count, estimated_tokens, content_text, content_json)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                word_count, estimated_tokens, response_time_seconds, conversation_depth,
+                content_text, content_json)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             [
                 msg["message_id"],
                 msg["session_key"],
@@ -2360,6 +2747,8 @@ def run_star_schema_etl(
                 msg["has_thinking"],
                 msg["word_count"],
                 msg["estimated_tokens"],
+                msg["response_time_seconds"],
+                msg["conversation_depth"],
                 msg["content_text"],
                 msg["content_json"],
             ],
@@ -2557,6 +2946,318 @@ def run_star_schema_etl(
                 err["timestamp"],
             ],
         )
+
+    # Load fact_entity_mentions
+    for em in entity_mentions_data:
+        conn.execute(
+            """INSERT INTO fact_entity_mentions
+               (mention_id, message_id, session_key, entity_type_key, entity_text,
+                entity_normalized, context_snippet, position_start, position_end)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            [
+                em["mention_id"],
+                em["message_id"],
+                em["session_key"],
+                em["entity_type_key"],
+                em["entity_text"],
+                em["entity_normalized"],
+                em["context_snippet"],
+                em["position_start"],
+                em["position_end"],
+            ],
+        )
+
+    # Load fact_tool_chain_steps
+    for tc in tool_chain_data:
+        conn.execute(
+            """INSERT INTO fact_tool_chain_steps
+               (chain_step_id, session_key, chain_id, tool_call_id, tool_key,
+                step_position, prev_tool_key, time_since_prev_seconds)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            [
+                tc["chain_step_id"],
+                tc["session_key"],
+                tc["chain_id"],
+                tc["tool_call_id"],
+                tc["tool_key"],
+                tc["step_position"],
+                tc["prev_tool_key"],
+                tc["time_since_prev_seconds"],
+            ],
+        )
+
+
+# =============================================================================
+# LLM Enrichment Pipeline
+# =============================================================================
+
+
+def run_llm_enrichment(
+    conn,
+    enrich_func,
+    model_name="claude-3-haiku-20240307",
+    batch_size=10,
+    session_key=None,
+):
+    """Run LLM enrichment on messages that haven't been enriched yet.
+
+    This function provides a framework for enriching messages with LLM-derived
+    classifications like intent, sentiment, and topics. It fetches un-enriched
+    messages, calls the provided enrichment function, and stores results.
+
+    Args:
+        conn: DuckDB connection
+        enrich_func: Async function(messages) -> list of enrichment results.
+                    Each result should be a dict with:
+                    - message_id: str
+                    - intent: str (should match dim_intent.intent_name)
+                    - sentiment: str (should match dim_sentiment.sentiment_name)
+                    - topics: list[str] (should match dim_topic.topic_name values)
+                    - complexity_score: float (0-1)
+                    - confidence_score: float (0-1)
+        model_name: Name of the model used for enrichment (for tracking)
+        batch_size: Number of messages to process at once
+        session_key: Optional session key to limit enrichment to one session
+
+    Returns:
+        dict with counts: messages_enriched, topics_assigned
+    """
+    # Fetch un-enriched messages
+    query = """
+        SELECT m.message_id, m.session_key, m.content_text, mt.message_type
+        FROM fact_messages m
+        JOIN dim_message_type mt ON m.message_type_key = mt.message_type_key
+        LEFT JOIN fact_message_enrichment e ON m.message_id = e.message_id
+        WHERE e.message_id IS NULL
+          AND m.content_text IS NOT NULL
+          AND LENGTH(m.content_text) > 0
+    """
+    params = []
+    if session_key:
+        query += " AND m.session_key = ?"
+        params.append(session_key)
+    query += f" LIMIT {batch_size}"
+
+    messages = conn.execute(query, params).fetchall()
+
+    if not messages:
+        return {"messages_enriched": 0, "topics_assigned": 0}
+
+    # Prepare message data for enrichment
+    message_data = [
+        {
+            "message_id": row[0],
+            "session_key": row[1],
+            "content_text": row[2],
+            "message_type": row[3],
+        }
+        for row in messages
+    ]
+
+    # Call the enrichment function
+    enrichment_results = enrich_func(message_data)
+
+    # Load dimension lookups
+    intent_lookup = {
+        row[0]: row[1]
+        for row in conn.execute(
+            "SELECT intent_name, intent_key FROM dim_intent"
+        ).fetchall()
+    }
+    sentiment_lookup = {
+        row[0]: row[1]
+        for row in conn.execute(
+            "SELECT sentiment_name, sentiment_key FROM dim_sentiment"
+        ).fetchall()
+    }
+    topic_lookup = {
+        row[0]: row[1]
+        for row in conn.execute(
+            "SELECT topic_name, topic_key FROM dim_topic"
+        ).fetchall()
+    }
+
+    # Process results
+    messages_enriched = 0
+    topics_assigned = 0
+    enriched_at = datetime.now()
+
+    for result in enrichment_results:
+        message_id = result.get("message_id")
+        if not message_id:
+            continue
+
+        # Get session_key for this message
+        msg_session_key = None
+        for md in message_data:
+            if md["message_id"] == message_id:
+                msg_session_key = md["session_key"]
+                break
+
+        # Look up dimension keys
+        intent_name = result.get("intent", "question")
+        sentiment_name = result.get("sentiment", "neutral")
+        intent_key = intent_lookup.get(intent_name, intent_lookup.get("question"))
+        sentiment_key = sentiment_lookup.get(
+            sentiment_name, sentiment_lookup.get("neutral")
+        )
+
+        # Insert enrichment record
+        enrichment_id = generate_dimension_key(message_id, "enrichment")
+        conn.execute(
+            """INSERT INTO fact_message_enrichment
+               (enrichment_id, message_id, session_key, intent_key, sentiment_key,
+                complexity_score, confidence_score, enrichment_model, enriched_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            [
+                enrichment_id,
+                message_id,
+                msg_session_key,
+                intent_key,
+                sentiment_key,
+                result.get("complexity_score", 0.5),
+                result.get("confidence_score", 0.5),
+                model_name,
+                enriched_at,
+            ],
+        )
+        messages_enriched += 1
+
+        # Insert topic associations
+        topics = result.get("topics", [])
+        for idx, topic_name in enumerate(topics):
+            topic_key = topic_lookup.get(topic_name)
+            if topic_key:
+                message_topic_id = generate_dimension_key(message_id, "topic", str(idx))
+                # Relevance decreases with position
+                relevance = 1.0 - (idx * 0.1) if idx < 10 else 0.1
+                conn.execute(
+                    """INSERT INTO fact_message_topics
+                       (message_topic_id, message_id, topic_key, relevance_score)
+                       VALUES (?, ?, ?, ?)""",
+                    [message_topic_id, message_id, topic_key, relevance],
+                )
+                topics_assigned += 1
+
+    return {"messages_enriched": messages_enriched, "topics_assigned": topics_assigned}
+
+
+def run_session_insights_enrichment(
+    conn,
+    insight_func,
+    model_name="claude-3-haiku-20240307",
+    session_key=None,
+):
+    """Generate LLM-based insights for sessions.
+
+    Args:
+        conn: DuckDB connection
+        insight_func: Function(session_data) -> insight dict with:
+                     - summary_text: str
+                     - key_decisions: str
+                     - outcome_status: str (success, partial, failed, unknown)
+                     - task_completed: bool
+                     - primary_intent: str (should match dim_intent.intent_name)
+                     - complexity_score: float (0-1)
+        model_name: Name of the model used for enrichment
+        session_key: Optional session key to process only one session
+
+    Returns:
+        dict with count: sessions_enriched
+    """
+    # Fetch sessions without insights
+    query = """
+        SELECT s.session_key, s.session_id,
+               ss.total_messages, ss.total_tool_calls,
+               ss.session_duration_seconds
+        FROM dim_session s
+        JOIN fact_session_summary ss ON s.session_key = ss.session_key
+        LEFT JOIN fact_session_insights i ON s.session_key = i.session_key
+        WHERE i.session_key IS NULL
+    """
+    params = []
+    if session_key:
+        query += " AND s.session_key = ?"
+        params.append(session_key)
+
+    sessions = conn.execute(query, params).fetchall()
+
+    if not sessions:
+        return {"sessions_enriched": 0}
+
+    # Load intent lookup
+    intent_lookup = {
+        row[0]: row[1]
+        for row in conn.execute(
+            "SELECT intent_name, intent_key FROM dim_intent"
+        ).fetchall()
+    }
+
+    sessions_enriched = 0
+    enriched_at = datetime.now()
+
+    for row in sessions:
+        sess_key = row[0]
+        session_id = row[1]
+        total_messages = row[2]
+        total_tool_calls = row[3]
+        duration_seconds = row[4]
+
+        # Fetch message content for this session
+        messages = conn.execute(
+            """SELECT content_text, mt.message_type
+               FROM fact_messages m
+               JOIN dim_message_type mt ON m.message_type_key = mt.message_type_key
+               WHERE m.session_key = ?
+               ORDER BY m.timestamp
+               LIMIT 50""",
+            [sess_key],
+        ).fetchall()
+
+        session_data = {
+            "session_key": sess_key,
+            "session_id": session_id,
+            "total_messages": total_messages,
+            "total_tool_calls": total_tool_calls,
+            "duration_seconds": duration_seconds,
+            "messages": [
+                {"content": row[0], "type": row[1]} for row in messages if row[0]
+            ],
+        }
+
+        # Call insight function
+        insight = insight_func(session_data)
+
+        # Look up intent key
+        primary_intent_name = insight.get("primary_intent", "question")
+        primary_intent_key = intent_lookup.get(
+            primary_intent_name, intent_lookup.get("question")
+        )
+
+        # Insert insight
+        insight_id = generate_dimension_key(sess_key, "insight")
+        conn.execute(
+            """INSERT INTO fact_session_insights
+               (insight_id, session_key, summary_text, key_decisions, outcome_status,
+                task_completed, primary_intent_key, complexity_score,
+                enrichment_model, enriched_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            [
+                insight_id,
+                sess_key,
+                insight.get("summary_text", ""),
+                insight.get("key_decisions", ""),
+                insight.get("outcome_status", "unknown"),
+                insight.get("task_completed", False),
+                primary_intent_key,
+                insight.get("complexity_score", 0.5),
+                model_name,
+                enriched_at,
+            ],
+        )
+        sessions_enriched += 1
+
+    return {"sessions_enriched": sessions_enriched}
 
 
 def parse_session_file(filepath):
