@@ -4204,7 +4204,11 @@ def generate_html(json_path, output_dir, github_repo=None):
 @click.group(cls=DefaultGroup, default="local", default_if_no_args=True)
 @click.version_option(None, "-v", "--version", package_name="claude-code-transcripts")
 def cli():
-    """Convert Claude Code session JSON to mobile-friendly HTML pages."""
+    """Convert Claude Code sessions to HTML pages or DuckDB databases.
+
+    Export individual sessions to HTML, or batch export all sessions
+    to a browsable HTML archive or DuckDB database for analytics.
+    """
     pass
 
 
@@ -4883,12 +4887,12 @@ def all_cmd(
     output_format,
     include_thinking,
 ):
-    """Convert all local Claude Code sessions to a browsable HTML archive.
+    """Convert all local Claude Code sessions to HTML archive or DuckDB.
 
-    Creates a directory structure with:
-    - Master index listing all projects
-    - Per-project pages listing sessions
-    - Individual session transcripts
+    Use --format to choose output:
+    - html: Browsable HTML archive with master index and per-project pages
+    - duckdb: DuckDB database with sessions, messages, and tool_calls tables
+    - both: Generate both HTML archive and DuckDB database
     """
     # Default source folder
     if source is None:
