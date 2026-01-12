@@ -1,6 +1,42 @@
 # Star Schema DuckDB Implementation
 
-This document describes the star schema data model for Claude Code transcript analytics. The schema is designed for efficient analytical queries across sessions, messages, tools, and time dimensions.
+A dimensional data model for Claude Code transcript analytics, with 25+ tables for analyzing sessions, messages, tools, and time patterns.
+
+## Quick Start (CLI)
+
+```bash
+# Generate star schema from local sessions
+claude-code-transcripts local --format duckdb-star -o ./analytics
+
+# Or generate from all sessions
+claude-code-transcripts all --format duckdb-star -o ./analytics
+
+# Launch the visual Data Explorer
+claude-code-transcripts explore ./analytics/archive.duckdb
+
+# Query directly with DuckDB CLI
+duckdb ./analytics/archive.duckdb
+```
+
+Once in DuckDB:
+
+```sql
+-- Tool usage by category
+SELECT dt.tool_category, COUNT(*) as uses
+FROM fact_tool_calls ftc
+JOIN dim_tool dt ON ftc.tool_key = dt.tool_key
+GROUP BY dt.tool_category ORDER BY uses DESC;
+
+-- Sessions by project
+SELECT dp.project_name, COUNT(*) as sessions
+FROM fact_session_summary fss
+JOIN dim_project dp ON fss.project_key = dp.project_key
+GROUP BY dp.project_name;
+```
+
+See [DATA_EXPLORER.md](DATA_EXPLORER.md) for the visual interface.
+
+---
 
 ## Overview
 
@@ -757,7 +793,9 @@ GROUP BY di.intent_name, di.intent_category
 ORDER BY message_count DESC;
 ```
 
-## Usage
+## Python API Reference
+
+For programmatic access, use the Python API directly.
 
 ### Creating a Star Schema Database
 

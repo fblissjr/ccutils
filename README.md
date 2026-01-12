@@ -1,4 +1,7 @@
 # claude-code-transcripts fork
+fork of simonw's [claude-code-transcripts](https://github.com/simonw/claude-code-transcripts) that aims to add structured data creation in an analytics friendly star schema, using duckdb, and a lightweight HTML-based data explorer using duckdb-wasm
+
+---
 
 Convert Claude Code session files (JSON or JSONL) to clean, mobile-friendly HTML pages with pagination.
 
@@ -240,15 +243,28 @@ LIMIT 10;
 
 Use `--include-thinking` to also export Claude's thinking blocks (these can be 10KB+ each, so they're opt-in).
 
-### Star Schema Analytics (Advanced)
+### Star Schema Analytics
 
-For advanced analytics, the library provides a programmatic Python API to create a comprehensive star schema data model. Unlike the simple `--format duckdb` CLI option, the star schema requires Python code but offers significantly richer analytics capabilities.
+A comprehensive dimensional model with 25+ tables for advanced analytics. Use `--format duckdb-star` to generate:
+
+```bash
+# Generate star schema from selected session
+claude-code-transcripts local --format duckdb-star -o ./analytics
+
+# Or from all sessions
+claude-code-transcripts all --format duckdb-star -o ./analytics
+
+# Launch the visual Data Explorer
+claude-code-transcripts explore ./analytics/archive.duckdb
+
+# Or query directly with DuckDB CLI
+duckdb ./analytics/archive.duckdb
+```
 
 **Key differences from simple format:**
 
-| Feature | Simple (`--format duckdb`) | Star Schema (Python API) |
-|---------|---------------------------|-------------------------|
-| Access | CLI command | Python code |
+| Feature | Simple (`--format duckdb`) | Star Schema (`--format duckdb-star`) |
+|---------|---------------------------|--------------------------------------|
 | Tables | 4 (flat) | 25+ (dimensional) |
 | Time analysis | Timestamps only | Date/time dimensions |
 | Tool analysis | Tool names | Categories, chains |
@@ -256,68 +272,25 @@ For advanced analytics, the library provides a programmatic Python API to create
 | Code blocks | In message content | Extracted, by language |
 | Aggregations | Query-time | Pre-computed summaries |
 
-**Quick start:**
+**Example queries:**
 
-```python
-from pathlib import Path
-from claude_code_transcripts import create_star_schema, run_star_schema_etl
+```sql
+-- Tool usage by category
+SELECT dt.tool_category, COUNT(*) as uses
+FROM fact_tool_calls ftc
+JOIN dim_tool dt ON ftc.tool_key = dt.tool_key
+GROUP BY dt.tool_category ORDER BY uses DESC;
 
-# Create the star schema database
-db_path = Path("./analytics.duckdb")
-conn = create_star_schema(db_path)
-
-# Load sessions (repeat for multiple sessions)
-session_path = Path("~/.claude/projects/myproject/session.jsonl")
-run_star_schema_etl(conn, session_path, project_name="My Project")
-
-# Query with dimensional analysis
-result = conn.execute("""
-    SELECT dt.tool_category, COUNT(*) as uses
-    FROM fact_tool_calls ftc
-    JOIN dim_tool dt ON ftc.tool_key = dt.tool_key
-    GROUP BY dt.tool_category
-    ORDER BY uses DESC
-""").fetchall()
-
-conn.close()
+-- Activity by time of day
+SELECT dt.time_of_day, COUNT(*) as messages
+FROM fact_messages fm
+JOIN dim_time dt ON fm.time_key = dt.time_key
+GROUP BY dt.time_of_day;
 ```
 
-**Available dimensions:**
-- `dim_tool` - Tools with category classification (file_operations, search, execution, etc.)
-- `dim_model` - Models with family (opus, sonnet, haiku)
-- `dim_date`, `dim_time` - Full date/time dimensions for temporal analysis
-- `dim_session`, `dim_project` - Session and project metadata
-- `dim_file`, `dim_programming_language` - File and language tracking
-- `dim_error_type` - Error classification
-- `dim_entity_type` - Extracted entities (URLs, file paths, function names)
+**Data Explorer features:** Type-aware columns, automatic joins, filter autocomplete, live SQL preview.
 
-**Key fact tables:**
-- `fact_messages` - Messages with response time, conversation depth, token estimates
-- `fact_tool_calls` - Tool invocations linking inputs to outputs
-- `fact_session_summary` - Pre-aggregated session metrics
-- `fact_file_operations` - Read/write/edit operations by file
-- `fact_code_blocks` - Extracted code blocks by language
-- `fact_errors` - Error tracking with classification
-- `fact_tool_chain_steps` - Sequential tool patterns for workflow analysis
-
-**LLM enrichment (optional):**
-
-The schema includes tables for LLM-based classification. Implement your own enrichment function to populate:
-- `fact_message_enrichment` - Intent, sentiment, complexity per message
-- `fact_message_topics` - Topic tags per message
-- `fact_session_insights` - Session summaries and outcomes
-
-```python
-from claude_code_transcripts import run_llm_enrichment
-
-def my_classifier(messages):
-    # Your LLM API call here
-    return [{"message_id": m["message_id"], "intent": "bug_fix", ...} for m in messages]
-
-run_llm_enrichment(conn, my_classifier, model_name="claude-3-haiku")
-```
-
-See [docs/STAR_SCHEMA.md](docs/STAR_SCHEMA.md) for the complete schema documentation, all example queries, and advanced use cases like context retrieval, workflow replay, and cost estimation.
+See [docs/STAR_SCHEMA.md](docs/STAR_SCHEMA.md) for complete schema documentation, all example queries, Python API reference, and advanced use cases. See [docs/DATA_EXPLORER.md](docs/DATA_EXPLORER.md) for the visual explorer.
 
 ## Development
 

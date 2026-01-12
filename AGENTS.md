@@ -19,16 +19,29 @@ Run Black to format code before you commit:
 ```
 claude-code-transcripts/
 ├── src/claude_code_transcripts/
-│   ├── __init__.py          # Main implementation (CLI, parsers, ETL, star schema)
-│   └── templates/            # HTML templates for transcript rendering
+│   ├── __init__.py           # CLI, parsers, re-exports star_schema API
+│   ├── star_schema/          # Modular star schema package
+│   │   ├── __init__.py       # Public API exports
+│   │   ├── schema.py         # DDL for star schema tables
+│   │   ├── etl.py            # Main ETL pipeline
+│   │   ├── semantic.py       # Semantic model generation
+│   │   ├── extractors.py     # Code blocks, entities, file extraction
+│   │   ├── enrichment.py     # LLM enrichment functions
+│   │   └── utils.py          # Key generation, tool/model classification
+│   └── templates/
 │       ├── base.html
 │       ├── page.html
-│       └── star_schema_dashboard.html
+│       ├── star_schema_dashboard.html
+│       └── data_explorer/
+│           ├── index.html
+│           ├── css/styles.css
+│           └── js/{app,state,duckdb,query-builder,ui}.js
 ├── tests/
 │   ├── test_claude_code_transcripts.py  # Core functionality tests
-│   └── test_star_schema.py              # Star schema & ETL tests (104 tests)
+│   └── test_star_schema.py              # Star schema & ETL tests (116 tests)
 ├── docs/
-│   └── STAR_SCHEMA.md        # Comprehensive star schema documentation
+│   ├── STAR_SCHEMA.md        # Star schema documentation
+│   └── DATA_EXPLORER.md      # Data explorer documentation
 └── README.md
 ```
 
@@ -49,8 +62,10 @@ Two database formats available:
 
 **Star schema format (programmatic API):**
 - Dimensional model with facts and dimensions
+- Modular package at `star_schema/` (schema, etl, semantic, extractors, enrichment, utils)
 - See `create_star_schema()` and `run_star_schema_etl()` functions
-- Full documentation in docs/STAR_SCHEMA.md
+- Visual explorer at `templates/data_explorer/`
+- Full documentation in docs/STAR_SCHEMA.md and docs/DATA_EXPLORER.md
 
 ### 3. Star Schema Tables
 
