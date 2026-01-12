@@ -1,0 +1,987 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Star Schema Data Explorer</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        /* Custom scrollbar */
+        ::-webkit-scrollbar { width: 8px; height: 8px; }
+        ::-webkit-scrollbar-track { background: #f1f5f9; }
+        ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 4px; }
+        ::-webkit-scrollbar-thumb:hover { background: #94a3b8; }
+
+        /* Table styles */
+        .data-grid { border-collapse: collapse; }
+        .data-grid th {
+            position: sticky;
+            top: 0;
+            background: white;
+            z-index: 10;
+            border-bottom: 2px solid #e2e8f0;
+        }
+        .data-grid td { border-bottom: 1px solid #f1f5f9; }
+        .data-grid tr:hover td { background: #f8fafc; }
+
+        /* Column header */
+        .col-header {
+            cursor: pointer;
+            user-select: none;
+            white-space: nowrap;
+            padding: 8px 12px;
+        }
+        .col-header:hover { background: #f1f5f9; }
+        .col-header.sorted { background: #e0f2fe; }
+        .col-header.filtered { background: #fef3c7; }
+
+        /* Type indicators */
+        .type-icon { font-size: 10px; font-weight: 600; opacity: 0.7; }
+        .type-integer { color: #2563eb; }
+        .type-float { color: #2563eb; }
+        .type-varchar { color: #16a34a; }
+        .type-timestamp { color: #9333ea; }
+        .type-date { color: #9333ea; }
+        .type-boolean { color: #ea580c; }
+        .type-json { color: #64748b; }
+
+        /* Table list items */
+        .table-item { transition: all 0.15s; }
+        .table-item:hover { transform: translateX(2px); }
+        .table-item.active { border-left: 3px solid #6366f1; background: #eef2ff; }
+        .table-item.dim { background: #eff6ff; }
+        .table-item.fact { background: #f0fdf4; }
+        .table-item.stg { background: #fefce8; }
+
+        /* Filter dropdown */
+        .filter-dropdown {
+            position: absolute;
+            top: 100%;
+            left: 0;
+            min-width: 200px;
+            max-height: 300px;
+            overflow-y: auto;
+            background: white;
+            border: 1px solid #e2e8f0;
+            border-radius: 8px;
+            box-shadow: 0 10px 15px -3px rgba(0,0,0,0.1);
+            z-index: 100;
+        }
+
+        /* Summary row */
+        .summary-row {
+            position: sticky;
+            bottom: 0;
+            background: #f8fafc;
+            border-top: 2px solid #e2e8f0;
+            font-weight: 500;
+        }
+        .summary-label { font-size: 10px; color: #64748b; }
+
+        /* Loader */
+        .loader {
+            border: 3px solid #e2e8f0;
+            border-top: 3px solid #6366f1;
+            border-radius: 50%;
+            width: 24px;
+            height: 24px;
+            animation: spin 1s linear infinite;
+        }
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
+        /* Resize handle */
+        .resize-handle {
+            position: absolute;
+            right: 0;
+            top: 0;
+            bottom: 0;
+            width: 4px;
+            cursor: col-resize;
+        }
+        .resize-handle:hover { background: #6366f1; }
+    </style>
+</head>
+<body class="bg-gray-50 min-h-screen flex flex-col">
+    <!-- Header -->
+    <header class="bg-white border-b border-gray-200 px-4 py-3 flex items-center justify-between">
+        <div class="flex items-center gap-4">
+            <h1 class="text-lg font-semibold text-gray-900">Data Explorer</h1>
+            <div id="db-status" class="flex items-center gap-2 text-sm text-gray-500">
+                <span class="w-2 h-2 rounded-full bg-gray-300"></span>
+                <span>No database loaded</span>
+            </div>
+        </div>
+        <div class="flex items-center gap-3">
+            <label class="px-4 py-2 bg-indigo-600 text-white text-sm font-medium rounded-lg cursor-pointer hover:bg-indigo-700 transition">
+                Load Database
+                <input type="file" id="db-file-input" accept=".duckdb,.db" class="hidden">
+            </label>
+        </div>
+    </header>
+
+    <!-- Main Layout -->
+    <div class="flex-1 flex overflow-hidden">
+        <!-- Left Sidebar - Tables -->
+        <aside id="sidebar" class="w-56 bg-white border-r border-gray-200 flex flex-col">
+            <div class="p-3 border-b border-gray-200">
+                <input type="text" id="table-search" placeholder="Search tables..."
+                       class="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500">
+            </div>
+            <div id="table-list" class="flex-1 overflow-y-auto p-2 space-y-1">
+                <div class="text-sm text-gray-400 text-center py-8">Load a database to see tables</div>
+            </div>
+        </aside>
+
+        <!-- Main Content - Data Grid -->
+        <main class="flex-1 flex flex-col overflow-hidden bg-white">
+            <!-- Toolbar -->
+            <div id="toolbar" class="hidden px-4 py-2 border-b border-gray-200 flex items-center justify-between">
+                <div class="flex items-center gap-3">
+                    <span id="table-name" class="font-medium text-gray-900"></span>
+                    <span id="row-count" class="text-sm text-gray-500"></span>
+                </div>
+                <div class="flex items-center gap-2">
+                    <button id="clear-filters-btn" class="hidden px-3 py-1 text-sm text-gray-600 hover:bg-gray-100 rounded">
+                        Clear Filters
+                    </button>
+                    <div class="flex items-center gap-1">
+                        <button id="prev-page" disabled class="px-2 py-1 text-sm text-gray-600 hover:bg-gray-100 rounded disabled:opacity-50 disabled:cursor-not-allowed">
+                            Prev
+                        </button>
+                        <span id="page-info" class="px-2 text-sm text-gray-600">-</span>
+                        <button id="next-page" disabled class="px-2 py-1 text-sm text-gray-600 hover:bg-gray-100 rounded disabled:opacity-50 disabled:cursor-not-allowed">
+                            Next
+                        </button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Grid Container -->
+            <div id="grid-container" class="flex-1 overflow-auto">
+                <div id="empty-state" class="flex flex-col items-center justify-center h-full text-gray-400">
+                    <svg class="w-16 h-16 mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M4 7v10c0 2 1 3 3 3h10c2 0 3-1 3-3V7c0-2-1-3-3-3H7C5 4 4 5 4 7z"/>
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M4 12h16M12 4v16"/>
+                    </svg>
+                    <p class="text-lg">Select a table to explore</p>
+                </div>
+                <table id="data-grid" class="data-grid w-full text-sm hidden">
+                    <thead id="grid-header"></thead>
+                    <tbody id="grid-body"></tbody>
+                    <tfoot id="grid-footer"></tfoot>
+                </table>
+            </div>
+        </main>
+
+        <!-- Right Panel - Column Visibility -->
+        <aside id="column-panel" class="hidden w-48 bg-white border-l border-gray-200 flex flex-col">
+            <div class="p-3 border-b border-gray-200">
+                <h3 class="text-sm font-medium text-gray-700">Columns</h3>
+            </div>
+            <div id="column-list" class="flex-1 overflow-y-auto p-2 space-y-1"></div>
+        </aside>
+    </div>
+
+    <!-- Filter Dropdown (positioned absolutely) -->
+    <div id="filter-dropdown" class="filter-dropdown hidden">
+        <div class="p-2 border-b border-gray-200">
+            <input type="text" id="filter-search" placeholder="Search values..."
+                   class="w-full px-2 py-1 text-sm border border-gray-300 rounded focus:outline-none focus:ring-1 focus:ring-indigo-500">
+        </div>
+        <div id="filter-values" class="max-h-48 overflow-y-auto"></div>
+        <div class="p-2 border-t border-gray-200 flex gap-2">
+            <button id="filter-apply" class="flex-1 px-2 py-1 text-sm bg-indigo-600 text-white rounded hover:bg-indigo-700">Apply</button>
+            <button id="filter-clear" class="flex-1 px-2 py-1 text-sm bg-gray-100 text-gray-700 rounded hover:bg-gray-200">Clear</button>
+        </div>
+    </div>
+
+    <!-- Loading Overlay -->
+    <div id="loading-overlay" class="hidden fixed inset-0 bg-black bg-opacity-30 flex items-center justify-center z-50">
+        <div class="bg-white p-6 rounded-lg flex items-center gap-4">
+            <div class="loader"></div>
+            <span class="text-gray-700">Loading...</span>
+        </div>
+    </div>
+
+    <script type="module">
+        // =============================================================================
+        // DuckDB WASM Initialization
+        // =============================================================================
+        import * as duckdb from 'https://cdn.jsdelivr.net/npm/@duckdb/duckdb-wasm@1.33.1-dev17.0/+esm';
+
+        let db = null;
+        let conn = null;
+
+        // =============================================================================
+        // Application State
+        // =============================================================================
+        const state = {
+            semanticModel: [],
+            tables: [],
+            dbPrefix: '',       // Prefix for table names (e.g., 'loaded_db.')
+            activeTable: null,
+            columns: [],
+            visibleColumns: [],
+            filters: {},        // { columnName: [values] }
+            sorts: [],          // [{ column, dir: 'asc'|'desc' }]
+            page: 0,
+            pageSize: 100,
+            totalRows: 0,
+            summary: {}
+        };
+
+        // Type icon mapping
+        const TYPE_ICONS = {
+            integer: { icon: '123', class: 'type-integer' },
+            float:   { icon: '1.2', class: 'type-float' },
+            varchar: { icon: 'Abc', class: 'type-varchar' },
+            timestamp: { icon: 'cal', class: 'type-timestamp' },
+            date:    { icon: 'cal', class: 'type-date' },
+            boolean: { icon: 'T/F', class: 'type-boolean' },
+            json:    { icon: '{ }', class: 'type-json' }
+        };
+
+        // =============================================================================
+        // Security: HTML Escaping
+        // =============================================================================
+        function escapeHtml(str) {
+            if (str === null || str === undefined) return '';
+            const div = document.createElement('div');
+            div.textContent = String(str);
+            return div.innerHTML;
+        }
+
+        // =============================================================================
+        // DuckDB Functions
+        // =============================================================================
+        async function initDuckDB() {
+            // Get the CDN bundles for DuckDB WASM
+            const JSDELIVR_BUNDLES = duckdb.getJsDelivrBundles();
+
+            // Select the best bundle for this browser
+            const bundle = await duckdb.selectBundle(JSDELIVR_BUNDLES);
+
+            // Create worker URL
+            const workerUrl = URL.createObjectURL(
+                new Blob([`importScripts("${bundle.mainWorker}");`], { type: 'text/javascript' })
+            );
+
+            // Initialize DuckDB
+            const logger = new duckdb.ConsoleLogger();
+            const worker = new Worker(workerUrl);
+            db = new duckdb.AsyncDuckDB(logger, worker);
+            await db.instantiate(bundle.mainModule, bundle.pthreadWorker);
+            URL.revokeObjectURL(workerUrl);
+        }
+
+        async function loadDatabase(file) {
+            showLoading(true);
+            try {
+                const buffer = await file.arrayBuffer();
+                await db.registerFileBuffer(file.name, new Uint8Array(buffer));
+                conn = await db.connect();
+                await conn.query(`ATTACH '${escapeSQL(file.name)}' AS loaded_db`);
+
+                // Load semantic model if available
+                await loadSemanticModel();
+
+                // Discover tables
+                await discoverTables();
+
+                updateStatus('connected', 'Connected: ' + escapeHtml(file.name));
+            } catch (e) {
+                console.error('Error loading database:', e);
+                updateStatus('error', 'Error loading database');
+            }
+            showLoading(false);
+        }
+
+        function escapeSQL(str) {
+            return str.replace(/'/g, "''");
+        }
+
+        async function loadSemanticModel() {
+            try {
+                // Try loaded_db schema first, then main
+                let result;
+                try {
+                    result = await conn.query(`SELECT * FROM loaded_db.meta_semantic_model ORDER BY sort_order`);
+                } catch {
+                    result = await conn.query(`SELECT * FROM meta_semantic_model ORDER BY sort_order`);
+                }
+                state.semanticModel = result.toArray().map(row => ({
+                    tableName: row.table_name,
+                    tableType: row.table_type,
+                    tableDisplayName: row.table_display_name,
+                    columnName: row.column_name,
+                    columnType: row.column_type,
+                    dataType: row.data_type,
+                    displayName: row.display_name,
+                    defaultAggregation: row.default_aggregation,
+                    relatedTable: row.related_table,
+                    relatedColumn: row.related_column,
+                    isVisible: row.is_visible,
+                    isFilterable: row.is_filterable
+                }));
+                console.log('Loaded semantic model with ' + state.semanticModel.length + ' entries');
+            } catch (e) {
+                console.warn('No semantic model found, using basic schema discovery');
+                state.semanticModel = [];
+            }
+        }
+
+        async function discoverTables() {
+            // Query tables from the attached database using SHOW TABLES
+            const result = await conn.query(`SHOW TABLES FROM loaded_db`);
+            state.tables = result.toArray().map(r => r.name);
+            // All tables from attached db need loaded_db prefix
+            state.dbPrefix = 'loaded_db.';
+            renderTableList();
+        }
+
+        function getQualifiedTableName(tableName) {
+            return state.dbPrefix + tableName;
+        }
+
+        async function loadTableData() {
+            if (!conn || !state.activeTable) return;
+
+            showLoading(true);
+            try {
+                // Get columns if not already loaded
+                if (state.columns.length === 0) {
+                    await loadTableColumns();
+                }
+
+                // Build query
+                const sql = buildQuery();
+                console.log('Query:', sql);
+
+                // Execute query
+                const result = await conn.query(sql);
+                const data = result.toArray();
+
+                // Get total count
+                const countSql = buildCountQuery();
+                const countResult = await conn.query(countSql);
+                state.totalRows = Number(countResult.toArray()[0].cnt);
+
+                // Get summary
+                await loadSummary();
+
+                // Render
+                renderGrid(data);
+                updatePagination();
+
+            } catch (e) {
+                console.error('Error loading table data:', e);
+            }
+            showLoading(false);
+        }
+
+        async function loadTableColumns() {
+            // Use DESCRIBE to get columns from attached database table
+            const qualifiedTable = getQualifiedTableName(state.activeTable);
+            const result = await conn.query(`DESCRIBE ${qualifiedTable}`);
+
+            state.columns = result.toArray().map(row => {
+                const meta = state.semanticModel.find(
+                    m => m.tableName === state.activeTable && m.columnName === row.column_name
+                );
+                const rawType = row.column_type || row.data_type;
+                return {
+                    name: row.column_name,
+                    rawType: rawType,
+                    dataType: meta?.dataType || normalizeType(rawType),
+                    displayName: meta?.displayName || formatColumnName(row.column_name),
+                    columnType: meta?.columnType || 'attribute',
+                    defaultAggregation: meta?.defaultAggregation,
+                    isVisible: meta?.isVisible !== false,
+                    isFilterable: meta?.isFilterable !== false
+                };
+            });
+
+            // Set visible columns
+            state.visibleColumns = state.columns.filter(c => c.isVisible).map(c => c.name);
+            renderColumnPanel();
+        }
+
+        async function loadSummary() {
+            const aggCols = state.visibleColumns.map(colName => {
+                const col = state.columns.find(c => c.name === colName);
+                if (col?.columnType === 'measure' && col?.defaultAggregation) {
+                    return col.defaultAggregation.toUpperCase() + '(' + colName + ') AS ' + colName;
+                } else if (col?.dataType === 'integer' || col?.dataType === 'float') {
+                    return 'SUM(' + colName + ') AS ' + colName;
+                } else {
+                    return 'COUNT(DISTINCT ' + colName + ') AS ' + colName;
+                }
+            });
+
+            const whereClause = buildWhereClause();
+            const qualifiedTable = getQualifiedTableName(state.activeTable);
+            const sql = 'SELECT ' + aggCols.join(', ') + ' FROM ' + qualifiedTable + ' ' + whereClause;
+
+            try {
+                const result = await conn.query(sql);
+                state.summary = result.toArray()[0] || {};
+            } catch (e) {
+                console.warn('Error loading summary:', e);
+                state.summary = {};
+            }
+        }
+
+        async function getFilterValues(columnName, searchTerm = '') {
+            const escapedSearch = escapeSQL(searchTerm);
+            const qualifiedTable = getQualifiedTableName(state.activeTable);
+            let sql = 'SELECT DISTINCT ' + columnName + ' AS val FROM ' + qualifiedTable +
+                      ' WHERE ' + columnName + ' IS NOT NULL';
+            if (searchTerm) {
+                sql += " AND CAST(" + columnName + " AS VARCHAR) ILIKE '%" + escapedSearch + "%'";
+            }
+            sql += ' ORDER BY ' + columnName + ' LIMIT 50';
+            const result = await conn.query(sql);
+            return result.toArray().map(r => r.val);
+        }
+
+        // =============================================================================
+        // Query Building
+        // =============================================================================
+        function buildQuery() {
+            const select = state.visibleColumns.join(', ');
+            const whereClause = buildWhereClause();
+            const orderClause = buildOrderClause();
+            const offset = state.page * state.pageSize;
+            const qualifiedTable = getQualifiedTableName(state.activeTable);
+
+            return 'SELECT ' + select + ' FROM ' + qualifiedTable + ' ' +
+                   whereClause + ' ' + orderClause + ' LIMIT ' + state.pageSize + ' OFFSET ' + offset;
+        }
+
+        function buildCountQuery() {
+            const whereClause = buildWhereClause();
+            const qualifiedTable = getQualifiedTableName(state.activeTable);
+            return 'SELECT COUNT(*) AS cnt FROM ' + qualifiedTable + ' ' + whereClause;
+        }
+
+        function buildWhereClause() {
+            const conditions = [];
+            for (const [col, values] of Object.entries(state.filters)) {
+                if (values && values.length > 0) {
+                    const escaped = values.map(v => "'" + escapeSQL(String(v)) + "'").join(',');
+                    conditions.push(col + ' IN (' + escaped + ')');
+                }
+            }
+            return conditions.length > 0 ? 'WHERE ' + conditions.join(' AND ') : '';
+        }
+
+        function buildOrderClause() {
+            if (state.sorts.length === 0) return '';
+            const orderParts = state.sorts.map(s => s.column + ' ' + s.dir);
+            return 'ORDER BY ' + orderParts.join(', ');
+        }
+
+        // =============================================================================
+        // Safe DOM Rendering Functions
+        // =============================================================================
+        function renderTableList() {
+            const container = document.getElementById('table-list');
+            const searchTerm = document.getElementById('table-search').value.toLowerCase();
+
+            const filteredTables = state.tables.filter(t =>
+                t.toLowerCase().includes(searchTerm)
+            );
+
+            // Clear container
+            container.replaceChildren();
+
+            if (filteredTables.length === 0) {
+                const emptyDiv = document.createElement('div');
+                emptyDiv.className = 'text-sm text-gray-400 text-center py-4';
+                emptyDiv.textContent = 'No tables found';
+                container.appendChild(emptyDiv);
+                return;
+            }
+
+            // Group by type
+            const dims = filteredTables.filter(t => t.startsWith('dim_'));
+            const facts = filteredTables.filter(t => t.startsWith('fact_'));
+            const others = filteredTables.filter(t => !t.startsWith('dim_') && !t.startsWith('fact_'));
+
+            function addSection(label, tables, type) {
+                if (tables.length === 0) return;
+
+                const header = document.createElement('div');
+                header.className = 'text-xs text-gray-500 uppercase px-2 py-1 mt-2 first:mt-0';
+                header.textContent = label;
+                container.appendChild(header);
+
+                tables.forEach(tableName => {
+                    container.appendChild(createTableItem(tableName, type));
+                });
+            }
+
+            addSection('Dimensions', dims, 'dim');
+            addSection('Facts', facts, 'fact');
+            addSection('Other', others, 'other');
+        }
+
+        function createTableItem(tableName, type) {
+            const isActive = tableName === state.activeTable;
+            const meta = state.semanticModel.find(m => m.tableName === tableName);
+            const displayName = meta?.tableDisplayName || formatTableName(tableName);
+
+            const div = document.createElement('div');
+            div.className = 'table-item ' + type + ' ' + (isActive ? 'active' : '') + ' px-3 py-2 rounded cursor-pointer text-sm';
+            div.dataset.table = tableName;
+
+            const nameDiv = document.createElement('div');
+            nameDiv.className = 'font-medium text-gray-900';
+            nameDiv.textContent = displayName;
+
+            const techNameDiv = document.createElement('div');
+            techNameDiv.className = 'text-xs text-gray-500';
+            techNameDiv.textContent = tableName;
+
+            div.appendChild(nameDiv);
+            div.appendChild(techNameDiv);
+
+            div.addEventListener('click', () => selectTable(tableName));
+
+            return div;
+        }
+
+        function renderColumnPanel() {
+            const container = document.getElementById('column-list');
+            const panel = document.getElementById('column-panel');
+
+            if (state.columns.length === 0) {
+                panel.classList.add('hidden');
+                return;
+            }
+
+            panel.classList.remove('hidden');
+            container.replaceChildren();
+
+            state.columns.forEach(col => {
+                const isVisible = state.visibleColumns.includes(col.name);
+                const typeInfo = TYPE_ICONS[col.dataType] || TYPE_ICONS.varchar;
+
+                const label = document.createElement('label');
+                label.className = 'flex items-center gap-2 px-2 py-1 rounded hover:bg-gray-100 cursor-pointer';
+
+                const checkbox = document.createElement('input');
+                checkbox.type = 'checkbox';
+                checkbox.checked = isVisible;
+                checkbox.dataset.column = col.name;
+                checkbox.className = 'column-toggle rounded border-gray-300 text-indigo-600 focus:ring-indigo-500';
+                checkbox.addEventListener('change', () => toggleColumn(col.name, checkbox.checked));
+
+                const typeSpan = document.createElement('span');
+                typeSpan.className = 'type-icon ' + typeInfo.class;
+                typeSpan.textContent = typeInfo.icon;
+
+                const nameSpan = document.createElement('span');
+                nameSpan.className = 'text-sm text-gray-700 truncate';
+                nameSpan.title = col.name;
+                nameSpan.textContent = col.displayName;
+
+                label.appendChild(checkbox);
+                label.appendChild(typeSpan);
+                label.appendChild(nameSpan);
+                container.appendChild(label);
+            });
+        }
+
+        function renderGrid(data) {
+            const grid = document.getElementById('data-grid');
+            const header = document.getElementById('grid-header');
+            const body = document.getElementById('grid-body');
+            const footer = document.getElementById('grid-footer');
+            const emptyState = document.getElementById('empty-state');
+            const toolbar = document.getElementById('toolbar');
+
+            // Show grid
+            grid.classList.remove('hidden');
+            emptyState.classList.add('hidden');
+            toolbar.classList.remove('hidden');
+
+            // Update table name
+            const meta = state.semanticModel.find(m => m.tableName === state.activeTable);
+            document.getElementById('table-name').textContent =
+                meta?.tableDisplayName || formatTableName(state.activeTable);
+            document.getElementById('row-count').textContent =
+                state.totalRows.toLocaleString() + ' rows';
+
+            // Render header
+            header.replaceChildren();
+            const headerRow = document.createElement('tr');
+            state.visibleColumns.forEach(colName => {
+                const col = state.columns.find(c => c.name === colName);
+                const typeInfo = TYPE_ICONS[col?.dataType] || TYPE_ICONS.varchar;
+                const sort = state.sorts.find(s => s.column === colName);
+                const hasFilter = state.filters[colName]?.length > 0;
+
+                const th = document.createElement('th');
+                th.className = 'col-header' + (sort ? ' sorted' : '') + (hasFilter ? ' filtered' : '');
+                th.dataset.column = colName;
+
+                const wrapper = document.createElement('div');
+                wrapper.className = 'flex items-center gap-2';
+
+                const typeSpan = document.createElement('span');
+                typeSpan.className = 'type-icon ' + typeInfo.class;
+                typeSpan.textContent = typeInfo.icon;
+
+                const nameSpan = document.createElement('span');
+                nameSpan.className = 'flex-1';
+                nameSpan.textContent = col?.displayName || colName;
+
+                const sortSpan = document.createElement('span');
+                sortSpan.className = 'text-gray-400';
+                sortSpan.textContent = sort ? (sort.dir === 'asc' ? ' \u2191' : ' \u2193') : '';
+
+                wrapper.appendChild(typeSpan);
+                wrapper.appendChild(nameSpan);
+                wrapper.appendChild(sortSpan);
+
+                if (hasFilter) {
+                    const filterSpan = document.createElement('span');
+                    filterSpan.className = 'text-amber-500 text-xs';
+                    filterSpan.textContent = '*';
+                    wrapper.appendChild(filterSpan);
+                }
+
+                th.appendChild(wrapper);
+                th.addEventListener('click', (e) => handleColumnClick(colName, e));
+                headerRow.appendChild(th);
+            });
+            header.appendChild(headerRow);
+
+            // Render body
+            body.replaceChildren();
+            data.forEach(row => {
+                const tr = document.createElement('tr');
+                state.visibleColumns.forEach(colName => {
+                    const td = document.createElement('td');
+                    td.className = 'px-3 py-2 text-gray-900';
+
+                    let val = row[colName];
+                    if (val === null || val === undefined) {
+                        const span = document.createElement('span');
+                        span.className = 'text-gray-400';
+                        span.textContent = 'null';
+                        td.appendChild(span);
+                    } else if (typeof val === 'object') {
+                        const span = document.createElement('span');
+                        span.className = 'text-gray-400';
+                        span.textContent = '[JSON]';
+                        td.appendChild(span);
+                    } else {
+                        let displayVal = String(val);
+                        if (displayVal.length > 100) {
+                            displayVal = displayVal.substring(0, 100) + '...';
+                        }
+                        td.textContent = displayVal;
+                    }
+                    tr.appendChild(td);
+                });
+                body.appendChild(tr);
+            });
+
+            // Render summary footer
+            footer.replaceChildren();
+            const footerRow = document.createElement('tr');
+            footerRow.className = 'summary-row';
+            state.visibleColumns.forEach(colName => {
+                const col = state.columns.find(c => c.name === colName);
+                const val = state.summary[colName];
+                const aggLabel = col?.defaultAggregation?.toUpperCase() ||
+                    (col?.dataType === 'integer' || col?.dataType === 'float' ? 'SUM' : 'DISTINCT');
+
+                const td = document.createElement('td');
+                td.className = 'px-3 py-2';
+
+                const labelDiv = document.createElement('div');
+                labelDiv.className = 'summary-label';
+                labelDiv.textContent = aggLabel;
+
+                const valDiv = document.createElement('div');
+                valDiv.className = 'text-gray-900';
+                if (typeof val === 'number') {
+                    valDiv.textContent = val >= 1000 ? val.toLocaleString() : val.toFixed(val % 1 === 0 ? 0 : 2);
+                } else {
+                    valDiv.textContent = val ?? '-';
+                }
+
+                td.appendChild(labelDiv);
+                td.appendChild(valDiv);
+                footerRow.appendChild(td);
+            });
+            footer.appendChild(footerRow);
+
+            // Show clear filters button if there are filters
+            const hasFilters = Object.values(state.filters).some(v => v?.length > 0);
+            document.getElementById('clear-filters-btn').classList.toggle('hidden', !hasFilters);
+        }
+
+        function updatePagination() {
+            const totalPages = Math.ceil(state.totalRows / state.pageSize);
+            document.getElementById('page-info').textContent =
+                (state.page + 1) + ' of ' + (totalPages || 1);
+            document.getElementById('prev-page').disabled = state.page === 0;
+            document.getElementById('next-page').disabled = state.page >= totalPages - 1;
+        }
+
+        // =============================================================================
+        // Event Handlers
+        // =============================================================================
+        function selectTable(tableName) {
+            state.activeTable = tableName;
+            state.columns = [];
+            state.visibleColumns = [];
+            state.filters = {};
+            state.sorts = [];
+            state.page = 0;
+            renderTableList();
+            loadTableData();
+        }
+
+        function toggleColumn(columnName, visible) {
+            if (visible) {
+                if (!state.visibleColumns.includes(columnName)) {
+                    // Insert at original position
+                    const colIndex = state.columns.findIndex(c => c.name === columnName);
+                    const insertIndex = state.visibleColumns.findIndex((name) => {
+                        const existingIndex = state.columns.findIndex(c => c.name === name);
+                        return existingIndex > colIndex;
+                    });
+                    if (insertIndex === -1) {
+                        state.visibleColumns.push(columnName);
+                    } else {
+                        state.visibleColumns.splice(insertIndex, 0, columnName);
+                    }
+                }
+            } else {
+                state.visibleColumns = state.visibleColumns.filter(c => c !== columnName);
+            }
+            loadTableData();
+        }
+
+        function handleColumnClick(columnName, event) {
+            // Shift+click for filter, regular click for sort
+            if (event.shiftKey) {
+                showFilterDropdown(columnName, event.target.closest('.col-header'));
+            } else {
+                toggleSort(columnName);
+            }
+        }
+
+        function toggleSort(columnName) {
+            const existing = state.sorts.find(s => s.column === columnName);
+            if (existing) {
+                if (existing.dir === 'asc') {
+                    existing.dir = 'desc';
+                } else {
+                    state.sorts = state.sorts.filter(s => s.column !== columnName);
+                }
+            } else {
+                state.sorts = [{ column: columnName, dir: 'asc' }];
+            }
+            state.page = 0;
+            loadTableData();
+        }
+
+        let currentFilterColumn = null;
+        let filterValues = [];
+        let selectedFilterValues = new Set();
+
+        async function showFilterDropdown(columnName, headerEl) {
+            currentFilterColumn = columnName;
+            selectedFilterValues = new Set(state.filters[columnName] || []);
+
+            const dropdown = document.getElementById('filter-dropdown');
+            const searchInput = document.getElementById('filter-search');
+
+            // Position dropdown
+            const rect = headerEl.getBoundingClientRect();
+            dropdown.style.top = (rect.bottom + 4) + 'px';
+            dropdown.style.left = rect.left + 'px';
+            dropdown.classList.remove('hidden');
+
+            // Clear search
+            searchInput.value = '';
+            searchInput.focus();
+
+            // Load values
+            filterValues = await getFilterValues(columnName);
+            renderFilterValues();
+        }
+
+        function renderFilterValues() {
+            const container = document.getElementById('filter-values');
+            const searchTerm = document.getElementById('filter-search').value.toLowerCase();
+
+            const filtered = filterValues.filter(v =>
+                String(v).toLowerCase().includes(searchTerm)
+            );
+
+            container.replaceChildren();
+            filtered.forEach(val => {
+                const isSelected = selectedFilterValues.has(val);
+                const displayVal = val === null ? 'null' : String(val);
+
+                const label = document.createElement('label');
+                label.className = 'flex items-center gap-2 px-3 py-1 hover:bg-gray-100 cursor-pointer';
+
+                const checkbox = document.createElement('input');
+                checkbox.type = 'checkbox';
+                checkbox.checked = isSelected;
+                checkbox.dataset.value = displayVal;
+                checkbox.className = 'filter-value-toggle rounded border-gray-300 text-indigo-600';
+                checkbox.addEventListener('change', () => {
+                    const v = checkbox.dataset.value === 'null' ? null : checkbox.dataset.value;
+                    if (checkbox.checked) {
+                        selectedFilterValues.add(v);
+                    } else {
+                        selectedFilterValues.delete(v);
+                    }
+                });
+
+                const span = document.createElement('span');
+                span.className = 'text-sm text-gray-700 truncate';
+                span.textContent = displayVal;
+
+                label.appendChild(checkbox);
+                label.appendChild(span);
+                container.appendChild(label);
+            });
+        }
+
+        function applyFilter() {
+            if (currentFilterColumn) {
+                state.filters[currentFilterColumn] = Array.from(selectedFilterValues);
+                state.page = 0;
+                loadTableData();
+            }
+            hideFilterDropdown();
+        }
+
+        function clearFilter() {
+            if (currentFilterColumn) {
+                delete state.filters[currentFilterColumn];
+                state.page = 0;
+                loadTableData();
+            }
+            hideFilterDropdown();
+        }
+
+        function hideFilterDropdown() {
+            document.getElementById('filter-dropdown').classList.add('hidden');
+            currentFilterColumn = null;
+        }
+
+        function clearAllFilters() {
+            state.filters = {};
+            state.page = 0;
+            loadTableData();
+        }
+
+        // =============================================================================
+        // Utility Functions
+        // =============================================================================
+        function normalizeType(rawType) {
+            const upper = rawType.toUpperCase();
+            if (upper.includes('VARCHAR') || upper.includes('TEXT') || upper.includes('CHAR')) return 'varchar';
+            if (upper.includes('INT')) return 'integer';
+            if (upper.includes('FLOAT') || upper.includes('DOUBLE') || upper.includes('DECIMAL')) return 'float';
+            if (upper.includes('TIMESTAMP')) return 'timestamp';
+            if (upper.includes('DATE') && !upper.includes('TIMESTAMP')) return 'date';
+            if (upper.includes('BOOL')) return 'boolean';
+            if (upper.includes('JSON')) return 'json';
+            return 'varchar';
+        }
+
+        function formatTableName(name) {
+            return name.replace(/^(dim_|fact_|stg_)/, '').replace(/_/g, ' ')
+                .replace(/\b\w/g, c => c.toUpperCase());
+        }
+
+        function formatColumnName(name) {
+            return name.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+        }
+
+        function updateStatus(status, text) {
+            const el = document.getElementById('db-status');
+            el.replaceChildren();
+
+            const dot = document.createElement('span');
+            dot.className = 'w-2 h-2 rounded-full ' +
+                (status === 'connected' ? 'bg-green-500' :
+                 status === 'error' ? 'bg-red-500' : 'bg-gray-300');
+
+            const textSpan = document.createElement('span');
+            textSpan.textContent = text;
+
+            el.appendChild(dot);
+            el.appendChild(textSpan);
+        }
+
+        function showLoading(show) {
+            document.getElementById('loading-overlay').classList.toggle('hidden', !show);
+        }
+
+        // =============================================================================
+        // Event Listeners
+        // =============================================================================
+        document.getElementById('db-file-input').addEventListener('change', (e) => {
+            const file = e.target.files[0];
+            if (file) loadDatabase(file);
+        });
+
+        document.getElementById('table-search').addEventListener('input', renderTableList);
+
+        document.getElementById('prev-page').addEventListener('click', () => {
+            if (state.page > 0) {
+                state.page--;
+                loadTableData();
+            }
+        });
+
+        document.getElementById('next-page').addEventListener('click', () => {
+            const totalPages = Math.ceil(state.totalRows / state.pageSize);
+            if (state.page < totalPages - 1) {
+                state.page++;
+                loadTableData();
+            }
+        });
+
+        document.getElementById('clear-filters-btn').addEventListener('click', clearAllFilters);
+
+        document.getElementById('filter-search').addEventListener('input', renderFilterValues);
+        document.getElementById('filter-apply').addEventListener('click', applyFilter);
+        document.getElementById('filter-clear').addEventListener('click', clearFilter);
+
+        // Close filter dropdown when clicking outside
+        document.addEventListener('click', (e) => {
+            const dropdown = document.getElementById('filter-dropdown');
+            if (!dropdown.contains(e.target) && !e.target.closest('.col-header')) {
+                hideFilterDropdown();
+            }
+        });
+
+        // =============================================================================
+        // Initialization
+        // =============================================================================
+        initDuckDB().then(() => {
+            console.log('DuckDB WASM initialized');
+        }).catch(err => {
+            console.error('Failed to initialize DuckDB:', err);
+            updateStatus('error', 'Failed to initialize DuckDB');
+        });
+    </script>
+</body>
+</html>

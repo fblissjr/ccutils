@@ -13,6 +13,7 @@ from claude_code_transcripts import (
     create_star_schema,
     run_star_schema_etl,
     generate_dimension_key,
+    create_semantic_model,
 )
 
 
@@ -2132,4 +2133,246 @@ class TestConversationFlowAnalytics:
         ).fetchall()
         # Should have some tool chain patterns
         assert len(result) > 0
+        conn.close()
+
+
+class TestCreateSemanticModel:
+    """Tests for semantic model metadata generation."""
+
+    def test_creates_meta_semantic_model_table(self, output_dir):
+        """Test that meta_semantic_model table is created."""
+        db_path = output_dir / "test.duckdb"
+        conn = create_star_schema(db_path)
+        create_semantic_model(conn)
+
+        result = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='meta_semantic_model'"
+        ).fetchone()
+        assert result is not None
+        conn.close()
+
+    def test_meta_semantic_model_has_correct_columns(self, output_dir):
+        """Test that meta_semantic_model has all required columns."""
+        db_path = output_dir / "test.duckdb"
+        conn = create_star_schema(db_path)
+        create_semantic_model(conn)
+
+        columns = conn.execute(
+            "SELECT column_name FROM information_schema.columns WHERE table_name = 'meta_semantic_model'"
+        ).fetchall()
+        column_names = [c[0] for c in columns]
+
+        required_columns = [
+            "table_name",
+            "table_type",
+            "table_display_name",
+            "column_name",
+            "column_type",
+            "data_type",
+            "display_name",
+            "default_aggregation",
+            "related_table",
+            "related_column",
+            "is_visible",
+            "is_filterable",
+            "sort_order",
+        ]
+        for col in required_columns:
+            assert col in column_names, f"Missing column: {col}"
+        conn.close()
+
+    def test_populates_dimension_tables(self, output_dir):
+        """Test that dimension tables are detected and added."""
+        db_path = output_dir / "test.duckdb"
+        conn = create_star_schema(db_path)
+        create_semantic_model(conn)
+
+        result = conn.execute(
+            "SELECT DISTINCT table_name FROM meta_semantic_model WHERE table_type = 'dimension'"
+        ).fetchall()
+        table_names = [r[0] for r in result]
+
+        # Should include key dimension tables
+        assert "dim_tool" in table_names
+        assert "dim_model" in table_names
+        assert "dim_session" in table_names
+        assert "dim_project" in table_names
+        conn.close()
+
+    def test_populates_fact_tables(self, output_dir):
+        """Test that fact tables are detected and added."""
+        db_path = output_dir / "test.duckdb"
+        conn = create_star_schema(db_path)
+        create_semantic_model(conn)
+
+        result = conn.execute(
+            "SELECT DISTINCT table_name FROM meta_semantic_model WHERE table_type = 'fact'"
+        ).fetchall()
+        table_names = [r[0] for r in result]
+
+        # Should include key fact tables
+        assert "fact_messages" in table_names
+        assert "fact_tool_calls" in table_names
+        assert "fact_session_summary" in table_names
+        conn.close()
+
+    def test_detects_key_columns(self, output_dir):
+        """Test that *_key columns are classified as 'key' type."""
+        db_path = output_dir / "test.duckdb"
+        conn = create_star_schema(db_path)
+        create_semantic_model(conn)
+
+        result = conn.execute(
+            """SELECT column_name, column_type
+               FROM meta_semantic_model
+               WHERE column_name LIKE '%_key'"""
+        ).fetchall()
+
+        # All *_key columns should be classified as 'key'
+        for col_name, col_type in result:
+            assert (
+                col_type == "key"
+            ), f"{col_name} should be type 'key', got '{col_type}'"
+        conn.close()
+
+    def test_detects_measure_columns(self, output_dir):
+        """Test that numeric columns with count/length/score suffixes are measures."""
+        db_path = output_dir / "test.duckdb"
+        conn = create_star_schema(db_path)
+        create_semantic_model(conn)
+
+        result = conn.execute(
+            """SELECT column_name, column_type
+               FROM meta_semantic_model
+               WHERE column_name IN ('content_length', 'word_count', 'input_char_count')"""
+        ).fetchall()
+
+        for col_name, col_type in result:
+            assert (
+                col_type == "measure"
+            ), f"{col_name} should be type 'measure', got '{col_type}'"
+        conn.close()
+
+    def test_detects_relationships(self, output_dir):
+        """Test that foreign key relationships are detected."""
+        db_path = output_dir / "test.duckdb"
+        conn = create_star_schema(db_path)
+        create_semantic_model(conn)
+
+        # session_key in fact_messages should relate to dim_session
+        result = conn.execute(
+            """SELECT related_table, related_column
+               FROM meta_semantic_model
+               WHERE table_name = 'fact_messages' AND column_name = 'session_key'"""
+        ).fetchone()
+
+        assert result is not None
+        assert result[0] == "dim_session"
+        assert result[1] == "session_key"
+        conn.close()
+
+    def test_tool_key_relationship(self, output_dir):
+        """Test that tool_key in fact_tool_calls relates to dim_tool."""
+        db_path = output_dir / "test.duckdb"
+        conn = create_star_schema(db_path)
+        create_semantic_model(conn)
+
+        result = conn.execute(
+            """SELECT related_table, related_column
+               FROM meta_semantic_model
+               WHERE table_name = 'fact_tool_calls' AND column_name = 'tool_key'"""
+        ).fetchone()
+
+        assert result is not None
+        assert result[0] == "dim_tool"
+        assert result[1] == "tool_key"
+        conn.close()
+
+    def test_default_aggregation_for_measures(self, output_dir):
+        """Test that measures have appropriate default aggregations."""
+        db_path = output_dir / "test.duckdb"
+        conn = create_star_schema(db_path)
+        create_semantic_model(conn)
+
+        result = conn.execute(
+            """SELECT column_name, default_aggregation
+               FROM meta_semantic_model
+               WHERE column_type = 'measure' AND default_aggregation IS NOT NULL"""
+        ).fetchall()
+
+        # Should have some measures with aggregations
+        assert len(result) > 0
+
+        # Common aggregations should be SUM, COUNT, AVG
+        aggregations = [r[1] for r in result]
+        valid_aggs = {"sum", "count", "avg", "min", "max", "count_distinct"}
+        for agg in aggregations:
+            assert agg in valid_aggs, f"Invalid aggregation: {agg}"
+        conn.close()
+
+    def test_data_types_are_normalized(self, output_dir):
+        """Test that data types are normalized to standard values."""
+        db_path = output_dir / "test.duckdb"
+        conn = create_star_schema(db_path)
+        create_semantic_model(conn)
+
+        result = conn.execute(
+            "SELECT DISTINCT data_type FROM meta_semantic_model"
+        ).fetchall()
+        data_types = [r[0] for r in result]
+
+        # Should have normalized types
+        valid_types = {
+            "varchar",
+            "integer",
+            "float",
+            "timestamp",
+            "boolean",
+            "json",
+            "date",
+        }
+        for dt in data_types:
+            assert dt in valid_types, f"Unexpected data type: {dt}"
+        conn.close()
+
+    def test_table_display_names_generated(self, output_dir):
+        """Test that human-readable table display names are generated."""
+        db_path = output_dir / "test.duckdb"
+        conn = create_star_schema(db_path)
+        create_semantic_model(conn)
+
+        result = conn.execute(
+            """SELECT DISTINCT table_name, table_display_name
+               FROM meta_semantic_model
+               WHERE table_display_name IS NOT NULL"""
+        ).fetchall()
+
+        # Should have display names
+        assert len(result) > 0
+
+        # dim_tool should have a display name like 'Tool' or 'Tools'
+        for table_name, display_name in result:
+            if table_name == "dim_tool":
+                assert display_name is not None
+                assert "tool" in display_name.lower() or "Tool" in display_name
+        conn.close()
+
+    def test_idempotent_creation(self, output_dir):
+        """Test that calling create_semantic_model twice is safe."""
+        db_path = output_dir / "test.duckdb"
+        conn = create_star_schema(db_path)
+
+        # Call twice
+        create_semantic_model(conn)
+        create_semantic_model(conn)
+
+        # Should not have duplicate rows
+        result = conn.execute(
+            """SELECT table_name, column_name, COUNT(*) as cnt
+               FROM meta_semantic_model
+               GROUP BY table_name, column_name
+               HAVING COUNT(*) > 1"""
+        ).fetchall()
+
+        assert len(result) == 0, f"Found duplicate entries: {result}"
         conn.close()
