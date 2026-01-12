@@ -377,6 +377,50 @@ class TestCreateStarSchema:
         assert result is not None
         conn.close()
 
+    def test_creates_semantic_sessions_view(self, output_dir):
+        """Test that semantic_sessions view is created."""
+        db_path = output_dir / "test.duckdb"
+        conn = create_star_schema(db_path)
+
+        result = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='view' AND name='semantic_sessions'"
+        ).fetchone()
+        assert result is not None
+        conn.close()
+
+    def test_creates_semantic_messages_view(self, output_dir):
+        """Test that semantic_messages view is created."""
+        db_path = output_dir / "test.duckdb"
+        conn = create_star_schema(db_path)
+
+        result = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='view' AND name='semantic_messages'"
+        ).fetchone()
+        assert result is not None
+        conn.close()
+
+    def test_creates_semantic_tool_calls_view(self, output_dir):
+        """Test that semantic_tool_calls view is created."""
+        db_path = output_dir / "test.duckdb"
+        conn = create_star_schema(db_path)
+
+        result = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='view' AND name='semantic_tool_calls'"
+        ).fetchone()
+        assert result is not None
+        conn.close()
+
+    def test_creates_semantic_file_operations_view(self, output_dir):
+        """Test that semantic_file_operations view is created."""
+        db_path = output_dir / "test.duckdb"
+        conn = create_star_schema(db_path)
+
+        result = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='view' AND name='semantic_file_operations'"
+        ).fetchone()
+        assert result is not None
+        conn.close()
+
 
 class TestDimToolTable:
     """Tests for dim_tool dimension table."""

@@ -3264,7 +3264,7 @@ def explore_cmd(port, no_open, database):
     if not explorer_file.exists():
         raise click.ClickException(f"Data explorer not found: {explorer_file}")
 
-    # Create a simple HTTP server
+    # Create a simple HTTP server with proper cleanup
     class QuietHandler(http.server.SimpleHTTPRequestHandler):
         def __init__(self, *args, **kwargs):
             super().__init__(*args, directory=str(explorer_dir), **kwargs)
@@ -3272,27 +3272,36 @@ def explore_cmd(port, no_open, database):
         def log_message(self, format, *args):
             pass  # Suppress request logging
 
+    class ReusableTCPServer(socketserver.TCPServer):
+        allow_reuse_address = True
+
+    httpd = None
     try:
-        with socketserver.TCPServer(("", port), QuietHandler) as httpd:
-            url = f"http://localhost:{port}/index.html"
-            click.echo(f"Data Explorer running at: {url}")
-            if database:
-                db_path = Path(database).resolve()
-                click.echo(f"Load database: {db_path}")
-            click.echo("Press Ctrl+C to stop the server.")
+        httpd = ReusableTCPServer(("", port), QuietHandler)
+        url = f"http://localhost:{port}/index.html"
+        click.echo(f"Data Explorer running at: {url}")
+        if database:
+            db_path = Path(database).resolve()
+            click.echo(f"Load database: {db_path}")
+        click.echo("Press Ctrl+C to stop the server.")
 
-            if not no_open:
-                webbrowser.open(url)
+        if not no_open:
+            webbrowser.open(url)
 
-            httpd.serve_forever()
+        httpd.serve_forever()
     except KeyboardInterrupt:
-        click.echo("\nServer stopped.")
+        click.echo("\nStopping server...")
     except OSError as e:
         if e.errno == 48:  # Address already in use
             raise click.ClickException(
                 f"Port {port} is already in use. Try a different port with -p/--port."
             )
         raise
+    finally:
+        if httpd:
+            httpd.shutdown()
+            httpd.server_close()
+            click.echo("Server stopped.")
 
 
 def main():

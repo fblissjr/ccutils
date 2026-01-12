@@ -118,6 +118,8 @@ def _get_table_type(table_name):
         return "fact"
     elif table_name.startswith("stg_"):
         return "staging"
+    elif table_name.startswith("semantic_"):
+        return "semantic"
     return "other"
 
 
@@ -164,7 +166,10 @@ def _detect_column_type(col_name, data_type, table_type):
     if col_name.endswith("_key") or col_name.endswith("_id"):
         return "key"
 
-    if table_type == "fact" and data_type in ("integer", "float"):
+    # Semantic views inherit measure detection from facts
+    is_fact_like = table_type in ("fact", "semantic")
+
+    if is_fact_like and data_type in ("integer", "float"):
         measure_suffixes = (
             "_count",
             "_length",
@@ -180,7 +185,7 @@ def _detect_column_type(col_name, data_type, table_type):
         if col_name.startswith("total_") or col_name.startswith("estimated_"):
             return "measure"
 
-    if table_type == "fact" and data_type == "boolean":
+    if is_fact_like and data_type == "boolean":
         if col_name.startswith("is_") or col_name.startswith("has_"):
             return "measure"
 

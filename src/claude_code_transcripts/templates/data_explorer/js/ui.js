@@ -3,7 +3,7 @@
  * Handles all DOM manipulation and UI updates
  */
 
-import { state, TYPE_ICONS, ARROWS, getTableDisplayName, getRelationships } from './state.js';
+import { state, TYPE_ICONS, ARROWS, getTableDisplayName, formatValue } from './state.js';
 import { isColumnSelected, addColumn, removeColumn, setBaseTable, toggleSort, setFilter, clearFilters, setPage, runQuery, formatSQLParts } from './query-builder.js';
 import { getDistinctValues } from './duckdb.js';
 
@@ -99,32 +99,36 @@ export function renderTableList() {
     }
 
     // Group tables
+    const semanticViews = filteredTables.filter(t => t.startsWith('semantic_'));
     const facts = filteredTables.filter(t => t.startsWith('fact_'));
     const dims = filteredTables.filter(t => t.startsWith('dim_'));
-    const others = filteredTables.filter(t => !t.startsWith('fact_') && !t.startsWith('dim_'));
+    const others = filteredTables.filter(t =>
+        !t.startsWith('fact_') && !t.startsWith('dim_') &&
+        !t.startsWith('semantic_') && !t.startsWith('meta_') && !t.startsWith('stg_')
+    );
 
-    // Facts first (primary selection)
+    // Semantic views first (recommended for exploration)
+    if (semanticViews.length > 0) {
+        container.appendChild(createSectionHeader('Semantic Views (Recommended)'));
+        semanticViews.forEach(t => container.appendChild(createSemanticViewItem(t)));
+    }
+
+    // Fact tables
     if (facts.length > 0) {
-        container.appendChild(createSectionHeader('Fact Tables (select one)'));
-        facts.forEach(t => container.appendChild(createFactTableItem(t)));
+        container.appendChild(createSectionHeader('Fact Tables'));
+        facts.forEach(t => container.appendChild(createTableItem(t, 'fact')));
     }
 
-    // Then dimensions (expandable with columns)
-    if (dims.length > 0 && state.baseTable) {
-        container.appendChild(createSectionHeader('Dimension Columns'));
-        const relationships = getRelationships(state.baseTable);
-        dims.forEach(t => {
-            const rel = relationships.find(r => r.dimTable === t);
-            if (rel) {
-                container.appendChild(createDimTableSection(t, rel));
-            }
-        });
+    // Dimension tables
+    if (dims.length > 0) {
+        container.appendChild(createSectionHeader('Dimension Tables'));
+        dims.forEach(t => container.appendChild(createTableItem(t, 'dim')));
     }
 
-    // Others
+    // Others (excluding staging, meta tables)
     if (others.length > 0) {
         container.appendChild(createSectionHeader('Other'));
-        others.forEach(t => container.appendChild(createOtherTableItem(t)));
+        others.forEach(t => container.appendChild(createTableItem(t, 'other')));
     }
 }
 
@@ -135,12 +139,58 @@ function createSectionHeader(text) {
     return header;
 }
 
-function createFactTableItem(tableName) {
+function createSemanticViewItem(tableName) {
     const isActive = tableName === state.baseTable;
     const displayName = getTableDisplayName(tableName);
 
     const div = document.createElement('div');
-    div.className = `table-item fact ${isActive ? 'active' : ''} px-3 py-2 rounded cursor-pointer text-sm`;
+    div.className = `table-item semantic ${isActive ? 'active' : ''} px-3 py-2 rounded cursor-pointer text-sm`;
+
+    const wrapper = document.createElement('div');
+    wrapper.className = 'flex items-center gap-2';
+
+    const icon = document.createElement('span');
+    icon.className = 'text-indigo-500';
+    icon.textContent = '\u2726'; // Star icon
+
+    const nameDiv = document.createElement('div');
+    nameDiv.className = 'font-medium text-gray-900';
+    nameDiv.textContent = displayName;
+
+    wrapper.appendChild(icon);
+    wrapper.appendChild(nameDiv);
+    div.appendChild(wrapper);
+
+    const descDiv = document.createElement('div');
+    descDiv.className = 'text-xs text-gray-500 ml-5';
+    descDiv.textContent = getSemanticViewDescription(tableName);
+    div.appendChild(descDiv);
+
+    div.addEventListener('click', () => {
+        setBaseTable(tableName);
+        renderTableList();
+        renderColumnPanel();
+    });
+
+    return div;
+}
+
+function getSemanticViewDescription(tableName) {
+    const descriptions = {
+        'semantic_sessions': 'Sessions with project info and metrics',
+        'semantic_messages': 'Messages with type, model, and context',
+        'semantic_tool_calls': 'Tool usage with categories and context',
+        'semantic_file_operations': 'File operations by type and path'
+    };
+    return descriptions[tableName] || 'Pre-joined view';
+}
+
+function createTableItem(tableName, type) {
+    const isActive = tableName === state.baseTable;
+    const displayName = getTableDisplayName(tableName);
+
+    const div = document.createElement('div');
+    div.className = `table-item ${type} ${isActive ? 'active' : ''} px-3 py-2 rounded cursor-pointer text-sm`;
 
     const nameDiv = document.createElement('div');
     nameDiv.className = 'font-medium text-gray-900';
@@ -162,74 +212,6 @@ function createFactTableItem(tableName) {
     return div;
 }
 
-function createDimTableSection(tableName, relationship) {
-    const displayName = getTableDisplayName(tableName);
-    const columns = state.columnMeta[tableName] || [];
-    const isJoined = state.joinedTables.has(tableName);
-
-    const section = document.createElement('div');
-    section.className = `dim-section ml-2 pl-2 ${isJoined ? 'expanded' : ''}`;
-
-    // Header (collapsible)
-    const header = document.createElement('div');
-    header.className = 'dim-header flex items-center gap-2 px-2 py-1.5 text-sm';
-
-    const chevron = document.createElement('span');
-    chevron.className = 'chevron text-gray-400 text-xs';
-    chevron.textContent = ARROWS.RIGHT;
-
-    const nameSpan = document.createElement('span');
-    nameSpan.className = 'font-medium text-gray-700 flex-1';
-    nameSpan.textContent = displayName;
-
-    if (isJoined) {
-        const badge = document.createElement('span');
-        badge.className = 'join-badge';
-        badge.textContent = 'JOINED';
-        header.appendChild(badge);
-    }
-
-    header.appendChild(chevron);
-    header.appendChild(nameSpan);
-
-    // Columns container
-    const colContainer = document.createElement('div');
-    colContainer.className = `dim-columns ${isJoined ? 'expanded' : ''}`;
-
-    // Add visible columns
-    columns.filter(c => c.isVisible && !c.name.endsWith('_key')).forEach(col => {
-        colContainer.appendChild(createColumnCheckbox(tableName, col));
-    });
-
-    header.addEventListener('click', () => {
-        colContainer.classList.toggle('expanded');
-        chevron.textContent = colContainer.classList.contains('expanded') ? ARROWS.DOWN : ARROWS.RIGHT;
-    });
-
-    section.appendChild(header);
-    section.appendChild(colContainer);
-    return section;
-}
-
-function createOtherTableItem(tableName) {
-    const displayName = getTableDisplayName(tableName);
-
-    const div = document.createElement('div');
-    div.className = 'table-item stg px-3 py-2 rounded text-sm opacity-60';
-
-    const nameDiv = document.createElement('div');
-    nameDiv.className = 'font-medium text-gray-700';
-    nameDiv.textContent = displayName;
-
-    const techDiv = document.createElement('div');
-    techDiv.className = 'text-xs text-gray-500';
-    techDiv.textContent = tableName;
-
-    div.appendChild(nameDiv);
-    div.appendChild(techDiv);
-
-    return div;
-}
 
 function createColumnCheckbox(tableName, col) {
     const isSelected = isColumnSelected(tableName, col.name);
@@ -386,18 +368,19 @@ export function renderGrid() {
             td.className = 'px-3 py-2 text-gray-900';
 
             const val = row[col.alias || col.column];
-            if (val === null || val === undefined) {
+            const colMeta = state.columnMeta[col.table]?.find(c => c.name === col.column);
+            const dataType = colMeta?.dataType || 'varchar';
+
+            // Use type-aware formatting
+            const formatted = formatValue(val, dataType);
+
+            if (formatted.isNull || formatted.isJson) {
                 const span = document.createElement('span');
                 span.className = 'text-gray-400';
-                span.textContent = 'null';
-                td.appendChild(span);
-            } else if (typeof val === 'object') {
-                const span = document.createElement('span');
-                span.className = 'text-gray-400';
-                span.textContent = '[JSON]';
+                span.textContent = formatted.display;
                 td.appendChild(span);
             } else {
-                let displayVal = String(val);
+                let displayVal = formatted.display;
                 if (displayVal.length > 100) {
                     displayVal = displayVal.substring(0, 100) + '...';
                 }

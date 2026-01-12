@@ -554,3 +554,146 @@ def _populate_reference_data(conn):
             "INSERT INTO dim_content_block_type VALUES (?, ?)",
             [key, block_type],
         )
+
+    # =========================================================================
+    # Semantic Views - Pre-joined views for easy exploration
+    # =========================================================================
+
+    # Main semantic view: Sessions with all key metrics
+    conn.execute(
+        """
+        CREATE OR REPLACE VIEW semantic_sessions AS
+        SELECT
+            -- Session info
+            ds.session_id,
+            ds.cwd,
+            ds.git_branch,
+            ds.version,
+            ds.first_timestamp,
+            ds.last_timestamp,
+            -- Project info
+            dp.project_name,
+            dp.project_path,
+            -- Metrics
+            fss.total_messages,
+            fss.user_messages,
+            fss.assistant_messages,
+            fss.total_tool_calls,
+            fss.total_thinking_blocks,
+            fss.session_duration_seconds,
+            -- Date info
+            dd.full_date,
+            dd.day_name,
+            dd.month_name,
+            dd.year,
+            dd.is_weekend
+        FROM fact_session_summary fss
+        JOIN dim_session ds ON fss.session_key = ds.session_key
+        JOIN dim_project dp ON fss.project_key = dp.project_key
+        LEFT JOIN dim_date dd ON fss.date_key = dd.date_key
+    """
+    )
+
+    # Messages with full context
+    conn.execute(
+        """
+        CREATE OR REPLACE VIEW semantic_messages AS
+        SELECT
+            -- Message info
+            fm.message_id,
+            fm.timestamp,
+            fm.content_text,
+            fm.content_length,
+            fm.word_count,
+            fm.estimated_tokens,
+            fm.has_tool_use,
+            fm.has_thinking,
+            fm.response_time_seconds,
+            fm.conversation_depth,
+            -- Type
+            dmt.message_type,
+            -- Model
+            dm.model_name,
+            dm.model_family,
+            -- Session
+            ds.session_id,
+            ds.cwd,
+            -- Project
+            dp.project_name,
+            -- Date/Time
+            dd.full_date,
+            dd.day_name,
+            dt.hour,
+            dt.time_of_day
+        FROM fact_messages fm
+        JOIN dim_message_type dmt ON fm.message_type_key = dmt.message_type_key
+        LEFT JOIN dim_model dm ON fm.model_key = dm.model_key
+        JOIN dim_session ds ON fm.session_key = ds.session_key
+        LEFT JOIN dim_project dp ON fm.project_key = dp.project_key
+        LEFT JOIN dim_date dd ON fm.date_key = dd.date_key
+        LEFT JOIN dim_time dt ON fm.time_key = dt.time_key
+    """
+    )
+
+    # Tool calls with full context
+    conn.execute(
+        """
+        CREATE OR REPLACE VIEW semantic_tool_calls AS
+        SELECT
+            -- Tool call info
+            ftc.tool_call_id,
+            ftc.timestamp,
+            ftc.input_char_count,
+            ftc.output_char_count,
+            ftc.is_error,
+            ftc.input_summary,
+            ftc.output_text,
+            -- Tool
+            dt.tool_name,
+            dt.tool_category,
+            -- Session
+            ds.session_id,
+            ds.cwd,
+            -- Project
+            dp.project_name,
+            -- Date/Time
+            dd.full_date,
+            dti.hour,
+            dti.time_of_day
+        FROM fact_tool_calls ftc
+        JOIN dim_tool dt ON ftc.tool_key = dt.tool_key
+        JOIN dim_session ds ON ftc.session_key = ds.session_key
+        LEFT JOIN dim_project dp ON ds.project_key = dp.project_key
+        LEFT JOIN dim_date dd ON ftc.date_key = dd.date_key
+        LEFT JOIN dim_time dti ON ftc.time_key = dti.time_key
+    """
+    )
+
+    # File operations with full context
+    conn.execute(
+        """
+        CREATE OR REPLACE VIEW semantic_file_operations AS
+        SELECT
+            -- Operation info
+            ffo.operation_type,
+            ffo.file_size_chars,
+            ffo.timestamp,
+            -- File
+            df.file_path,
+            df.file_name,
+            df.file_extension,
+            df.directory_path,
+            -- Tool
+            dt.tool_name,
+            dt.tool_category,
+            -- Session
+            ds.session_id,
+            -- Project
+            dp.project_name
+        FROM fact_file_operations ffo
+        JOIN dim_file df ON ffo.file_key = df.file_key
+        JOIN dim_tool dt ON ffo.tool_key = dt.tool_key
+        JOIN dim_session ds ON ffo.session_key = ds.session_key
+        LEFT JOIN dim_project dp ON ds.project_key = dp.project_key
+    """
+    )

@@ -20,9 +20,9 @@ export const state = {
     dimTables: [],
 
     // Current selection
-    baseTable: null,        // The fact table we're querying from
+    baseTable: null,        // The primary fact table we're querying from
     selectedColumns: [],    // [{ table, column, alias }]
-    joinedTables: new Set(), // Dimension tables currently joined
+    joinedTables: new Set(), // Tables currently joined (dims and additional facts)
 
     // Query state
     filters: {},            // { columnAlias: [values] }
@@ -120,4 +120,102 @@ export function normalizeType(rawType) {
     if (upper.includes('BOOL')) return 'boolean';
     if (upper.includes('JSON')) return 'json';
     return 'varchar';
+}
+
+/**
+ * Format a value for display based on its data type.
+ * DuckDB WASM returns timestamps as BigInt microseconds, dates as BigInt days since epoch.
+ */
+export function formatValue(value, dataType) {
+    if (value === null || value === undefined) {
+        return { display: 'null', isNull: true };
+    }
+
+    // Handle BigInt values (timestamps, dates from DuckDB)
+    if (typeof value === 'bigint') {
+        value = Number(value);
+    }
+
+    switch (dataType) {
+        case 'timestamp': {
+            // DuckDB WASM returns timestamps as microseconds since epoch
+            // Detect format: if value > 1e15, it's microseconds; if > 1e12, it's milliseconds
+            let ms;
+            if (value > 1e15) {
+                ms = value / 1000; // Microseconds to milliseconds
+            } else if (value > 1e12) {
+                ms = value; // Already milliseconds
+            } else {
+                ms = value * 1000; // Seconds to milliseconds
+            }
+            const date = new Date(ms);
+            if (isNaN(date.getTime())) {
+                return { display: String(value), isNull: false };
+            }
+            return {
+                display: date.toLocaleString('en-US', {
+                    year: 'numeric',
+                    month: 'short',
+                    day: 'numeric',
+                    hour: '2-digit',
+                    minute: '2-digit',
+                    second: '2-digit'
+                }),
+                isNull: false
+            };
+        }
+
+        case 'date': {
+            // DuckDB WASM returns dates in varying formats:
+            // - As days since epoch (small numbers < 100000)
+            // - As milliseconds (large numbers > 1e10)
+            let date;
+            if (value > 1e10) {
+                // Likely milliseconds
+                date = new Date(value);
+            } else if (value > 100000) {
+                // Likely seconds
+                date = new Date(value * 1000);
+            } else {
+                // Days since epoch (1970-01-01)
+                date = new Date(value * 24 * 60 * 60 * 1000);
+            }
+            if (isNaN(date.getTime())) {
+                return { display: String(value), isNull: false };
+            }
+            return {
+                display: date.toLocaleDateString('en-US', {
+                    year: 'numeric',
+                    month: 'short',
+                    day: 'numeric'
+                }),
+                isNull: false
+            };
+        }
+
+        case 'boolean':
+            return { display: value ? 'true' : 'false', isNull: false };
+
+        case 'float':
+        case 'double':
+        case 'decimal':
+            // Format floats with reasonable precision
+            if (typeof value === 'number') {
+                return { display: value.toLocaleString('en-US', { maximumFractionDigits: 4 }), isNull: false };
+            }
+            return { display: String(value), isNull: false };
+
+        case 'integer':
+        case 'bigint':
+            if (typeof value === 'number') {
+                return { display: value.toLocaleString('en-US'), isNull: false };
+            }
+            return { display: String(value), isNull: false };
+
+        case 'json':
+            return { display: '[JSON]', isJson: true, isNull: false };
+
+        default:
+            return { display: String(value), isNull: false };
+    }
 }
