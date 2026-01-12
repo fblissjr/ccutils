@@ -1465,6 +1465,7 @@ def render_content_block(block):
     elif block_type == "tool_result":
         content = block.get("content", "")
         is_error = block.get("is_error", False)
+        has_images = False
 
         # Check for git commits and render with styled cards
         if isinstance(content, str):
@@ -1494,11 +1495,35 @@ def render_content_block(block):
                 content_html = "".join(parts)
             else:
                 content_html = f"<pre>{html.escape(content)}</pre>"
-        elif isinstance(content, list) or is_json_like(content):
+        elif isinstance(content, list):
+            # Handle tool result content that contains multiple blocks (text, images, etc.)
+            parts = []
+            for item in content:
+                if isinstance(item, dict):
+                    item_type = item.get("type", "")
+                    if item_type == "text":
+                        text = item.get("text", "")
+                        if text:
+                            parts.append(f"<pre>{html.escape(text)}</pre>")
+                    elif item_type == "image":
+                        source = item.get("source", {})
+                        media_type = source.get("media_type", "image/png")
+                        data = source.get("data", "")
+                        if data:
+                            parts.append(_macros.image_block(media_type, data))
+                            has_images = True
+                    else:
+                        # Unknown type, render as JSON
+                        parts.append(format_json(item))
+                else:
+                    # Non-dict item, escape as text
+                    parts.append(f"<pre>{html.escape(str(item))}</pre>")
+            content_html = "".join(parts) if parts else format_json(content)
+        elif is_json_like(content):
             content_html = format_json(content)
         else:
             content_html = format_json(content)
-        return _macros.tool_result(content_html, is_error)
+        return _macros.tool_result(content_html, is_error, has_images)
     else:
         return format_json(block)
 
