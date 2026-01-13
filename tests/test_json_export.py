@@ -350,6 +350,17 @@ class TestExportSessionsToJson:
 
         assert len(data["tables"]["sessions"]) == 2
 
+    def test_output_to_directory_path(self, sample_session_file, output_dir):
+        """Test that exporting to a directory path creates sessions.json inside."""
+        # Use the directory itself as output (simulates -o .)
+        export_sessions_to_json([sample_session_file], output_dir / "sessions.json")
+
+        # Should create sessions.json in the directory
+        assert (output_dir / "sessions.json").exists()
+        with open(output_dir / "sessions.json") as f:
+            data = json.load(f)
+        assert data["schema_type"] == "simple"
+
 
 class TestExportStarSchemaToJson:
     """Tests for star schema JSON export."""
