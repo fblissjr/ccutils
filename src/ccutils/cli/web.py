@@ -56,6 +56,16 @@ from .utils import resolve_credentials, generate_html_from_session_data
     is_flag=True,
     help="Open the generated index.html in your default browser (default if no -o specified).",
 )
+@click.option(
+    "--debug",
+    is_flag=True,
+    help="Show raw API response structure for debugging pagination.",
+)
+@click.option(
+    "--limit",
+    type=int,
+    help="Request specific number of sessions per page (for debugging API).",
+)
 def web_cmd(
     session_id,
     output,
@@ -66,6 +76,8 @@ def web_cmd(
     gist,
     include_json,
     open_browser,
+    debug,
+    limit,
 ):
     """Select and convert a web session from the Claude API to HTML.
 
@@ -79,13 +91,33 @@ def web_cmd(
     # If no session ID provided, show interactive picker
     if session_id is None:
         try:
-            sessions_data = fetch_sessions(token, org_uuid)
+            sessions_data = fetch_sessions(token, org_uuid, debug=debug, limit=limit)
         except httpx.HTTPStatusError as e:
             raise click.ClickException(
                 f"API request failed: {e.response.status_code} {e.response.text}"
             )
         except httpx.RequestError as e:
             raise click.ClickException(f"Network error: {e}")
+
+        if debug:
+            click.echo("\n=== DEBUG: API Response Structure ===")
+            click.echo(f"Top-level keys: {list(sessions_data.keys())}")
+            pagination_keys = ["has_more", "first_id", "last_id"]
+            found = {
+                k: sessions_data.get(k) for k in pagination_keys if k in sessions_data
+            }
+            click.echo(f"Pagination fields: {found}")
+            click.echo(f"Session count: {len(sessions_data.get('data', []))}")
+            if sessions_data.get("data"):
+                first = sessions_data["data"][0]
+                last = sessions_data["data"][-1]
+                click.echo(
+                    f"First session: {first.get('created_at', 'N/A')} - {first.get('id', 'N/A')[:8]}..."
+                )
+                click.echo(
+                    f"Last session: {last.get('created_at', 'N/A')} - {last.get('id', 'N/A')[:8]}..."
+                )
+            click.echo("=====================================\n")
 
         sessions = sessions_data.get("data", [])
         if not sessions:

@@ -83,16 +83,59 @@ def get_api_headers(token, org_uuid):
     }
 
 
-def fetch_sessions(token, org_uuid):
-    """Fetch list of sessions from the API.
+def fetch_sessions(token, org_uuid, debug=False, limit=None):
+    """Fetch list of sessions from the API with pagination support.
 
-    Returns the sessions data as a dict.
+    Handles pagination by following `has_more` and using `last_id` as cursor.
+    Returns the sessions data as a dict with all sessions combined in "data".
     Raises httpx.HTTPError on network/API errors.
+
+    Args:
+        token: API access token
+        org_uuid: Organization UUID
+        debug: If True, returns after first page for inspection
+        limit: Optional limit per page (useful for debugging API behavior)
     """
     headers = get_api_headers(token, org_uuid)
-    response = httpx.get(f"{API_BASE_URL}/sessions", headers=headers, timeout=30.0)
-    response.raise_for_status()
-    return response.json()
+    all_sessions = []
+    after_id = None
+
+    while True:
+        # Build params fresh each iteration
+        params = {}
+        if limit:
+            params["limit"] = limit
+        if after_id:
+            params["after_id"] = after_id
+
+        response = httpx.get(
+            f"{API_BASE_URL}/sessions",
+            headers=headers,
+            params=params if params else None,
+            timeout=30.0,
+        )
+        response.raise_for_status()
+        data = response.json()
+
+        sessions = data.get("data", [])
+        all_sessions.extend(sessions)
+
+        # In debug mode, return the raw first page response for inspection
+        if debug:
+            return data
+
+        # Check for more pages using has_more and last_id (common API pattern)
+        has_more = data.get("has_more", False)
+        last_id = data.get("last_id")
+
+        if not has_more or not last_id:
+            break
+
+        # Use last_id as cursor for next page
+        after_id = last_id
+
+    # Return combined result with same structure as single-page response
+    return {"data": all_sessions, "has_more": False}
 
 
 def fetch_session(token, org_uuid, session_id):

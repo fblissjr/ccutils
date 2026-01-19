@@ -6,3 +6,4 @@ tests/__snapshots__/*
 tmp/
 claude-archive/
 .claude/
+internal/

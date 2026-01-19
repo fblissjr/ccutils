@@ -26,6 +26,14 @@ from .discovery import (
     matches_project_filter,
 )
 
+from .claude_ai import (
+    convert_content_block,
+    convert_conversation_to_loglines,
+    convert_message_to_logline,
+    load_export_files,
+    parse_claude_ai_export,
+)
+
 __all__ = [
     # Session parsing
     "extract_searchable_content",
@@ -45,4 +53,10 @@ __all__ = [
     "get_project_display_name",
     "get_terminal_width",
     "matches_project_filter",
+    # Claude.ai export parsing
+    "convert_content_block",
+    "convert_conversation_to_loglines",
+    "convert_message_to_logline",
+    "load_export_files",
+    "parse_claude_ai_export",
 ]

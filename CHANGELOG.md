@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 ## [Unreleased]
 
 ### Added
+- **Claude.ai account export import**: New `import` command to convert Claude.ai account exports (from Settings > Privacy)
+  - Supports all existing output formats: HTML, DuckDB
+  - Lists conversations: `ccutils import ./export --list`
+  - Interactive selection: `ccutils import ./export --interactive`
+  - Filter by conversation UUID: `ccutils import ./export -c <uuid>`
+  - Preserves thinking blocks and tool calls
+  - New parser functions: `parse_claude_ai_export()`, `convert_conversation_to_loglines()`
 - **JSON export format**: Export sessions to JSON in addition to HTML and DuckDB
   - `--format json`: Simple schema (sessions, messages, tool_calls, thinking) in single JSON file
   - `--format json-star`: Star schema exported as directory structure (meta.json + dimensions/*.json + facts/*.json)

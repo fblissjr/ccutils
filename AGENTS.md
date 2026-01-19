@@ -1,3 +1,12 @@
+# Start Here
+
+| Document | Purpose |
+|----------|---------|
+| [internal/hub.md](internal/hub.md) | Central documentation hub |
+| [internal/state/current.md](internal/state/current.md) | Current project state - read first for active work |
+
+---
+
 Uses uv. Run tests like this:
 
     uv run pytest
