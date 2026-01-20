@@ -55,7 +55,7 @@ def explore_cmd(port, no_open, database):
 
     httpd = None
     try:
-        httpd = ReusableTCPServer(("", port), QuietHandler)
+        httpd = ReusableTCPServer(("127.0.0.1", port), QuietHandler)
         url = f"http://localhost:{port}/index.html"
         click.echo(f"Data Explorer running at: {url}")
         if database:

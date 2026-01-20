@@ -9,6 +9,7 @@ from .json_cmd import json_cmd
 from .all import all_cmd
 from .explore import explore_cmd
 from .import_cmd import import_cmd
+from .schema import schema_cmd
 from .utils import (
     is_url,
     fetch_url_to_tempfile,
@@ -36,6 +37,7 @@ cli.add_command(web_cmd, "web")
 cli.add_command(all_cmd, "all")
 cli.add_command(explore_cmd, "explore")
 cli.add_command(import_cmd, "import")
+cli.add_command(schema_cmd, "schema")
 
 
 def main():
@@ -52,6 +54,7 @@ __all__ = [
     "all_cmd",
     "explore_cmd",
     "import_cmd",
+    "schema_cmd",
     "is_url",
     "fetch_url_to_tempfile",
     "resolve_credentials",

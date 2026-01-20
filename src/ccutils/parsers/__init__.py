@@ -34,6 +34,13 @@ from .claude_ai import (
     parse_claude_ai_export,
 )
 
+from .schema_inspector import (
+    format_schema,
+    infer_schema,
+    inspect_export_directory,
+    inspect_json_file,
+)
+
 __all__ = [
     # Session parsing
     "extract_searchable_content",
@@ -59,4 +66,9 @@ __all__ = [
     "convert_message_to_logline",
     "load_export_files",
     "parse_claude_ai_export",
+    # Schema inspection
+    "format_schema",
+    "infer_schema",
+    "inspect_export_directory",
+    "inspect_json_file",
 ]
