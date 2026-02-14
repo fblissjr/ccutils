@@ -19,7 +19,7 @@ uvx ccutils --help
 ## Quick Start
 
 ```bash
-# Interactive session picker - select and view as HTML
+# Interactive two-phase picker - select projects, then sessions
 ccutils
 
 # Export to DuckDB for SQL analytics
@@ -36,7 +36,7 @@ ccutils explore ./analytics/archive.duckdb
 
 | Command | Description |
 |---------|-------------|
-| `local` | Select from local sessions (~/.claude/projects) - **default** |
+| `local` | Two-phase session picker: projects then sessions with rich metadata - **default** |
 | `web` | Import from Claude API |
 | `json` | Convert specific JSON/JSONL file or URL |
 | `all` | Batch convert all sessions |
@@ -119,6 +119,8 @@ Features: type-aware columns, automatic joins, filter autocomplete, live SQL pre
 --schema SCHEMA        # simple or star (auto-inferred from format)
 --include-thinking     # Include thinking blocks (can be large)
 --include-subagents    # Include related agent sessions
+--flat                 # Flat single-list mode (skip project grouping)
+--expand-chains        # Show individual sessions in resumed chains
 --open                 # Open result in browser
 ```
 
