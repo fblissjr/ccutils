@@ -1399,7 +1399,10 @@ class TestLocalSessionCLI:
         result = runner.invoke(cli, ["local"])
 
         assert result.exit_code == 0
-        assert "Loading local sessions" in result.output
+        assert (
+            "Scanning sessions" in result.output
+            or "Loading local sessions" in result.output
+        )
         assert "Selected 1 session" in result.output
 
     def test_no_args_runs_local_command(self, tmp_path, monkeypatch):
@@ -1435,7 +1438,10 @@ class TestLocalSessionCLI:
         result = runner.invoke(cli, [])
 
         assert result.exit_code == 0
-        assert "Loading local sessions" in result.output
+        assert (
+            "Scanning sessions" in result.output
+            or "Loading local sessions" in result.output
+        )
 
     def test_local_handles_cancelled_selection(self, tmp_path, monkeypatch):
         """Test that local command handles cancelled selection gracefully."""

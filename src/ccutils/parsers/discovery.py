@@ -9,7 +9,13 @@ from datetime import datetime
 from pathlib import Path
 
 import questionary
-
+from rich.console import Console
+from rich.table import Table
+from .metadata import (
+    SessionMetadata,
+    extract_rich_metadata,
+    format_duration,
+)
 from .session import extract_session_metadata, extract_session_slug, get_session_summary
 
 
@@ -477,6 +483,395 @@ def matches_project_filter(folder_name: str, project_filter: str | None) -> bool
     display_name = get_project_display_name(folder_name)
     # Match against display name OR raw folder name
     return filter_lower in display_name.lower() or filter_lower in folder_name.lower()
+
+
+def find_local_sessions_rich(folder, limit=100, project_filter=None):
+    """Find recent JSONL sessions with rich metadata extraction.
+
+    Returns a list of SessionMetadata objects sorted by modification time.
+    Excludes agent files and warmup/empty sessions.
+
+    Args:
+        folder: Path to the projects folder
+        limit: Maximum number of sessions to return
+        project_filter: Optional filter for project names (partial, case-insensitive)
+
+    Returns:
+        List of SessionMetadata objects, sorted by mtime (most recent first).
+    """
+    folder = Path(folder)
+    if not folder.exists():
+        return []
+
+    results = []
+    for f in sorted(
+        folder.glob("**/*.jsonl"), key=lambda p: p.stat().st_mtime, reverse=True
+    ):
+        if f.name.startswith("agent-"):
+            continue
+        if project_filter and not matches_project_filter(f.parent.name, project_filter):
+            continue
+
+        meta = extract_rich_metadata(f, f.parent.name)
+
+        # Skip boring/empty sessions
+        if meta.summary.lower() == "warmup" or meta.summary == "(no summary)":
+            continue
+
+        results.append(meta)
+        if len(results) >= limit:
+            break
+
+    return results
+
+
+def group_by_project(sessions):
+    """Group SessionMetadata list by project_path.
+
+    Args:
+        sessions: List of SessionMetadata objects
+
+    Returns:
+        Dict mapping project_path to list of SessionMetadata, ordered by most
+        recent session activity.
+    """
+    groups = {}
+    for s in sessions:
+        if s.project_path not in groups:
+            groups[s.project_path] = []
+        groups[s.project_path].append(s)
+
+    # Sort each group by mtime (most recent first)
+    for group in groups.values():
+        group.sort(key=lambda s: s.mtime, reverse=True)
+
+    # Sort groups by most recent session
+    sorted_keys = sorted(
+        groups.keys(),
+        key=lambda k: groups[k][0].mtime if groups[k] else 0,
+        reverse=True,
+    )
+    return {k: groups[k] for k in sorted_keys}
+
+
+def print_project_table(grouped_sessions, console=None):
+    """Print a rich table summarizing available projects.
+
+    Args:
+        grouped_sessions: Dict from group_by_project()
+        console: Optional Rich Console instance
+    """
+    if console is None:
+        console = Console()
+
+    table = Table(
+        title="Projects",
+        show_header=True,
+        header_style="bold",
+        border_style="dim",
+        pad_edge=False,
+        show_edge=False,
+    )
+    table.add_column("Name", style="cyan", no_wrap=True)
+    table.add_column("Sessions", justify="right", style="green")
+    table.add_column("Last Active", style="yellow", no_wrap=True)
+    table.add_column("Models", style="magenta")
+    table.add_column("Branches", style="blue")
+
+    for project_path, sessions in grouped_sessions.items():
+        if not sessions:
+            continue
+
+        project_name = sessions[0].project_name
+
+        # Collect unique models and branches
+        models = set()
+        branches = set()
+        for s in sessions:
+            if s.model_short:
+                models.add(s.model_short)
+            if s.git_branch:
+                branches.add(s.git_branch)
+
+        # Format last active date
+        last_active = datetime.fromtimestamp(sessions[0].mtime)
+        now = datetime.now()
+        if last_active.date() == now.date():
+            date_str = "Today"
+        elif (now - last_active).days == 1:
+            date_str = "Yesterday"
+        elif (now - last_active).days < 7:
+            date_str = last_active.strftime("%A")  # Day name
+        else:
+            date_str = last_active.strftime("%b %d")
+
+        table.add_row(
+            project_name,
+            str(len(sessions)),
+            date_str,
+            ", ".join(sorted(models)) if models else "-",
+            ", ".join(sorted(branches)) if branches else "-",
+        )
+
+    console.print(table)
+    console.print()
+
+
+def print_session_table(project_name, sessions, console=None):
+    """Print a rich table of sessions for a single project.
+
+    Args:
+        project_name: Display name of the project
+        sessions: List of SessionMetadata for this project
+        console: Optional Rich Console instance
+    """
+    if console is None:
+        console = Console()
+
+    table = Table(
+        title=f"{project_name} - {len(sessions)} session(s)",
+        show_header=True,
+        header_style="bold",
+        border_style="dim",
+        pad_edge=False,
+        show_edge=False,
+    )
+    table.add_column("#", justify="right", style="dim", width=3)
+    table.add_column("Date", style="yellow", no_wrap=True, width=14)
+    table.add_column("Model", style="magenta", no_wrap=True, width=12)
+    table.add_column("Branch", style="blue", no_wrap=True, width=10)
+    table.add_column("Dur", justify="right", style="green", width=6)
+    table.add_column("Msgs", justify="right", style="dim", width=4)
+    table.add_column("Summary", style="white", no_wrap=False)
+
+    now = datetime.now()
+    for idx, s in enumerate(sessions, 1):
+        mod_time = datetime.fromtimestamp(s.mtime)
+
+        # Format date relative to now
+        if mod_time.date() == now.date():
+            date_str = f"Today {mod_time.strftime('%H:%M')}"
+        elif (now - mod_time).days == 1:
+            date_str = f"Yest {mod_time.strftime('%H:%M')}"
+        elif (now - mod_time).days < 7:
+            date_str = mod_time.strftime("%a %H:%M")
+        else:
+            date_str = mod_time.strftime("%b %d %H:%M")
+
+        # Dim old sessions
+        style = "dim" if (now - mod_time).days > 7 else ""
+
+        table.add_row(
+            str(idx),
+            date_str,
+            s.model_short or "-",
+            s.git_branch or "-",
+            format_duration(s.duration_minutes),
+            str(s.user_msg_count) if s.user_msg_count > 0 else "-",
+            s.summary,
+            style=style,
+        )
+
+    console.print(table)
+    console.print()
+
+
+def build_project_choices(grouped_sessions):
+    """Build questionary checkbox choices for project selection.
+
+    Args:
+        grouped_sessions: Dict from group_by_project()
+
+    Returns:
+        List of questionary.Choice objects, one per project.
+    """
+    choices = []
+    for project_path, sessions in grouped_sessions.items():
+        if not sessions:
+            continue
+        project_name = sessions[0].project_name
+        count = len(sessions)
+        label = f"{project_name} ({count} session{'s' if count != 1 else ''})"
+        choices.append(questionary.Choice(title=label, value=project_path))
+    return choices
+
+
+def build_session_choices_for_projects(
+    sessions, selected_project_paths, expand_chains=False
+):
+    """Build questionary checkbox choices for sessions within selected projects.
+
+    Args:
+        sessions: Full list of SessionMetadata
+        selected_project_paths: List of project_path values selected in phase 1
+        expand_chains: If True, show individual sessions in chains
+
+    Returns:
+        List of questionary.Choice objects for session selection.
+    """
+    selected_set = set(selected_project_paths)
+    filtered = [s for s in sessions if s.project_path in selected_set]
+    # Re-sort by mtime (most recent first)
+    filtered.sort(key=lambda s: s.mtime, reverse=True)
+
+    # Multiple projects selected -> show project prefix
+    multi_project = len(selected_set) > 1
+
+    if not expand_chains:
+        # Group by slug for chain collapsing
+        slug_groups = {}
+        standalone = []
+        for s in filtered:
+            if s.slug:
+                if s.slug not in slug_groups:
+                    slug_groups[s.slug] = []
+                slug_groups[s.slug].append(s)
+            else:
+                standalone.append(s)
+
+        choices = []
+        seen_slugs = set()
+
+        # Build choices maintaining overall mtime order
+        for s in filtered:
+            if s.slug and s.slug not in seen_slugs:
+                seen_slugs.add(s.slug)
+                chain = slug_groups[s.slug]
+                if len(chain) > 1:
+                    # Collapsed chain
+                    label = _format_rich_chain_label(chain, multi_project)
+                    paths = [cs.path for cs in chain]
+                    choices.append(questionary.Choice(title=label, value=paths))
+                else:
+                    label = _format_rich_session_label(chain[0], multi_project)
+                    choices.append(questionary.Choice(title=label, value=chain[0].path))
+            elif not s.slug:
+                label = _format_rich_session_label(s, multi_project)
+                choices.append(questionary.Choice(title=label, value=s.path))
+
+        return choices
+    else:
+        # Expanded mode - show each session individually
+        choices = []
+        for s in filtered:
+            label = _format_rich_session_label(s, multi_project)
+            choices.append(questionary.Choice(title=label, value=s.path))
+        return choices
+
+
+def _format_rich_session_label(meta, show_project=False):
+    """Format a single SessionMetadata for questionary display.
+
+    Args:
+        meta: SessionMetadata instance
+        show_project: Whether to prefix with project name
+
+    Returns:
+        Formatted string for questionary choice title.
+    """
+    mod_time = datetime.fromtimestamp(meta.mtime)
+    now = datetime.now()
+
+    # Compact date
+    if mod_time.date() == now.date():
+        date_str = f"Today {mod_time.strftime('%H:%M')}"
+    elif (now - mod_time).days == 1:
+        date_str = f"Yest {mod_time.strftime('%H:%M')}"
+    elif (now - mod_time).days < 7:
+        date_str = mod_time.strftime("%a %H:%M")
+    else:
+        date_str = mod_time.strftime("%b %d")
+
+    parts = []
+    if show_project:
+        proj = meta.project_name
+        if len(proj) > 16:
+            proj = proj[:14] + ".."
+        parts.append(f"[{proj}]")
+
+    parts.append(f"{date_str:>14s}")
+
+    if meta.model_short:
+        parts.append(f"{meta.model_short:>10s}")
+
+    if meta.git_branch:
+        branch = meta.git_branch
+        if len(branch) > 12:
+            branch = branch[:10] + ".."
+        parts.append(branch)
+
+    dur = format_duration(meta.duration_minutes)
+    if dur:
+        parts.append(f"{dur:>5s}")
+
+    # Truncate summary for questionary line
+    terminal_width = get_terminal_width()
+    used = sum(len(p) for p in parts) + len(parts) * 2 + 6  # spacing + checkbox
+    available = max(20, terminal_width - used)
+    summary = meta.summary
+    if len(summary) > available:
+        summary = summary[: available - 3] + "..."
+    parts.append(summary)
+
+    return "  ".join(parts)
+
+
+def _format_rich_chain_label(chain, show_project=False):
+    """Format a collapsed chain of sessions for questionary display.
+
+    Args:
+        chain: List of SessionMetadata with the same slug
+        show_project: Whether to prefix with project name
+
+    Returns:
+        Formatted string for questionary choice title.
+    """
+    # Use most recent session for display
+    chain.sort(key=lambda s: s.mtime, reverse=True)
+    newest = chain[0]
+
+    mod_time = datetime.fromtimestamp(newest.mtime)
+    now = datetime.now()
+
+    if mod_time.date() == now.date():
+        date_str = f"Today {mod_time.strftime('%H:%M')}"
+    elif (now - mod_time).days == 1:
+        date_str = f"Yest {mod_time.strftime('%H:%M')}"
+    elif (now - mod_time).days < 7:
+        date_str = mod_time.strftime("%a %H:%M")
+    else:
+        date_str = mod_time.strftime("%b %d")
+
+    parts = []
+    if show_project:
+        proj = newest.project_name
+        if len(proj) > 16:
+            proj = proj[:14] + ".."
+        parts.append(f"[{proj}]")
+
+    parts.append(f"{date_str:>14s}")
+
+    chain_tag = f"[{len(chain)} resumed]"
+    parts.append(chain_tag)
+
+    if newest.model_short:
+        parts.append(f"{newest.model_short:>10s}")
+
+    # Total duration across chain
+    total_dur = sum(s.duration_minutes or 0 for s in chain)
+    if total_dur > 0:
+        parts.append(f"{format_duration(total_dur):>5s}")
+
+    # Summary from newest session
+    terminal_width = get_terminal_width()
+    used = sum(len(p) for p in parts) + len(parts) * 2 + 6
+    available = max(20, terminal_width - used)
+    summary = newest.summary
+    if len(summary) > available:
+        summary = summary[: available - 3] + "..."
+    parts.append(summary)
+
+    return "  ".join(parts)
 
 
 def find_all_sessions(folder, include_agents=False, project_filter=None):

@@ -26,13 +26,24 @@ from .parsers import (
     parse_session_file,
     PROMPTS_PER_PAGE,
     # Session discovery
+    build_project_choices,
     build_session_choices,
+    build_session_choices_for_projects,
     find_agent_sessions,
     find_all_sessions,
     find_local_sessions,
+    find_local_sessions_rich,
     flatten_selected_sessions,
     get_project_display_name,
+    group_by_project,
     matches_project_filter,
+    # Metadata extraction
+    SessionMetadata,
+    derive_project_name,
+    extract_rich_metadata,
+    format_duration,
+    get_meaningful_summary,
+    shorten_model_name,
 )
 
 # Simple schema imports (from modular package)

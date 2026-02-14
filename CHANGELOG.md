@@ -2,6 +2,34 @@
 
 All notable changes to this project will be documented in this file.
 
+## 0.8
+
+### Added
+- **Two-phase session selection UI**: Redesigned `local` command with project-first navigation
+  - Phase 1: Pick project(s) from a rich summary table showing session counts, models, branches, last active date
+  - Phase 2: Pick session(s) within selected projects with detailed metadata (model, branch, duration, message count)
+  - Automatic skip of phase 1 when only one project matches (or when using `-p` filter)
+  - `--flat` flag preserves old single-list behavior
+  - `--expand-chains` flag shows individual sessions in resumed chains
+- **Rich metadata extraction**: New `SessionMetadata` dataclass and extraction pipeline
+  - `extract_rich_metadata()`: Single-pass extraction of cwd, model, branch, slug, duration, message counts
+  - `get_meaningful_summary()`: Smarter summary extraction that skips interrupted/error/XML messages
+  - `shorten_model_name()`: Human-friendly model names (`claude-opus-4-6` -> `opus-4.6`)
+  - `format_duration()`: Human-readable duration (`45m`, `1h 5m`)
+  - `derive_project_name()`: Derives project name from `cwd` field (actual directory name, not encoded path)
+- **Rich terminal tables**: `rich` library for colorized project and session tables
+  - `print_project_table()`: Summarizes projects with session counts, models, branches
+  - `print_session_table()`: Shows session details with relative dates, model, branch, duration
+- **New discovery functions**: `find_local_sessions_rich()`, `group_by_project()`, `build_project_choices()`, `build_session_choices_for_projects()`
+
+### Changed
+- Default `local` command now uses two-phase selection (projects then sessions)
+- Project names derived from `cwd` metadata field when available (more accurate than folder name parsing)
+- Session summaries no longer show `[Request interrupted...]` or XML system prompts
+
+### Dependencies
+- Added `rich` for terminal formatting
+
 ## 0.7
 
 ### Added

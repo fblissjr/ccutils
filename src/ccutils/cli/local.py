@@ -7,12 +7,21 @@ from pathlib import Path
 
 import click
 import questionary
+from rich.console import Console
 
 from ..parsers import (
-    build_session_choices,
     find_agent_sessions,
-    find_local_sessions,
     flatten_selected_sessions,
+)
+from ..parsers.discovery import (
+    build_project_choices,
+    build_session_choices,
+    build_session_choices_for_projects,
+    find_local_sessions,
+    find_local_sessions_rich,
+    group_by_project,
+    print_project_table,
+    print_session_table,
 )
 from ..schemas import (
     create_duckdb_schema,
@@ -131,7 +140,9 @@ def local_cmd(
 ):
     """Select and convert local Claude Code sessions to HTML or DuckDB.
 
-    Supports multi-select: use SPACE to select multiple sessions, ENTER to confirm.
+    Two-phase selection: first pick project(s), then pick session(s) within them.
+    Use --flat to skip project selection and show all sessions in a single list.
+    Supports multi-select: use SPACE to select multiple, ENTER to confirm.
     """
     projects_folder = Path.home() / ".claude" / "projects"
 
@@ -140,47 +151,23 @@ def local_cmd(
         click.echo("No local Claude Code sessions available.")
         return
 
-    click.echo("Loading local sessions...")
-    results = find_local_sessions(
-        projects_folder, limit=limit, project_filter=project_filter
-    )
+    console = Console()
 
-    if not results:
-        click.echo("No local sessions found.")
-        return
-
-    # Count related agents for each session
-    agent_counts = {}
-    if include_subagents:
-        session_paths = [filepath for filepath, _, _ in results]
-        agent_map = find_agent_sessions(session_paths, recursive=True)
-        for filepath, agents in agent_map.items():
-            agent_counts[filepath] = len(agents)
-
-    # Group sessions by project for better organization
-    sessions_by_project = {}
-    for filepath, summary, slug in results:
-        project_key = filepath.parent.name
-        if project_key not in sessions_by_project:
-            sessions_by_project[project_key] = []
-        sessions_by_project[project_key].append((filepath, summary, slug))
-
-    # Build choices for questionary with inline project markers
-    # Default: chains are collapsed (selecting a chain selects all sessions)
-    # With --expand-chains: individual sessions shown with chain info
-    # With --flat: all sessions in a single list sorted by date
-    choices = build_session_choices(
-        sessions_by_project,
-        expand_chains=expand_chains,
-        agent_counts=agent_counts if include_subagents else None,
-        flat=flat,
-    )
-
-    # Multi-select with checkbox
-    selected = questionary.checkbox(
-        "Select sessions to convert (SPACE to select, ENTER to confirm):",
-        choices=choices,
-    ).ask()
+    if flat:
+        # --flat mode: use old behavior with improved formatting
+        selected = _flat_mode_selection(
+            projects_folder, limit, project_filter, include_subagents, expand_chains
+        )
+    else:
+        # Two-phase mode: project selection then session selection
+        selected = _two_phase_selection(
+            projects_folder,
+            limit,
+            project_filter,
+            include_subagents,
+            expand_chains,
+            console,
+        )
 
     if not selected:
         click.echo("No sessions selected.")
@@ -339,3 +326,96 @@ def local_cmd(
         # For multiple sessions or agents, open the master index
         index_url = (output / "index.html").resolve().as_uri()
         webbrowser.open(index_url)
+
+
+def _flat_mode_selection(
+    projects_folder, limit, project_filter, include_subagents, expand_chains
+):
+    """Flat mode: single list of all sessions sorted by date (legacy behavior)."""
+    click.echo("Loading local sessions...")
+    results = find_local_sessions(
+        projects_folder, limit=limit, project_filter=project_filter
+    )
+
+    if not results:
+        return None
+
+    # Count related agents for each session
+    agent_counts = {}
+    if include_subagents:
+        session_paths = [filepath for filepath, _, _ in results]
+        agent_map = find_agent_sessions(session_paths, recursive=True)
+        for filepath, agents in agent_map.items():
+            agent_counts[filepath] = len(agents)
+
+    # Group sessions by project for better organization
+    sessions_by_project = {}
+    for filepath, summary, slug in results:
+        project_key = filepath.parent.name
+        if project_key not in sessions_by_project:
+            sessions_by_project[project_key] = []
+        sessions_by_project[project_key].append((filepath, summary, slug))
+
+    choices = build_session_choices(
+        sessions_by_project,
+        expand_chains=expand_chains,
+        agent_counts=agent_counts if include_subagents else None,
+        flat=True,
+    )
+
+    selected = questionary.checkbox(
+        "Select sessions to convert (SPACE to select, ENTER to confirm):",
+        choices=choices,
+    ).ask()
+
+    return selected
+
+
+def _two_phase_selection(
+    projects_folder, limit, project_filter, include_subagents, expand_chains, console
+):
+    """Two-phase selection: pick projects, then pick sessions."""
+    click.echo("Scanning sessions...")
+    sessions = find_local_sessions_rich(
+        projects_folder, limit=limit, project_filter=project_filter
+    )
+
+    if not sessions:
+        return None
+
+    grouped = group_by_project(sessions)
+
+    # If only one project found (or -p narrowed to one), skip phase 1
+    if len(grouped) == 1:
+        selected_projects = list(grouped.keys())
+    else:
+        # Phase 1: Project selection
+        print_project_table(grouped, console=console)
+
+        project_choices = build_project_choices(grouped)
+        selected_projects = questionary.checkbox(
+            "Select projects (SPACE to select, ENTER to confirm):",
+            choices=project_choices,
+        ).ask()
+
+        if not selected_projects:
+            return None
+
+    # Phase 2: Session selection within chosen projects
+    # Print session tables for selected projects
+    for project_path in selected_projects:
+        if project_path in grouped:
+            project_sessions = grouped[project_path]
+            project_name = project_sessions[0].project_name
+            print_session_table(project_name, project_sessions, console=console)
+
+    session_choices = build_session_choices_for_projects(
+        sessions, selected_projects, expand_chains=expand_chains
+    )
+
+    selected = questionary.checkbox(
+        "Select sessions to convert (SPACE to select, ENTER to confirm):",
+        choices=session_choices,
+    ).ask()
+
+    return selected

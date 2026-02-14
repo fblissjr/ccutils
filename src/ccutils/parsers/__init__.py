@@ -17,14 +17,29 @@ from .session import (
 )
 
 from .discovery import (
+    build_project_choices,
     build_session_choices,
+    build_session_choices_for_projects,
     find_agent_sessions,
     find_all_sessions,
     find_local_sessions,
+    find_local_sessions_rich,
     flatten_selected_sessions,
     get_project_display_name,
     get_terminal_width,
+    group_by_project,
     matches_project_filter,
+    print_project_table,
+    print_session_table,
+)
+
+from .metadata import (
+    SessionMetadata,
+    derive_project_name,
+    extract_rich_metadata,
+    format_duration,
+    get_meaningful_summary,
+    shorten_model_name,
 )
 
 from .claude_ai import (
@@ -54,14 +69,27 @@ __all__ = [
     "parse_session_file",
     "PROMPTS_PER_PAGE",
     # Session discovery
+    "build_project_choices",
     "build_session_choices",
+    "build_session_choices_for_projects",
     "find_agent_sessions",
     "find_all_sessions",
     "find_local_sessions",
+    "find_local_sessions_rich",
     "flatten_selected_sessions",
     "get_project_display_name",
     "get_terminal_width",
+    "group_by_project",
     "matches_project_filter",
+    "print_project_table",
+    "print_session_table",
+    # Metadata extraction
+    "SessionMetadata",
+    "derive_project_name",
+    "extract_rich_metadata",
+    "format_duration",
+    "get_meaningful_summary",
+    "shorten_model_name",
     # Claude.ai export parsing
     "convert_content_block",
     "convert_conversation_to_loglines",
