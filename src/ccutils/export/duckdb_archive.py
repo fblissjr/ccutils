@@ -443,13 +443,35 @@ def _build_session_chains(conn):
 def _link_agent_delegations(conn):
     """Link agent sessions to their parent's Task tool_use calls.
 
-    For each agent session (is_agent=TRUE with parent_session_key):
-    1. Find Task tool_use blocks in the parent session's fact_tool_calls
-    2. Match by timestamp proximity (agent's first_timestamp closest to Task call)
-    3. Extract description/prompt/subagent_type from input_json
-    4. Set match_confidence based on match quality
+    Uses a two-tier matching strategy:
+    1. Deterministic: progress records provide tool_use_id -> agent_id links
+       (confidence 1.0, zero ambiguity)
+    2. Fallback heuristic: timestamp proximity matching for older data without
+       progress records (confidence 0.5-0.8)
+
+    The deterministic path uses stg_task_agent_map (populated from progress
+    records during ETL) joined with dim_session.agent_id to find the exact
+    tool_call_id for each agent session.
     """
     import json
+
+    # Build deterministic lookup: agent_id -> tool_use_id
+    # from progress records captured during ETL
+    deterministic_map = {}
+    try:
+        map_rows = conn.execute(
+            """
+            SELECT tam.tool_use_id, tam.agent_id, ds.session_key
+            FROM stg_task_agent_map tam
+            JOIN dim_session ds ON ds.agent_id = tam.agent_id AND ds.is_agent = TRUE
+            """
+        ).fetchall()
+        for row in map_rows:
+            # agent_session_key -> tool_use_id
+            deterministic_map[row[2]] = row[0]
+    except Exception:
+        # Table may not exist in older databases
+        pass
 
     # Find all agent sessions with parents
     agents = conn.execute(
@@ -489,20 +511,47 @@ def _link_agent_delegations(conn):
         if not task_calls:
             continue
 
-        # Find the best matching Task call by timestamp proximity
+        # Tier 1: Deterministic match via progress records
         best_match = None
-        best_distance = float("inf")
+        match_confidence = None
 
-        for tc in task_calls:
-            tc_timestamp = tc[1]
-            if tc_timestamp and agent_first_ts:
-                try:
-                    distance = abs((agent_first_ts - tc_timestamp).total_seconds())
-                    if distance < best_distance:
-                        best_distance = distance
-                        best_match = tc
-                except (TypeError, AttributeError):
-                    continue
+        if agent_session_key in deterministic_map:
+            target_tool_id = deterministic_map[agent_session_key]
+            for tc in task_calls:
+                if tc[0] == target_tool_id:
+                    best_match = tc
+                    match_confidence = 1.0
+                    break
+
+        # Tier 2: Fallback heuristic - timestamp proximity
+        if best_match is None:
+            best_distance = float("inf")
+
+            for tc in task_calls:
+                tc_timestamp = tc[1]
+                if tc_timestamp and agent_first_ts:
+                    try:
+                        distance = abs((agent_first_ts - tc_timestamp).total_seconds())
+                        if distance < best_distance:
+                            best_distance = distance
+                            best_match = tc
+                    except (TypeError, AttributeError):
+                        continue
+
+            if best_match is not None:
+                match_confidence = 1.0
+                if len(task_calls) > 1:
+                    close_calls = sum(
+                        1
+                        for tc in task_calls
+                        if tc[1]
+                        and agent_first_ts
+                        and abs((agent_first_ts - tc[1]).total_seconds()) < 60
+                    )
+                    if close_calls > 1:
+                        match_confidence = 0.5
+                    else:
+                        match_confidence = 0.8
 
         if best_match is None:
             continue
@@ -528,24 +577,6 @@ def _link_agent_delegations(conn):
                 subagent_type = input_data.get("subagent_type")
             except (json.JSONDecodeError, TypeError):
                 pass
-
-        # Determine match confidence
-        # 1.0 if only one Task call matches this agent's timeframe
-        # Lower for ambiguous matches
-        match_confidence = 1.0
-        if len(task_calls) > 1:
-            # Check how many Task calls are close to this agent
-            close_calls = sum(
-                1
-                for tc in task_calls
-                if tc[1]
-                and agent_first_ts
-                and abs((agent_first_ts - tc[1]).total_seconds()) < 60
-            )
-            if close_calls > 1:
-                match_confidence = 0.5
-            else:
-                match_confidence = 0.8
 
         # Determine completion status
         completion_status = "unknown"

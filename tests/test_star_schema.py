@@ -2891,11 +2891,106 @@ class TestSessionChains:
 
 @pytest.fixture
 def parent_with_task_call():
-    """Create a parent session with a Task tool call.
+    """Create a parent session with a Task tool call and progress record.
 
     File is named 'parent-sess-1.jsonl' to match the sessionId,
     so the agent's parent_session_key (from sessionId) matches the
     parent's session_key (from filename stem).
+
+    Includes a progress record that deterministically links the Task
+    tool_use_id to the agent's agentId.
+    """
+    with tempfile.TemporaryDirectory() as tmpdir:
+        f_path = Path(tmpdir) / "parent-sess-1.jsonl"
+        with open(f_path, "w") as f:
+            f.write(
+                json.dumps(
+                    {
+                        "type": "user",
+                        "uuid": "parent-user-001",
+                        "parentUuid": None,
+                        "sessionId": "parent-sess-1",
+                        "timestamp": "2025-02-10T10:00:00.000Z",
+                        "cwd": "/home/user/project",
+                        "version": "2.0.0",
+                        "message": {
+                            "role": "user",
+                            "content": "Implement feature X",
+                        },
+                    }
+                )
+                + "\n"
+            )
+            f.write(
+                json.dumps(
+                    {
+                        "type": "assistant",
+                        "uuid": "parent-asst-001",
+                        "parentUuid": "parent-user-001",
+                        "sessionId": "parent-sess-1",
+                        "timestamp": "2025-02-10T10:00:05.000Z",
+                        "message": {
+                            "role": "assistant",
+                            "model": "claude-opus-4-5-20251101",
+                            "content": [
+                                {"type": "text", "text": "Let me delegate this."},
+                                {
+                                    "type": "tool_use",
+                                    "id": "task-call-001",
+                                    "name": "Task",
+                                    "input": {
+                                        "description": "Search for auth files",
+                                        "prompt": "Find all authentication-related files in the project",
+                                        "subagent_type": "Explore",
+                                    },
+                                },
+                            ],
+                        },
+                    }
+                )
+                + "\n"
+            )
+            # Progress record linking task-call-001 to agent-explore-1
+            f.write(
+                json.dumps(
+                    {
+                        "type": "progress",
+                        "parentToolUseID": "task-call-001",
+                        "data": {"agentId": "agent-explore-1"},
+                    }
+                )
+                + "\n"
+            )
+            f.write(
+                json.dumps(
+                    {
+                        "type": "user",
+                        "uuid": "parent-user-002",
+                        "parentUuid": "parent-asst-001",
+                        "sessionId": "parent-sess-1",
+                        "timestamp": "2025-02-10T10:01:00.000Z",
+                        "message": {
+                            "role": "user",
+                            "content": [
+                                {
+                                    "type": "tool_result",
+                                    "tool_use_id": "task-call-001",
+                                    "content": "Found 3 auth files.",
+                                }
+                            ],
+                        },
+                    }
+                )
+                + "\n"
+            )
+        yield f_path
+
+
+@pytest.fixture
+def parent_without_progress():
+    """Create a parent session with a Task tool call but NO progress record.
+
+    Used to test the timestamp-heuristic fallback path.
     """
     with tempfile.TemporaryDirectory() as tmpdir:
         f_path = Path(tmpdir) / "parent-sess-1.jsonl"
@@ -3036,7 +3131,7 @@ class TestAgentDelegations:
     def test_delegation_linked_with_task_call(
         self, parent_with_task_call, agent_for_task, output_dir
     ):
-        """Test that agent is linked to parent's Task call."""
+        """Test that agent is deterministically linked via progress record."""
         from ccutils.export.duckdb_archive import _link_agent_delegations
 
         db_path = output_dir / "test.duckdb"
@@ -3048,14 +3143,15 @@ class TestAgentDelegations:
 
         result = conn.execute(
             """SELECT task_description, subagent_type, match_confidence,
-                      completion_status
+                      completion_status, task_tool_call_id
                FROM fact_agent_delegations"""
         ).fetchone()
 
         assert result is not None
         assert result[0] == "Search for auth files"
         assert result[1] == "Explore"
-        assert result[2] > 0  # match_confidence > 0
+        assert result[2] == 1.0  # deterministic match via progress record
+        assert result[4] == "task-call-001"  # exact tool_call_id
         conn.close()
 
     def test_delegation_captures_prompt(
@@ -3113,6 +3209,286 @@ class TestAgentDelegations:
         ).fetchone()
         assert result is not None
         assert result[0] == "Search for auth files"
+        conn.close()
+
+    def test_deterministic_match_uses_progress_record(
+        self, parent_with_task_call, agent_for_task, output_dir
+    ):
+        """Test that progress records populate stg_task_agent_map and produce confidence 1.0."""
+        from ccutils.export.duckdb_archive import _link_agent_delegations
+
+        db_path = output_dir / "test.duckdb"
+        conn = create_star_schema(db_path)
+        run_star_schema_etl(conn, parent_with_task_call, "test-project")
+        run_star_schema_etl(conn, agent_for_task, "test-project")
+
+        # Verify the staging table was populated
+        map_rows = conn.execute("SELECT * FROM stg_task_agent_map").fetchall()
+        assert len(map_rows) == 1
+        assert map_rows[0][0] == "task-call-001"  # tool_use_id
+        assert map_rows[0][1] == "agent-explore-1"  # agent_id
+
+        _link_agent_delegations(conn)
+
+        result = conn.execute(
+            "SELECT match_confidence, task_tool_call_id FROM fact_agent_delegations"
+        ).fetchone()
+        assert result is not None
+        assert result[0] == 1.0
+        assert result[1] == "task-call-001"
+        conn.close()
+
+    def test_heuristic_fallback_without_progress(
+        self, parent_without_progress, agent_for_task, output_dir
+    ):
+        """Test that delegation still works via timestamp heuristic without progress records."""
+        from ccutils.export.duckdb_archive import _link_agent_delegations
+
+        db_path = output_dir / "test.duckdb"
+        conn = create_star_schema(db_path)
+        run_star_schema_etl(conn, parent_without_progress, "test-project")
+        run_star_schema_etl(conn, agent_for_task, "test-project")
+
+        # No progress records should exist
+        map_rows = conn.execute("SELECT * FROM stg_task_agent_map").fetchall()
+        assert len(map_rows) == 0
+
+        _link_agent_delegations(conn)
+
+        result = conn.execute(
+            "SELECT match_confidence, task_description FROM fact_agent_delegations"
+        ).fetchone()
+        assert result is not None
+        # Single Task call -> heuristic confidence 1.0
+        assert result[0] == 1.0
+        assert result[1] == "Search for auth files"
+        conn.close()
+
+    def test_stg_task_agent_map_table_created(self, output_dir):
+        """Test that stg_task_agent_map staging table exists."""
+        db_path = output_dir / "test.duckdb"
+        conn = create_star_schema(db_path)
+
+        columns = conn.execute("DESCRIBE stg_task_agent_map").fetchall()
+        column_names = [c[0] for c in columns]
+        assert "tool_use_id" in column_names
+        assert "agent_id" in column_names
+        assert "session_key" in column_names
+        conn.close()
+
+    def test_multiple_agents_deterministic(self, output_dir):
+        """Test multiple agents are each matched to their correct Task call via progress records."""
+        from ccutils.export.duckdb_archive import _link_agent_delegations
+
+        db_path = output_dir / "test.duckdb"
+        conn = create_star_schema(db_path)
+
+        # Create parent with TWO Task calls and progress records
+        with tempfile.TemporaryDirectory() as tmpdir:
+            parent_path = Path(tmpdir) / "multi-parent.jsonl"
+            with open(parent_path, "w") as f:
+                f.write(
+                    json.dumps(
+                        {
+                            "type": "user",
+                            "uuid": "mp-user-001",
+                            "parentUuid": None,
+                            "sessionId": "multi-parent",
+                            "timestamp": "2025-02-10T10:00:00.000Z",
+                            "cwd": "/home/user/project",
+                            "version": "2.0.0",
+                            "message": {"role": "user", "content": "Do two things"},
+                        }
+                    )
+                    + "\n"
+                )
+                f.write(
+                    json.dumps(
+                        {
+                            "type": "assistant",
+                            "uuid": "mp-asst-001",
+                            "parentUuid": "mp-user-001",
+                            "sessionId": "multi-parent",
+                            "timestamp": "2025-02-10T10:00:05.000Z",
+                            "message": {
+                                "role": "assistant",
+                                "model": "claude-opus-4-5-20251101",
+                                "content": [
+                                    {"type": "text", "text": "Delegating two tasks."},
+                                    {
+                                        "type": "tool_use",
+                                        "id": "task-alpha",
+                                        "name": "Task",
+                                        "input": {
+                                            "description": "Alpha task",
+                                            "prompt": "Do alpha work",
+                                            "subagent_type": "Explore",
+                                        },
+                                    },
+                                    {
+                                        "type": "tool_use",
+                                        "id": "task-beta",
+                                        "name": "Task",
+                                        "input": {
+                                            "description": "Beta task",
+                                            "prompt": "Do beta work",
+                                            "subagent_type": "Bash",
+                                        },
+                                    },
+                                ],
+                            },
+                        }
+                    )
+                    + "\n"
+                )
+                # Progress records for both
+                f.write(
+                    json.dumps(
+                        {
+                            "type": "progress",
+                            "parentToolUseID": "task-alpha",
+                            "data": {"agentId": "agent-alpha-1"},
+                        }
+                    )
+                    + "\n"
+                )
+                f.write(
+                    json.dumps(
+                        {
+                            "type": "progress",
+                            "parentToolUseID": "task-beta",
+                            "data": {"agentId": "agent-beta-1"},
+                        }
+                    )
+                    + "\n"
+                )
+                # Tool results
+                f.write(
+                    json.dumps(
+                        {
+                            "type": "user",
+                            "uuid": "mp-user-002",
+                            "parentUuid": "mp-asst-001",
+                            "sessionId": "multi-parent",
+                            "timestamp": "2025-02-10T10:01:00.000Z",
+                            "message": {
+                                "role": "user",
+                                "content": [
+                                    {
+                                        "type": "tool_result",
+                                        "tool_use_id": "task-alpha",
+                                        "content": "Alpha done.",
+                                    },
+                                    {
+                                        "type": "tool_result",
+                                        "tool_use_id": "task-beta",
+                                        "content": "Beta done.",
+                                    },
+                                ],
+                            },
+                        }
+                    )
+                    + "\n"
+                )
+
+            run_star_schema_etl(conn, parent_path, "test-project")
+
+        # Create agent-alpha
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".jsonl", delete=False) as f:
+            f.write(
+                json.dumps(
+                    {
+                        "type": "user",
+                        "uuid": "alpha-user-001",
+                        "parentUuid": None,
+                        "sessionId": "multi-parent",
+                        "agentId": "agent-alpha-1",
+                        "timestamp": "2025-02-10T10:00:06.000Z",
+                        "cwd": "/home/user/project",
+                        "version": "2.0.0",
+                        "message": {"role": "user", "content": "Do alpha work"},
+                    }
+                )
+                + "\n"
+            )
+            f.write(
+                json.dumps(
+                    {
+                        "type": "assistant",
+                        "uuid": "alpha-asst-001",
+                        "parentUuid": "alpha-user-001",
+                        "sessionId": "multi-parent",
+                        "timestamp": "2025-02-10T10:00:30.000Z",
+                        "message": {
+                            "role": "assistant",
+                            "model": "claude-haiku-3-20240307",
+                            "content": "Alpha done.",
+                        },
+                    }
+                )
+                + "\n"
+            )
+            f.flush()
+            alpha_path = Path(f.name)
+
+        # Create agent-beta
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".jsonl", delete=False) as f:
+            f.write(
+                json.dumps(
+                    {
+                        "type": "user",
+                        "uuid": "beta-user-001",
+                        "parentUuid": None,
+                        "sessionId": "multi-parent",
+                        "agentId": "agent-beta-1",
+                        "timestamp": "2025-02-10T10:00:06.000Z",
+                        "cwd": "/home/user/project",
+                        "version": "2.0.0",
+                        "message": {"role": "user", "content": "Do beta work"},
+                    }
+                )
+                + "\n"
+            )
+            f.write(
+                json.dumps(
+                    {
+                        "type": "assistant",
+                        "uuid": "beta-asst-001",
+                        "parentUuid": "beta-user-001",
+                        "sessionId": "multi-parent",
+                        "timestamp": "2025-02-10T10:00:30.000Z",
+                        "message": {
+                            "role": "assistant",
+                            "model": "claude-haiku-3-20240307",
+                            "content": "Beta done.",
+                        },
+                    }
+                )
+                + "\n"
+            )
+            f.flush()
+            beta_path = Path(f.name)
+
+        run_star_schema_etl(conn, alpha_path, "test-project")
+        run_star_schema_etl(conn, beta_path, "test-project")
+
+        _link_agent_delegations(conn)
+
+        results = conn.execute(
+            """SELECT task_description, task_tool_call_id, match_confidence
+               FROM fact_agent_delegations
+               ORDER BY task_description"""
+        ).fetchall()
+
+        assert len(results) == 2
+        # Alpha agent matched to task-alpha
+        assert results[0][0] == "Alpha task"
+        assert results[0][1] == "task-alpha"
+        assert results[0][2] == 1.0
+        # Beta agent matched to task-beta
+        assert results[1][0] == "Beta task"
+        assert results[1][1] == "task-beta"
+        assert results[1][2] == 1.0
         conn.close()
 
 

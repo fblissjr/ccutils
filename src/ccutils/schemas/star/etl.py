@@ -98,6 +98,9 @@ def run_star_schema_etl(
     # Tool input params tracking
     tool_input_params_data = []
 
+    # Progress record tracking: tool_use_id -> agent_id
+    task_agent_map = {}
+
     with open(session_path, "r", encoding="utf-8") as f:
         for line in f:
             line = line.strip()
@@ -110,6 +113,18 @@ def run_star_schema_etl(
                 continue
 
             entry_type = entry.get("type")
+
+            # Capture progress records for deterministic agent delegation linking
+            if entry_type == "progress":
+                parent_tool_id = entry.get("parentToolUseID")
+                agent_data = entry.get("data", {})
+                progress_agent_id = (
+                    agent_data.get("agentId") if isinstance(agent_data, dict) else None
+                )
+                if parent_tool_id and progress_agent_id:
+                    task_agent_map[parent_tool_id] = progress_agent_id
+                continue
+
             if entry_type not in ("user", "assistant"):
                 continue
 
@@ -608,6 +623,7 @@ def run_star_schema_etl(
         entity_mentions_data,
         tool_chain_data,
         tool_input_params_data,
+        task_agent_map,
     )
 
 
@@ -872,6 +888,7 @@ def _load_facts(
     entity_mentions_data,
     tool_chain_data,
     tool_input_params_data,
+    task_agent_map=None,
 ):
     """Load all fact tables."""
 
@@ -1081,3 +1098,11 @@ def _load_facts(
                 param["param_value_bool"],
             ],
         )
+
+    # stg_task_agent_map (progress record links: tool_use_id -> agent_id)
+    if task_agent_map:
+        for tool_use_id, agent_id in task_agent_map.items():
+            conn.execute(
+                "INSERT INTO stg_task_agent_map VALUES (?, ?, ?)",
+                [tool_use_id, agent_id, session_key],
+            )

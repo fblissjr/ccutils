@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## 0.9.1
+
+### Changed
+- **Deterministic agent delegation linking**: `_link_agent_delegations` now uses `progress` records from JSONL for zero-ambiguity matching (confidence 1.0) instead of relying solely on timestamp proximity heuristics
+  - New `stg_task_agent_map` staging table captures `tool_use_id` -> `agent_id` links from progress records during ETL
+  - Falls back to timestamp-based heuristic matching (confidence 0.5-0.8) for older data without progress records
+  - Multiple simultaneous Task delegations are now matched correctly
+
 ## 0.9
 
 ### Added
