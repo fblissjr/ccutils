@@ -254,3 +254,188 @@ def run_session_insights_enrichment(
         sessions_enriched += 1
 
     return {"sessions_enriched": sessions_enriched}
+
+
+def run_goal_task_enrichment(conn, classify_func, session_key=None):
+    """Populate Goal > Task > Attempt hierarchy via LLM classification.
+
+    This function queries sessions that don't yet have goal/task/attempt
+    assignments, calls user-provided classify_func for classification,
+    and populates dim_goal, dim_task, dim_attempt tables.
+
+    Args:
+        conn: DuckDB connection
+        classify_func: Function(session_data) -> dict with:
+                       - goal: dict with goal_description, goal_status (optional)
+                       - task: dict with task_description, task_type, task_status (optional)
+                       - attempt: dict with attempt_description, approach, outcome (optional)
+                       Each key is optional; only provided keys are processed.
+        session_key: Optional session key to process only one session
+
+    Returns:
+        dict with counts: goals_created, tasks_created, attempts_created, sessions_linked
+    """
+    query = """
+        SELECT s.session_key, s.session_id,
+               s.first_timestamp, s.last_timestamp, s.chain_key,
+               ss.total_messages, ss.total_tool_calls,
+               ss.session_duration_seconds
+        FROM dim_session s
+        JOIN fact_session_summary ss ON s.session_key = ss.session_key
+        WHERE s.goal_key IS NULL AND s.task_key IS NULL
+    """
+    params = []
+    if session_key:
+        query += " AND s.session_key = ?"
+        params.append(session_key)
+
+    sessions = conn.execute(query, params).fetchall()
+
+    if not sessions:
+        return {
+            "goals_created": 0,
+            "tasks_created": 0,
+            "attempts_created": 0,
+            "sessions_linked": 0,
+        }
+
+    goals_created = 0
+    tasks_created = 0
+    attempts_created = 0
+    sessions_linked = 0
+    now = datetime.now()
+
+    for row in sessions:
+        sess_key = row[0]
+        session_id = row[1]
+        first_ts = row[2]
+        last_ts = row[3]
+        chain_key = row[4]
+        total_messages = row[5]
+        total_tool_calls = row[6]
+        duration = row[7]
+
+        # Get session messages for classification
+        messages = conn.execute(
+            """SELECT content_text, mt.message_type
+               FROM fact_messages m
+               JOIN dim_message_type mt ON m.message_type_key = mt.message_type_key
+               WHERE m.session_key = ?
+               ORDER BY m.timestamp
+               LIMIT 50""",
+            [sess_key],
+        ).fetchall()
+
+        session_data = {
+            "session_key": sess_key,
+            "session_id": session_id,
+            "total_messages": total_messages,
+            "total_tool_calls": total_tool_calls,
+            "duration_seconds": duration,
+            "messages": [{"content": r[0], "type": r[1]} for r in messages if r[0]],
+        }
+
+        result = classify_func(session_data)
+        if not result:
+            continue
+
+        goal_key = None
+        task_key = None
+        attempt_key = None
+
+        # Process goal
+        goal_data = result.get("goal")
+        if goal_data and goal_data.get("goal_description"):
+            goal_key = generate_dimension_key(goal_data["goal_description"])
+            if not conn.execute(
+                "SELECT 1 FROM dim_goal WHERE goal_key = ?", [goal_key]
+            ).fetchone():
+                conn.execute(
+                    """INSERT INTO dim_goal
+                       (goal_key, goal_description, goal_status,
+                        created_at, completed_at, source)
+                       VALUES (?, ?, ?, ?, ?, ?)""",
+                    [
+                        goal_key,
+                        goal_data["goal_description"],
+                        goal_data.get("goal_status", "active"),
+                        now,
+                        None,
+                        "llm_enrichment",
+                    ],
+                )
+                goals_created += 1
+
+        # Process task
+        task_data = result.get("task")
+        if task_data and task_data.get("task_description"):
+            task_key = generate_dimension_key(task_data["task_description"])
+            if not conn.execute(
+                "SELECT 1 FROM dim_task WHERE task_key = ?", [task_key]
+            ).fetchone():
+                conn.execute(
+                    """INSERT INTO dim_task
+                       (task_key, goal_key, task_description, task_type,
+                        task_status, created_at, completed_at, source)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                    [
+                        task_key,
+                        goal_key,
+                        task_data["task_description"],
+                        task_data.get("task_type", "unknown"),
+                        task_data.get("task_status", "active"),
+                        now,
+                        None,
+                        "llm_enrichment",
+                    ],
+                )
+                tasks_created += 1
+
+        # Process attempt
+        attempt_data = result.get("attempt")
+        if attempt_data and attempt_data.get("attempt_description"):
+            attempt_key = generate_dimension_key(
+                sess_key, attempt_data["attempt_description"]
+            )
+            if not conn.execute(
+                "SELECT 1 FROM dim_attempt WHERE attempt_key = ?", [attempt_key]
+            ).fetchone():
+                conn.execute(
+                    """INSERT INTO dim_attempt
+                       (attempt_key, task_key, session_key, chain_key,
+                        attempt_description, approach, outcome,
+                        started_at, ended_at, source)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    [
+                        attempt_key,
+                        task_key,
+                        sess_key,
+                        chain_key,
+                        attempt_data["attempt_description"],
+                        attempt_data.get("approach"),
+                        attempt_data.get("outcome", "unknown"),
+                        first_ts,
+                        last_ts,
+                        "llm_enrichment",
+                    ],
+                )
+                attempts_created += 1
+
+        # Update session with hierarchy links
+        if goal_key or task_key or attempt_key:
+            conn.execute(
+                """UPDATE dim_session
+                   SET goal_key = COALESCE(?, goal_key),
+                       task_key = COALESCE(?, task_key),
+                       attempt_key = COALESCE(?, attempt_key)
+                   WHERE session_key = ?""",
+                [goal_key, task_key, attempt_key, sess_key],
+            )
+            sessions_linked += 1
+
+    return {
+        "goals_created": goals_created,
+        "tasks_created": tasks_created,
+        "attempts_created": attempts_created,
+        "sessions_linked": sessions_linked,
+    }

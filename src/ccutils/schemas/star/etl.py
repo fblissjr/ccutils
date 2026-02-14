@@ -54,6 +54,7 @@ def run_star_schema_etl(
     cwd = None
     git_branch = None
     version = None
+    slug = None
     first_timestamp = None
     last_timestamp = None
 
@@ -117,6 +118,7 @@ def run_star_schema_etl(
                 cwd = entry.get("cwd")
                 git_branch = entry.get("gitBranch")
                 version = entry.get("version")
+                slug = entry.get("slug")
                 agent_id = entry.get("agentId")
                 is_sidechain = entry.get("isSidechain", False)
                 is_agent = agent_id is not None
@@ -569,6 +571,7 @@ def run_star_schema_etl(
         cwd,
         git_branch,
         version,
+        slug,
         first_timestamp,
         last_timestamp,
         is_agent,
@@ -647,6 +650,7 @@ def _load_dimensions(
     cwd,
     git_branch,
     version,
+    slug,
     first_timestamp,
     last_timestamp,
     is_agent,
@@ -671,15 +675,29 @@ def _load_dimensions(
         )
 
     # dim_session
+    parent_session_key = (
+        generate_dimension_key(parent_session_id) if parent_session_id else None
+    )
+    # Attempt depth_level calculation for agents with known parents
+    depth_level = 0
+    if is_agent and parent_session_key:
+        parent_depth = conn.execute(
+            "SELECT depth_level FROM dim_session WHERE session_key = ?",
+            [parent_session_key],
+        ).fetchone()
+        if parent_depth is not None:
+            depth_level = parent_depth[0] + 1
+
     if not conn.execute(
         "SELECT 1 FROM dim_session WHERE session_key = ?", [session_key]
     ).fetchone():
         conn.execute(
             """INSERT INTO dim_session
                (session_key, session_id, project_key, cwd, git_branch, version,
-                first_timestamp, last_timestamp, is_agent, agent_id,
-                parent_session_key, depth_level)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                slug, first_timestamp, last_timestamp, is_agent, agent_id,
+                parent_session_key, depth_level,
+                chain_key, goal_key, task_key, attempt_key)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             [
                 session_key,
                 session_id,
@@ -687,16 +705,17 @@ def _load_dimensions(
                 cwd,
                 git_branch,
                 version,
+                slug,
                 first_timestamp,
                 last_timestamp,
                 is_agent,
                 agent_id,
-                (
-                    generate_dimension_key(parent_session_id)
-                    if parent_session_id
-                    else None
-                ),
-                0,
+                parent_session_key,
+                depth_level,
+                None,  # chain_key - populated by batch export
+                None,  # goal_key - populated by enrichment
+                None,  # task_key - populated by enrichment
+                None,  # attempt_key - populated by enrichment
             ],
         )
 

@@ -8,7 +8,12 @@ This package provides:
 - JSON export for star schema data
 """
 
-from .enrichment import run_llm_enrichment, run_session_insights_enrichment
+from .embeddings import EmbeddingPipeline
+from .enrichment import (
+    run_goal_task_enrichment,
+    run_llm_enrichment,
+    run_session_insights_enrichment,
+)
 from .etl import run_star_schema_etl
 from .json_export import export_star_schema_to_json
 from .schema import create_star_schema
@@ -33,6 +38,9 @@ __all__ = [
     # LLM enrichment
     "run_llm_enrichment",
     "run_session_insights_enrichment",
+    "run_goal_task_enrichment",
+    # Embedding pipeline
+    "EmbeddingPipeline",
     # Utilities
     "generate_dimension_key",
     "get_tool_category",

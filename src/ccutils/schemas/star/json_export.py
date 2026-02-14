@@ -11,6 +11,7 @@ DIMENSION_TABLES = [
     "dim_model",
     "dim_project",
     "dim_session",
+    "dim_session_chain",
     "dim_date",
     "dim_time",
     "dim_message_type",
@@ -22,6 +23,9 @@ DIMENSION_TABLES = [
     "dim_intent",
     "dim_topic",
     "dim_sentiment",
+    "dim_goal",
+    "dim_task",
+    "dim_attempt",
 ]
 
 FACT_TABLES = [
@@ -38,6 +42,9 @@ FACT_TABLES = [
     "fact_message_enrichment",
     "fact_message_topics",
     "fact_session_insights",
+    "fact_agent_delegations",
+    "fact_session_embeddings",
+    "bridge_session_file",
 ]
 
 # Key relationships for the star schema

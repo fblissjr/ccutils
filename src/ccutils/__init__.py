@@ -10,8 +10,10 @@ from .schemas.star import (
     get_tool_category,
     run_llm_enrichment,
     run_session_insights_enrichment,
+    run_goal_task_enrichment,
     run_star_schema_etl,
     export_star_schema_to_json,
+    EmbeddingPipeline,
     TOOL_CATEGORIES,
 )
 

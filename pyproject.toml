@@ -32,6 +32,9 @@ ccutils = "ccutils:main"
 requires = ["uv_build>=0.9.7,<0.10.0"]
 build-backend = "uv_build"
 
+[project.optional-dependencies]
+colbert = ["pylate"]
+
 [dependency-groups]
 dev = [
     "black>=25.12.0",

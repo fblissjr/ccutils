@@ -89,12 +89,17 @@ def create_star_schema(db_path):
             cwd VARCHAR,
             git_branch VARCHAR,
             version VARCHAR,
+            slug VARCHAR,
             first_timestamp TIMESTAMP,
             last_timestamp TIMESTAMP,
             is_agent BOOLEAN DEFAULT FALSE,
             agent_id VARCHAR,
             parent_session_key VARCHAR,
-            depth_level INTEGER DEFAULT 0
+            depth_level INTEGER DEFAULT 0,
+            chain_key VARCHAR,
+            goal_key VARCHAR,
+            task_key VARCHAR,
+            attempt_key VARCHAR
         )
     """
     )
@@ -373,6 +378,140 @@ def create_star_schema(db_path):
             step_position INTEGER,
             prev_tool_key VARCHAR,
             time_since_prev_seconds FLOAT
+        )
+    """
+    )
+
+    # =========================================================================
+    # Session Chain Dimension
+    # =========================================================================
+
+    conn.execute(
+        """
+        CREATE OR REPLACE TABLE dim_session_chain (
+            chain_key VARCHAR,
+            slug VARCHAR,
+            project_key VARCHAR,
+            first_session_key VARCHAR,
+            last_session_key VARCHAR,
+            session_count INTEGER,
+            first_timestamp TIMESTAMP,
+            last_timestamp TIMESTAMP,
+            total_duration_seconds INTEGER
+        )
+    """
+    )
+
+    # =========================================================================
+    # Agent Delegation Tracking
+    # =========================================================================
+
+    conn.execute(
+        """
+        CREATE OR REPLACE TABLE fact_agent_delegations (
+            delegation_key VARCHAR,
+            parent_session_key VARCHAR,
+            agent_session_key VARCHAR,
+            task_tool_call_id VARCHAR,
+            date_key INTEGER,
+            time_key INTEGER,
+            task_description TEXT,
+            task_prompt TEXT,
+            subagent_type VARCHAR,
+            agent_output TEXT,
+            completion_status VARCHAR,
+            delegation_timestamp TIMESTAMP,
+            completion_timestamp TIMESTAMP,
+            match_confidence FLOAT
+        )
+    """
+    )
+
+    # =========================================================================
+    # Goal > Task > Attempt Hierarchy
+    # =========================================================================
+
+    conn.execute(
+        """
+        CREATE OR REPLACE TABLE dim_goal (
+            goal_key VARCHAR,
+            goal_description TEXT,
+            goal_status VARCHAR,
+            created_at TIMESTAMP,
+            completed_at TIMESTAMP,
+            source VARCHAR
+        )
+    """
+    )
+
+    conn.execute(
+        """
+        CREATE OR REPLACE TABLE dim_task (
+            task_key VARCHAR,
+            goal_key VARCHAR,
+            task_description TEXT,
+            task_type VARCHAR,
+            task_status VARCHAR,
+            created_at TIMESTAMP,
+            completed_at TIMESTAMP,
+            source VARCHAR
+        )
+    """
+    )
+
+    conn.execute(
+        """
+        CREATE OR REPLACE TABLE dim_attempt (
+            attempt_key VARCHAR,
+            task_key VARCHAR,
+            session_key VARCHAR,
+            chain_key VARCHAR,
+            attempt_description TEXT,
+            approach VARCHAR,
+            outcome VARCHAR,
+            started_at TIMESTAMP,
+            ended_at TIMESTAMP,
+            source VARCHAR
+        )
+    """
+    )
+
+    # =========================================================================
+    # Session Embeddings
+    # =========================================================================
+
+    conn.execute(
+        """
+        CREATE OR REPLACE TABLE fact_session_embeddings (
+            embedding_key VARCHAR,
+            session_key VARCHAR,
+            content_type VARCHAR,
+            embedding_model VARCHAR,
+            embedding_dim INTEGER,
+            mean_embedding FLOAT[64],
+            embedded_at TIMESTAMP,
+            content_hash VARCHAR
+        )
+    """
+    )
+
+    # =========================================================================
+    # Cross-Session Bridge Table
+    # =========================================================================
+
+    conn.execute(
+        """
+        CREATE OR REPLACE TABLE bridge_session_file (
+            session_file_key VARCHAR,
+            session_key VARCHAR,
+            file_key VARCHAR,
+            first_operation_timestamp TIMESTAMP,
+            last_operation_timestamp TIMESTAMP,
+            operation_count INTEGER,
+            read_count INTEGER,
+            write_count INTEGER,
+            edit_count INTEGER,
+            total_chars_written INTEGER
         )
     """
     )
@@ -722,5 +861,88 @@ def _populate_reference_data(conn):
         JOIN dim_tool dt ON ffo.tool_key = dt.tool_key
         JOIN dim_session ds ON ffo.session_key = ds.session_key
         LEFT JOIN dim_project dp ON ds.project_key = dp.project_key
+    """
+    )
+
+    # Session chains view
+    conn.execute(
+        """
+        CREATE OR REPLACE VIEW semantic_session_chains AS
+        SELECT
+            dsc.chain_key,
+            dsc.slug,
+            dsc.session_count,
+            dsc.first_timestamp AS chain_first_timestamp,
+            dsc.last_timestamp AS chain_last_timestamp,
+            dsc.total_duration_seconds,
+            ds.session_id,
+            ds.session_key,
+            ds.is_agent,
+            ds.depth_level,
+            dp.project_name,
+            fss.total_messages,
+            fss.total_tool_calls,
+            fss.session_duration_seconds
+        FROM dim_session_chain dsc
+        JOIN dim_session ds ON ds.chain_key = dsc.chain_key
+        LEFT JOIN dim_project dp ON ds.project_key = dp.project_key
+        LEFT JOIN fact_session_summary fss ON ds.session_key = fss.session_key
+    """
+    )
+
+    # Agent delegations view
+    conn.execute(
+        """
+        CREATE OR REPLACE VIEW semantic_agent_delegations AS
+        SELECT
+            fad.delegation_key,
+            fad.task_description,
+            fad.task_prompt,
+            fad.subagent_type,
+            fad.completion_status,
+            fad.match_confidence,
+            fad.delegation_timestamp,
+            fad.completion_timestamp,
+            -- Parent session
+            ps.session_id AS parent_session_id,
+            ps.cwd AS parent_cwd,
+            -- Agent session
+            ags.session_id AS agent_session_id,
+            ags.depth_level AS agent_depth_level,
+            -- Agent metrics
+            fss.total_messages AS agent_total_messages,
+            fss.total_tool_calls AS agent_total_tool_calls,
+            fss.session_duration_seconds AS agent_duration_seconds,
+            -- Project
+            dp.project_name
+        FROM fact_agent_delegations fad
+        JOIN dim_session ps ON fad.parent_session_key = ps.session_key
+        JOIN dim_session ags ON fad.agent_session_key = ags.session_key
+        LEFT JOIN fact_session_summary fss ON ags.session_key = fss.session_key
+        LEFT JOIN dim_project dp ON ps.project_key = dp.project_key
+    """
+    )
+
+    # File evolution across sessions
+    conn.execute(
+        """
+        CREATE OR REPLACE VIEW semantic_file_evolution AS
+        SELECT
+            df.file_path,
+            df.file_name,
+            df.file_extension,
+            df.directory_path,
+            COUNT(DISTINCT bsf.session_key) AS session_count,
+            SUM(bsf.operation_count) AS total_operations,
+            SUM(bsf.read_count) AS total_reads,
+            SUM(bsf.write_count) AS total_writes,
+            SUM(bsf.edit_count) AS total_edits,
+            SUM(bsf.total_chars_written) AS total_chars_written,
+            MIN(bsf.first_operation_timestamp) AS first_seen,
+            MAX(bsf.last_operation_timestamp) AS last_seen
+        FROM bridge_session_file bsf
+        JOIN dim_file df ON bsf.file_key = df.file_key
+        GROUP BY df.file_path, df.file_name, df.file_extension, df.directory_path
+        HAVING COUNT(DISTINCT bsf.session_key) > 1
     """
     )

@@ -135,7 +135,7 @@ Project dimension for grouping sessions.
 
 ### dim_session
 
-Session dimension with metadata.
+Session dimension with metadata, hierarchy links, and chain membership.
 
 | Column | Type | Description |
 |--------|------|-------------|
@@ -145,8 +145,78 @@ Session dimension with metadata.
 | cwd | VARCHAR | Working directory |
 | git_branch | VARCHAR | Git branch name |
 | version | VARCHAR | Claude Code version |
+| slug | VARCHAR | Session resume identifier (shared across chain) |
 | first_timestamp | TIMESTAMP | Session start time |
 | last_timestamp | TIMESTAMP | Session end time |
+| is_agent | BOOLEAN | Whether this is an agent/subagent session |
+| agent_id | VARCHAR | Agent identifier |
+| parent_session_key | VARCHAR | Soft FK to parent dim_session |
+| depth_level | INTEGER | Nesting depth (0=root, 1=direct agent, etc.) |
+| chain_key | VARCHAR | Soft FK to dim_session_chain |
+| goal_key | VARCHAR | Soft FK to dim_goal (populated via enrichment) |
+| task_key | VARCHAR | Soft FK to dim_task (populated via enrichment) |
+| attempt_key | VARCHAR | Soft FK to dim_attempt (populated via enrichment) |
+
+### dim_session_chain
+
+Groups sessions sharing the same `slug` into resumable chains.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| chain_key | VARCHAR | MD5 hash of slug |
+| slug | VARCHAR | Session resume identifier |
+| project_key | VARCHAR | Soft FK to dim_project |
+| first_session_key | VARCHAR | Earliest session in chain |
+| last_session_key | VARCHAR | Most recent session in chain |
+| session_count | INTEGER | Number of sessions in chain |
+| first_timestamp | TIMESTAMP | Chain start time |
+| last_timestamp | TIMESTAMP | Chain end time |
+| total_duration_seconds | INTEGER | Sum of session durations |
+
+### dim_goal
+
+High-level goal dimension (populated via LLM enrichment).
+
+| Column | Type | Description |
+|--------|------|-------------|
+| goal_key | VARCHAR | MD5 hash of goal_description |
+| goal_description | TEXT | Human-readable goal description |
+| goal_status | VARCHAR | active, completed, abandoned |
+| created_at | TIMESTAMP | When goal was created |
+| completed_at | TIMESTAMP | When goal was completed |
+| source | VARCHAR | llm_enrichment, user_defined, auto_inferred |
+
+### dim_task
+
+Task dimension linking to goals (populated via LLM enrichment).
+
+| Column | Type | Description |
+|--------|------|-------------|
+| task_key | VARCHAR | MD5 hash of task_description |
+| goal_key | VARCHAR | Soft FK to dim_goal |
+| task_description | TEXT | Human-readable task description |
+| task_type | VARCHAR | debug, refactor, implement, analyze, etc. |
+| task_status | VARCHAR | active, completed, abandoned |
+| created_at | TIMESTAMP | When task was created |
+| completed_at | TIMESTAMP | When task was completed |
+| source | VARCHAR | llm_enrichment, user_defined, auto_inferred |
+
+### dim_attempt
+
+Attempt dimension linking tasks to sessions (populated via LLM enrichment).
+
+| Column | Type | Description |
+|--------|------|-------------|
+| attempt_key | VARCHAR | MD5 hash of session_key + description |
+| task_key | VARCHAR | Soft FK to dim_task |
+| session_key | VARCHAR | Soft FK to dim_session |
+| chain_key | VARCHAR | Soft FK to dim_session_chain |
+| attempt_description | TEXT | Description of the attempt |
+| approach | VARCHAR | Approach taken |
+| outcome | VARCHAR | success, failure, abandoned, partial |
+| started_at | TIMESTAMP | Attempt start time |
+| ended_at | TIMESTAMP | Attempt end time |
+| source | VARCHAR | llm_enrichment, user_defined, auto_inferred |
 
 ### dim_date
 
@@ -449,6 +519,64 @@ Sequential tool call patterns for workflow analysis.
 | step_position | INTEGER | Position in chain (0-based) |
 | prev_tool_key | VARCHAR | Previous tool's key (NULL for first) |
 | time_since_prev_seconds | FLOAT | Time since previous tool call |
+
+### fact_agent_delegations
+
+Agent delegation tracking - links agent sessions to parent Task tool_use calls.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| delegation_key | VARCHAR | Generated ID |
+| parent_session_key | VARCHAR | FK to dim_session (parent) |
+| agent_session_key | VARCHAR | FK to dim_session (agent) |
+| task_tool_call_id | VARCHAR | FK to fact_tool_calls |
+| date_key | INTEGER | FK to dim_date |
+| time_key | INTEGER | FK to dim_time |
+| task_description | TEXT | Task description from Task tool input |
+| task_prompt | TEXT | Full prompt sent to agent |
+| subagent_type | VARCHAR | Agent type (e.g., "Bash", "Explore") |
+| agent_output | TEXT | Agent output/result |
+| completion_status | VARCHAR | success, error, unknown |
+| delegation_timestamp | TIMESTAMP | When Task tool was invoked |
+| completion_timestamp | TIMESTAMP | When agent completed |
+| match_confidence | FLOAT | Confidence in heuristic match (0-1) |
+
+**Match confidence scoring:**
+- `1.0`: Only one Task call in parent, unambiguous match
+- `0.8`: Multiple Task calls but well-separated in time
+- `0.5`: Ambiguous match, multiple candidates
+
+### fact_session_embeddings
+
+ColBERT embedding storage for semantic matching.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| embedding_key | VARCHAR | Generated ID |
+| session_key | VARCHAR | FK to dim_session |
+| content_type | VARCHAR | summary, first_user_message |
+| embedding_model | VARCHAR | Model used for embedding |
+| embedding_dim | INTEGER | Embedding dimensionality (64) |
+| mean_embedding | FLOAT[64] | Mean-pooled embedding vector |
+| embedded_at | TIMESTAMP | When embedding was created |
+| content_hash | VARCHAR | MD5 of content (for re-embedding detection) |
+
+### bridge_session_file
+
+Cross-session file operation aggregation.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| session_file_key | VARCHAR | Generated ID |
+| session_key | VARCHAR | FK to dim_session |
+| file_key | VARCHAR | FK to dim_file |
+| first_operation_timestamp | TIMESTAMP | First operation on file in session |
+| last_operation_timestamp | TIMESTAMP | Last operation on file in session |
+| operation_count | INTEGER | Total operations |
+| read_count | INTEGER | Read operations |
+| write_count | INTEGER | Write operations |
+| edit_count | INTEGER | Edit operations |
+| total_chars_written | INTEGER | Characters written/edited |
 
 ## Entity Extraction Dimensions
 
@@ -938,6 +1066,75 @@ result = run_session_insights_enrichment(conn, my_insight_func)
 print(f"Enriched {result['sessions_enriched']} sessions")
 ```
 
+### Goal/Task/Attempt Enrichment
+
+Populate the session hierarchy via LLM classification:
+
+```python
+from ccutils import run_goal_task_enrichment
+
+def my_classifier(session_data):
+    """Classify session into goal/task/attempt hierarchy."""
+    # Call your LLM to analyze session_data["messages"]...
+    return {
+        "goal": {
+            "goal_description": "Implement authentication system",
+            "goal_status": "active",
+        },
+        "task": {
+            "task_description": "Add JWT token validation",
+            "task_type": "implement",
+            "task_status": "completed",
+        },
+        "attempt": {
+            "attempt_description": "First attempt using jsonwebtoken library",
+            "approach": "jsonwebtoken + express middleware",
+            "outcome": "success",
+        },
+    }
+
+result = run_goal_task_enrichment(conn, my_classifier)
+print(f"Goals: {result['goals_created']}, Tasks: {result['tasks_created']}")
+```
+
+### ColBERT Embedding Pipeline
+
+Semantic matching using ColBERT late-interaction retrieval (requires `pylate`):
+
+```python
+from ccutils import EmbeddingPipeline
+
+pipeline = EmbeddingPipeline()  # lazy model loading
+
+# Embed session summaries (requires fact_session_insights populated)
+result = pipeline.embed_sessions(conn, content_type="summary")
+print(f"Embedded {result['sessions_embedded']} sessions")
+
+# Re-score agent delegation matches using semantic similarity
+result = pipeline.match_delegations(conn)
+print(f"Re-scored {result['delegations_rescored']} delegations")
+
+# Cluster sessions by similarity (requires sklearn)
+result = pipeline.cluster_sessions(conn)
+print(f"Clustered {result['sessions_clustered']} into {result['clusters_found']} groups")
+```
+
+CLI integration:
+
+```bash
+# Run embedding pipeline after star schema export
+ccutils all --format duckdb-star --embed
+
+# Use a custom model
+ccutils all --format duckdb-star --embed --embed-model "custom/model-name"
+```
+
+Install the optional dependency:
+
+```bash
+uv add ccutils[colbert]
+```
+
 ### JSON Export
 
 Export the star schema to JSON format for use with other tools or data pipelines:
@@ -1006,6 +1203,42 @@ Or use the CLI:
 ```bash
 # Export star schema to JSON directory
 ccutils local --format json-star -o ./star-export/
+```
+
+## Semantic Views
+
+Pre-built views for common analytics patterns.
+
+### semantic_session_chains
+
+Chain-level analytics joining chains to sessions and summaries.
+
+```sql
+SELECT * FROM semantic_session_chains;
+-- Returns: chain_key, slug, session_count, total_messages,
+--          total_tool_calls, first_timestamp, last_timestamp
+```
+
+### semantic_agent_delegations
+
+Delegation details joining parent/agent sessions with metrics.
+
+```sql
+SELECT * FROM semantic_agent_delegations;
+-- Returns: delegation_key, parent_session_id, agent_session_id,
+--          task_description, subagent_type, match_confidence,
+--          agent total_messages, agent total_tool_calls
+```
+
+### semantic_file_evolution
+
+Files touched across multiple sessions with aggregate operation counts.
+
+```sql
+SELECT * FROM semantic_file_evolution;
+-- Returns: file_path, session_count, total_operations,
+--          total_reads, total_writes, total_edits,
+--          first_seen, last_seen
 ```
 
 ## Design Decisions

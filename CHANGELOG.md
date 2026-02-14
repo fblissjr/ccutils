@@ -2,6 +2,38 @@
 
 All notable changes to this project will be documented in this file.
 
+## 0.9
+
+### Added
+- **Session chains**: `dim_session_chain` groups sessions sharing the same `slug` into chains
+  - `chain_key` added to `dim_session` for chain membership
+  - `semantic_session_chains` view for chain-level analytics
+  - Chains auto-built during batch export from shared slug values
+- **Agent delegation tracking**: `fact_agent_delegations` links agent sessions to their parent's Task tool_use calls
+  - Heuristic matching by timestamp proximity with confidence scoring
+  - Captures task description, prompt, subagent_type from Task tool inputs
+  - `semantic_agent_delegations` view joining parent/agent sessions with metrics
+- **Session hierarchy**: Goal > Task > Attempt dimensional tables
+  - `dim_goal`, `dim_task`, `dim_attempt` tables (populated via LLM enrichment)
+  - `goal_key`, `task_key`, `attempt_key` soft FKs on `dim_session`
+  - `run_goal_task_enrichment(conn, classify_func)` enrichment API
+- **ColBERT embedding pipeline**: Semantic matching via PyLate (optional dependency)
+  - `EmbeddingPipeline` class with lazy model loading (`mxbai-edge-colbert-v0-32m`)
+  - `embed_sessions()`: Embed session summaries into `fact_session_embeddings`
+  - `match_delegations()`: Re-score agent delegation matches using semantic similarity
+  - `cluster_sessions()`: K-means clustering with auto task assignment
+  - `--embed` and `--embed-model` CLI flags for batch export
+- **Cross-session file bridge**: `bridge_session_file` aggregates file operations across sessions
+  - Per-file operation counts (read/write/edit) by session
+  - `semantic_file_evolution` view for files touched by multiple sessions
+- **Session slug storage**: `slug` column in `dim_session` preserves chain resume identifiers
+- **Agent depth calculation**: `depth_level` correctly calculated for nested agent hierarchies
+  - Iterative batch calculation handles arbitrarily deep nesting
+  - Single-session ETL attempts parent lookup during insert
+
+### Dependencies
+- Added `pylate` as optional dependency: `pip install ccutils[colbert]`
+
 ## 0.8
 
 ### Added
