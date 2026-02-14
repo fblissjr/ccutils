@@ -539,12 +539,16 @@ Agent delegation tracking - links agent sessions to parent Task tool_use calls.
 | completion_status | VARCHAR | success, error, unknown |
 | delegation_timestamp | TIMESTAMP | When Task tool was invoked |
 | completion_timestamp | TIMESTAMP | When agent completed |
-| match_confidence | FLOAT | Confidence in heuristic match (0-1) |
+| match_confidence | FLOAT | Confidence in match (0-1) |
 
-**Match confidence scoring:**
-- `1.0`: Only one Task call in parent, unambiguous match
-- `0.8`: Multiple Task calls but well-separated in time
-- `0.5`: Ambiguous match, multiple candidates
+**Match strategy (two-tier):**
+
+1. **Deterministic (confidence 1.0):** Uses `progress` records from JSONL that contain `parentToolUseID` -> `agentId` links. These are captured during ETL into `stg_task_agent_map` and joined with `dim_session.agent_id` to find the exact `tool_call_id` for each agent session. Zero ambiguity.
+
+2. **Heuristic fallback (confidence 0.5-0.8):** For older data without progress records, falls back to timestamp proximity matching:
+   - `1.0`: Only one Task call in parent, unambiguous match
+   - `0.8`: Multiple Task calls but well-separated in time
+   - `0.5`: Ambiguous match, multiple candidates within 60 seconds
 
 ### fact_session_embeddings
 
@@ -705,7 +709,7 @@ LLM-generated session summaries.
 | enrichment_model | VARCHAR | Model used for enrichment |
 | enriched_at | TIMESTAMP | When enrichment was performed |
 
-## Staging Table
+## Staging Tables
 
 ### stg_raw_messages
 
@@ -726,6 +730,16 @@ Staging table for raw extracted data (used during ETL processing).
 | version | VARCHAR | Claude Code version |
 | content_json | JSON | Raw content |
 | content_text | TEXT | Extracted text |
+
+### stg_task_agent_map
+
+Staging table linking Task tool_use calls to agent sessions via progress records. Populated during ETL from JSONL `progress` entries. Used by `_link_agent_delegations` for deterministic matching.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| tool_use_id | VARCHAR | Task tool_use block `id` (from `parentToolUseID` in progress record) |
+| agent_id | VARCHAR | Agent identifier (from `data.agentId` in progress record) |
+| session_key | VARCHAR | Session key of the parent session that emitted the progress record |
 
 ## Key Generation
 
