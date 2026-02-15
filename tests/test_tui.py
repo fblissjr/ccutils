@@ -442,3 +442,181 @@ class TestRenderStatusHeader:
         output = buf.getvalue()
         assert "42" in output
         assert "5" in output
+
+
+# ---------------------------------------------------------------------------
+# selection.py tests
+# ---------------------------------------------------------------------------
+
+
+class TestProjectLabel:
+    def test_returns_list_of_tuples(self):
+        from ccutils.tui.selection import _project_label
+
+        label = _project_label("ccutils", 8, time.time(), {"opus-4.6"}, {"main"})
+        assert isinstance(label, list)
+        assert all(isinstance(t, tuple) and len(t) == 2 for t in label)
+
+    def test_contains_project_name(self):
+        from ccutils.tui.selection import _project_label
+
+        label = _project_label("my-project", 3, time.time(), set(), set())
+        text = "".join(t[1] for t in label)
+        assert "my-project" in text
+
+    def test_contains_session_count(self):
+        from ccutils.tui.selection import _project_label
+
+        label = _project_label("proj", 42, time.time(), set(), set())
+        text = "".join(t[1] for t in label)
+        assert "42 sessions" in text
+
+    def test_singular_session(self):
+        from ccutils.tui.selection import _project_label
+
+        label = _project_label("proj", 1, time.time(), set(), set())
+        text = "".join(t[1] for t in label)
+        assert "1 session " in text  # note: no trailing 's'
+
+
+class TestSessionLabel:
+    def test_returns_list_of_tuples(self):
+        from ccutils.tui.selection import _session_label
+
+        meta = _make_session_meta()
+        label = _session_label(meta, terminal_width=120)
+        assert isinstance(label, list)
+        assert all(isinstance(t, tuple) and len(t) == 2 for t in label)
+
+    def test_contains_model(self):
+        from ccutils.tui.selection import _session_label
+
+        meta = _make_session_meta(model_short="opus-4.6")
+        label = _session_label(meta, terminal_width=120)
+        text = "".join(t[1] for t in label)
+        assert "opus-4.6" in text
+
+    def test_contains_summary(self):
+        from ccutils.tui.selection import _session_label
+
+        meta = _make_session_meta(summary="Fix the authentication bug")
+        label = _session_label(meta, terminal_width=120)
+        text = "".join(t[1] for t in label)
+        assert "Fix the authentication bug" in text
+
+    def test_with_project_prefix(self):
+        from ccutils.tui.selection import _session_label
+
+        meta = _make_session_meta(project_name="my-proj")
+        label = _session_label(meta, show_project=True, terminal_width=120)
+        text = "".join(t[1] for t in label)
+        assert "[my-proj]" in text
+
+    def test_truncates_long_summary(self):
+        from ccutils.tui.selection import _session_label
+
+        long_summary = "A" * 200
+        meta = _make_session_meta(summary=long_summary)
+        label = _session_label(meta, terminal_width=80)
+        text = "".join(t[1] for t in label)
+        assert "..." in text
+        assert len(text) <= 80
+
+
+class TestChainLabel:
+    def test_returns_list_of_tuples(self):
+        from ccutils.tui.selection import _chain_label
+
+        chain = [
+            _make_session_meta(slug="abc", mtime=time.time() - 100),
+            _make_session_meta(slug="abc", mtime=time.time()),
+        ]
+        label = _chain_label(chain, terminal_width=120)
+        assert isinstance(label, list)
+        assert all(isinstance(t, tuple) and len(t) == 2 for t in label)
+
+    def test_contains_chain_count(self):
+        from ccutils.tui.selection import _chain_label
+
+        chain = [
+            _make_session_meta(slug="abc"),
+            _make_session_meta(slug="abc"),
+            _make_session_meta(slug="abc"),
+        ]
+        label = _chain_label(chain, terminal_width=120)
+        text = "".join(t[1] for t in label)
+        assert "[3 resumed]" in text
+
+    def test_uses_newest_summary(self):
+        from ccutils.tui.selection import _chain_label
+
+        chain = [
+            _make_session_meta(slug="abc", mtime=time.time() - 3600, summary="old"),
+            _make_session_meta(slug="abc", mtime=time.time(), summary="newest"),
+        ]
+        label = _chain_label(chain, terminal_width=120)
+        text = "".join(t[1] for t in label)
+        assert "newest" in text
+
+
+class TestBuildProjectChoices:
+    def test_returns_choices(self):
+        from ccutils.tui.selection import build_project_choices
+
+        s1 = _make_session_meta(project_name="proj-a")
+        grouped = {s1.project_path: [s1]}
+        choices = build_project_choices(grouped)
+        assert len(choices) == 1
+        assert choices[0].value == s1.project_path
+
+    def test_choice_title_is_formatted_text(self):
+        from ccutils.tui.selection import build_project_choices
+
+        s1 = _make_session_meta()
+        grouped = {s1.project_path: [s1]}
+        choices = build_project_choices(grouped)
+        # title should be a list of (style, text) tuples
+        assert isinstance(choices[0].title, list)
+        assert all(isinstance(t, tuple) for t in choices[0].title)
+
+
+class TestBuildSessionChoices:
+    def test_returns_choices_for_selected_project(self):
+        from ccutils.tui.selection import build_session_choices
+
+        sessions = [
+            _make_session_meta(project_name="proj-a"),
+            _make_session_meta(
+                project_name="proj-b",
+                project_path="-Users-test-workspace-proj-b",
+            ),
+        ]
+        choices = build_session_choices(sessions, [sessions[0].project_path])
+        assert len(choices) == 1
+        assert choices[0].value == sessions[0].path
+
+    def test_chain_collapsing(self):
+        from ccutils.tui.selection import build_session_choices
+
+        sessions = [
+            _make_session_meta(slug="shared-slug", mtime=time.time()),
+            _make_session_meta(slug="shared-slug", mtime=time.time() - 100),
+        ]
+        choices = build_session_choices(sessions, [sessions[0].project_path])
+        # Should collapse to 1 choice returning list of paths
+        assert len(choices) == 1
+        assert isinstance(choices[0].value, list)
+        assert len(choices[0].value) == 2
+
+    def test_expand_chains(self):
+        from ccutils.tui.selection import build_session_choices
+
+        sessions = [
+            _make_session_meta(slug="shared-slug", mtime=time.time()),
+            _make_session_meta(slug="shared-slug", mtime=time.time() - 100),
+        ]
+        choices = build_session_choices(
+            sessions, [sessions[0].project_path], expand_chains=True
+        )
+        # Should show individual sessions
+        assert len(choices) == 2
