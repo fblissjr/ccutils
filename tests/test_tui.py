@@ -620,3 +620,94 @@ class TestBuildSessionChoices:
         )
         # Should show individual sessions
         assert len(choices) == 2
+
+
+class TestBuildFlatChoices:
+    def test_returns_choices_with_project_prefix(self):
+        from ccutils.tui.selection import build_flat_choices
+
+        s1 = _make_session_meta(project_name="proj-a")
+        grouped = {s1.project_path: [s1]}
+        choices = build_flat_choices(grouped)
+        assert len(choices) == 1
+        assert choices[0].value == s1.path
+        # Label should include project name
+        text = "".join(t[1] for t in choices[0].title)
+        assert "[proj-a]" in text
+
+    def test_merges_projects_sorted_by_mtime(self):
+        from ccutils.tui.selection import build_flat_choices
+
+        s_old = _make_session_meta(
+            project_name="proj-a",
+            mtime=time.time() - 3600,
+        )
+        s_new = _make_session_meta(
+            project_name="proj-b",
+            project_path="-Users-test-workspace-proj-b",
+            mtime=time.time(),
+        )
+        grouped = {s_old.project_path: [s_old], s_new.project_path: [s_new]}
+        choices = build_flat_choices(grouped)
+        assert len(choices) == 2
+        # Newest should be first
+        assert choices[0].value == s_new.path
+        assert choices[1].value == s_old.path
+
+    def test_chain_collapsing(self):
+        from ccutils.tui.selection import build_flat_choices
+
+        s1 = _make_session_meta(slug="chain-a", mtime=time.time())
+        s2 = _make_session_meta(slug="chain-a", mtime=time.time() - 100)
+        grouped = {s1.project_path: [s1, s2]}
+        choices = build_flat_choices(grouped, expand_chains=False)
+        # Should collapse to 1 choice
+        assert len(choices) == 1
+        assert isinstance(choices[0].value, list)
+        assert len(choices[0].value) == 2
+
+    def test_expand_chains(self):
+        from ccutils.tui.selection import build_flat_choices
+
+        s1 = _make_session_meta(slug="chain-a", mtime=time.time())
+        s2 = _make_session_meta(slug="chain-a", mtime=time.time() - 100)
+        grouped = {s1.project_path: [s1, s2]}
+        choices = build_flat_choices(grouped, expand_chains=True)
+        # Should show individual sessions
+        assert len(choices) == 2
+
+    def test_includes_model_in_label(self):
+        from ccutils.tui.selection import build_flat_choices
+
+        s1 = _make_session_meta(model_short="opus-4.6")
+        grouped = {s1.project_path: [s1]}
+        choices = build_flat_choices(grouped)
+        text = "".join(t[1] for t in choices[0].title)
+        assert "opus-4.6" in text
+
+    def test_includes_branch_in_label(self):
+        from ccutils.tui.selection import build_flat_choices
+
+        s1 = _make_session_meta(git_branch="main")
+        grouped = {s1.project_path: [s1]}
+        choices = build_flat_choices(grouped)
+        text = "".join(t[1] for t in choices[0].title)
+        assert "main" in text
+
+    def test_includes_duration_in_label(self):
+        from ccutils.tui.selection import build_flat_choices
+
+        s1 = _make_session_meta(duration_minutes=125)
+        grouped = {s1.project_path: [s1]}
+        choices = build_flat_choices(grouped)
+        text = "".join(t[1] for t in choices[0].title)
+        assert "2h 5m" in text
+
+    def test_choice_title_is_formatted_text(self):
+        from ccutils.tui.selection import build_flat_choices
+
+        s1 = _make_session_meta()
+        grouped = {s1.project_path: [s1]}
+        choices = build_flat_choices(grouped)
+        assert isinstance(choices[0].title, list)
+        assert all(isinstance(t, tuple) and len(t) == 2 for t in choices[0].title)

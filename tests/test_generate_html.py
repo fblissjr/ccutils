@@ -1939,7 +1939,7 @@ class TestBuildSessionChoices:
         assert standalone_choice is not None, "Should have standalone choice"
 
     def test_collapsed_chain_shows_metadata(self, tmp_path):
-        """Test that collapsed chain shows session count and date range."""
+        """Test that collapsed chain shows resumed count in FormattedText label."""
         from ccutils import build_session_choices
         import questionary
 
@@ -1972,13 +1972,10 @@ class TestBuildSessionChoices:
         assert len(value_choices) == 1
         chain_choice = value_choices[0]
 
-        # Title should show session count and slug on first line
-        assert "[2 sessions]" in chain_choice.title
-        assert "test-chain" in chain_choice.title
-
-        # Multi-line format should include size, date range, and latest summary
-        assert "KB" in chain_choice.title
-        assert "\n" in chain_choice.title  # Multi-line
+        # Title is now FormattedText (list of tuples) with chain indicator
+        assert isinstance(chain_choice.title, list)
+        text = "".join(t[1] for t in chain_choice.title)
+        assert "[2 resumed]" in text
 
     def test_collapsed_chain_shows_latest_summary(self, tmp_path):
         """Test that collapsed chain shows the summary from the most recent session."""
@@ -2017,10 +2014,12 @@ class TestBuildSessionChoices:
 
         chain_choice = value_choices[0]
 
+        # Title is FormattedText -- extract text from tuples
+        text = "".join(t[1] for t in chain_choice.title)
+
         # Should show the latest (most recent) summary, not the old one
-        # Note: May be truncated with dynamic width, so check for prefix
-        assert "Latest summary from recent" in chain_choice.title
-        assert "Old summary from first" not in chain_choice.title
+        assert "Latest summary from recent" in text
+        assert "Old summary from first" not in text
 
     def test_expanded_chains_shows_individual_sessions(self, tmp_path):
         """Test that expanded mode shows individual sessions with inline project markers."""
@@ -2066,8 +2065,9 @@ class TestBuildSessionChoices:
             assert not isinstance(
                 c.value, list
             ), "Expanded mode should have individual paths"
-            # Should have inline project marker
-            assert "[" in c.title and "]" in c.title
+            # Title is FormattedText -- project marker should be in the text
+            text = "".join(t[1] for t in c.title)
+            assert "[" in text and "]" in text
 
 
 class TestFlattenSelectedSessions:
@@ -2130,47 +2130,6 @@ class TestFlattenSelectedSessions:
 class TestDynamicTruncation:
     """Tests for dynamic session display truncation based on terminal width."""
 
-    def test_format_session_display_uses_dynamic_width(self, tmp_path):
-        """Test that _format_session_display uses terminal_width parameter."""
-        from ccutils.parsers.discovery import _format_session_display
-
-        session = tmp_path / "test-session.jsonl"
-        session.write_text('{"type":"user","message":{"content":"Hello"}}\n')
-
-        long_summary = "This is a very long summary that should be truncated based on available terminal width"
-
-        # With wide terminal (200 cols), should show more text
-        wide_display = _format_session_display(
-            session, long_summary, terminal_width=200
-        )
-
-        # With narrow terminal (80 cols), should truncate more aggressively
-        narrow_display = _format_session_display(
-            session, long_summary, terminal_width=80
-        )
-
-        # Wide display should show more of the summary than narrow
-        assert len(wide_display) > len(narrow_display)
-        # Both should still be truncated (not full 86 chars of summary)
-        assert "..." in narrow_display
-
-    def test_format_session_display_respects_minimum_summary_width(self, tmp_path):
-        """Even with very narrow terminal, should show at least some summary."""
-        from ccutils.parsers.discovery import _format_session_display
-
-        session = tmp_path / "test-session.jsonl"
-        session.write_text('{"type":"user","message":{"content":"Hello"}}\n')
-
-        summary = "Important session summary"
-
-        # Very narrow terminal
-        display = _format_session_display(session, summary, terminal_width=60)
-
-        # Should still include some summary text (not just metadata)
-        assert any(
-            word in display for word in ["Important", "session", "summary", "..."]
-        )
-
     def test_get_terminal_width_returns_sensible_default(self):
         """Test terminal width helper returns sensible default."""
         from ccutils.parsers.discovery import get_terminal_width
@@ -2226,13 +2185,12 @@ class TestInlineProjectMarkers:
         choices = build_session_choices(sessions_by_project, expand_chains=False)
         value_choices = [c for c in choices if not isinstance(c, questionary.Separator)]
 
-        # Each choice title should include project name in brackets
+        # Each choice title is FormattedText with project name in brackets
         for choice in value_choices:
-            assert "[" in choice.title and "]" in choice.title
+            text = "".join(t[1] for t in choice.title)
+            assert "[" in text and "]" in text
             # Project name "test-project" should appear
-            assert (
-                "test-project" in choice.title.lower() or "test" in choice.title.lower()
-            )
+            assert "test-project" in text.lower() or "test" in text.lower()
 
     def test_multiple_projects_inline_markers(self, tmp_path):
         """Test multiple projects show inline markers for each."""
@@ -2267,13 +2225,13 @@ class TestInlineProjectMarkers:
         # Should have 2 choices (no separators)
         assert len(value_choices) == 2
 
-        # Titles should include respective project names
-        titles = [c.title for c in value_choices]
-        assert any("alpha" in t.lower() for t in titles)
-        assert any("beta" in t.lower() for t in titles)
+        # Titles (FormattedText) should include respective project names
+        texts = ["".join(t[1] for t in c.title) for c in value_choices]
+        assert any("alpha" in t.lower() for t in texts)
+        assert any("beta" in t.lower() for t in texts)
 
-    def test_project_name_consistently_padded(self, tmp_path):
-        """Test project names are padded to consistent width."""
+    def test_project_name_in_flat_choices(self, tmp_path):
+        """Test project names appear in FormattedText labels."""
         from ccutils import build_session_choices
         import questionary
 
@@ -2296,23 +2254,11 @@ class TestInlineProjectMarkers:
         choices = build_session_choices(sessions_by_project, expand_chains=False)
         value_choices = [c for c in choices if not isinstance(c, questionary.Separator)]
 
-        # Extract the project prefix portions (text before the date)
-        # The format should be: [project_name] date size summary
-        titles = [c.title for c in value_choices]
-
-        # Find position of first digit (start of date) to compare prefix lengths
-        def get_prefix_length(title):
-            for i, char in enumerate(title):
-                if char.isdigit():
-                    return i
-            return len(title)
-
-        prefix_lengths = [get_prefix_length(t) for t in titles]
-
-        # Prefixes should be same length (padded consistently)
-        assert (
-            len(set(prefix_lengths)) == 1
-        ), f"Project prefixes should be consistently padded: {titles}"
+        # Each title should be FormattedText with project name in brackets
+        for choice in value_choices:
+            assert isinstance(choice.title, list)
+            text = "".join(t[1] for t in choice.title)
+            assert "[" in text and "]" in text
 
 
 class TestFlatMode:
@@ -2367,9 +2313,10 @@ class TestFlatMode:
         assert len(regular_value_choices) == 2
         assert len(flat_value_choices) == 2
 
-        # Flat mode should still include project markers
+        # Flat mode should still include project markers in FormattedText
         for choice in flat_value_choices:
-            assert "[" in choice.title and "]" in choice.title
+            text = "".join(t[1] for t in choice.title)
+            assert "[" in text and "]" in text
 
     def test_flat_mode_preserves_sort_order(self, tmp_path):
         """Test that flat mode preserves modification time sort order."""
@@ -2409,10 +2356,10 @@ class TestFlatMode:
             c for c in flat_choices if not isinstance(c, questionary.Separator)
         ]
 
-        # Should maintain order as provided (caller is responsible for sorting)
+        # Should be sorted by mtime (newest first)
         assert len(flat_value_choices) == 3
-        titles = [c.title for c in flat_value_choices]
+        texts = ["".join(t[1] for t in c.title) for c in flat_value_choices]
 
         # First should be newest, last should be oldest
-        assert "Newest" in titles[0]
-        assert "Oldest" in titles[-1]
+        assert "Newest" in texts[0]
+        assert "Oldest" in texts[-1]

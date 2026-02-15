@@ -445,26 +445,45 @@ def build_session_choices(
 ):
     """Build questionary choices from sessions, with chain grouping support.
 
-    Deprecated: Use tui.build_flat_choices() or tui.build_session_choices() directly.
+    .. deprecated::
+        Use ``tui.build_flat_choices()`` (accepts grouped SessionMetadata) or
+        ``tui.build_session_choices()`` directly. This wrapper accepts the old
+        ``(filepath, summary, slug)`` tuple format for backward compatibility
+        but converts to SessionMetadata internally.
     """
-    if flat:
-        from ..tui.selection import build_flat_choices
+    import warnings
 
-        return build_flat_choices(
-            sessions_by_project,
-            expand_chains=expand_chains,
-            agent_counts=agent_counts,
-        )
-    # Non-flat mode with old-style (filepath, summary, slug) tuples is not
-    # supported by the new tui code. Fall back to the old implementation
-    # for any remaining callers.
+    warnings.warn(
+        "build_session_choices() is deprecated. "
+        "Use tui.build_flat_choices(grouped_sessions) with SessionMetadata instead.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
+
+    # Convert old-style (filepath, summary, slug) tuples to SessionMetadata
+    from ..parsers.metadata import SessionMetadata
+
+    grouped = {}
+    for project_key, sessions in sessions_by_project.items():
+        metas = []
+        for filepath, summary, slug in sessions:
+            stat = filepath.stat()
+            meta = SessionMetadata(
+                path=filepath,
+                project_name=get_project_display_name(project_key),
+                project_path=project_key,
+                model_short="",
+                summary=summary,
+                mtime=stat.st_mtime,
+                size=stat.st_size,
+                slug=slug,
+            )
+            metas.append(meta)
+        grouped[project_key] = metas
+
     from ..tui.selection import build_flat_choices
 
-    return build_flat_choices(
-        sessions_by_project,
-        expand_chains=expand_chains,
-        agent_counts=agent_counts,
-    )
+    return build_flat_choices(grouped, expand_chains=expand_chains)
 
 
 def build_session_choices_for_projects(

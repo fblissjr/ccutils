@@ -6,8 +6,6 @@ it calls `tokens.extend(choice.title)` directly, preserving per-segment
 colors even when highlighted or selected.
 """
 
-from datetime import datetime
-
 import questionary
 
 from ..parsers.metadata import format_duration
@@ -211,65 +209,6 @@ def _chain_label(chain, show_project=False, terminal_width=None):
     return tokens
 
 
-def _flat_session_label(
-    filepath, summary, project_name, agent_count=0, terminal_width=None
-):
-    """Build a styled label for flat mode (legacy style with project prefix).
-
-    Args:
-        filepath: Path to session file.
-        summary: Session summary text.
-        project_name: Display name of the project.
-        agent_count: Number of related agent sessions.
-        terminal_width: Terminal width for summary truncation.
-
-    Returns:
-        List of (style, text) tuples for FormattedText.
-    """
-    if terminal_width is None:
-        terminal_width = get_terminal_width()
-
-    stat = filepath.stat()
-    mod_time = datetime.fromtimestamp(stat.st_mtime)
-    size_kb = stat.st_size / 1024
-
-    tokens = []
-    used = 6  # checkbox chrome
-
-    # Project prefix
-    proj = format_project_name(project_name, max_width=20)
-    tokens.append(_styled("identity", f"[{proj}]"))
-    tokens.append(_styled("primary", " "))
-    used += len(proj) + 3
-
-    # Date
-    date_str = mod_time.strftime("%Y-%m-%d %H:%M")
-    tokens.append(_styled("temporal", date_str))
-    tokens.append(_styled("primary", "  "))
-    used += 18
-
-    # Size
-    size_str = f"{size_kb:5.0f} KB"
-    tokens.append(_styled("metric", size_str))
-    tokens.append(_styled("primary", "  "))
-    used += len(size_str) + 2
-
-    # Agent suffix
-    suffix = ""
-    if agent_count > 0:
-        suffix = f" (+{agent_count} agents)"
-
-    # Summary
-    available = max(20, terminal_width - used - len(suffix))
-    truncated = format_summary(summary, available)
-    tokens.append(_styled("primary", truncated))
-
-    if suffix:
-        tokens.append(_styled("secondary", suffix))
-
-    return tokens
-
-
 # ---------------------------------------------------------------------------
 # Public choice builders
 # ---------------------------------------------------------------------------
@@ -368,43 +307,65 @@ def build_session_choices(sessions, selected_projects, expand_chains=False):
         return choices
 
 
-def build_flat_choices(sessions_by_project, expand_chains=False, agent_counts=None):
+def build_flat_choices(grouped_sessions, expand_chains=False):
     """Build questionary choices for flat mode (all projects merged).
 
-    Replaces discovery.build_session_choices(flat=True).
+    All sessions across projects are merged into a single mtime-sorted list.
+    Each label shows [project_name] prefix via _session_label(show_project=True).
+    Chain collapsing is supported when expand_chains=False.
 
     Args:
-        sessions_by_project: Dict mapping project_key to list of
-            (filepath, summary, slug) tuples.
-        expand_chains: Currently unused in flat mode (reserved).
-        agent_counts: Optional dict mapping filepath to agent count.
+        grouped_sessions: Dict from group_by_project(), mapping project_path
+            to list of SessionMetadata objects.
+        expand_chains: If True, show individual sessions in chains.
 
     Returns:
         List of questionary.Choice objects for flat session selection.
     """
-    agent_counts = agent_counts or {}
     terminal_width = get_terminal_width()
 
-    from ..parsers.discovery import get_project_display_name
-
+    # Merge all sessions across projects into one list
     all_sessions = []
-    for project_key, sessions in sessions_by_project.items():
-        project_name = get_project_display_name(project_key)
-        for filepath, summary, slug in sessions:
-            all_sessions.append((filepath, summary, project_name))
+    for sessions in grouped_sessions.values():
+        all_sessions.extend(sessions)
+    all_sessions.sort(key=lambda s: s.mtime, reverse=True)
 
-    all_sessions.sort(key=lambda x: x[0].stat().st_mtime, reverse=True)
+    if expand_chains:
+        choices = []
+        for s in all_sessions:
+            label = _session_label(s, show_project=True, terminal_width=terminal_width)
+            choices.append(questionary.Choice(title=label, value=s.path))
+        return choices
+
+    # Chain collapsing: group by slug, then emit in mtime order
+    slug_groups = {}
+    for s in all_sessions:
+        if s.slug:
+            if s.slug not in slug_groups:
+                slug_groups[s.slug] = []
+            slug_groups[s.slug].append(s)
 
     choices = []
-    for filepath, summary, project_name in all_sessions:
-        label = _flat_session_label(
-            filepath,
-            summary,
-            project_name,
-            agent_counts.get(filepath, 0),
-            terminal_width,
-        )
-        choices.append(questionary.Choice(title=label, value=filepath))
+    seen_slugs = set()
+
+    for s in all_sessions:
+        if s.slug and s.slug not in seen_slugs:
+            seen_slugs.add(s.slug)
+            chain = slug_groups[s.slug]
+            if len(chain) > 1:
+                label = _chain_label(
+                    chain, show_project=True, terminal_width=terminal_width
+                )
+                paths = [cs.path for cs in chain]
+                choices.append(questionary.Choice(title=label, value=paths))
+            else:
+                label = _session_label(
+                    chain[0], show_project=True, terminal_width=terminal_width
+                )
+                choices.append(questionary.Choice(title=label, value=chain[0].path))
+        elif not s.slug:
+            label = _session_label(s, show_project=True, terminal_width=terminal_width)
+            choices.append(questionary.Choice(title=label, value=s.path))
 
     return choices
 

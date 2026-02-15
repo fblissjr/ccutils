@@ -14,7 +14,6 @@ from ..parsers import (
     flatten_selected_sessions,
 )
 from ..parsers.discovery import (
-    find_local_sessions,
     find_local_sessions_rich,
     group_by_project,
 )
@@ -163,7 +162,6 @@ def local_cmd(
             projects_folder,
             limit,
             project_filter,
-            include_subagents,
             expand_chains,
             style,
         )
@@ -338,39 +336,19 @@ def local_cmd(
         webbrowser.open(index_url)
 
 
-def _flat_mode_selection(
-    projects_folder, limit, project_filter, include_subagents, expand_chains, style
-):
-    """Flat mode: single list of all sessions sorted by date (legacy behavior)."""
-    click.echo("Loading local sessions...")
-    results = find_local_sessions(
+def _flat_mode_selection(projects_folder, limit, project_filter, expand_chains, style):
+    """Flat mode: single list of all sessions sorted by date with rich metadata."""
+    click.echo("Scanning sessions...")
+    sessions = find_local_sessions_rich(
         projects_folder, limit=limit, project_filter=project_filter
     )
 
-    if not results:
+    if not sessions:
         return None
 
-    # Count related agents for each session
-    agent_counts = {}
-    if include_subagents:
-        session_paths = [filepath for filepath, _, _ in results]
-        agent_map = find_agent_sessions(session_paths, recursive=True)
-        for filepath, agents in agent_map.items():
-            agent_counts[filepath] = len(agents)
+    grouped = group_by_project(sessions)
 
-    # Group sessions by project for better organization
-    sessions_by_project = {}
-    for filepath, summary, slug in results:
-        project_key = filepath.parent.name
-        if project_key not in sessions_by_project:
-            sessions_by_project[project_key] = []
-        sessions_by_project[project_key].append((filepath, summary, slug))
-
-    choices = build_flat_choices(
-        sessions_by_project,
-        expand_chains=expand_chains,
-        agent_counts=agent_counts if include_subagents else None,
-    )
+    choices = build_flat_choices(grouped, expand_chains=expand_chains)
 
     selected = questionary.checkbox(
         "Select sessions to convert (SPACE to select, ENTER to confirm):",
