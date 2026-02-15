@@ -323,3 +323,122 @@ class TestCalculateColumnWidths:
         result = calculate_column_widths(cols, total_width=15, padding=2)
         assert result["a"] >= 10
         assert result["b"] >= 10
+
+
+# ---------------------------------------------------------------------------
+# components.py tests
+# ---------------------------------------------------------------------------
+
+
+def _make_session_meta(**kwargs):
+    """Create a minimal SessionMetadata for testing."""
+    from ccutils.parsers.metadata import SessionMetadata
+
+    defaults = {
+        "path": Path("/tmp/test.jsonl"),
+        "project_name": "test-project",
+        "project_path": "-Users-test-workspace-test-project",
+        "model_short": "opus-4.6",
+        "git_branch": "main",
+        "summary": "Test session summary",
+        "mtime": time.time(),
+        "size": 50000,
+        "user_msg_count": 5,
+        "assistant_msg_count": 3,
+        "duration_minutes": 45,
+        "slug": None,
+    }
+    defaults.update(kwargs)
+    return SessionMetadata(**defaults)
+
+
+class TestRenderProjectTable:
+    def test_renders_without_error(self):
+        from ccutils.tui.components import render_project_table
+
+        sessions = [_make_session_meta()]
+        grouped = {sessions[0].project_path: sessions}
+        buf = StringIO()
+        console = Console(file=buf, width=120, force_terminal=True)
+        render_project_table(grouped, console=console)
+        output = buf.getvalue()
+        assert "test-project" in output
+        assert "1" in output  # session count
+
+    def test_shows_title_with_counts(self):
+        from ccutils.tui.components import render_project_table
+
+        s1 = _make_session_meta(project_name="proj-a")
+        s2 = _make_session_meta(
+            project_name="proj-b",
+            project_path="-Users-test-workspace-proj-b",
+        )
+        grouped = {s1.project_path: [s1], s2.project_path: [s2]}
+        buf = StringIO()
+        console = Console(file=buf, width=120, force_terminal=True)
+        render_project_table(grouped, console=console)
+        output = buf.getvalue()
+        assert "2 found" in output
+        assert "2 sessions" in output
+
+    def test_shows_models_and_branches(self):
+        from ccutils.tui.components import render_project_table
+
+        sessions = [
+            _make_session_meta(model_short="opus-4.6", git_branch="main"),
+            _make_session_meta(model_short="sonnet-4.5", git_branch="dev"),
+        ]
+        grouped = {sessions[0].project_path: sessions}
+        buf = StringIO()
+        console = Console(file=buf, width=120, force_terminal=True)
+        render_project_table(grouped, console=console)
+        output = buf.getvalue()
+        assert "opus-4.6" in output
+        assert "sonnet-4.5" in output
+        assert "main" in output
+        assert "dev" in output
+
+
+class TestRenderSessionTable:
+    def test_renders_without_error(self):
+        from ccutils.tui.components import render_session_table
+
+        sessions = [_make_session_meta()]
+        buf = StringIO()
+        console = Console(file=buf, width=120, force_terminal=True)
+        render_session_table("test-project", sessions, console=console)
+        output = buf.getvalue()
+        assert "test-project" in output
+        assert "Test session summary" in output
+
+    def test_shows_duration(self):
+        from ccutils.tui.components import render_session_table
+
+        sessions = [_make_session_meta(duration_minutes=125)]
+        buf = StringIO()
+        console = Console(file=buf, width=120, force_terminal=True)
+        render_session_table("proj", sessions, console=console)
+        output = buf.getvalue()
+        assert "2h 5m" in output
+
+    def test_shows_msg_count(self):
+        from ccutils.tui.components import render_session_table
+
+        sessions = [_make_session_meta(user_msg_count=12, assistant_msg_count=8)]
+        buf = StringIO()
+        console = Console(file=buf, width=120, force_terminal=True)
+        render_session_table("proj", sessions, console=console)
+        output = buf.getvalue()
+        assert "12/8" in output
+
+
+class TestRenderStatusHeader:
+    def test_renders_counts(self):
+        from ccutils.tui.components import render_status_header
+
+        buf = StringIO()
+        console = Console(file=buf, width=80, force_terminal=True)
+        render_status_header(42, 5, console=console)
+        output = buf.getvalue()
+        assert "42" in output
+        assert "5" in output
