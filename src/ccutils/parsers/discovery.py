@@ -1,22 +1,21 @@
 """Session discovery and project management utilities.
 
 This module provides functions for finding and organizing Claude Code sessions
-across project directories.
+across project directories. Display and selection functions have been moved
+to the tui/ package; thin wrappers here maintain backward compatibility.
 """
 
-import shutil
-from datetime import datetime
 from pathlib import Path
 
-import questionary
-from rich.console import Console
-from rich.table import Table
 from .metadata import (
-    SessionMetadata,
     extract_rich_metadata,
-    format_duration,
 )
 from .session import extract_session_metadata, extract_session_slug, get_session_summary
+
+
+# ---------------------------------------------------------------------------
+# Terminal width (delegated to tui.layout)
+# ---------------------------------------------------------------------------
 
 
 def get_terminal_width():
@@ -25,10 +24,14 @@ def get_terminal_width():
     Returns:
         Terminal width in columns, defaults to 80 if unable to determine.
     """
-    try:
-        return shutil.get_terminal_size().columns
-    except (AttributeError, ValueError):
-        return 80
+    from ..tui.layout import get_terminal_width as _get_terminal_width
+
+    return _get_terminal_width()
+
+
+# ---------------------------------------------------------------------------
+# Session discovery functions (data only, no display)
+# ---------------------------------------------------------------------------
 
 
 def find_local_sessions(folder, limit=10, project_filter=None):
@@ -84,230 +87,6 @@ def flatten_selected_sessions(selected):
         else:
             result.append(item)
     return result
-
-
-def build_session_choices(
-    sessions_by_project, expand_chains=False, agent_counts=None, flat=False
-):
-    """Build questionary choices from sessions, with chain grouping support.
-
-    Uses inline project markers instead of separators for better space efficiency.
-
-    Args:
-        sessions_by_project: Dict mapping project_key to list of (filepath, summary, slug) tuples
-        expand_chains: If False (default), group sessions with same slug into single choice.
-                      If True, show individual sessions with chain headers.
-        agent_counts: Optional dict mapping filepath to agent count for display
-        flat: If True, merge all projects into a single flat list sorted by mtime.
-              In flat mode, slug grouping is disabled since chains don't span projects.
-
-    Returns:
-        List of questionary.Choice objects with inline project prefixes.
-    """
-    agent_counts = agent_counts or {}
-    choices = []
-    terminal_width = get_terminal_width()
-
-    # Calculate max project name width for consistent padding across all projects
-    max_project_width = 20
-
-    # In flat mode, merge all sessions into a single list
-    if flat:
-        all_sessions = []
-        for project_key, sessions in sessions_by_project.items():
-            project_name = get_project_display_name(project_key)
-            for filepath, summary, slug in sessions:
-                all_sessions.append((filepath, summary, project_name))
-        # Sort by mtime, most recent first (preserves caller's sort if already sorted)
-        all_sessions.sort(key=lambda x: x[0].stat().st_mtime, reverse=True)
-
-        # In flat mode, just add all sessions individually with their project markers
-        for filepath, summary, project_name in all_sessions:
-            display = _format_session_display(
-                filepath,
-                summary,
-                agent_counts.get(filepath, 0),
-                project_name=project_name,
-                terminal_width=terminal_width,
-            )
-            choices.append(questionary.Choice(title=display, value=filepath))
-        return choices
-
-    # Non-flat mode: process by project with slug grouping
-    for project_key, sessions in sessions_by_project.items():
-        project_name = get_project_display_name(project_key)
-
-        # Group sessions by slug
-        slug_groups = {}  # slug -> list of (filepath, summary, slug)
-        standalone = []  # sessions without slug
-
-        for filepath, summary, slug in sessions:
-            if slug:
-                if slug not in slug_groups:
-                    slug_groups[slug] = []
-                slug_groups[slug].append((filepath, summary, slug))
-            else:
-                standalone.append((filepath, summary, slug))
-
-        if expand_chains:
-            # Expanded mode: show individual sessions with chain info in display
-            for slug, chain_sessions in slug_groups.items():
-                # Add individual sessions with project prefix
-                for filepath, summary, _ in chain_sessions:
-                    # Add chain indicator for multi-session chains
-                    chain_suffix = (
-                        f" [{len(chain_sessions)}]" if len(chain_sessions) > 1 else ""
-                    )
-                    display = _format_session_display(
-                        filepath,
-                        summary + chain_suffix,
-                        agent_counts.get(filepath, 0),
-                        project_name=project_name,
-                        terminal_width=terminal_width,
-                    )
-                    choices.append(questionary.Choice(title=display, value=filepath))
-
-            # Add standalone sessions
-            for filepath, summary, _ in standalone:
-                display = _format_session_display(
-                    filepath,
-                    summary,
-                    agent_counts.get(filepath, 0),
-                    project_name=project_name,
-                    terminal_width=terminal_width,
-                )
-                choices.append(questionary.Choice(title=display, value=filepath))
-
-        else:
-            # Collapsed mode: group chains into single choice
-            for slug, chain_sessions in slug_groups.items():
-                if len(chain_sessions) > 1:
-                    # Create a single choice for the entire chain
-                    paths = [s[0] for s in chain_sessions]
-                    total_size = sum(p.stat().st_size for p in paths) / 1024
-
-                    # Get date range with times
-                    session_stats = [(p, p.stat().st_mtime) for p in paths]
-                    session_stats.sort(key=lambda x: x[1])  # Sort by mtime
-                    oldest_time = datetime.fromtimestamp(session_stats[0][1])
-                    newest_time = datetime.fromtimestamp(session_stats[-1][1])
-
-                    # Find summary from most recent session
-                    newest_path = session_stats[-1][0]
-                    latest_summary = None
-                    for filepath, summary, _ in chain_sessions:
-                        if filepath == newest_path:
-                            latest_summary = summary
-                            break
-
-                    # Format date range
-                    if oldest_time.date() == newest_time.date():
-                        date_range = f"{oldest_time.strftime('%b %d %H:%M')} - {newest_time.strftime('%H:%M')}"
-                    else:
-                        date_range = f"{oldest_time.strftime('%b %d %H:%M')} - {newest_time.strftime('%b %d %H:%M')}"
-
-                    # Calculate dynamic truncation for chain summary
-                    # Project prefix + chain info takes about 60 chars on line 1
-                    available_summary = max(30, terminal_width - 80)
-                    if latest_summary and len(latest_summary) > available_summary:
-                        latest_summary = latest_summary[: available_summary - 3] + "..."
-
-                    # Format project prefix for consistent width
-                    proj_display = project_name
-                    if len(proj_display) > max_project_width:
-                        proj_display = proj_display[: max_project_width - 2] + ".."
-                    proj_prefix = f"[{proj_display}]".ljust(max_project_width + 2)
-
-                    # Multi-line display for better readability
-                    line1 = f"{proj_prefix} [{len(chain_sessions)} sessions] {slug}"
-                    line2 = f"{''.ljust(max_project_width + 3)}{total_size:,.0f} KB | {date_range}"
-                    if latest_summary:
-                        line2 += f' | "{latest_summary}"'
-
-                    display = f"{line1}\n{line2}"
-                    choices.append(questionary.Choice(title=display, value=paths))
-                else:
-                    # Single session with slug - treat as standalone
-                    filepath, summary, _ = chain_sessions[0]
-                    display = _format_session_display(
-                        filepath,
-                        summary,
-                        agent_counts.get(filepath, 0),
-                        project_name=project_name,
-                        terminal_width=terminal_width,
-                    )
-                    choices.append(questionary.Choice(title=display, value=filepath))
-
-            # Add standalone sessions
-            for filepath, summary, _ in standalone:
-                display = _format_session_display(
-                    filepath,
-                    summary,
-                    agent_counts.get(filepath, 0),
-                    project_name=project_name,
-                    terminal_width=terminal_width,
-                )
-                choices.append(questionary.Choice(title=display, value=filepath))
-
-    return choices
-
-
-def _format_session_display(
-    filepath, summary, agent_count=0, project_name=None, terminal_width=None
-):
-    """Format a single session for display in the selection list.
-
-    Args:
-        filepath: Path to the session file
-        summary: Session summary text
-        agent_count: Number of related agent sessions
-        project_name: Project name to show as inline prefix (optional)
-        terminal_width: Terminal width for dynamic truncation (optional)
-
-    Returns:
-        Formatted display string.
-    """
-    if terminal_width is None:
-        terminal_width = get_terminal_width()
-
-    stat = filepath.stat()
-    mod_time = datetime.fromtimestamp(stat.st_mtime)
-    size_kb = stat.st_size / 1024
-    date_str = mod_time.strftime("%Y-%m-%d %H:%M")
-
-    # Build suffix for agents
-    suffix = ""
-    if agent_count > 0:
-        suffix = f" (+{agent_count} agents)"
-
-    # Calculate fixed-width portions
-    # Format: [project] date  size KB  summary(suffix)
-    # Project prefix: [name] + space = max 22 chars (20 for name + brackets + space)
-    # Date: 16 chars (YYYY-MM-DD HH:MM)
-    # Size: 9 chars (5 digits + " KB" + 2 spaces)
-    # Padding: ~4 chars for spacing
-
-    max_project_width = 20
-    project_prefix = ""
-    if project_name:
-        # Truncate or pad project name for consistent width
-        if len(project_name) > max_project_width:
-            project_name = project_name[: max_project_width - 2] + ".."
-        project_prefix = f"[{project_name}]".ljust(max_project_width + 2) + " "
-
-    fixed_width = len(project_prefix) + 16 + 9 + 4 + len(suffix)
-
-    # Calculate available space for summary
-    available = terminal_width - fixed_width
-    min_summary_width = 20  # Always show at least this much
-
-    max_summary = max(min_summary_width, available)
-
-    # Truncate summary if needed
-    if len(summary) > max_summary:
-        summary = summary[: max_summary - 3] + "..."
-
-    return f"{project_prefix}{date_str}  {size_kb:5.0f} KB  {summary}{suffix}"
 
 
 def find_agent_sessions(session_paths, recursive=True):
@@ -554,326 +333,6 @@ def group_by_project(sessions):
     return {k: groups[k] for k in sorted_keys}
 
 
-def print_project_table(grouped_sessions, console=None):
-    """Print a rich table summarizing available projects.
-
-    Args:
-        grouped_sessions: Dict from group_by_project()
-        console: Optional Rich Console instance
-    """
-    if console is None:
-        console = Console()
-
-    table = Table(
-        title="Projects",
-        show_header=True,
-        header_style="bold",
-        border_style="dim",
-        pad_edge=False,
-        show_edge=False,
-    )
-    table.add_column("Name", style="cyan", no_wrap=True)
-    table.add_column("Sessions", justify="right", style="green")
-    table.add_column("Last Active", style="yellow", no_wrap=True)
-    table.add_column("Models", style="magenta")
-    table.add_column("Branches", style="blue")
-
-    for project_path, sessions in grouped_sessions.items():
-        if not sessions:
-            continue
-
-        project_name = sessions[0].project_name
-
-        # Collect unique models and branches
-        models = set()
-        branches = set()
-        for s in sessions:
-            if s.model_short:
-                models.add(s.model_short)
-            if s.git_branch:
-                branches.add(s.git_branch)
-
-        # Format last active date
-        last_active = datetime.fromtimestamp(sessions[0].mtime)
-        now = datetime.now()
-        if last_active.date() == now.date():
-            date_str = "Today"
-        elif (now - last_active).days == 1:
-            date_str = "Yesterday"
-        elif (now - last_active).days < 7:
-            date_str = last_active.strftime("%A")  # Day name
-        else:
-            date_str = last_active.strftime("%b %d")
-
-        table.add_row(
-            project_name,
-            str(len(sessions)),
-            date_str,
-            ", ".join(sorted(models)) if models else "-",
-            ", ".join(sorted(branches)) if branches else "-",
-        )
-
-    console.print(table)
-    console.print()
-
-
-def print_session_table(project_name, sessions, console=None):
-    """Print a rich table of sessions for a single project.
-
-    Args:
-        project_name: Display name of the project
-        sessions: List of SessionMetadata for this project
-        console: Optional Rich Console instance
-    """
-    if console is None:
-        console = Console()
-
-    table = Table(
-        title=f"{project_name} - {len(sessions)} session(s)",
-        show_header=True,
-        header_style="bold",
-        border_style="dim",
-        pad_edge=False,
-        show_edge=False,
-    )
-    table.add_column("#", justify="right", style="dim", width=3)
-    table.add_column("Date", style="yellow", no_wrap=True, width=14)
-    table.add_column("Model", style="magenta", no_wrap=True, width=12)
-    table.add_column("Branch", style="blue", no_wrap=True, width=10)
-    table.add_column("Dur", justify="right", style="green", width=6)
-    table.add_column("Msgs", justify="right", style="dim", width=4)
-    table.add_column("Summary", style="white", no_wrap=False)
-
-    now = datetime.now()
-    for idx, s in enumerate(sessions, 1):
-        mod_time = datetime.fromtimestamp(s.mtime)
-
-        # Format date relative to now
-        if mod_time.date() == now.date():
-            date_str = f"Today {mod_time.strftime('%H:%M')}"
-        elif (now - mod_time).days == 1:
-            date_str = f"Yest {mod_time.strftime('%H:%M')}"
-        elif (now - mod_time).days < 7:
-            date_str = mod_time.strftime("%a %H:%M")
-        else:
-            date_str = mod_time.strftime("%b %d %H:%M")
-
-        # Dim old sessions
-        style = "dim" if (now - mod_time).days > 7 else ""
-
-        table.add_row(
-            str(idx),
-            date_str,
-            s.model_short or "-",
-            s.git_branch or "-",
-            format_duration(s.duration_minutes),
-            str(s.user_msg_count) if s.user_msg_count > 0 else "-",
-            s.summary,
-            style=style,
-        )
-
-    console.print(table)
-    console.print()
-
-
-def build_project_choices(grouped_sessions):
-    """Build questionary checkbox choices for project selection.
-
-    Args:
-        grouped_sessions: Dict from group_by_project()
-
-    Returns:
-        List of questionary.Choice objects, one per project.
-    """
-    choices = []
-    for project_path, sessions in grouped_sessions.items():
-        if not sessions:
-            continue
-        project_name = sessions[0].project_name
-        count = len(sessions)
-        label = f"{project_name} ({count} session{'s' if count != 1 else ''})"
-        choices.append(questionary.Choice(title=label, value=project_path))
-    return choices
-
-
-def build_session_choices_for_projects(
-    sessions, selected_project_paths, expand_chains=False
-):
-    """Build questionary checkbox choices for sessions within selected projects.
-
-    Args:
-        sessions: Full list of SessionMetadata
-        selected_project_paths: List of project_path values selected in phase 1
-        expand_chains: If True, show individual sessions in chains
-
-    Returns:
-        List of questionary.Choice objects for session selection.
-    """
-    selected_set = set(selected_project_paths)
-    filtered = [s for s in sessions if s.project_path in selected_set]
-    # Re-sort by mtime (most recent first)
-    filtered.sort(key=lambda s: s.mtime, reverse=True)
-
-    # Multiple projects selected -> show project prefix
-    multi_project = len(selected_set) > 1
-
-    if not expand_chains:
-        # Group by slug for chain collapsing
-        slug_groups = {}
-        standalone = []
-        for s in filtered:
-            if s.slug:
-                if s.slug not in slug_groups:
-                    slug_groups[s.slug] = []
-                slug_groups[s.slug].append(s)
-            else:
-                standalone.append(s)
-
-        choices = []
-        seen_slugs = set()
-
-        # Build choices maintaining overall mtime order
-        for s in filtered:
-            if s.slug and s.slug not in seen_slugs:
-                seen_slugs.add(s.slug)
-                chain = slug_groups[s.slug]
-                if len(chain) > 1:
-                    # Collapsed chain
-                    label = _format_rich_chain_label(chain, multi_project)
-                    paths = [cs.path for cs in chain]
-                    choices.append(questionary.Choice(title=label, value=paths))
-                else:
-                    label = _format_rich_session_label(chain[0], multi_project)
-                    choices.append(questionary.Choice(title=label, value=chain[0].path))
-            elif not s.slug:
-                label = _format_rich_session_label(s, multi_project)
-                choices.append(questionary.Choice(title=label, value=s.path))
-
-        return choices
-    else:
-        # Expanded mode - show each session individually
-        choices = []
-        for s in filtered:
-            label = _format_rich_session_label(s, multi_project)
-            choices.append(questionary.Choice(title=label, value=s.path))
-        return choices
-
-
-def _format_rich_session_label(meta, show_project=False):
-    """Format a single SessionMetadata for questionary display.
-
-    Args:
-        meta: SessionMetadata instance
-        show_project: Whether to prefix with project name
-
-    Returns:
-        Formatted string for questionary choice title.
-    """
-    mod_time = datetime.fromtimestamp(meta.mtime)
-    now = datetime.now()
-
-    # Compact date
-    if mod_time.date() == now.date():
-        date_str = f"Today {mod_time.strftime('%H:%M')}"
-    elif (now - mod_time).days == 1:
-        date_str = f"Yest {mod_time.strftime('%H:%M')}"
-    elif (now - mod_time).days < 7:
-        date_str = mod_time.strftime("%a %H:%M")
-    else:
-        date_str = mod_time.strftime("%b %d")
-
-    parts = []
-    if show_project:
-        proj = meta.project_name
-        if len(proj) > 16:
-            proj = proj[:14] + ".."
-        parts.append(f"[{proj}]")
-
-    parts.append(f"{date_str:>14s}")
-
-    if meta.model_short:
-        parts.append(f"{meta.model_short:>10s}")
-
-    if meta.git_branch:
-        branch = meta.git_branch
-        if len(branch) > 12:
-            branch = branch[:10] + ".."
-        parts.append(branch)
-
-    dur = format_duration(meta.duration_minutes)
-    if dur:
-        parts.append(f"{dur:>5s}")
-
-    # Truncate summary for questionary line
-    terminal_width = get_terminal_width()
-    used = sum(len(p) for p in parts) + len(parts) * 2 + 6  # spacing + checkbox
-    available = max(20, terminal_width - used)
-    summary = meta.summary
-    if len(summary) > available:
-        summary = summary[: available - 3] + "..."
-    parts.append(summary)
-
-    return "  ".join(parts)
-
-
-def _format_rich_chain_label(chain, show_project=False):
-    """Format a collapsed chain of sessions for questionary display.
-
-    Args:
-        chain: List of SessionMetadata with the same slug
-        show_project: Whether to prefix with project name
-
-    Returns:
-        Formatted string for questionary choice title.
-    """
-    # Use most recent session for display
-    chain.sort(key=lambda s: s.mtime, reverse=True)
-    newest = chain[0]
-
-    mod_time = datetime.fromtimestamp(newest.mtime)
-    now = datetime.now()
-
-    if mod_time.date() == now.date():
-        date_str = f"Today {mod_time.strftime('%H:%M')}"
-    elif (now - mod_time).days == 1:
-        date_str = f"Yest {mod_time.strftime('%H:%M')}"
-    elif (now - mod_time).days < 7:
-        date_str = mod_time.strftime("%a %H:%M")
-    else:
-        date_str = mod_time.strftime("%b %d")
-
-    parts = []
-    if show_project:
-        proj = newest.project_name
-        if len(proj) > 16:
-            proj = proj[:14] + ".."
-        parts.append(f"[{proj}]")
-
-    parts.append(f"{date_str:>14s}")
-
-    chain_tag = f"[{len(chain)} resumed]"
-    parts.append(chain_tag)
-
-    if newest.model_short:
-        parts.append(f"{newest.model_short:>10s}")
-
-    # Total duration across chain
-    total_dur = sum(s.duration_minutes or 0 for s in chain)
-    if total_dur > 0:
-        parts.append(f"{format_duration(total_dur):>5s}")
-
-    # Summary from newest session
-    terminal_width = get_terminal_width()
-    used = sum(len(p) for p in parts) + len(parts) * 2 + 6
-    available = max(20, terminal_width - used)
-    summary = newest.summary
-    if len(summary) > available:
-        summary = summary[: available - 3] + "..."
-    parts.append(summary)
-
-    return "  ".join(parts)
-
-
 def find_all_sessions(folder, include_agents=False, project_filter=None):
     """Find all sessions in a Claude projects folder, grouped by project.
 
@@ -944,3 +403,77 @@ def find_all_sessions(folder, include_agents=False, project_filter=None):
     )
 
     return result
+
+
+# ---------------------------------------------------------------------------
+# Backward-compatible wrappers (delegate to tui/)
+# ---------------------------------------------------------------------------
+
+
+def print_project_table(grouped_sessions, console=None):
+    """Print a rich table summarizing available projects.
+
+    Deprecated: Use tui.render_project_table() directly.
+    """
+    from ..tui.components import render_project_table
+
+    render_project_table(grouped_sessions, console=console)
+
+
+def print_session_table(project_name, sessions, console=None):
+    """Print a rich table of sessions for a single project.
+
+    Deprecated: Use tui.render_session_table() directly.
+    """
+    from ..tui.components import render_session_table
+
+    render_session_table(project_name, sessions, console=console)
+
+
+def build_project_choices(grouped_sessions):
+    """Build questionary checkbox choices for project selection.
+
+    Deprecated: Use tui.build_project_choices() directly.
+    """
+    from ..tui.selection import build_project_choices as _build_project_choices
+
+    return _build_project_choices(grouped_sessions)
+
+
+def build_session_choices(
+    sessions_by_project, expand_chains=False, agent_counts=None, flat=False
+):
+    """Build questionary choices from sessions, with chain grouping support.
+
+    Deprecated: Use tui.build_flat_choices() or tui.build_session_choices() directly.
+    """
+    if flat:
+        from ..tui.selection import build_flat_choices
+
+        return build_flat_choices(
+            sessions_by_project,
+            expand_chains=expand_chains,
+            agent_counts=agent_counts,
+        )
+    # Non-flat mode with old-style (filepath, summary, slug) tuples is not
+    # supported by the new tui code. Fall back to the old implementation
+    # for any remaining callers.
+    from ..tui.selection import build_flat_choices
+
+    return build_flat_choices(
+        sessions_by_project,
+        expand_chains=expand_chains,
+        agent_counts=agent_counts,
+    )
+
+
+def build_session_choices_for_projects(
+    sessions, selected_project_paths, expand_chains=False
+):
+    """Build questionary checkbox choices for sessions within selected projects.
+
+    Deprecated: Use tui.build_session_choices() directly.
+    """
+    from ..tui.selection import build_session_choices as _build_session_choices
+
+    return _build_session_choices(sessions, selected_project_paths, expand_chains)
