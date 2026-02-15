@@ -20,7 +20,6 @@ from ..export import (
     inject_gist_preview_js,
 )
 from .utils import (
-    format_session_for_display,
     generate_html_from_session_data,
     resolve_credentials,
 )
@@ -141,16 +140,16 @@ def web_cmd(
             if not sessions:
                 raise click.ClickException(f"No sessions found for repo: {repo}")
 
-        # Build choices for questionary
-        choices = []
-        for s in sessions:
-            sid = s.get("id", "unknown")
-            display = format_session_for_display(s)
-            choices.append(questionary.Choice(title=display, value=sid))
+        # Build styled choices for questionary
+        from ..tui.selection import build_web_session_choices
+        from ..tui.theme import questionary_style
+
+        choices = build_web_session_choices(sessions)
 
         selected = questionary.select(
             "Select a session to import:",
             choices=choices,
+            style=questionary_style(),
         ).ask()
 
         if selected is None:

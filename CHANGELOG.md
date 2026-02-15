@@ -2,6 +2,27 @@
 
 All notable changes to this project will be documented in this file.
 
+## 0.9.2
+
+### Added
+- **Styled TUI package** (`src/ccutils/tui/`): New modular package for terminal UI with semantic coloring
+  - `theme.py`: Color constants for prompt_toolkit (questionary) and Rich, with model-family sub-styles (opus=bold, sonnet=normal, haiku=italic magenta)
+  - `formatters.py`: Pure formatting functions for relative dates, durations, project names, summaries, branch names, file sizes, message counts
+  - `layout.py`: Terminal width detection and proportional column width calculation with `ColumnSpec` dataclass
+  - `components.py`: Rich table renderers using ratio-based columns that expand to fill terminal width; summary column gets remaining space
+  - `selection.py`: Questionary choice builders using `FormattedText` (list of `(style, text)` tuples) for per-segment coloring in checkboxes/selects
+- Styled questionary chrome: blue pointer/highlight, green selected markers, dim instructions via `questionary_style()`
+- Color-coded session labels: dates in yellow, project names in blue, models in magenta, counts in green, summaries in default
+
+### Changed
+- `local` command now uses styled choices and styled questionary chrome for both flat and two-phase selection modes
+- `web` command session picker now uses styled choices with color-coded repo/date/title
+- `import` command interactive picker now uses styled choices with color-coded date/count/name
+- Project table title now shows total counts: "Projects (N found, M sessions)"
+- Session table columns use `expand=True` with `ratio` so summaries fill remaining terminal width
+- `discovery.py` refactored: display/selection functions replaced with thin wrappers delegating to `tui/` (~400 lines removed)
+- All backward-compatible re-exports preserved in `parsers/__init__.py`
+
 ## 0.9.1
 
 ### Changed

@@ -167,22 +167,17 @@ def _interactive_select(conversations):
             "Interactive mode requires questionary. Install with: uv add questionary"
         )
 
-    # Build choices
-    choices = []
-    for conv in sorted(
-        conversations, key=lambda c: c.get("updated_at", ""), reverse=True
-    ):
-        name = conv.get("name", "(untitled)")
-        uuid = conv.get("uuid", "")
-        msg_count = len(conv.get("chat_messages", []))
-        updated = conv.get("updated_at", "")[:10]
-        label = f"{updated} ({msg_count:3d} msgs) {name[:50]}"
-        choices.append(questionary.Choice(title=label, value=uuid))
+    # Build styled choices
+    from ..tui.selection import build_import_choices
+    from ..tui.theme import questionary_style
+
+    choices = build_import_choices(conversations)
 
     # Multi-select
     selected = questionary.checkbox(
         "Select conversations to export:",
         choices=choices,
+        style=questionary_style(),
     ).ask()
 
     return selected if selected else []
