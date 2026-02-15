@@ -14,14 +14,17 @@ from ..parsers import (
     flatten_selected_sessions,
 )
 from ..parsers.discovery import (
-    build_project_choices,
-    build_session_choices,
-    build_session_choices_for_projects,
     find_local_sessions,
     find_local_sessions_rich,
     group_by_project,
-    print_project_table,
-    print_session_table,
+)
+from ..tui import (
+    build_flat_choices,
+    build_project_choices,
+    build_session_choices,
+    questionary_style,
+    render_project_table,
+    render_session_table,
 )
 from ..schemas import (
     create_duckdb_schema,
@@ -152,11 +155,17 @@ def local_cmd(
         return
 
     console = Console()
+    style = questionary_style()
 
     if flat:
         # --flat mode: use old behavior with improved formatting
         selected = _flat_mode_selection(
-            projects_folder, limit, project_filter, include_subagents, expand_chains
+            projects_folder,
+            limit,
+            project_filter,
+            include_subagents,
+            expand_chains,
+            style,
         )
     else:
         # Two-phase mode: project selection then session selection
@@ -167,6 +176,7 @@ def local_cmd(
             include_subagents,
             expand_chains,
             console,
+            style,
         )
 
     if not selected:
@@ -329,7 +339,7 @@ def local_cmd(
 
 
 def _flat_mode_selection(
-    projects_folder, limit, project_filter, include_subagents, expand_chains
+    projects_folder, limit, project_filter, include_subagents, expand_chains, style
 ):
     """Flat mode: single list of all sessions sorted by date (legacy behavior)."""
     click.echo("Loading local sessions...")
@@ -356,23 +366,29 @@ def _flat_mode_selection(
             sessions_by_project[project_key] = []
         sessions_by_project[project_key].append((filepath, summary, slug))
 
-    choices = build_session_choices(
+    choices = build_flat_choices(
         sessions_by_project,
         expand_chains=expand_chains,
         agent_counts=agent_counts if include_subagents else None,
-        flat=True,
     )
 
     selected = questionary.checkbox(
         "Select sessions to convert (SPACE to select, ENTER to confirm):",
         choices=choices,
+        style=style,
     ).ask()
 
     return selected
 
 
 def _two_phase_selection(
-    projects_folder, limit, project_filter, include_subagents, expand_chains, console
+    projects_folder,
+    limit,
+    project_filter,
+    include_subagents,
+    expand_chains,
+    console,
+    style,
 ):
     """Two-phase selection: pick projects, then pick sessions."""
     click.echo("Scanning sessions...")
@@ -390,12 +406,13 @@ def _two_phase_selection(
         selected_projects = list(grouped.keys())
     else:
         # Phase 1: Project selection
-        print_project_table(grouped, console=console)
+        render_project_table(grouped, console=console)
 
         project_choices = build_project_choices(grouped)
         selected_projects = questionary.checkbox(
             "Select projects (SPACE to select, ENTER to confirm):",
             choices=project_choices,
+            style=style,
         ).ask()
 
         if not selected_projects:
@@ -407,15 +424,16 @@ def _two_phase_selection(
         if project_path in grouped:
             project_sessions = grouped[project_path]
             project_name = project_sessions[0].project_name
-            print_session_table(project_name, project_sessions, console=console)
+            render_session_table(project_name, project_sessions, console=console)
 
-    session_choices = build_session_choices_for_projects(
+    session_choices = build_session_choices(
         sessions, selected_projects, expand_chains=expand_chains
     )
 
     selected = questionary.checkbox(
         "Select sessions to convert (SPACE to select, ENTER to confirm):",
         choices=session_choices,
+        style=style,
     ).ask()
 
     return selected
