@@ -15,7 +15,7 @@ from .formatters import (
     format_relative_date,
     format_summary,
 )
-from .layout import get_terminal_width
+from .layout import ColumnSpec, calculate_column_widths, get_terminal_width
 from .theme import STYLES, model_style_key
 
 
@@ -29,8 +29,13 @@ def _styled(role, text):
     return (STYLES.get(role, ""), text)
 
 
-def _project_label(meta_or_name, session_count, last_mtime, models, branches):
+def _project_label(
+    meta_or_name, session_count, last_mtime, models, branches, terminal_width=None
+):
     """Build a styled label for project selection.
+
+    Column widths are computed proportionally based on terminal width.
+    Project name and models/branches flex to fill available space.
 
     Args:
         meta_or_name: Project display name string.
@@ -38,39 +43,66 @@ def _project_label(meta_or_name, session_count, last_mtime, models, branches):
         last_mtime: mtime of most recent session.
         models: Set of model short names.
         branches: Set of branch names.
+        terminal_width: Override terminal width (for testing).
 
     Returns:
         List of (style, text) tuples for FormattedText.
     """
+    if terminal_width is None:
+        terminal_width = get_terminal_width()
+
+    # Compute column widths proportionally.
+    # checkbox chrome eats ~6 chars, subtract before calculating.
+    usable = terminal_width - 6
+    cols = [
+        ColumnSpec(name="name", min_width=15, ratio=2.0),
+        ColumnSpec(name="count", min_width=12, fixed=True),
+        ColumnSpec(name="date", min_width=10, fixed=True),
+        ColumnSpec(name="models", min_width=10, ratio=1.5),
+        ColumnSpec(name="branches", min_width=4, ratio=1.0),
+    ]
+    widths = calculate_column_widths(cols, usable, padding=2)
+
     tokens = []
 
     # Project name (bold blue)
-    name = format_project_name(meta_or_name, max_width=22)
-    tokens.append(_styled("identity.bold", f"{name:<22s}"))
+    w_name = widths["name"]
+    name = format_project_name(meta_or_name, max_width=w_name)
+    tokens.append(_styled("identity.bold", f"{name:<{w_name}s}"))
     tokens.append(_styled("primary", "  "))
 
     # Session count (green)
     count_str = f"{session_count} session{'s' if session_count != 1 else ''}"
-    tokens.append(_styled("metric", f"{count_str:<14s}"))
+    w_count = widths["count"]
+    tokens.append(_styled("metric", f"{count_str:<{w_count}s}"))
 
     # Last active date (yellow)
     from .formatters import format_relative_date_short
 
     date_str = format_relative_date_short(last_mtime)
-    tokens.append(_styled("temporal", f"{date_str:<12s}"))
+    w_date = widths["date"]
+    tokens.append(_styled("temporal", f"{date_str:<{w_date}s}"))
 
     # Models (magenta)
+    w_models = widths["models"]
     if models:
         model_str = ", ".join(sorted(models))
+        if len(model_str) > w_models:
+            model_str = model_str[: w_models - 2] + ".."
         first_model = sorted(models)[0]
         style_key = model_style_key(first_model)
-        tokens.append((STYLES.get(style_key, STYLES["model"]), f"{model_str:<20s}"))
+        tokens.append(
+            (STYLES.get(style_key, STYLES["model"]), f"{model_str:<{w_models}s}")
+        )
     else:
-        tokens.append(_styled("secondary", f"{'-':<20s}"))
+        tokens.append(_styled("secondary", f"{'-':<{w_models}s}"))
 
     # Branches (blue)
+    w_branches = widths["branches"]
     if branches:
         branch_str = ", ".join(sorted(branches))
+        if len(branch_str) > w_branches:
+            branch_str = branch_str[: w_branches - 2] + ".."
         tokens.append(_styled("identity", branch_str))
     else:
         tokens.append(_styled("secondary", "-"))
@@ -95,9 +127,11 @@ def _session_label(meta, show_project=False, terminal_width=None):
     tokens = []
     used = 6  # checkbox chrome
 
-    # Optional project prefix
+    # Compute project prefix width proportionally when in flat mode
     if show_project:
-        proj = format_project_name(meta.project_name, max_width=16)
+        # Scale project name width: ~15% of terminal, min 12, max 28
+        proj_width = max(12, min(28, terminal_width // 7))
+        proj = format_project_name(meta.project_name, max_width=proj_width)
         tokens.append(_styled("identity", f"[{proj}]"))
         tokens.append(_styled("primary", " "))
         used += len(proj) + 3
@@ -121,12 +155,13 @@ def _session_label(meta, show_project=False, terminal_width=None):
         tokens.append(_styled("primary", "  "))
         used += 12
 
-    # Branch (blue)
+    # Branch (blue) - scale width: ~10% of terminal, min 6, max 20
     if meta.git_branch:
-        branch = format_branch(meta.git_branch, max_width=12)
-        tokens.append(_styled("identity", f"{branch:<12s}"))
+        branch_width = max(6, min(20, terminal_width // 10))
+        branch = format_branch(meta.git_branch, max_width=branch_width)
+        tokens.append(_styled("identity", f"{branch:<{branch_width}s}"))
         tokens.append(_styled("primary", " "))
-        used += 13
+        used += branch_width + 1
     else:
         used += 0  # skip branch if missing
 
@@ -165,9 +200,10 @@ def _chain_label(chain, show_project=False, terminal_width=None):
     tokens = []
     used = 6  # checkbox chrome
 
-    # Optional project prefix
+    # Optional project prefix (same scaling as _session_label)
     if show_project:
-        proj = format_project_name(newest.project_name, max_width=16)
+        proj_width = max(12, min(28, terminal_width // 7))
+        proj = format_project_name(newest.project_name, max_width=proj_width)
         tokens.append(_styled("identity", f"[{proj}]"))
         tokens.append(_styled("primary", " "))
         used += len(proj) + 3
@@ -218,6 +254,8 @@ def build_project_choices(grouped_sessions):
     """Build questionary checkbox choices for project selection.
 
     Each choice title is a FormattedText list with semantic coloring.
+    Column widths are computed once from terminal width and shared
+    across all choices for consistent alignment.
 
     Args:
         grouped_sessions: Dict from group_by_project(), mapping project_path
@@ -226,6 +264,7 @@ def build_project_choices(grouped_sessions):
     Returns:
         List of questionary.Choice objects, one per project.
     """
+    terminal_width = get_terminal_width()
     choices = []
     for project_path, sessions in grouped_sessions.items():
         if not sessions:
@@ -242,7 +281,9 @@ def build_project_choices(grouped_sessions):
             if s.git_branch:
                 branches.add(s.git_branch)
 
-        label = _project_label(project_name, count, sessions[0].mtime, models, branches)
+        label = _project_label(
+            project_name, count, sessions[0].mtime, models, branches, terminal_width
+        )
         choices.append(questionary.Choice(title=label, value=project_path))
 
     return choices
