@@ -7,14 +7,10 @@ Claude utilities for session transcripts, star schema analytics, data exploratio
 ## Installation
 
 ```bash
-uv tool install ccutils
+uv tool install -e .
 ```
 
 Or run without installing:
-
-```bash
-uvx ccutils --help
-```
 
 ## Quick Start
 
