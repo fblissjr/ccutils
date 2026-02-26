@@ -420,10 +420,12 @@ def generate_index_pagination_html(total_pages):
     return _macros.index_pagination(total_pages)
 
 
-# Load static assets from files
-_STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
-CSS = (_STATIC_DIR / "transcript.css").read_text(encoding="utf-8")
-JS = (_STATIC_DIR / "transcript.js").read_text(encoding="utf-8")
+# Load static assets via importlib.resources (works with zip/wheel installs)
+from importlib.resources import files as _resource_files
+
+_STATIC = _resource_files("ccutils") / "static"
+CSS = (_STATIC / "transcript.css").read_text(encoding="utf-8")
+JS = (_STATIC / "transcript.js").read_text(encoding="utf-8")
 
 
 def generate_batch_html(
