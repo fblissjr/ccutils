@@ -28,8 +28,6 @@ from .parsers import (
     parse_session_file,
     PROMPTS_PER_PAGE,
     # Session discovery
-    build_project_choices,
-    build_session_choices,
     find_agent_sessions,
     find_all_sessions,
     find_local_sessions,

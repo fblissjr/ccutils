@@ -27,14 +27,6 @@ from .discovery import (
     matches_project_filter,
 )
 
-from ..tui import (
-    build_project_choices,
-    build_session_choices,
-    get_terminal_width,
-    render_project_table as print_project_table,
-    render_session_table as print_session_table,
-)
-
 from .metadata import (
     SessionMetadata,
     derive_project_name,
@@ -78,19 +70,14 @@ __all__ = [
     "parse_session_file",
     "PROMPTS_PER_PAGE",
     # Session discovery
-    "build_project_choices",
-    "build_session_choices",
     "find_agent_sessions",
     "find_all_sessions",
     "find_local_sessions",
     "find_local_sessions_rich",
     "flatten_selected_sessions",
     "get_project_display_name",
-    "get_terminal_width",
     "group_by_project",
     "matches_project_filter",
-    "print_project_table",
-    "print_session_table",
     # Metadata extraction
     "SessionMetadata",
     "derive_project_name",
