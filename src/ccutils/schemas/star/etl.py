@@ -103,6 +103,234 @@ def run_star_schema_etl(
     _load_facts(conn, session_key, project_key, result)
 
 
+@dataclass
+class BlockContext:
+    """Per-message state passed to block handler functions."""
+
+    message_id: str
+    session_key: str
+    date_key: int | None
+    time_key: int | None
+    timestamp: datetime | None
+    truncate_output: int
+    idx: int  # block index
+
+
+def _handle_tool_use_block(result, block, ctx, tool_use_map, prev_tool_call):
+    """Handle a tool_use content block during extraction.
+
+    Populates tool_use_map, tool_input_params, file operations, and tool chain data.
+    Returns updated prev_tool_call tuple.
+    """
+    tool_use_id = block.get("id")
+    tool_name = block.get("name", "unknown")
+    tool_input = block.get("input", {})
+    result.tools_seen.add(tool_name)
+
+    input_json = json.dumps(tool_input)
+    input_summary = input_json[: ctx.truncate_output]
+
+    # Extract common parameters for direct columns
+    extracted_file_path = extract_file_path_from_tool(tool_name, tool_input)
+    extracted_command = (
+        tool_input.get("command") if tool_name.lower() == "bash" else None
+    )
+    extracted_pattern = (
+        tool_input.get("pattern") if tool_name.lower() == "grep" else None
+    )
+    extracted_query = tool_input.get("query") or tool_input.get("url")
+
+    tool_use_map[tool_use_id] = {
+        "message_id": ctx.message_id,
+        "tool_name": tool_name,
+        "tool_key": generate_dimension_key(tool_name),
+        "input_json": input_json,
+        "input_summary": input_summary,
+        "input_char_count": len(input_json),
+        "timestamp": ctx.timestamp,
+        "date_key": ctx.date_key,
+        "time_key": ctx.time_key,
+        "file_path": extracted_file_path,
+        "command": extracted_command,
+        "pattern": extracted_pattern,
+        "query_text": extracted_query,
+    }
+
+    # Populate tool_input_params for granular exploration
+    for param_key, param_value in tool_input.items():
+        if param_value is None:
+            continue
+        param_id = f"{tool_use_id}-{param_key}"
+        param_text = None
+        param_number = None
+        param_bool = None
+
+        if isinstance(param_value, bool):
+            param_bool = param_value
+        elif isinstance(param_value, (int, float)):
+            param_number = float(param_value)
+        elif isinstance(param_value, str):
+            param_text = param_value[:2000]
+        else:
+            param_text = json.dumps(param_value)[:2000]
+
+        result.tool_input_params_data.append(
+            {
+                "param_id": param_id,
+                "tool_call_id": tool_use_id,
+                "session_key": ctx.session_key,
+                "param_key": param_key,
+                "param_value_text": param_text,
+                "param_value_number": param_number,
+                "param_value_bool": param_bool,
+            }
+        )
+
+    # Track file operations
+    file_path = extract_file_path_from_tool(tool_name, tool_input)
+    if file_path:
+        file_info = extract_file_info(file_path)
+        if file_info and file_path not in result.files_seen:
+            result.files_seen[file_path] = file_info
+
+        operation_type = get_operation_type(tool_name)
+        file_content = tool_input.get("content", "")
+        file_size = len(file_content) if isinstance(file_content, str) else 0
+
+        result.file_operations_data.append(
+            {
+                "file_operation_id": f"{tool_use_id}-file",
+                "tool_call_id": tool_use_id,
+                "session_key": ctx.session_key,
+                "file_key": file_info["file_key"] if file_info else None,
+                "tool_key": generate_dimension_key(tool_name),
+                "date_key": ctx.date_key,
+                "time_key": ctx.time_key,
+                "operation_type": operation_type,
+                "file_size_chars": file_size,
+                "timestamp": ctx.timestamp,
+            }
+        )
+
+    # Track tool chain
+    tool_key = generate_dimension_key(tool_name)
+    chain_id = f"{ctx.session_key}-chain"
+    step_position = len(result.tool_chain_data)
+
+    time_since_prev = None
+    prev_tool_key_val = None
+    if prev_tool_call and ctx.timestamp:
+        prev_ts = prev_tool_call[2]
+        if prev_ts:
+            time_since_prev = (ctx.timestamp - prev_ts).total_seconds()
+        prev_tool_key_val = prev_tool_call[1]
+
+    result.tool_chain_data.append(
+        {
+            "chain_step_id": f"{chain_id}-{step_position}",
+            "session_key": ctx.session_key,
+            "chain_id": chain_id,
+            "tool_call_id": tool_use_id,
+            "tool_key": tool_key,
+            "step_position": step_position,
+            "prev_tool_key": prev_tool_key_val,
+            "time_since_prev_seconds": time_since_prev,
+        }
+    )
+
+    _add_content_block(
+        result.content_blocks_data,
+        ctx.message_id,
+        ctx.session_key,
+        "tool_use",
+        ctx.idx,
+        ctx.date_key,
+        ctx.time_key,
+        input_summary,
+        ctx.truncate_output,
+        block,
+    )
+    result.total_content_blocks += 1
+
+    return (tool_use_id, tool_key, ctx.timestamp)
+
+
+def _handle_tool_result_block(result, block, ctx, tool_use_map):
+    """Handle a tool_result content block during extraction.
+
+    Resolves tool_use_map entries, appends to tool_calls_data and errors_data.
+    """
+    tool_use_id = block.get("tool_use_id")
+    result_content = block.get("content", "")
+    is_error = block.get("is_error", False)
+
+    if isinstance(result_content, list):
+        result_text = " ".join(
+            str(item.get("text", ""))
+            for item in result_content
+            if isinstance(item, dict)
+        )
+    else:
+        result_text = str(result_content)
+
+    output_text = result_text[: ctx.truncate_output]
+    output_char_count = len(result_text)
+
+    if tool_use_id and tool_use_id in tool_use_map:
+        tool_info = tool_use_map[tool_use_id]
+        result.tool_calls_data.append(
+            {
+                "tool_call_id": tool_use_id,
+                "session_key": ctx.session_key,
+                "tool_key": tool_info["tool_key"],
+                "date_key": tool_info["date_key"],
+                "time_key": tool_info["time_key"],
+                "invoke_message_id": tool_info["message_id"],
+                "result_message_id": ctx.message_id,
+                "timestamp": tool_info["timestamp"],
+                "input_char_count": tool_info["input_char_count"],
+                "output_char_count": output_char_count,
+                "is_error": is_error,
+                "input_json": tool_info["input_json"],
+                "input_summary": tool_info["input_summary"],
+                "output_text": output_text,
+                "file_path": tool_info["file_path"],
+                "command": tool_info["command"],
+                "pattern": tool_info["pattern"],
+                "query_text": tool_info["query_text"],
+            }
+        )
+
+        if is_error:
+            result.errors_data.append(
+                {
+                    "error_id": f"{tool_use_id}-error",
+                    "tool_call_id": tool_use_id,
+                    "session_key": ctx.session_key,
+                    "tool_key": tool_info["tool_key"],
+                    "error_type_key": generate_dimension_key("tool_error"),
+                    "date_key": tool_info["date_key"],
+                    "time_key": tool_info["time_key"],
+                    "error_message": output_text,
+                    "timestamp": tool_info["timestamp"],
+                }
+            )
+
+    _add_content_block(
+        result.content_blocks_data,
+        ctx.message_id,
+        ctx.session_key,
+        "tool_result",
+        ctx.idx,
+        ctx.date_key,
+        ctx.time_key,
+        output_text,
+        ctx.truncate_output,
+        block,
+    )
+    result.total_content_blocks += 1
+
+
 def _extract_star_data(
     session_path, session_key, project_key, include_thinking, truncate_output
 ):
@@ -201,6 +429,16 @@ def _extract_star_data(
                 if block_type == "thinking" and not include_thinking:
                     should_track = False
 
+                ctx = BlockContext(
+                    message_id=message_id,
+                    session_key=session_key,
+                    date_key=date_key,
+                    time_key=time_key,
+                    timestamp=timestamp,
+                    truncate_output=truncate_output,
+                    idx=idx,
+                )
+
                 if block_type == "text":
                     text = block.get("text", "")
                     texts.append(text)
@@ -221,223 +459,13 @@ def _extract_star_data(
 
                 elif block_type == "tool_use":
                     has_tool_use = True
-                    tool_use_id = block.get("id")
-                    tool_name = block.get("name", "unknown")
-                    tool_input = block.get("input", {})
-                    result.tools_seen.add(tool_name)
-
-                    input_json = json.dumps(tool_input)
-                    input_summary = input_json[:truncate_output]
-
-                    # Extract common parameters for direct columns
-                    extracted_file_path = extract_file_path_from_tool(
-                        tool_name, tool_input
+                    prev_tool_call = _handle_tool_use_block(
+                        result, block, ctx, tool_use_map, prev_tool_call
                     )
-                    extracted_command = (
-                        tool_input.get("command")
-                        if tool_name.lower() == "bash"
-                        else None
-                    )
-                    extracted_pattern = (
-                        tool_input.get("pattern")
-                        if tool_name.lower() == "grep"
-                        else None
-                    )
-                    extracted_query = tool_input.get("query") or tool_input.get("url")
-
-                    tool_use_map[tool_use_id] = {
-                        "message_id": message_id,
-                        "tool_name": tool_name,
-                        "tool_key": generate_dimension_key(tool_name),
-                        "input_json": input_json,
-                        "input_summary": input_summary,
-                        "input_char_count": len(input_json),
-                        "timestamp": timestamp,
-                        "date_key": date_key,
-                        "time_key": time_key,
-                        "file_path": extracted_file_path,
-                        "command": extracted_command,
-                        "pattern": extracted_pattern,
-                        "query_text": extracted_query,
-                    }
-
-                    # Populate tool_input_params for granular exploration
-                    for param_key, param_value in tool_input.items():
-                        if param_value is None:
-                            continue
-                        param_id = f"{tool_use_id}-{param_key}"
-                        param_text = None
-                        param_number = None
-                        param_bool = None
-
-                        if isinstance(param_value, bool):
-                            param_bool = param_value
-                        elif isinstance(param_value, (int, float)):
-                            param_number = float(param_value)
-                        elif isinstance(param_value, str):
-                            param_text = param_value[:2000]
-                        else:
-                            # For complex types (list, dict), serialize
-                            param_text = json.dumps(param_value)[:2000]
-
-                        result.tool_input_params_data.append(
-                            {
-                                "param_id": param_id,
-                                "tool_call_id": tool_use_id,
-                                "session_key": session_key,
-                                "param_key": param_key,
-                                "param_value_text": param_text,
-                                "param_value_number": param_number,
-                                "param_value_bool": param_bool,
-                            }
-                        )
-
-                    # Track file operations
-                    file_path = extract_file_path_from_tool(tool_name, tool_input)
-                    if file_path:
-                        file_info = extract_file_info(file_path)
-                        if file_info and file_path not in result.files_seen:
-                            result.files_seen[file_path] = file_info
-
-                        operation_type = get_operation_type(tool_name)
-                        file_content = tool_input.get("content", "")
-                        file_size = (
-                            len(file_content) if isinstance(file_content, str) else 0
-                        )
-
-                        result.file_operations_data.append(
-                            {
-                                "file_operation_id": f"{tool_use_id}-file",
-                                "tool_call_id": tool_use_id,
-                                "session_key": session_key,
-                                "file_key": (
-                                    file_info["file_key"] if file_info else None
-                                ),
-                                "tool_key": generate_dimension_key(tool_name),
-                                "date_key": date_key,
-                                "time_key": time_key,
-                                "operation_type": operation_type,
-                                "file_size_chars": file_size,
-                                "timestamp": timestamp,
-                            }
-                        )
-
-                    # Track tool chain
-                    tool_key = generate_dimension_key(tool_name)
-                    chain_id = f"{session_key}-chain"
-                    step_position = len(result.tool_chain_data)
-
-                    time_since_prev = None
-                    prev_tool_key_val = None
-                    if prev_tool_call and timestamp:
-                        prev_ts = prev_tool_call[2]
-                        if prev_ts:
-                            time_since_prev = (timestamp - prev_ts).total_seconds()
-                        prev_tool_key_val = prev_tool_call[1]
-
-                    result.tool_chain_data.append(
-                        {
-                            "chain_step_id": f"{chain_id}-{step_position}",
-                            "session_key": session_key,
-                            "chain_id": chain_id,
-                            "tool_call_id": tool_use_id,
-                            "tool_key": tool_key,
-                            "step_position": step_position,
-                            "prev_tool_key": prev_tool_key_val,
-                            "time_since_prev_seconds": time_since_prev,
-                        }
-                    )
-                    prev_tool_call = (tool_use_id, tool_key, timestamp)
-
-                    if should_track:
-                        _add_content_block(
-                            result.content_blocks_data,
-                            message_id,
-                            session_key,
-                            "tool_use",
-                            idx,
-                            date_key,
-                            time_key,
-                            input_summary,
-                            truncate_output,
-                            block,
-                        )
-                        result.total_content_blocks += 1
 
                 elif block_type == "tool_result":
                     has_tool_result = True
-                    tool_use_id = block.get("tool_use_id")
-                    result_content = block.get("content", "")
-                    is_error = block.get("is_error", False)
-
-                    if isinstance(result_content, list):
-                        result_text = " ".join(
-                            str(item.get("text", ""))
-                            for item in result_content
-                            if isinstance(item, dict)
-                        )
-                    else:
-                        result_text = str(result_content)
-
-                    output_text = result_text[:truncate_output]
-                    output_char_count = len(result_text)
-
-                    if tool_use_id and tool_use_id in tool_use_map:
-                        tool_info = tool_use_map[tool_use_id]
-                        result.tool_calls_data.append(
-                            {
-                                "tool_call_id": tool_use_id,
-                                "session_key": session_key,
-                                "tool_key": tool_info["tool_key"],
-                                "date_key": tool_info["date_key"],
-                                "time_key": tool_info["time_key"],
-                                "invoke_message_id": tool_info["message_id"],
-                                "result_message_id": message_id,
-                                "timestamp": tool_info["timestamp"],
-                                "input_char_count": tool_info["input_char_count"],
-                                "output_char_count": output_char_count,
-                                "is_error": is_error,
-                                "input_json": tool_info["input_json"],
-                                "input_summary": tool_info["input_summary"],
-                                "output_text": output_text,
-                                "file_path": tool_info["file_path"],
-                                "command": tool_info["command"],
-                                "pattern": tool_info["pattern"],
-                                "query_text": tool_info["query_text"],
-                            }
-                        )
-
-                        if is_error:
-                            result.errors_data.append(
-                                {
-                                    "error_id": f"{tool_use_id}-error",
-                                    "tool_call_id": tool_use_id,
-                                    "session_key": session_key,
-                                    "tool_key": tool_info["tool_key"],
-                                    "error_type_key": generate_dimension_key(
-                                        "tool_error"
-                                    ),
-                                    "date_key": tool_info["date_key"],
-                                    "time_key": tool_info["time_key"],
-                                    "error_message": output_text,
-                                    "timestamp": tool_info["timestamp"],
-                                }
-                            )
-
-                    if should_track:
-                        _add_content_block(
-                            result.content_blocks_data,
-                            message_id,
-                            session_key,
-                            "tool_result",
-                            idx,
-                            date_key,
-                            time_key,
-                            output_text,
-                            truncate_output,
-                            block,
-                        )
-                        result.total_content_blocks += 1
+                    _handle_tool_result_block(result, block, ctx, tool_use_map)
 
                 elif block_type == "thinking":
                     has_thinking = True
