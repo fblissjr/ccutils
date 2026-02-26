@@ -47,6 +47,7 @@ from .claude_ai import (
 from .jsonl_reader import (
     SessionEntry,
     SessionMetaHeader,
+    iter_loglines,
     iter_session_entries,
     parse_session_header,
 )
@@ -94,6 +95,7 @@ __all__ = [
     # JSONL reader
     "SessionEntry",
     "SessionMetaHeader",
+    "iter_loglines",
     "iter_session_entries",
     "parse_session_header",
     # Schema inspection

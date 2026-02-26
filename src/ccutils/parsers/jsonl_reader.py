@@ -106,6 +106,44 @@ def _parse_timestamp(ts_str: str) -> datetime | None:
         return None
 
 
+def iter_loglines(loglines: list[dict]) -> Iterator[SessionEntry]:
+    """Convert pre-parsed logline dicts into SessionEntry objects.
+
+    Used for Claude.ai export data that has already been parsed into
+    the ccutils logline format (with type, uuid, timestamp, message keys).
+
+    Args:
+        loglines: List of logline dicts in ccutils format
+
+    Yields:
+        SessionEntry for each user/assistant entry
+    """
+    for obj in loglines:
+        entry_type = obj.get("type")
+        if entry_type not in ("user", "assistant"):
+            continue
+
+        message_data = obj.get("message", {})
+        content = message_data.get("content", "")
+        model = message_data.get("model") if isinstance(message_data, dict) else None
+        ts_raw = obj.get("timestamp", "")
+
+        yield SessionEntry(
+            entry_type=entry_type,
+            uuid=obj.get("uuid", ""),
+            parent_uuid=obj.get("parentUuid"),
+            timestamp_raw=ts_raw,
+            timestamp=_parse_timestamp(ts_raw),
+            model=model,
+            message_data=message_data if isinstance(message_data, dict) else {},
+            content=content,
+            is_compact_summary=obj.get("isCompactSummary", False),
+            is_meta=obj.get("isMeta", False),
+            is_sidechain=obj.get("isSidechain", False),
+            raw=obj,
+        )
+
+
 def iter_session_entries(path: str | Path) -> Iterator[SessionEntry]:
     """Iterate over entries in a session JSONL file.
 

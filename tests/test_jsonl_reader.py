@@ -9,6 +9,7 @@ import pytest
 from ccutils.parsers.jsonl_reader import (
     SessionEntry,
     SessionMetaHeader,
+    iter_loglines,
     iter_session_entries,
     parse_session_header,
 )
@@ -305,3 +306,80 @@ class TestIterSessionEntries:
         )
         entries = list(iter_session_entries(path))
         assert len(entries) == 0
+
+
+class TestIterLoglines:
+    """Tests for iter_loglines() which converts pre-parsed logline dicts to SessionEntry."""
+
+    def test_converts_user_and_assistant(self):
+        loglines = [
+            {
+                "type": "user",
+                "uuid": "u1",
+                "timestamp": "2025-01-01T00:00:00.000Z",
+                "message": {"content": [{"type": "text", "text": "hello"}]},
+            },
+            {
+                "type": "assistant",
+                "uuid": "a1",
+                "timestamp": "2025-01-01T00:00:01.000Z",
+                "message": {
+                    "content": [{"type": "text", "text": "hi"}],
+                    "model": "claude-opus-4-6",
+                },
+            },
+        ]
+        entries = list(iter_loglines(loglines))
+        assert len(entries) == 2
+        assert entries[0].entry_type == "user"
+        assert entries[0].uuid == "u1"
+        assert entries[0].content == [{"type": "text", "text": "hello"}]
+        assert entries[1].entry_type == "assistant"
+        assert entries[1].model == "claude-opus-4-6"
+
+    def test_parses_timestamps(self):
+        loglines = [
+            {
+                "type": "user",
+                "uuid": "u1",
+                "timestamp": "2025-06-15T14:30:00.000Z",
+                "message": {"content": "test"},
+            },
+        ]
+        entries = list(iter_loglines(loglines))
+        assert entries[0].timestamp is not None
+        assert entries[0].timestamp.year == 2025
+        assert entries[0].timestamp_raw == "2025-06-15T14:30:00.000Z"
+
+    def test_skips_non_message_types(self):
+        loglines = [
+            {"type": "summary", "data": "ignored"},
+            {"type": "user", "uuid": "u1", "message": {"content": "hello"}},
+        ]
+        entries = list(iter_loglines(loglines))
+        assert len(entries) == 1
+
+    def test_empty_list(self):
+        assert list(iter_loglines([])) == []
+
+    def test_sets_defaults_for_missing_fields(self):
+        loglines = [
+            {"type": "user", "message": {"content": "test"}},
+        ]
+        entries = list(iter_loglines(loglines))
+        assert entries[0].uuid == ""
+        assert entries[0].parent_uuid is None
+        assert entries[0].model is None
+        assert entries[0].is_sidechain is False
+
+    def test_preserves_raw_dict(self):
+        loglines = [
+            {
+                "type": "user",
+                "uuid": "u1",
+                "sessionId": "sess-123",
+                "message": {"content": "test"},
+            },
+        ]
+        entries = list(iter_loglines(loglines))
+        assert entries[0].raw["sessionId"] == "sess-123"

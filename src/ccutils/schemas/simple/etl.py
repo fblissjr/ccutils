@@ -8,23 +8,37 @@ import json
 from datetime import datetime
 from pathlib import Path
 
-from ...parsers.jsonl_reader import iter_session_entries
+from ...parsers.jsonl_reader import iter_loglines, iter_session_entries
 from .schema import create_duckdb_schema
 
 
 def export_session_to_duckdb(
-    conn, session_path, project_name, include_thinking=False, truncate_output=2000
+    conn,
+    session_path,
+    project_name,
+    include_thinking=False,
+    truncate_output=2000,
+    loglines=None,
+    session_id_override=None,
 ):
     """Export a single session to DuckDB.
 
     Args:
         conn: DuckDB connection
-        session_path: Path to the JSONL session file
+        session_path: Path to the JSONL session file (ignored if loglines provided)
         project_name: Name of the project
         include_thinking: Whether to export thinking blocks
         truncate_output: Max characters for tool output (default 2000)
+        loglines: Optional pre-parsed logline dicts (skips file reading)
+        session_id_override: Optional session ID (used with loglines instead of path.stem)
     """
-    session_path = Path(session_path)
+    if loglines is not None:
+        entries_iter = iter_loglines(loglines)
+        session_path_str = "claude.ai"
+    else:
+        session_path = Path(session_path)
+        entries_iter = iter_session_entries(session_path)
+        session_path_str = str(session_path)
     session_id = None
     cwd = None
     git_branch = None
@@ -44,13 +58,15 @@ def export_session_to_duckdb(
     tool_use_map = {}
     thinking_id = 0
 
-    for entry in iter_session_entries(session_path):
+    for entry in entries_iter:
         if entry.entry_type == "progress":
             continue
 
         # Extract metadata from first entry
         if session_id is None:
-            session_id = session_path.stem
+            session_id = session_id_override or (
+                session_path.stem if hasattr(session_path, "stem") else "unknown"
+            )
             cwd = entry.raw.get("cwd")
             git_branch = entry.raw.get("gitBranch")
             version = entry.raw.get("version")
@@ -205,7 +221,7 @@ def export_session_to_duckdb(
         """,
             [
                 session_id,
-                str(session_path),
+                session_path_str,
                 project_name,
                 first_timestamp,
                 last_timestamp,
