@@ -1,7 +1,6 @@
 """Import command for Claude.ai account exports."""
 
 import html
-import json
 import tempfile
 from pathlib import Path
 
@@ -127,7 +126,6 @@ def import_cmd(
     )
 
     loglines = parsed["loglines"]
-    metadata = parsed["_metadata"]
 
     if not loglines:
         click.echo("No messages found to export.")
@@ -186,44 +184,19 @@ def _interactive_select(conversations):
 def _export_to_html(parsed, output, open_browser):
     """Export parsed data to HTML."""
     loglines = parsed["loglines"]
+    sessions = _group_loglines_by_session(loglines)
+    auto_open = output is None
 
-    # Group loglines by session for multi-conversation exports
-    sessions = {}
-    for ll in loglines:
-        sid = ll.get("sessionId", "unknown")
-        if sid not in sessions:
-            sessions[sid] = []
-        sessions[sid].append(ll)
-
-    # Determine output directory
-    if output is None:
-        output = Path(tempfile.gettempdir()) / "claude-ai-export"
-        auto_open = True
-    else:
-        output = Path(output)
-        auto_open = False
-
+    output = (
+        Path(output) if output else Path(tempfile.gettempdir()) / "claude-ai-export"
+    )
     output.mkdir(parents=True, exist_ok=True)
 
-    # For each session, write temp file and generate HTML
     for session_id, session_loglines in sessions.items():
-        # Create temp JSON file in ccutils format
-        session_data = {"loglines": session_loglines}
-
-        # Use session name from first message's conversation, or truncated ID
         session_name = session_id[:8]
-
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as tmp:
-            json.dump(session_data, tmp)
-            tmp_path = Path(tmp.name)
-
-        try:
-            # Generate HTML to session subdirectory
-            session_output = output / session_name
-            generate_html(tmp_path, session_output)
-            click.echo(f"  Generated: {session_output}")
-        finally:
-            tmp_path.unlink()  # Clean up temp file
+        session_output = output / session_name
+        generate_html(loglines=session_loglines, output_dir=session_output)
+        click.echo(f"  Generated: {session_output}")
 
     # Create index if multiple sessions
     if len(sessions) > 1:

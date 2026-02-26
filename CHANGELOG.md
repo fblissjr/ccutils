@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## 0.9.5
+
+### Changed
+- `_export_to_html` cleanup: eliminated temp-file round-trip by passing loglines directly to `generate_html(loglines=)`, reused `_group_loglines_by_session` helper, simplified `auto_open` logic, removed unused `metadata` binding and `json` import
+
 ## 0.9.4
 
 ### Removed
