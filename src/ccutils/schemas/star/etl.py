@@ -4,6 +4,7 @@ import json
 from datetime import datetime
 from pathlib import Path
 
+from ...parsers.jsonl_reader import iter_session_entries
 from .extractors import (
     LANGUAGE_EXTENSIONS,
     calculate_conversation_depth,
@@ -62,7 +63,6 @@ def run_star_schema_etl(
     is_agent = False
     agent_id = None
     parent_session_id = None
-    is_sidechain = False
 
     # Counters
     user_count = 0
@@ -101,476 +101,446 @@ def run_star_schema_etl(
     # Progress record tracking: tool_use_id -> agent_id
     task_agent_map = {}
 
-    with open(session_path, "r", encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
-            if not line:
-                continue
+    is_first = True
 
-            try:
-                entry = json.loads(line)
-            except json.JSONDecodeError:
-                continue
+    for entry in iter_session_entries(session_path):
+        # Capture progress records for deterministic agent delegation linking
+        if entry.entry_type == "progress":
+            if entry.progress_parent_tool_id and entry.progress_agent_id:
+                task_agent_map[entry.progress_parent_tool_id] = entry.progress_agent_id
+            continue
 
-            entry_type = entry.get("type")
+        # Extract metadata from first entry
+        if is_first:
+            is_first = False
+            cwd = entry.raw.get("cwd")
+            git_branch = entry.raw.get("gitBranch")
+            version = entry.raw.get("version")
+            slug = entry.raw.get("slug")
+            agent_id = entry.raw.get("agentId")
+            is_agent = agent_id is not None
+            if is_agent:
+                parent_session_id = entry.raw.get("sessionId")
 
-            # Capture progress records for deterministic agent delegation linking
-            if entry_type == "progress":
-                parent_tool_id = entry.get("parentToolUseID")
-                agent_data = entry.get("data", {})
-                progress_agent_id = (
-                    agent_data.get("agentId") if isinstance(agent_data, dict) else None
-                )
-                if parent_tool_id and progress_agent_id:
-                    task_agent_map[parent_tool_id] = progress_agent_id
-                continue
+        message_id = entry.uuid
+        parent_id = entry.parent_uuid
+        timestamp = entry.timestamp
+        model = entry.model
+        content = entry.content
 
-            if entry_type not in ("user", "assistant"):
-                continue
+        # Derive date/time keys from parsed timestamp
+        date_key = None
+        time_key = None
+        if timestamp is not None:
+            if first_timestamp is None:
+                first_timestamp = timestamp
+            last_timestamp = timestamp
+            date_key = int(timestamp.strftime("%Y%m%d"))
+            time_key = int(timestamp.strftime("%H%M"))
+            dates_seen.add(date_key)
 
-            # Extract metadata from first entry
-            if cwd is None:
-                cwd = entry.get("cwd")
-                git_branch = entry.get("gitBranch")
-                version = entry.get("version")
-                slug = entry.get("slug")
-                agent_id = entry.get("agentId")
-                is_sidechain = entry.get("isSidechain", False)
-                is_agent = agent_id is not None
-                if is_agent:
-                    parent_session_id = entry.get("sessionId")
+        if model:
+            models_seen.add(model)
 
-            message_id = entry.get("uuid", "")
-            parent_id = entry.get("parentUuid")
-            timestamp_str = entry.get("timestamp", "")
-            message_data = entry.get("message", {})
-            model = message_data.get("model")
+        # Process content
+        has_tool_use = False
+        has_tool_result = False
+        has_thinking = False
+        text_content = ""
+        content_json = json.dumps(content)
+        content_block_count = 0
 
-            # Parse timestamp
-            timestamp = None
-            date_key = None
-            time_key = None
-            if timestamp_str:
-                try:
-                    timestamp = datetime.fromisoformat(
-                        timestamp_str.replace("Z", "+00:00")
+        if isinstance(content, str):
+            text_content = content
+            content_block_count = 1
+            block_id = f"{message_id}-0"
+            content_blocks_data.append(
+                {
+                    "content_block_id": block_id,
+                    "message_id": message_id,
+                    "session_key": session_key,
+                    "content_block_type_key": generate_dimension_key("text"),
+                    "date_key": date_key,
+                    "time_key": time_key,
+                    "block_index": 0,
+                    "content_length": len(content),
+                    "content_text": content[:truncate_output] if content else "",
+                    "content_json": json.dumps({"type": "text", "text": content}),
+                }
+            )
+            total_content_blocks += 1
+
+        elif isinstance(content, list):
+            texts = []
+            for idx, block in enumerate(content):
+                if not isinstance(block, dict):
+                    continue
+
+                block_type = block.get("type")
+                content_block_count += 1
+
+                should_track = True
+                if block_type == "thinking" and not include_thinking:
+                    should_track = False
+
+                if block_type == "text":
+                    text = block.get("text", "")
+                    texts.append(text)
+                    if should_track:
+                        _add_content_block(
+                            content_blocks_data,
+                            message_id,
+                            session_key,
+                            "text",
+                            idx,
+                            date_key,
+                            time_key,
+                            text,
+                            truncate_output,
+                            block,
+                        )
+                        total_content_blocks += 1
+
+                elif block_type == "tool_use":
+                    has_tool_use = True
+                    tool_use_id = block.get("id")
+                    tool_name = block.get("name", "unknown")
+                    tool_input = block.get("input", {})
+                    tools_seen.add(tool_name)
+
+                    input_json = json.dumps(tool_input)
+                    input_summary = input_json[:truncate_output]
+
+                    # Extract common parameters for direct columns
+                    extracted_file_path = extract_file_path_from_tool(
+                        tool_name, tool_input
                     )
-                    if first_timestamp is None:
-                        first_timestamp = timestamp
-                    last_timestamp = timestamp
-                    date_key = int(timestamp.strftime("%Y%m%d"))
-                    time_key = int(timestamp.strftime("%H%M"))
-                    dates_seen.add(date_key)
-                except (ValueError, TypeError):
-                    pass
+                    extracted_command = (
+                        tool_input.get("command")
+                        if tool_name.lower() == "bash"
+                        else None
+                    )
+                    extracted_pattern = (
+                        tool_input.get("pattern")
+                        if tool_name.lower() == "grep"
+                        else None
+                    )
+                    extracted_query = tool_input.get("query") or tool_input.get("url")
 
-            if model:
-                models_seen.add(model)
-
-            # Process content
-            content = message_data.get("content", "")
-            has_tool_use = False
-            has_tool_result = False
-            has_thinking = False
-            text_content = ""
-            content_json = json.dumps(content)
-            content_block_count = 0
-
-            if isinstance(content, str):
-                text_content = content
-                content_block_count = 1
-                block_id = f"{message_id}-0"
-                content_blocks_data.append(
-                    {
-                        "content_block_id": block_id,
+                    tool_use_map[tool_use_id] = {
                         "message_id": message_id,
-                        "session_key": session_key,
-                        "content_block_type_key": generate_dimension_key("text"),
+                        "tool_name": tool_name,
+                        "tool_key": generate_dimension_key(tool_name),
+                        "input_json": input_json,
+                        "input_summary": input_summary,
+                        "input_char_count": len(input_json),
+                        "timestamp": timestamp,
                         "date_key": date_key,
                         "time_key": time_key,
-                        "block_index": 0,
-                        "content_length": len(content),
-                        "content_text": content[:truncate_output] if content else "",
-                        "content_json": json.dumps({"type": "text", "text": content}),
+                        "file_path": extracted_file_path,
+                        "command": extracted_command,
+                        "pattern": extracted_pattern,
+                        "query_text": extracted_query,
                     }
-                )
-                total_content_blocks += 1
 
-            elif isinstance(content, list):
-                texts = []
-                for idx, block in enumerate(content):
-                    if not isinstance(block, dict):
-                        continue
+                    # Populate tool_input_params for granular exploration
+                    for param_key, param_value in tool_input.items():
+                        if param_value is None:
+                            continue
+                        param_id = f"{tool_use_id}-{param_key}"
+                        param_text = None
+                        param_number = None
+                        param_bool = None
 
-                    block_type = block.get("type")
-                    content_block_count += 1
+                        if isinstance(param_value, bool):
+                            param_bool = param_value
+                        elif isinstance(param_value, (int, float)):
+                            param_number = float(param_value)
+                        elif isinstance(param_value, str):
+                            param_text = param_value[:2000]
+                        else:
+                            # For complex types (list, dict), serialize
+                            param_text = json.dumps(param_value)[:2000]
 
-                    should_track = True
-                    if block_type == "thinking" and not include_thinking:
-                        should_track = False
-
-                    if block_type == "text":
-                        text = block.get("text", "")
-                        texts.append(text)
-                        if should_track:
-                            _add_content_block(
-                                content_blocks_data,
-                                message_id,
-                                session_key,
-                                "text",
-                                idx,
-                                date_key,
-                                time_key,
-                                text,
-                                truncate_output,
-                                block,
-                            )
-                            total_content_blocks += 1
-
-                    elif block_type == "tool_use":
-                        has_tool_use = True
-                        tool_use_id = block.get("id")
-                        tool_name = block.get("name", "unknown")
-                        tool_input = block.get("input", {})
-                        tools_seen.add(tool_name)
-
-                        input_json = json.dumps(tool_input)
-                        input_summary = input_json[:truncate_output]
-
-                        # Extract common parameters for direct columns
-                        extracted_file_path = extract_file_path_from_tool(
-                            tool_name, tool_input
-                        )
-                        extracted_command = (
-                            tool_input.get("command")
-                            if tool_name.lower() == "bash"
-                            else None
-                        )
-                        extracted_pattern = (
-                            tool_input.get("pattern")
-                            if tool_name.lower() == "grep"
-                            else None
-                        )
-                        extracted_query = tool_input.get("query") or tool_input.get(
-                            "url"
-                        )
-
-                        tool_use_map[tool_use_id] = {
-                            "message_id": message_id,
-                            "tool_name": tool_name,
-                            "tool_key": generate_dimension_key(tool_name),
-                            "input_json": input_json,
-                            "input_summary": input_summary,
-                            "input_char_count": len(input_json),
-                            "timestamp": timestamp,
-                            "date_key": date_key,
-                            "time_key": time_key,
-                            "file_path": extracted_file_path,
-                            "command": extracted_command,
-                            "pattern": extracted_pattern,
-                            "query_text": extracted_query,
-                        }
-
-                        # Populate tool_input_params for granular exploration
-                        for param_key, param_value in tool_input.items():
-                            if param_value is None:
-                                continue
-                            param_id = f"{tool_use_id}-{param_key}"
-                            param_text = None
-                            param_number = None
-                            param_bool = None
-
-                            if isinstance(param_value, bool):
-                                param_bool = param_value
-                            elif isinstance(param_value, (int, float)):
-                                param_number = float(param_value)
-                            elif isinstance(param_value, str):
-                                param_text = param_value[:2000]
-                            else:
-                                # For complex types (list, dict), serialize
-                                param_text = json.dumps(param_value)[:2000]
-
-                            tool_input_params_data.append(
-                                {
-                                    "param_id": param_id,
-                                    "tool_call_id": tool_use_id,
-                                    "session_key": session_key,
-                                    "param_key": param_key,
-                                    "param_value_text": param_text,
-                                    "param_value_number": param_number,
-                                    "param_value_bool": param_bool,
-                                }
-                            )
-
-                        # Track file operations
-                        file_path = extract_file_path_from_tool(tool_name, tool_input)
-                        if file_path:
-                            file_info = extract_file_info(file_path)
-                            if file_info and file_path not in files_seen:
-                                files_seen[file_path] = file_info
-
-                            operation_type = get_operation_type(tool_name)
-                            file_content = tool_input.get("content", "")
-                            file_size = (
-                                len(file_content)
-                                if isinstance(file_content, str)
-                                else 0
-                            )
-
-                            file_operations_data.append(
-                                {
-                                    "file_operation_id": f"{tool_use_id}-file",
-                                    "tool_call_id": tool_use_id,
-                                    "session_key": session_key,
-                                    "file_key": (
-                                        file_info["file_key"] if file_info else None
-                                    ),
-                                    "tool_key": generate_dimension_key(tool_name),
-                                    "date_key": date_key,
-                                    "time_key": time_key,
-                                    "operation_type": operation_type,
-                                    "file_size_chars": file_size,
-                                    "timestamp": timestamp,
-                                }
-                            )
-
-                        # Track tool chain
-                        tool_key = generate_dimension_key(tool_name)
-                        chain_id = f"{session_key}-chain"
-                        step_position = len(tool_chain_data)
-
-                        time_since_prev = None
-                        prev_tool_key_val = None
-                        if prev_tool_call and timestamp:
-                            prev_ts = prev_tool_call[2]
-                            if prev_ts:
-                                time_since_prev = (timestamp - prev_ts).total_seconds()
-                            prev_tool_key_val = prev_tool_call[1]
-
-                        tool_chain_data.append(
+                        tool_input_params_data.append(
                             {
-                                "chain_step_id": f"{chain_id}-{step_position}",
-                                "session_key": session_key,
-                                "chain_id": chain_id,
+                                "param_id": param_id,
                                 "tool_call_id": tool_use_id,
-                                "tool_key": tool_key,
-                                "step_position": step_position,
-                                "prev_tool_key": prev_tool_key_val,
-                                "time_since_prev_seconds": time_since_prev,
+                                "session_key": session_key,
+                                "param_key": param_key,
+                                "param_value_text": param_text,
+                                "param_value_number": param_number,
+                                "param_value_bool": param_bool,
                             }
                         )
-                        prev_tool_call = (tool_use_id, tool_key, timestamp)
 
-                        if should_track:
-                            _add_content_block(
-                                content_blocks_data,
-                                message_id,
-                                session_key,
-                                "tool_use",
-                                idx,
-                                date_key,
-                                time_key,
-                                input_summary,
-                                truncate_output,
-                                block,
-                            )
-                            total_content_blocks += 1
+                    # Track file operations
+                    file_path = extract_file_path_from_tool(tool_name, tool_input)
+                    if file_path:
+                        file_info = extract_file_info(file_path)
+                        if file_info and file_path not in files_seen:
+                            files_seen[file_path] = file_info
 
-                    elif block_type == "tool_result":
-                        has_tool_result = True
-                        tool_use_id = block.get("tool_use_id")
-                        result_content = block.get("content", "")
-                        is_error = block.get("is_error", False)
+                        operation_type = get_operation_type(tool_name)
+                        file_content = tool_input.get("content", "")
+                        file_size = (
+                            len(file_content) if isinstance(file_content, str) else 0
+                        )
 
-                        if isinstance(result_content, list):
-                            result_text = " ".join(
-                                str(item.get("text", ""))
-                                for item in result_content
-                                if isinstance(item, dict)
-                            )
-                        else:
-                            result_text = str(result_content)
+                        file_operations_data.append(
+                            {
+                                "file_operation_id": f"{tool_use_id}-file",
+                                "tool_call_id": tool_use_id,
+                                "session_key": session_key,
+                                "file_key": (
+                                    file_info["file_key"] if file_info else None
+                                ),
+                                "tool_key": generate_dimension_key(tool_name),
+                                "date_key": date_key,
+                                "time_key": time_key,
+                                "operation_type": operation_type,
+                                "file_size_chars": file_size,
+                                "timestamp": timestamp,
+                            }
+                        )
 
-                        output_text = result_text[:truncate_output]
-                        output_char_count = len(result_text)
+                    # Track tool chain
+                    tool_key = generate_dimension_key(tool_name)
+                    chain_id = f"{session_key}-chain"
+                    step_position = len(tool_chain_data)
 
-                        if tool_use_id and tool_use_id in tool_use_map:
-                            tool_info = tool_use_map[tool_use_id]
-                            tool_calls_data.append(
+                    time_since_prev = None
+                    prev_tool_key_val = None
+                    if prev_tool_call and timestamp:
+                        prev_ts = prev_tool_call[2]
+                        if prev_ts:
+                            time_since_prev = (timestamp - prev_ts).total_seconds()
+                        prev_tool_key_val = prev_tool_call[1]
+
+                    tool_chain_data.append(
+                        {
+                            "chain_step_id": f"{chain_id}-{step_position}",
+                            "session_key": session_key,
+                            "chain_id": chain_id,
+                            "tool_call_id": tool_use_id,
+                            "tool_key": tool_key,
+                            "step_position": step_position,
+                            "prev_tool_key": prev_tool_key_val,
+                            "time_since_prev_seconds": time_since_prev,
+                        }
+                    )
+                    prev_tool_call = (tool_use_id, tool_key, timestamp)
+
+                    if should_track:
+                        _add_content_block(
+                            content_blocks_data,
+                            message_id,
+                            session_key,
+                            "tool_use",
+                            idx,
+                            date_key,
+                            time_key,
+                            input_summary,
+                            truncate_output,
+                            block,
+                        )
+                        total_content_blocks += 1
+
+                elif block_type == "tool_result":
+                    has_tool_result = True
+                    tool_use_id = block.get("tool_use_id")
+                    result_content = block.get("content", "")
+                    is_error = block.get("is_error", False)
+
+                    if isinstance(result_content, list):
+                        result_text = " ".join(
+                            str(item.get("text", ""))
+                            for item in result_content
+                            if isinstance(item, dict)
+                        )
+                    else:
+                        result_text = str(result_content)
+
+                    output_text = result_text[:truncate_output]
+                    output_char_count = len(result_text)
+
+                    if tool_use_id and tool_use_id in tool_use_map:
+                        tool_info = tool_use_map[tool_use_id]
+                        tool_calls_data.append(
+                            {
+                                "tool_call_id": tool_use_id,
+                                "session_key": session_key,
+                                "tool_key": tool_info["tool_key"],
+                                "date_key": tool_info["date_key"],
+                                "time_key": tool_info["time_key"],
+                                "invoke_message_id": tool_info["message_id"],
+                                "result_message_id": message_id,
+                                "timestamp": tool_info["timestamp"],
+                                "input_char_count": tool_info["input_char_count"],
+                                "output_char_count": output_char_count,
+                                "is_error": is_error,
+                                "input_json": tool_info["input_json"],
+                                "input_summary": tool_info["input_summary"],
+                                "output_text": output_text,
+                                "file_path": tool_info["file_path"],
+                                "command": tool_info["command"],
+                                "pattern": tool_info["pattern"],
+                                "query_text": tool_info["query_text"],
+                            }
+                        )
+
+                        if is_error:
+                            errors_data.append(
                                 {
+                                    "error_id": f"{tool_use_id}-error",
                                     "tool_call_id": tool_use_id,
                                     "session_key": session_key,
                                     "tool_key": tool_info["tool_key"],
+                                    "error_type_key": generate_dimension_key(
+                                        "tool_error"
+                                    ),
                                     "date_key": tool_info["date_key"],
                                     "time_key": tool_info["time_key"],
-                                    "invoke_message_id": tool_info["message_id"],
-                                    "result_message_id": message_id,
+                                    "error_message": output_text,
                                     "timestamp": tool_info["timestamp"],
-                                    "input_char_count": tool_info["input_char_count"],
-                                    "output_char_count": output_char_count,
-                                    "is_error": is_error,
-                                    "input_json": tool_info["input_json"],
-                                    "input_summary": tool_info["input_summary"],
-                                    "output_text": output_text,
-                                    "file_path": tool_info["file_path"],
-                                    "command": tool_info["command"],
-                                    "pattern": tool_info["pattern"],
-                                    "query_text": tool_info["query_text"],
                                 }
                             )
 
-                            if is_error:
-                                errors_data.append(
-                                    {
-                                        "error_id": f"{tool_use_id}-error",
-                                        "tool_call_id": tool_use_id,
-                                        "session_key": session_key,
-                                        "tool_key": tool_info["tool_key"],
-                                        "error_type_key": generate_dimension_key(
-                                            "tool_error"
-                                        ),
-                                        "date_key": tool_info["date_key"],
-                                        "time_key": tool_info["time_key"],
-                                        "error_message": output_text,
-                                        "timestamp": tool_info["timestamp"],
-                                    }
-                                )
+                    if should_track:
+                        _add_content_block(
+                            content_blocks_data,
+                            message_id,
+                            session_key,
+                            "tool_result",
+                            idx,
+                            date_key,
+                            time_key,
+                            output_text,
+                            truncate_output,
+                            block,
+                        )
+                        total_content_blocks += 1
 
-                        if should_track:
-                            _add_content_block(
-                                content_blocks_data,
-                                message_id,
-                                session_key,
-                                "tool_result",
-                                idx,
-                                date_key,
-                                time_key,
-                                output_text,
-                                truncate_output,
-                                block,
-                            )
-                            total_content_blocks += 1
+                elif block_type == "thinking":
+                    has_thinking = True
+                    thinking_count += 1
+                    thinking_text = block.get("thinking", "")
 
-                    elif block_type == "thinking":
-                        has_thinking = True
-                        thinking_count += 1
-                        thinking_text = block.get("thinking", "")
+                    if should_track:
+                        _add_content_block(
+                            content_blocks_data,
+                            message_id,
+                            session_key,
+                            "thinking",
+                            idx,
+                            date_key,
+                            time_key,
+                            thinking_text,
+                            truncate_output,
+                            block,
+                        )
+                        total_content_blocks += 1
 
-                        if should_track:
-                            _add_content_block(
-                                content_blocks_data,
-                                message_id,
-                                session_key,
-                                "thinking",
-                                idx,
-                                date_key,
-                                time_key,
-                                thinking_text,
-                                truncate_output,
-                                block,
-                            )
-                            total_content_blocks += 1
+                elif block_type == "image":
+                    if should_track:
+                        content_blocks_data.append(
+                            {
+                                "content_block_id": f"{message_id}-{idx}",
+                                "message_id": message_id,
+                                "session_key": session_key,
+                                "content_block_type_key": generate_dimension_key(
+                                    "image"
+                                ),
+                                "date_key": date_key,
+                                "time_key": time_key,
+                                "block_index": idx,
+                                "content_length": 0,
+                                "content_text": "[image]",
+                                "content_json": json.dumps(
+                                    {"type": "image", "note": "content omitted"}
+                                ),
+                            }
+                        )
+                        total_content_blocks += 1
 
-                    elif block_type == "image":
-                        if should_track:
-                            content_blocks_data.append(
-                                {
-                                    "content_block_id": f"{message_id}-{idx}",
-                                    "message_id": message_id,
-                                    "session_key": session_key,
-                                    "content_block_type_key": generate_dimension_key(
-                                        "image"
-                                    ),
-                                    "date_key": date_key,
-                                    "time_key": time_key,
-                                    "block_index": idx,
-                                    "content_length": 0,
-                                    "content_text": "[image]",
-                                    "content_json": json.dumps(
-                                        {"type": "image", "note": "content omitted"}
-                                    ),
-                                }
-                            )
-                            total_content_blocks += 1
+            text_content = " ".join(texts)
 
-                text_content = " ".join(texts)
+        # Extract code blocks
+        if text_content:
+            extracted_blocks = extract_code_blocks(text_content)
+            for cb_idx, cb in enumerate(extracted_blocks):
+                language = cb["language"]
+                languages_seen.add(language)
+                code_blocks_data.append(
+                    {
+                        "code_block_id": f"{message_id}-code-{cb_idx}",
+                        "message_id": message_id,
+                        "session_key": session_key,
+                        "language_key": generate_dimension_key(language),
+                        "date_key": date_key,
+                        "time_key": time_key,
+                        "block_index": cb_idx,
+                        "line_count": cb["line_count"],
+                        "char_count": cb["char_count"],
+                        "code_text": cb["code"][:truncate_output],
+                    }
+                )
 
-            # Extract code blocks
-            if text_content:
-                extracted_blocks = extract_code_blocks(text_content)
-                for cb_idx, cb in enumerate(extracted_blocks):
-                    language = cb["language"]
-                    languages_seen.add(language)
-                    code_blocks_data.append(
-                        {
-                            "code_block_id": f"{message_id}-code-{cb_idx}",
-                            "message_id": message_id,
-                            "session_key": session_key,
-                            "language_key": generate_dimension_key(language),
-                            "date_key": date_key,
-                            "time_key": time_key,
-                            "block_index": cb_idx,
-                            "line_count": cb["line_count"],
-                            "char_count": cb["char_count"],
-                            "code_text": cb["code"][:truncate_output],
-                        }
-                    )
+            entities = extract_entities(text_content, message_id, session_key)
+            entity_mentions_data.extend(entities)
 
-                entities = extract_entities(text_content, message_id, session_key)
-                entity_mentions_data.extend(entities)
+        if entry.entry_type == "user":
+            user_count += 1
+        else:
+            assistant_count += 1
 
-            if entry_type == "user":
-                user_count += 1
-            else:
-                assistant_count += 1
+        word_cnt = count_words(text_content)
+        token_est = estimate_tokens(text_content)
 
-            word_cnt = count_words(text_content)
-            token_est = estimate_tokens(text_content)
+        response_time = None
+        if parent_id and parent_id in message_timestamps and timestamp:
+            parent_ts = message_timestamps[parent_id]
+            if parent_ts:
+                response_time = (timestamp - parent_ts).total_seconds()
 
-            response_time = None
-            if parent_id and parent_id in message_timestamps and timestamp:
-                parent_ts = message_timestamps[parent_id]
-                if parent_ts:
-                    response_time = (timestamp - parent_ts).total_seconds()
+        conversation_depth = calculate_conversation_depth(
+            message_id, parent_id, depth_map
+        )
+        depth_map[message_id] = conversation_depth
 
-            conversation_depth = calculate_conversation_depth(
-                message_id, parent_id, depth_map
-            )
-            depth_map[message_id] = conversation_depth
+        if timestamp:
+            message_timestamps[message_id] = timestamp
 
-            if timestamp:
-                message_timestamps[message_id] = timestamp
+        message_type_key = generate_dimension_key(entry.entry_type)
+        model_key = generate_dimension_key(model) if model else None
 
-            message_type_key = generate_dimension_key(entry_type)
-            model_key = generate_dimension_key(model) if model else None
-
-            messages_data.append(
-                {
-                    "message_id": message_id,
-                    "session_key": session_key,
-                    "project_key": project_key,
-                    "message_type_key": message_type_key,
-                    "model_key": model_key,
-                    "date_key": date_key,
-                    "time_key": time_key,
-                    "parent_message_id": parent_id,
-                    "timestamp": timestamp,
-                    "content_length": len(text_content),
-                    "content_block_count": content_block_count,
-                    "has_tool_use": has_tool_use,
-                    "has_tool_result": has_tool_result,
-                    "has_thinking": has_thinking,
-                    "word_count": word_cnt,
-                    "estimated_tokens": token_est,
-                    "response_time_seconds": response_time,
-                    "conversation_depth": conversation_depth,
-                    "content_text": (
-                        text_content[:truncate_output] if text_content else ""
-                    ),
-                    "content_json": content_json,
-                    "is_sidechain": is_sidechain,
-                }
-            )
+        messages_data.append(
+            {
+                "message_id": message_id,
+                "session_key": session_key,
+                "project_key": project_key,
+                "message_type_key": message_type_key,
+                "model_key": model_key,
+                "date_key": date_key,
+                "time_key": time_key,
+                "parent_message_id": parent_id,
+                "timestamp": timestamp,
+                "content_length": len(text_content),
+                "content_block_count": content_block_count,
+                "has_tool_use": has_tool_use,
+                "has_tool_result": has_tool_result,
+                "has_thinking": has_thinking,
+                "word_count": word_cnt,
+                "estimated_tokens": token_est,
+                "response_time_seconds": response_time,
+                "conversation_depth": conversation_depth,
+                "content_text": (
+                    text_content[:truncate_output] if text_content else ""
+                ),
+                "content_json": content_json,
+                "is_sidechain": entry.is_sidechain,
+            }
+        )
 
     # ==========================================================================
     # Phase 2: Load Dimensions
