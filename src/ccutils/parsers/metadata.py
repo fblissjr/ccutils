@@ -8,6 +8,8 @@ import json
 from dataclasses import dataclass
 from pathlib import Path
 
+from .session import extract_text_from_content
+
 
 # Messages to skip when looking for a meaningful summary
 SKIP_SUMMARY_PATTERNS = [
@@ -169,7 +171,7 @@ def get_meaningful_summary(filepath: Path, max_length: int = 120) -> str:
                         continue
 
                     content = obj.get("message", {}).get("content", "")
-                    text = _extract_text(content)
+                    text = extract_text_from_content(content)
                     if not text or _is_skip_summary(text):
                         continue
 
@@ -182,21 +184,6 @@ def get_meaningful_summary(filepath: Path, max_length: int = 120) -> str:
         pass
 
     return "(no summary)"
-
-
-def _extract_text(content) -> str:
-    """Extract plain text from message content (string or list)."""
-    if isinstance(content, str):
-        return content.strip()
-    if isinstance(content, list):
-        texts = []
-        for block in content:
-            if isinstance(block, dict) and block.get("type") == "text":
-                text = block.get("text", "")
-                if text:
-                    texts.append(text)
-        return " ".join(texts).strip()
-    return ""
 
 
 def extract_rich_metadata(filepath: Path, folder_name: str) -> SessionMetadata:
@@ -278,7 +265,7 @@ def extract_rich_metadata(filepath: Path, folder_name: str) -> SessionMetadata:
                     # Extract summary from first meaningful user message
                     if not got_summary:
                         content = obj.get("message", {}).get("content", "")
-                        text = _extract_text(content)
+                        text = extract_text_from_content(content)
                         if text and not _is_skip_summary(text):
                             if len(text) > 120:
                                 meta.summary = text[:117] + "..."
