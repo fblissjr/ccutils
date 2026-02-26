@@ -8,6 +8,7 @@ import json
 from datetime import datetime
 from pathlib import Path
 
+from ...parsers.jsonl_reader import iter_session_entries
 from .schema import create_duckdb_schema
 
 
@@ -38,188 +39,158 @@ def export_session_to_duckdb(
     is_agent = False
     agent_id = None
     parent_session_id = None
-    is_sidechain = False
 
     # Maps to link tool_use to tool_result
-    tool_use_map = (
-        {}
-    )  # tool_use_id -> {message_id, tool_name, input_json, input_summary, timestamp}
+    tool_use_map = {}
     thinking_id = 0
 
-    with open(session_path, "r", encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
-            if not line:
-                continue
+    for entry in iter_session_entries(session_path):
+        if entry.entry_type == "progress":
+            continue
 
-            try:
-                entry = json.loads(line)
-            except json.JSONDecodeError:
-                continue
+        # Extract metadata from first entry
+        if session_id is None:
+            session_id = session_path.stem
+            cwd = entry.raw.get("cwd")
+            git_branch = entry.raw.get("gitBranch")
+            version = entry.raw.get("version")
+            agent_id = entry.raw.get("agentId")
+            is_agent = agent_id is not None
+            if is_agent:
+                parent_session_id = entry.raw.get("sessionId")
 
-            entry_type = entry.get("type")
-            if entry_type not in ("user", "assistant"):
-                continue
+        uuid = entry.uuid
+        parent_uuid = entry.parent_uuid
+        timestamp = entry.timestamp
+        content = entry.content
+        model = entry.model
 
-            # Extract metadata from first entry
-            # Always use file stem as unique ID (agent files share parent sessionId)
-            if session_id is None:
-                session_id = session_path.stem
-                cwd = entry.get("cwd")
-                git_branch = entry.get("gitBranch")
-                version = entry.get("version")
+        if timestamp is not None:
+            if first_timestamp is None:
+                first_timestamp = timestamp
+            last_timestamp = timestamp
 
-                # Extract agent metadata
-                agent_id = entry.get("agentId")
-                is_sidechain = entry.get("isSidechain", False)
-                is_agent = agent_id is not None
-                if is_agent:
-                    # For agents, the sessionId field points to the parent session
-                    parent_session_id = entry.get("sessionId")
+        # Extract content
+        has_tool_use = False
+        has_tool_result = False
+        has_thinking = False
+        text_content = ""
 
-            uuid = entry.get("uuid", "")
-            parent_uuid = entry.get("parentUuid")
-            timestamp_str = entry.get("timestamp", "")
-            message_data = entry.get("message", {})
+        if isinstance(content, str):
+            text_content = content
+        elif isinstance(content, list):
+            text_parts = []
+            for block in content:
+                if not isinstance(block, dict):
+                    continue
+                block_type = block.get("type")
 
-            # Parse timestamp
-            timestamp = None
-            if timestamp_str:
-                try:
-                    timestamp = datetime.fromisoformat(
-                        timestamp_str.replace("Z", "+00:00")
-                    )
-                    if first_timestamp is None:
-                        first_timestamp = timestamp
-                    last_timestamp = timestamp
-                except ValueError:
-                    pass
+                if block_type == "text":
+                    text_parts.append(block.get("text", ""))
 
-            # Extract content
-            content = message_data.get("content", "")
-            model = message_data.get("model")
-            has_tool_use = False
-            has_tool_result = False
-            has_thinking = False
-            text_content = ""
+                elif block_type == "tool_use":
+                    has_tool_use = True
+                    tool_use_count += 1
+                    tool_id = block.get("id", "")
+                    tool_name = block.get("name", "")
+                    tool_input = block.get("input", {})
 
-            if isinstance(content, str):
-                text_content = content
-            elif isinstance(content, list):
-                text_parts = []
-                for block in content:
-                    if not isinstance(block, dict):
-                        continue
-                    block_type = block.get("type")
+                    if isinstance(tool_input, dict):
+                        input_summary = json.dumps(tool_input)[:truncate_output]
+                    else:
+                        input_summary = str(tool_input)[:truncate_output]
 
-                    if block_type == "text":
-                        text_parts.append(block.get("text", ""))
+                    tool_use_map[tool_id] = {
+                        "message_id": uuid,
+                        "tool_name": tool_name,
+                        "input_json": json.dumps(tool_input),
+                        "input_summary": input_summary,
+                        "timestamp": timestamp,
+                    }
 
-                    elif block_type == "tool_use":
-                        has_tool_use = True
-                        tool_use_count += 1
-                        tool_id = block.get("id", "")
-                        tool_name = block.get("name", "")
-                        tool_input = block.get("input", {})
+                elif block_type == "tool_result":
+                    has_tool_result = True
+                    tool_id = block.get("tool_use_id", "")
+                    result_content = block.get("content", "")
+                    if isinstance(result_content, str):
+                        output_text = result_content[:truncate_output]
+                    else:
+                        output_text = str(result_content)[:truncate_output]
 
-                        # Create summary of input
-                        if isinstance(tool_input, dict):
-                            input_summary = json.dumps(tool_input)[:truncate_output]
-                        else:
-                            input_summary = str(tool_input)[:truncate_output]
+                    if tool_id in tool_use_map:
+                        tool_info = tool_use_map[tool_id]
+                        conn.execute(
+                            """
+                            INSERT INTO tool_calls (
+                                tool_use_id, session_id, message_id,
+                                result_message_id, tool_name, input_json,
+                                input_summary, output_text, timestamp
+                            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                            [
+                                tool_id,
+                                session_id,
+                                tool_info["message_id"],
+                                uuid,
+                                tool_info["tool_name"],
+                                tool_info["input_json"],
+                                tool_info["input_summary"],
+                                output_text,
+                                tool_info["timestamp"],
+                            ],
+                        )
 
-                        tool_use_map[tool_id] = {
-                            "message_id": uuid,
-                            "tool_name": tool_name,
-                            "input_json": json.dumps(tool_input),
-                            "input_summary": input_summary,
-                            "timestamp": timestamp,
-                        }
+                elif block_type == "thinking":
+                    has_thinking = True
+                    if include_thinking:
+                        thinking_text = block.get("thinking", "")
+                        thinking_id += 1
+                        conn.execute(
+                            """
+                            INSERT INTO thinking (id, session_id, message_id, thinking_text, timestamp)
+                            VALUES (?, ?, ?, ?, ?)
+                        """,
+                            [
+                                thinking_id,
+                                session_id,
+                                uuid,
+                                thinking_text,
+                                timestamp,
+                            ],
+                        )
 
-                    elif block_type == "tool_result":
-                        has_tool_result = True
-                        tool_id = block.get("tool_use_id", "")
-                        result_content = block.get("content", "")
-                        if isinstance(result_content, str):
-                            output_text = result_content[:truncate_output]
-                        else:
-                            output_text = str(result_content)[:truncate_output]
+            text_content = " ".join(text_parts)
 
-                        # Link to tool_use and insert
-                        if tool_id in tool_use_map:
-                            tool_info = tool_use_map[tool_id]
-                            conn.execute(
-                                """
-                                INSERT INTO tool_calls (
-                                    tool_use_id, session_id, message_id,
-                                    result_message_id, tool_name, input_json,
-                                    input_summary, output_text, timestamp
-                                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                            """,
-                                [
-                                    tool_id,
-                                    session_id,
-                                    tool_info["message_id"],
-                                    uuid,
-                                    tool_info["tool_name"],
-                                    tool_info["input_json"],
-                                    tool_info["input_summary"],
-                                    output_text,
-                                    tool_info["timestamp"],
-                                ],
-                            )
+        # Count messages
+        if entry.entry_type == "user":
+            user_count += 1
+        else:
+            assistant_count += 1
 
-                    elif block_type == "thinking":
-                        has_thinking = True
-                        if include_thinking:
-                            thinking_text = block.get("thinking", "")
-                            thinking_id += 1
-                            conn.execute(
-                                """
-                                INSERT INTO thinking (id, session_id, message_id, thinking_text, timestamp)
-                                VALUES (?, ?, ?, ?, ?)
-                            """,
-                                [
-                                    thinking_id,
-                                    session_id,
-                                    uuid,
-                                    thinking_text,
-                                    timestamp,
-                                ],
-                            )
-
-                text_content = " ".join(text_parts)
-
-            # Count messages
-            if entry_type == "user":
-                user_count += 1
-            else:
-                assistant_count += 1
-
-            # Insert message
-            conn.execute(
-                """
-                INSERT INTO messages (
-                    id, session_id, parent_id, type, timestamp, model,
-                    content, content_json, has_tool_use, has_tool_result, has_thinking,
-                    is_sidechain
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-                [
-                    uuid,
-                    session_id,
-                    parent_uuid,
-                    entry_type,
-                    timestamp,
-                    model,
-                    text_content,
-                    json.dumps(content) if isinstance(content, list) else None,
-                    has_tool_use,
-                    has_tool_result,
-                    has_thinking,
-                    is_sidechain,
-                ],
-            )
+        # Insert message
+        conn.execute(
+            """
+            INSERT INTO messages (
+                id, session_id, parent_id, type, timestamp, model,
+                content, content_json, has_tool_use, has_tool_result, has_thinking,
+                is_sidechain
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+            [
+                uuid,
+                session_id,
+                parent_uuid,
+                entry.entry_type,
+                timestamp,
+                model,
+                text_content,
+                json.dumps(content) if isinstance(content, list) else None,
+                has_tool_use,
+                has_tool_result,
+                has_thinking,
+                entry.is_sidechain,
+            ],
+        )
 
     # Insert session metadata
     if session_id:
@@ -293,152 +264,130 @@ def _extract_session_data(session_path, include_thinking=False, truncate_output=
     thinking_id = 0
     is_first = True
 
-    with open(session_path, "r", encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
-            if not line:
-                continue
+    for entry in iter_session_entries(session_path):
+        if entry.entry_type == "progress":
+            continue
 
-            try:
-                entry = json.loads(line)
-            except json.JSONDecodeError:
-                continue
+        # Extract metadata from first entry
+        if is_first:
+            is_first = False
+            session_meta["cwd"] = entry.raw.get("cwd")
+            session_meta["git_branch"] = entry.raw.get("gitBranch")
+            session_meta["version"] = entry.raw.get("version")
+            agent_id = entry.raw.get("agentId")
+            session_meta["agent_id"] = agent_id
+            session_meta["is_agent"] = agent_id is not None
+            if agent_id:
+                session_meta["parent_session_id"] = entry.raw.get("sessionId")
 
-            entry_type = entry.get("type")
-            if entry_type not in ("user", "assistant"):
-                continue
+        uuid = entry.uuid
+        parent_uuid = entry.parent_uuid
+        timestamp_str = entry.timestamp_raw
+        content = entry.content
+        model = entry.model
+        is_sidechain = entry.is_sidechain
 
-            # Extract metadata from first entry
-            if is_first:
-                is_first = False
-                session_meta["cwd"] = entry.get("cwd")
-                session_meta["git_branch"] = entry.get("gitBranch")
-                session_meta["version"] = entry.get("version")
-                agent_id = entry.get("agentId")
-                session_meta["agent_id"] = agent_id
-                session_meta["is_agent"] = agent_id is not None
-                if agent_id:
-                    session_meta["parent_session_id"] = entry.get("sessionId")
+        # Track timestamps
+        if entry.timestamp is not None:
+            if session_meta["first_timestamp"] is None:
+                session_meta["first_timestamp"] = timestamp_str
+            session_meta["last_timestamp"] = timestamp_str
 
-            uuid = entry.get("uuid", "")
-            parent_uuid = entry.get("parentUuid")
-            timestamp_str = entry.get("timestamp", "")
-            message_data = entry.get("message", {})
-            is_sidechain = entry.get("isSidechain", False)
+        # Extract content
+        has_tool_use = False
+        has_tool_result = False
+        has_thinking = False
+        text_content = ""
 
-            # Parse timestamp
-            timestamp = None
-            if timestamp_str:
-                try:
-                    timestamp = datetime.fromisoformat(
-                        timestamp_str.replace("Z", "+00:00")
-                    )
-                    if session_meta["first_timestamp"] is None:
-                        session_meta["first_timestamp"] = timestamp_str
-                    session_meta["last_timestamp"] = timestamp_str
-                except ValueError:
-                    pass
+        if isinstance(content, str):
+            text_content = content
+        elif isinstance(content, list):
+            text_parts = []
+            for block in content:
+                if not isinstance(block, dict):
+                    continue
+                block_type = block.get("type")
 
-            # Extract content
-            content = message_data.get("content", "")
-            model = message_data.get("model")
-            has_tool_use = False
-            has_tool_result = False
-            has_thinking = False
-            text_content = ""
+                if block_type == "text":
+                    text_parts.append(block.get("text", ""))
 
-            if isinstance(content, str):
-                text_content = content
-            elif isinstance(content, list):
-                text_parts = []
-                for block in content:
-                    if not isinstance(block, dict):
-                        continue
-                    block_type = block.get("type")
+                elif block_type == "tool_use":
+                    has_tool_use = True
+                    session_meta["tool_use_count"] += 1
+                    tool_id = block.get("id", "")
+                    tool_name = block.get("name", "")
+                    tool_input = block.get("input", {})
 
-                    if block_type == "text":
-                        text_parts.append(block.get("text", ""))
+                    if isinstance(tool_input, dict):
+                        input_summary = json.dumps(tool_input)[:truncate_output]
+                    else:
+                        input_summary = str(tool_input)[:truncate_output]
 
-                    elif block_type == "tool_use":
-                        has_tool_use = True
-                        session_meta["tool_use_count"] += 1
-                        tool_id = block.get("id", "")
-                        tool_name = block.get("name", "")
-                        tool_input = block.get("input", {})
+                    tool_use_map[tool_id] = {
+                        "tool_use_id": tool_id,
+                        "session_id": session_id,
+                        "message_id": uuid,
+                        "tool_name": tool_name,
+                        "input_json": tool_input,
+                        "input_summary": input_summary,
+                        "timestamp": timestamp_str,
+                    }
 
-                        # Create summary of input
-                        if isinstance(tool_input, dict):
-                            input_summary = json.dumps(tool_input)[:truncate_output]
-                        else:
-                            input_summary = str(tool_input)[:truncate_output]
+                elif block_type == "tool_result":
+                    has_tool_result = True
+                    tool_id = block.get("tool_use_id", "")
+                    result_content = block.get("content", "")
+                    if isinstance(result_content, str):
+                        output_text = result_content[:truncate_output]
+                    else:
+                        output_text = str(result_content)[:truncate_output]
 
-                        tool_use_map[tool_id] = {
-                            "tool_use_id": tool_id,
-                            "session_id": session_id,
-                            "message_id": uuid,
-                            "tool_name": tool_name,
-                            "input_json": tool_input,
-                            "input_summary": input_summary,
-                            "timestamp": timestamp_str,
-                        }
+                    if tool_id in tool_use_map:
+                        tool_info = tool_use_map[tool_id]
+                        tool_info["result_message_id"] = uuid
+                        tool_info["output_text"] = output_text
+                        tool_calls.append(tool_info)
+                        del tool_use_map[tool_id]
 
-                    elif block_type == "tool_result":
-                        has_tool_result = True
-                        tool_id = block.get("tool_use_id", "")
-                        result_content = block.get("content", "")
-                        if isinstance(result_content, str):
-                            output_text = result_content[:truncate_output]
-                        else:
-                            output_text = str(result_content)[:truncate_output]
+                elif block_type == "thinking":
+                    has_thinking = True
+                    if include_thinking:
+                        thinking_text = block.get("thinking", "")
+                        thinking_id += 1
+                        thinking_blocks.append(
+                            {
+                                "id": thinking_id,
+                                "session_id": session_id,
+                                "message_id": uuid,
+                                "thinking_text": thinking_text,
+                                "timestamp": timestamp_str,
+                            }
+                        )
 
-                        # Link to tool_use
-                        if tool_id in tool_use_map:
-                            tool_info = tool_use_map[tool_id]
-                            tool_info["result_message_id"] = uuid
-                            tool_info["output_text"] = output_text
-                            tool_calls.append(tool_info)
-                            del tool_use_map[tool_id]
+            text_content = " ".join(text_parts)
 
-                    elif block_type == "thinking":
-                        has_thinking = True
-                        if include_thinking:
-                            thinking_text = block.get("thinking", "")
-                            thinking_id += 1
-                            thinking_blocks.append(
-                                {
-                                    "id": thinking_id,
-                                    "session_id": session_id,
-                                    "message_id": uuid,
-                                    "thinking_text": thinking_text,
-                                    "timestamp": timestamp_str,
-                                }
-                            )
+        # Count messages
+        if entry.entry_type == "user":
+            session_meta["user_message_count"] += 1
+        else:
+            session_meta["assistant_message_count"] += 1
 
-                text_content = " ".join(text_parts)
-
-            # Count messages
-            if entry_type == "user":
-                session_meta["user_message_count"] += 1
-            else:
-                session_meta["assistant_message_count"] += 1
-
-            # Add message
-            messages.append(
-                {
-                    "id": uuid,
-                    "session_id": session_id,
-                    "parent_id": parent_uuid,
-                    "type": entry_type,
-                    "timestamp": timestamp_str,
-                    "model": model,
-                    "content": text_content,
-                    "content_json": content if isinstance(content, list) else None,
-                    "has_tool_use": has_tool_use,
-                    "has_tool_result": has_tool_result,
-                    "has_thinking": has_thinking,
-                    "is_sidechain": is_sidechain,
-                }
-            )
+        messages.append(
+            {
+                "id": uuid,
+                "session_id": session_id,
+                "parent_id": parent_uuid,
+                "type": entry.entry_type,
+                "timestamp": timestamp_str,
+                "model": model,
+                "content": text_content,
+                "content_json": content if isinstance(content, list) else None,
+                "has_tool_use": has_tool_use,
+                "has_tool_result": has_tool_result,
+                "has_thinking": has_thinking,
+                "is_sidechain": is_sidechain,
+            }
+        )
 
     # Add any remaining tool uses (no result received)
     for tool_info in tool_use_map.values():
