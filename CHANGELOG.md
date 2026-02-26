@@ -2,6 +2,18 @@
 
 All notable changes to this project will be documented in this file.
 
+## 0.9.3
+
+### Changed
+- **Codebase cleanup**: Eliminated ~790 lines of duplicated/dead code across 7 phases
+  - Deleted 170-line `generate_html_from_session_data` clone; `generate_html()` now accepts optional `loglines` param
+  - Unified `_extract_text()` duplicate in `parsers/metadata.py` with `extract_text_from_content()` from `parsers/session.py`
+  - Extracted ~232 lines of inline CSS/JS from `export/html.py` to `src/ccutils/static/` files
+  - New shared JSONL parser (`parsers/jsonl_reader.py`) with `iter_session_entries()` generator replaces triple-parsed sessions in simple and star schema ETL
+  - Decomposed `star/etl.py` with `StarExtractionResult` dataclass; `_load_dimensions`/`_load_facts` take structured result instead of 20+ positional args
+  - Removed 6 deprecated wrapper functions from `parsers/discovery.py`; imports now go through `tui/` package
+  - Extracted `handle_gist_upload()` and `maybe_open_browser()` helpers to `cli/utils.py`
+
 ## 0.9.2
 
 ### Added
