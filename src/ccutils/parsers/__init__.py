@@ -50,6 +50,13 @@ from .claude_ai import (
     parse_claude_ai_export,
 )
 
+from .jsonl_reader import (
+    SessionEntry,
+    SessionMetaHeader,
+    iter_session_entries,
+    parse_session_header,
+)
+
 from .schema_inspector import (
     format_schema,
     infer_schema,
@@ -96,6 +103,11 @@ __all__ = [
     "convert_message_to_logline",
     "load_export_files",
     "parse_claude_ai_export",
+    # JSONL reader
+    "SessionEntry",
+    "SessionMetaHeader",
+    "iter_session_entries",
+    "parse_session_header",
     # Schema inspection
     "format_schema",
     "infer_schema",
