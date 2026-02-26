@@ -2,6 +2,18 @@
 
 All notable changes to this project will be documented in this file.
 
+## 0.9.4
+
+### Removed
+- **Gist upload feature**: Removed `--gist` option from `local`, `web`, and `json` commands; deleted `create_gist()`, `GistError`, `inject_gist_preview_js()`, gist preview JS, and ~310 lines of gist tests
+- Backward-compat re-exports (`build_project_choices`, `build_session_choices`, etc.) from `parsers/__init__.py`
+
+### Changed
+- **Codebase cleanup round 2**: Eliminated ~845 additional lines across 5 phases
+  - Static file loading uses `importlib.resources.files()` instead of `Path(__file__)` for wheel/zip compatibility
+  - Star ETL `_extract_star_data()` decomposed: `BlockContext` dataclass + extracted `_handle_tool_use_block()` and `_handle_tool_result_block()` handlers
+  - Import command DuckDB export now reuses `simple/etl.py:export_session_to_duckdb()` via new `iter_loglines()` adapter, replacing ~200 lines of duplicated insert logic
+
 ## 0.9.3
 
 ### Changed
