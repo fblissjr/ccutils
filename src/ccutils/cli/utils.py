@@ -102,22 +102,6 @@ def format_session_for_display(session_data):
     return f"{repo_display:30}  {date_display:19}  {title}"
 
 
-def handle_gist_upload(output_dir):
-    """Inject gist preview JS, create a gist, and print the URLs.
-
-    Args:
-        output_dir: Path to the output directory containing index.html.
-    """
-    from ..export.html import inject_gist_preview_js, create_gist
-
-    inject_gist_preview_js(output_dir)
-    click.echo("Creating GitHub gist...")
-    gist_id, gist_url = create_gist(output_dir)
-    preview_url = f"https://gisthost.github.io/?{gist_id}/index.html"
-    click.echo(f"Gist: {gist_url}")
-    click.echo(f"Preview: {preview_url}")
-
-
 def maybe_open_browser(output_dir):
     """Open the index.html in the output directory in the default browser.
 

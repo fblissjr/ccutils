@@ -15,7 +15,7 @@ from ..api import (
     filter_sessions_by_repo,
 )
 from ..export import generate_html
-from .utils import resolve_credentials, handle_gist_upload, maybe_open_browser
+from .utils import resolve_credentials, maybe_open_browser
 
 
 @click.command("web")
@@ -39,11 +39,6 @@ from .utils import resolve_credentials, handle_gist_upload, maybe_open_browser
 @click.option(
     "--repo",
     help="GitHub repo (owner/name). Filters session list and sets default for commit links.",
-)
-@click.option(
-    "--gist",
-    is_flag=True,
-    help="Upload to GitHub Gist and output a gisthost.github.io URL.",
 )
 @click.option(
     "--json",
@@ -74,7 +69,6 @@ def web_cmd(
     token,
     org_uuid,
     repo,
-    gist,
     include_json,
     open_browser,
     debug,
@@ -164,7 +158,7 @@ def web_cmd(
 
     # Determine output directory and whether to open browser
     # If no -o specified, use temp dir and open browser by default
-    auto_open = output is None and not gist and not output_auto
+    auto_open = output is None and not output_auto
     if output_auto:
         # Use -o as parent dir (or current dir), with auto-named subdirectory
         parent_dir = Path(output) if output else Path(".")
@@ -189,9 +183,6 @@ def web_cmd(
             json.dump(session_data, f, indent=2)
         json_size_kb = json_dest.stat().st_size / 1024
         click.echo(f"JSON: {json_dest} ({json_size_kb:.1f} KB)")
-
-    if gist:
-        handle_gist_upload(output)
 
     if open_browser or auto_open:
         maybe_open_browser(output)

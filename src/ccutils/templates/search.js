@@ -18,51 +18,6 @@
     // Show search box (progressive enhancement)
     searchBox.style.display = 'flex';
 
-    // Gist preview support - detect if we're on gisthost.github.io or gistpreview.github.io
-    var hostname = window.location.hostname;
-    var isGistPreview = hostname === 'gisthost.github.io' || hostname === 'gistpreview.github.io';
-    var gistId = null;
-    var gistOwner = null;
-    var gistInfoLoaded = false;
-
-    if (isGistPreview) {
-        // Extract gist ID from URL query string like ?78a436a8a9e7a2e603738b8193b95410/index.html
-        var queryMatch = window.location.search.match(/^\?([a-f0-9]+)/i);
-        if (queryMatch) {
-            gistId = queryMatch[1];
-        }
-    }
-
-    async function loadGistInfo() {
-        if (!isGistPreview || !gistId || gistInfoLoaded) return;
-        try {
-            var response = await fetch('https://api.github.com/gists/' + gistId);
-            if (response.ok) {
-                var info = await response.json();
-                gistOwner = info.owner.login;
-                gistInfoLoaded = true;
-            }
-        } catch (e) {
-            console.error('Failed to load gist info:', e);
-        }
-    }
-
-    function getPageFetchUrl(pageFile) {
-        if (isGistPreview && gistOwner && gistId) {
-            // Use raw gist URL for fetching content
-            return 'https://gist.githubusercontent.com/' + gistOwner + '/' + gistId + '/raw/' + pageFile;
-        }
-        return pageFile;
-    }
-
-    function getPageLinkUrl(pageFile) {
-        if (isGistPreview && gistId) {
-            // Use gistpreview URL format for navigation links
-            return '?' + gistId + '/' + pageFile;
-        }
-        return pageFile;
-    }
-
     function escapeHtml(text) {
         var div = document.createElement('div');
         div.textContent = text;
@@ -153,13 +108,12 @@
 
                 // Get the message ID for linking
                 var msgId = msg.id || '';
-                var pageLinkUrl = getPageLinkUrl(pageFile);
-                var link = pageLinkUrl + (msgId ? '#' + msgId : '');
+                var link = pageFile + (msgId ? '#' + msgId : '');
 
                 // Clone the message HTML and highlight matches
                 var clone = msg.cloneNode(true);
                 // Fix internal links to include the page file
-                fixInternalLinks(clone, pageLinkUrl);
+                fixInternalLinks(clone, pageFile);
                 highlightTextNodes(clone, query);
 
                 var resultDiv = document.createElement('div');
@@ -185,16 +139,6 @@
         searchResults.innerHTML = '';
         searchStatus.textContent = 'Searching...';
 
-        // Load gist info if on gistpreview (needed for constructing URLs)
-        if (isGistPreview && !gistInfoLoaded) {
-            searchStatus.textContent = 'Loading gist info...';
-            await loadGistInfo();
-            if (!gistOwner) {
-                searchStatus.textContent = 'Failed to load gist info. Search unavailable.';
-                return;
-            }
-        }
-
         var resultsFound = 0;
         var pagesSearched = 0;
 
@@ -213,7 +157,7 @@
 
             // Create promises that process results immediately when each fetch completes
             var promises = batch.map(function(pageFile) {
-                return fetch(getPageFetchUrl(pageFile))
+                return fetch(pageFile)
                     .then(function(response) {
                         if (!response.ok) throw new Error('Failed to fetch');
                         return response.text();

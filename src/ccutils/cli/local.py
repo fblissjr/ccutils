@@ -40,7 +40,7 @@ from ..export import (
     generate_html,
     generate_multi_session_index,
 )
-from .utils import handle_gist_upload, maybe_open_browser
+from .utils import maybe_open_browser
 
 
 @click.command("local")
@@ -59,11 +59,6 @@ from .utils import handle_gist_upload, maybe_open_browser
 @click.option(
     "--repo",
     help="GitHub repo (owner/name) for commit links. Auto-detected from git push output if not specified.",
-)
-@click.option(
-    "--gist",
-    is_flag=True,
-    help="Upload to GitHub Gist and output a gisthost.github.io URL.",
 )
 @click.option(
     "--json",
@@ -126,7 +121,6 @@ def local_cmd(
     output,
     output_auto,
     repo,
-    gist,
     include_json,
     open_browser,
     limit,
@@ -315,11 +309,6 @@ def local_cmd(
             json_dest = output / session_file.name
             shutil.copy(session_file, json_dest)
         click.echo(f"Copied {len(selected)} JSONL file(s)")
-
-    if gist and fmt == "html" and len(selected) == 1:
-        handle_gist_upload(output)
-    elif gist:
-        click.echo("Warning: --gist only supported for single HTML session export")
 
     if open_browser and fmt == "html":
         maybe_open_browser(output)

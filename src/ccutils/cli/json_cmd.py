@@ -7,7 +7,7 @@ from pathlib import Path
 import click
 
 from ..export import generate_html
-from .utils import is_url, fetch_url_to_tempfile, handle_gist_upload, maybe_open_browser
+from .utils import is_url, fetch_url_to_tempfile, maybe_open_browser
 
 
 @click.command("json")
@@ -29,11 +29,6 @@ from .utils import is_url, fetch_url_to_tempfile, handle_gist_upload, maybe_open
     help="GitHub repo (owner/name) for commit links. Auto-detected from git push output if not specified.",
 )
 @click.option(
-    "--gist",
-    is_flag=True,
-    help="Upload to GitHub Gist and output a gisthost.github.io URL.",
-)
-@click.option(
     "--json",
     "include_json",
     is_flag=True,
@@ -45,7 +40,7 @@ from .utils import is_url, fetch_url_to_tempfile, handle_gist_upload, maybe_open
     is_flag=True,
     help="Open the generated index.html in your default browser (default if no -o specified).",
 )
-def json_cmd(json_file, output, output_auto, repo, gist, include_json, open_browser):
+def json_cmd(json_file, output, output_auto, repo, include_json, open_browser):
     """Convert a Claude Code session JSON/JSONL file or URL to HTML."""
     # Handle URL input
     if is_url(json_file):
@@ -63,7 +58,7 @@ def json_cmd(json_file, output, output_auto, repo, gist, include_json, open_brow
 
     # Determine output directory and whether to open browser
     # If no -o specified, use temp dir and open browser by default
-    auto_open = output is None and not gist and not output_auto
+    auto_open = output is None and not output_auto
     if output_auto:
         # Use -o as parent dir (or current dir), with auto-named subdirectory
         parent_dir = Path(output) if output else Path(".")
@@ -87,9 +82,6 @@ def json_cmd(json_file, output, output_auto, repo, gist, include_json, open_brow
         shutil.copy(json_file_path, json_dest)
         json_size_kb = json_dest.stat().st_size / 1024
         click.echo(f"JSON: {json_dest} ({json_size_kb:.1f} KB)")
-
-    if gist:
-        handle_gist_upload(output)
 
     if open_browser or auto_open:
         maybe_open_browser(output)
