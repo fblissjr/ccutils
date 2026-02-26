@@ -963,13 +963,14 @@ def generate_multi_session_index(
     return index_path
 
 
-def generate_html(json_path, output_dir, github_repo=None):
-    """Generate HTML transcript from a session file.
+def generate_html(json_path=None, output_dir=None, github_repo=None, loglines=None):
+    """Generate HTML transcript from a session file or pre-parsed loglines.
 
     Args:
-        json_path: Path to JSON/JSONL session file
+        json_path: Path to JSON/JSONL session file (required unless loglines provided)
         output_dir: Directory to write HTML files
         github_repo: Optional GitHub repo for commit links (format: "owner/repo")
+        loglines: Optional pre-parsed list of log entries (skips file parsing)
 
     Returns:
         Path to output directory
@@ -977,10 +978,12 @@ def generate_html(json_path, output_dir, github_repo=None):
     output_dir = Path(output_dir)
     output_dir.mkdir(exist_ok=True)
 
-    # Load session file (supports both JSON and JSONL)
-    data = parse_session_file(json_path)
-
-    loglines = data.get("loglines", [])
+    # Load session file (supports both JSON and JSONL) or use provided loglines
+    if loglines is None:
+        if json_path is None:
+            raise ValueError("Either json_path or loglines must be provided")
+        data = parse_session_file(json_path)
+        loglines = data.get("loglines", [])
 
     # Auto-detect GitHub repo if not provided
     if github_repo is None:

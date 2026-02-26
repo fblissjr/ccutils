@@ -15,7 +15,6 @@ from .utils import (
     fetch_url_to_tempfile,
     resolve_credentials,
     format_session_for_display,
-    generate_html_from_session_data,
 )
 
 
@@ -59,5 +58,4 @@ __all__ = [
     "fetch_url_to_tempfile",
     "resolve_credentials",
     "format_session_for_display",
-    "generate_html_from_session_data",
 ]

@@ -17,12 +17,10 @@ from ..api import (
 )
 from ..export import (
     create_gist,
+    generate_html,
     inject_gist_preview_js,
 )
-from .utils import (
-    generate_html_from_session_data,
-    resolve_credentials,
-)
+from .utils import resolve_credentials
 
 
 @click.command("web")
@@ -181,7 +179,9 @@ def web_cmd(
 
     output = Path(output)
     click.echo(f"Generating HTML in {output}/...")
-    generate_html_from_session_data(session_data, output, github_repo=repo)
+    generate_html(
+        output_dir=output, github_repo=repo, loglines=session_data.get("loglines", [])
+    )
 
     # Show output directory
     click.echo(f"Output: {output.resolve()}")
