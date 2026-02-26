@@ -3,7 +3,6 @@
 import html
 import json
 import tempfile
-import webbrowser
 from pathlib import Path
 
 import click
@@ -11,6 +10,7 @@ import click
 from ..parsers.claude_ai import parse_claude_ai_export, load_export_files
 from ..export import generate_html
 from ..schemas.simple import create_duckdb_schema
+from .utils import maybe_open_browser
 
 
 @click.command("import")
@@ -233,13 +233,10 @@ def _export_to_html(parsed, output, open_browser):
 
     if open_browser or auto_open:
         if len(sessions) == 1:
-            # Single session - open its index
             session_name = list(sessions.keys())[0][:8]
-            index_url = (output / session_name / "index.html").resolve().as_uri()
+            maybe_open_browser(output / session_name)
         else:
-            # Multiple sessions - open master index
-            index_url = (output / "index.html").resolve().as_uri()
-        webbrowser.open(index_url)
+            maybe_open_browser(output)
 
 
 def _create_multi_session_index(output_dir, sessions, metadata):

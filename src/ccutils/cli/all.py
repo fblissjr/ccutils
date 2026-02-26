@@ -1,6 +1,5 @@
 """Batch conversion command for all sessions."""
 
-import webbrowser
 from datetime import datetime
 from pathlib import Path
 
@@ -13,6 +12,7 @@ from ..export import (
     generate_duckdb_archive,
     generate_star_json_archive,
 )
+from .utils import maybe_open_browser
 
 
 @click.command("all")
@@ -334,5 +334,4 @@ def all_cmd(
                 click.echo(f"Size: {duckdb_stats['db_size_mb']:.2f} MB")
 
     if open_browser and output_format in ("html", "both"):
-        index_url = (output / "index.html").resolve().as_uri()
-        webbrowser.open(index_url)
+        maybe_open_browser(output)

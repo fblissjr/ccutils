@@ -1,7 +1,6 @@
 """Local session selection and conversion command."""
 
 import shutil
-import webbrowser
 from datetime import datetime
 from pathlib import Path
 
@@ -38,11 +37,10 @@ from ..schemas.star import (
     run_star_schema_etl,
 )
 from ..export import (
-    create_gist,
     generate_html,
     generate_multi_session_index,
-    inject_gist_preview_js,
 )
+from .utils import handle_gist_upload, maybe_open_browser
 
 
 @click.command("local")
@@ -319,21 +317,12 @@ def local_cmd(
         click.echo(f"Copied {len(selected)} JSONL file(s)")
 
     if gist and fmt == "html" and len(selected) == 1:
-        # Inject gist preview JS and create gist
-        inject_gist_preview_js(output)
-        click.echo("Creating GitHub gist...")
-        gist_id, gist_url = create_gist(output)
-        preview_url = f"https://gisthost.github.io/?{gist_id}/index.html"
-        click.echo(f"Gist: {gist_url}")
-        click.echo(f"Preview: {preview_url}")
+        handle_gist_upload(output)
     elif gist:
         click.echo("Warning: --gist only supported for single HTML session export")
 
-    # Open browser if requested
     if open_browser and fmt == "html":
-        # For multiple sessions or agents, open the master index
-        index_url = (output / "index.html").resolve().as_uri()
-        webbrowser.open(index_url)
+        maybe_open_browser(output)
 
 
 def _flat_mode_selection(projects_folder, limit, project_filter, expand_chains, style):

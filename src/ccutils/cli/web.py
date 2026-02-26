@@ -2,7 +2,6 @@
 
 import json
 import tempfile
-import webbrowser
 from pathlib import Path
 
 import click
@@ -15,12 +14,8 @@ from ..api import (
     fetch_sessions,
     filter_sessions_by_repo,
 )
-from ..export import (
-    create_gist,
-    generate_html,
-    inject_gist_preview_js,
-)
-from .utils import resolve_credentials
+from ..export import generate_html
+from .utils import resolve_credentials, handle_gist_upload, maybe_open_browser
 
 
 @click.command("web")
@@ -196,14 +191,7 @@ def web_cmd(
         click.echo(f"JSON: {json_dest} ({json_size_kb:.1f} KB)")
 
     if gist:
-        # Inject gist preview JS and create gist
-        inject_gist_preview_js(output)
-        click.echo("Creating GitHub gist...")
-        gist_id, gist_url = create_gist(output)
-        preview_url = f"https://gisthost.github.io/?{gist_id}/index.html"
-        click.echo(f"Gist: {gist_url}")
-        click.echo(f"Preview: {preview_url}")
+        handle_gist_upload(output)
 
     if open_browser or auto_open:
-        index_url = (output / "index.html").resolve().as_uri()
-        webbrowser.open(index_url)
+        maybe_open_browser(output)
