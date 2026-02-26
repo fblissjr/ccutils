@@ -1884,11 +1884,33 @@ class TestFindLocalSessionsWithSlugs:
 
 
 class TestBuildSessionChoices:
-    """Tests for build_session_choices which creates questionary choices."""
+    """Tests for build_flat_choices which creates questionary choices."""
+
+    def _make_meta(
+        self,
+        path,
+        summary,
+        slug=None,
+        project_name="test-project",
+        project_path="test-project",
+    ):
+        from ccutils.parsers.metadata import SessionMetadata
+
+        stat = path.stat()
+        return SessionMetadata(
+            path=path,
+            project_name=project_name,
+            project_path=project_path,
+            model_short="",
+            summary=summary,
+            mtime=stat.st_mtime,
+            size=stat.st_size,
+            slug=slug,
+        )
 
     def test_collapsed_chains_groups_sessions_by_slug(self, tmp_path):
         """Test that collapsed mode groups sessions with same slug into single choice."""
-        from ccutils import build_session_choices
+        from ccutils.tui import build_flat_choices
 
         projects_dir = tmp_path / ".claude" / "projects"
         project = projects_dir / "test-project"
@@ -1909,13 +1931,13 @@ class TestBuildSessionChoices:
             '{"type":"user","timestamp":"2025-01-04T00:00:00Z","message":{"role":"user","content":"Hi"}}\n'
         )
 
-        sessions_by_project = {"test-project": []}
+        grouped = {"test-project": []}
         for f in sorted(project.glob("*.jsonl")):
             summary = f"Summary for {f.stem}"
             slug = "my-chain" if "session" in f.stem else None
-            sessions_by_project["test-project"].append((f, summary, slug))
+            grouped["test-project"].append(self._make_meta(f, summary, slug))
 
-        choices = build_session_choices(sessions_by_project, expand_chains=False)
+        choices = build_flat_choices(grouped, expand_chains=False)
 
         # Filter out Separator objects
         import questionary
@@ -1940,7 +1962,7 @@ class TestBuildSessionChoices:
 
     def test_collapsed_chain_shows_metadata(self, tmp_path):
         """Test that collapsed chain shows resumed count in FormattedText label."""
-        from ccutils import build_session_choices
+        from ccutils.tui import build_flat_choices
         import questionary
 
         projects_dir = tmp_path / ".claude" / "projects"
@@ -1959,14 +1981,14 @@ class TestBuildSessionChoices:
             '{"type":"user","timestamp":"2025-01-02T00:00:00Z","message":{"role":"user","content":"Hello"}}\n'
         )
 
-        sessions_by_project = {
+        grouped = {
             "test-project": [
-                (session1, "First", "test-chain"),
-                (session2, "Second", "test-chain"),
+                self._make_meta(session1, "First", "test-chain"),
+                self._make_meta(session2, "Second", "test-chain"),
             ]
         }
 
-        choices = build_session_choices(sessions_by_project, expand_chains=False)
+        choices = build_flat_choices(grouped, expand_chains=False)
         value_choices = [c for c in choices if not isinstance(c, questionary.Separator)]
 
         assert len(value_choices) == 1
@@ -1979,7 +2001,7 @@ class TestBuildSessionChoices:
 
     def test_collapsed_chain_shows_latest_summary(self, tmp_path):
         """Test that collapsed chain shows the summary from the most recent session."""
-        from ccutils import build_session_choices
+        from ccutils.tui import build_flat_choices
         import questionary
         import time
 
@@ -2002,14 +2024,18 @@ class TestBuildSessionChoices:
             '{"type":"user","timestamp":"2025-01-02T00:00:00Z","message":{"role":"user","content":"Hello"}}\n'
         )
 
-        sessions_by_project = {
+        grouped = {
             "test-project": [
-                (session1, "Old summary from first session", "test-chain"),
-                (session2, "Latest summary from recent session", "test-chain"),
+                self._make_meta(
+                    session1, "Old summary from first session", "test-chain"
+                ),
+                self._make_meta(
+                    session2, "Latest summary from recent session", "test-chain"
+                ),
             ]
         }
 
-        choices = build_session_choices(sessions_by_project, expand_chains=False)
+        choices = build_flat_choices(grouped, expand_chains=False)
         value_choices = [c for c in choices if not isinstance(c, questionary.Separator)]
 
         chain_choice = value_choices[0]
@@ -2023,7 +2049,7 @@ class TestBuildSessionChoices:
 
     def test_expanded_chains_shows_individual_sessions(self, tmp_path):
         """Test that expanded mode shows individual sessions with inline project markers."""
-        from ccutils import build_session_choices
+        from ccutils.tui import build_flat_choices
         import questionary
 
         projects_dir = tmp_path / ".claude" / "projects"
@@ -2042,14 +2068,14 @@ class TestBuildSessionChoices:
             '{"type":"user","timestamp":"2025-01-02T00:00:00Z","message":{"role":"user","content":"Hello"}}\n'
         )
 
-        sessions_by_project = {
+        grouped = {
             "test-project": [
-                (session1, "First", "test-chain"),
-                (session2, "Second", "test-chain"),
+                self._make_meta(session1, "First", "test-chain"),
+                self._make_meta(session2, "Second", "test-chain"),
             ]
         }
 
-        choices = build_session_choices(sessions_by_project, expand_chains=True)
+        choices = build_flat_choices(grouped, expand_chains=True)
 
         # No separators - using inline project markers instead
         separators = [c for c in choices if isinstance(c, questionary.Separator)]
@@ -2132,7 +2158,7 @@ class TestDynamicTruncation:
 
     def test_get_terminal_width_returns_sensible_default(self):
         """Test terminal width helper returns sensible default."""
-        from ccutils.parsers.discovery import get_terminal_width
+        from ccutils.tui import get_terminal_width
 
         width = get_terminal_width()
 
@@ -2144,9 +2170,31 @@ class TestDynamicTruncation:
 class TestInlineProjectMarkers:
     """Tests for inline project markers replacing Separator objects."""
 
+    def _make_meta(
+        self,
+        path,
+        summary,
+        slug=None,
+        project_name="test-project",
+        project_path="test-project",
+    ):
+        from ccutils.parsers.metadata import SessionMetadata
+
+        stat = path.stat()
+        return SessionMetadata(
+            path=path,
+            project_name=project_name,
+            project_path=project_path,
+            model_short="",
+            summary=summary,
+            mtime=stat.st_mtime,
+            size=stat.st_size,
+            slug=slug,
+        )
+
     def test_build_session_choices_no_separators(self, tmp_path):
-        """Test that build_session_choices no longer uses Separator objects."""
-        from ccutils import build_session_choices
+        """Test that build_flat_choices no longer uses Separator objects."""
+        from ccutils.tui import build_flat_choices
         import questionary
 
         project = tmp_path / "test-project"
@@ -2158,9 +2206,9 @@ class TestInlineProjectMarkers:
             '{"type":"user","timestamp":"2025-01-01T00:00:00Z","message":{"role":"user","content":"Hi"}}\n'
         )
 
-        sessions_by_project = {"test-project": [(session, "Test session", None)]}
+        grouped = {"test-project": [self._make_meta(session, "Test session")]}
 
-        choices = build_session_choices(sessions_by_project, expand_chains=False)
+        choices = build_flat_choices(grouped, expand_chains=False)
 
         # Should NOT contain any Separator objects
         separators = [c for c in choices if isinstance(c, questionary.Separator)]
@@ -2168,7 +2216,7 @@ class TestInlineProjectMarkers:
 
     def test_build_session_choices_includes_project_prefix(self, tmp_path):
         """Test that each choice includes inline project name prefix."""
-        from ccutils import build_session_choices
+        from ccutils.tui import build_flat_choices
         import questionary
 
         project = tmp_path / "test-project"
@@ -2180,9 +2228,9 @@ class TestInlineProjectMarkers:
             '{"type":"user","timestamp":"2025-01-01T00:00:00Z","message":{"role":"user","content":"Hi"}}\n'
         )
 
-        sessions_by_project = {"test-project": [(session, "Test session", None)]}
+        grouped = {"test-project": [self._make_meta(session, "Test session")]}
 
-        choices = build_session_choices(sessions_by_project, expand_chains=False)
+        choices = build_flat_choices(grouped, expand_chains=False)
         value_choices = [c for c in choices if not isinstance(c, questionary.Separator)]
 
         # Each choice title is FormattedText with project name in brackets
@@ -2194,7 +2242,7 @@ class TestInlineProjectMarkers:
 
     def test_multiple_projects_inline_markers(self, tmp_path):
         """Test multiple projects show inline markers for each."""
-        from ccutils import build_session_choices
+        from ccutils.tui import build_flat_choices
         import questionary
 
         # Create two projects
@@ -2214,12 +2262,26 @@ class TestInlineProjectMarkers:
             '{"type":"user","timestamp":"2025-01-02T00:00:00Z","message":{"role":"user","content":"Hi"}}\n'
         )
 
-        sessions_by_project = {
-            "project-alpha": [(session1, "Alpha session", None)],
-            "project-beta": [(session2, "Beta session", None)],
+        grouped = {
+            "project-alpha": [
+                self._make_meta(
+                    session1,
+                    "Alpha session",
+                    project_name="project-alpha",
+                    project_path="project-alpha",
+                ),
+            ],
+            "project-beta": [
+                self._make_meta(
+                    session2,
+                    "Beta session",
+                    project_name="project-beta",
+                    project_path="project-beta",
+                ),
+            ],
         }
 
-        choices = build_session_choices(sessions_by_project, expand_chains=False)
+        choices = build_flat_choices(grouped, expand_chains=False)
         value_choices = [c for c in choices if not isinstance(c, questionary.Separator)]
 
         # Should have 2 choices (no separators)
@@ -2232,7 +2294,7 @@ class TestInlineProjectMarkers:
 
     def test_project_name_in_flat_choices(self, tmp_path):
         """Test project names appear in FormattedText labels."""
-        from ccutils import build_session_choices
+        from ccutils.tui import build_flat_choices
         import questionary
 
         # Create projects with different name lengths
@@ -2246,12 +2308,26 @@ class TestInlineProjectMarkers:
         session2 = long_proj / "session2.jsonl"
         session2.write_text('{"type":"user","message":{"content":"Hi"}}\n')
 
-        sessions_by_project = {
-            "api": [(session1, "Short project session", None)],
-            "my-very-long-project-name": [(session2, "Long project session", None)],
+        grouped = {
+            "api": [
+                self._make_meta(
+                    session1,
+                    "Short project session",
+                    project_name="api",
+                    project_path="api",
+                ),
+            ],
+            "my-very-long-project-name": [
+                self._make_meta(
+                    session2,
+                    "Long project session",
+                    project_name="my-very-long-project-name",
+                    project_path="my-very-long-project-name",
+                ),
+            ],
         }
 
-        choices = build_session_choices(sessions_by_project, expand_chains=False)
+        choices = build_flat_choices(grouped, expand_chains=False)
         value_choices = [c for c in choices if not isinstance(c, questionary.Separator)]
 
         # Each title should be FormattedText with project name in brackets
@@ -2262,11 +2338,33 @@ class TestInlineProjectMarkers:
 
 
 class TestFlatMode:
-    """Tests for flat mode session display (no project grouping)."""
+    """Tests for flat mode session display (build_flat_choices merges all projects)."""
+
+    def _make_meta(
+        self,
+        path,
+        summary,
+        slug=None,
+        project_name="test-project",
+        project_path="test-project",
+    ):
+        from ccutils.parsers.metadata import SessionMetadata
+
+        stat = path.stat()
+        return SessionMetadata(
+            path=path,
+            project_name=project_name,
+            project_path=project_path,
+            model_short="",
+            summary=summary,
+            mtime=stat.st_mtime,
+            size=stat.st_size,
+            slug=slug,
+        )
 
     def test_flat_mode_merges_projects(self, tmp_path):
-        """Test that flat=True shows all sessions in one list."""
-        from ccutils import build_session_choices
+        """Test that build_flat_choices shows all sessions in one list."""
+        from ccutils.tui import build_flat_choices
         import questionary
         import time
 
@@ -2288,39 +2386,39 @@ class TestFlatMode:
             '{"type":"user","timestamp":"2025-01-02T00:00:00Z","message":{"role":"user","content":"Hi"}}\n'
         )
 
-        sessions_by_project = {
-            "project-alpha": [(session1, "Alpha session", None)],
-            "project-beta": [(session2, "Beta session", None)],
+        grouped = {
+            "project-alpha": [
+                self._make_meta(
+                    session1,
+                    "Alpha session",
+                    project_name="project-alpha",
+                    project_path="project-alpha",
+                ),
+            ],
+            "project-beta": [
+                self._make_meta(
+                    session2,
+                    "Beta session",
+                    project_name="project-beta",
+                    project_path="project-beta",
+                ),
+            ],
         }
 
-        # Without flat mode - sessions are separate per project
-        regular_choices = build_session_choices(
-            sessions_by_project, expand_chains=False, flat=False
-        )
-        regular_value_choices = [
-            c for c in regular_choices if not isinstance(c, questionary.Separator)
-        ]
+        choices = build_flat_choices(grouped, expand_chains=False)
+        value_choices = [c for c in choices if not isinstance(c, questionary.Separator)]
 
-        # With flat mode - all sessions in one merged list
-        flat_choices = build_session_choices(
-            sessions_by_project, expand_chains=False, flat=True
-        )
-        flat_value_choices = [
-            c for c in flat_choices if not isinstance(c, questionary.Separator)
-        ]
+        # Should have 2 choices (no separators)
+        assert len(value_choices) == 2
 
-        # Both should have same number of choices (no separators in either)
-        assert len(regular_value_choices) == 2
-        assert len(flat_value_choices) == 2
-
-        # Flat mode should still include project markers in FormattedText
-        for choice in flat_value_choices:
+        # Should include project markers in FormattedText
+        for choice in value_choices:
             text = "".join(t[1] for t in choice.title)
             assert "[" in text and "]" in text
 
     def test_flat_mode_preserves_sort_order(self, tmp_path):
         """Test that flat mode preserves modification time sort order."""
-        from ccutils import build_session_choices
+        from ccutils.tui import build_flat_choices
         import questionary
         import time
 
@@ -2340,20 +2438,34 @@ class TestFlatMode:
         newest = project1 / "newest.jsonl"
         newest.write_text('{"type":"user","message":{"content":"Newest"}}\n')
 
-        sessions_by_project = {
-            # Sessions provided in mtime order (most recent first)
+        grouped = {
             "project-alpha": [
-                (newest, "Newest session", None),
-                (oldest, "Oldest session", None),
+                self._make_meta(
+                    newest,
+                    "Newest session",
+                    project_name="project-alpha",
+                    project_path="project-alpha",
+                ),
+                self._make_meta(
+                    oldest,
+                    "Oldest session",
+                    project_name="project-alpha",
+                    project_path="project-alpha",
+                ),
             ],
-            "project-beta": [(middle, "Middle session", None)],
+            "project-beta": [
+                self._make_meta(
+                    middle,
+                    "Middle session",
+                    project_name="project-beta",
+                    project_path="project-beta",
+                ),
+            ],
         }
 
-        flat_choices = build_session_choices(
-            sessions_by_project, expand_chains=False, flat=True
-        )
+        choices = build_flat_choices(grouped, expand_chains=False)
         flat_value_choices = [
-            c for c in flat_choices if not isinstance(c, questionary.Separator)
+            c for c in choices if not isinstance(c, questionary.Separator)
         ]
 
         # Should be sorted by mtime (newest first)

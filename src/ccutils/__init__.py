@@ -30,7 +30,6 @@ from .parsers import (
     # Session discovery
     build_project_choices,
     build_session_choices,
-    build_session_choices_for_projects,
     find_agent_sessions,
     find_all_sessions,
     find_local_sessions,
