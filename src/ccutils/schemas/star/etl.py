@@ -1,6 +1,7 @@
 """ETL pipeline for loading session data into star schema."""
 
 import json
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
@@ -24,6 +25,51 @@ from .utils import (
 )
 
 
+@dataclass
+class StarExtractionResult:
+    """Bundles all data extracted from a session file for star schema loading."""
+
+    # Session metadata
+    cwd: str | None = None
+    git_branch: str | None = None
+    version: str | None = None
+    slug: str | None = None
+    first_timestamp: datetime | None = None
+    last_timestamp: datetime | None = None
+
+    # Agent metadata
+    is_agent: bool = False
+    agent_id: str | None = None
+    parent_session_id: str | None = None
+
+    # Counters
+    user_count: int = 0
+    assistant_count: int = 0
+    total_content_blocks: int = 0
+    thinking_count: int = 0
+
+    # Data lists
+    messages_data: list = field(default_factory=list)
+    content_blocks_data: list = field(default_factory=list)
+    tool_calls_data: list = field(default_factory=list)
+    file_operations_data: list = field(default_factory=list)
+    code_blocks_data: list = field(default_factory=list)
+    errors_data: list = field(default_factory=list)
+    entity_mentions_data: list = field(default_factory=list)
+    tool_chain_data: list = field(default_factory=list)
+    tool_input_params_data: list = field(default_factory=list)
+
+    # Dimension tracking sets
+    tools_seen: set = field(default_factory=set)
+    models_seen: set = field(default_factory=set)
+    dates_seen: set = field(default_factory=set)
+    languages_seen: set = field(default_factory=set)
+
+    # Dimension tracking dicts
+    files_seen: dict = field(default_factory=dict)
+    task_agent_map: dict = field(default_factory=dict)
+
+
 def run_star_schema_etl(
     conn, session_path, project_name, include_thinking=False, truncate_output=2000
 ):
@@ -42,85 +88,57 @@ def run_star_schema_etl(
         truncate_output: Max characters for tool output (default 2000)
     """
     session_path = Path(session_path)
-
-    # ==========================================================================
-    # Phase 1: Extract - Parse session file and collect raw data
-    # ==========================================================================
     session_id = session_path.stem
     session_key = generate_dimension_key(session_id)
     project_path = str(session_path.parent)
     project_key = generate_dimension_key(project_path)
 
-    # Session metadata
-    cwd = None
-    git_branch = None
-    version = None
-    slug = None
-    first_timestamp = None
-    last_timestamp = None
+    result = _extract_star_data(
+        session_path, session_key, project_key, include_thinking, truncate_output
+    )
 
-    # Agent metadata
-    is_agent = False
-    agent_id = None
-    parent_session_id = None
+    _load_dimensions(
+        conn, project_key, project_path, project_name, session_key, session_id, result
+    )
+    _load_facts(conn, session_key, project_key, result)
 
-    # Counters
-    user_count = 0
-    assistant_count = 0
-    total_content_blocks = 0
-    thinking_count = 0
 
-    # Tracking structures
-    messages_data = []
-    content_blocks_data = []
+def _extract_star_data(
+    session_path, session_key, project_key, include_thinking, truncate_output
+):
+    """Extract all data from a session file for star schema loading.
+
+    Returns a StarExtractionResult with all extracted data ready for
+    dimension and fact table loading.
+    """
+    result = StarExtractionResult()
+
     tool_use_map = {}
-    tool_calls_data = []
-    models_seen = set()
-    tools_seen = set()
-    dates_seen = set()
-
-    # Granular tracking
-    files_seen = {}
-    file_operations_data = []
-    code_blocks_data = []
-    errors_data = []
-    languages_seen = set()
-
-    # Conversation tracking
     message_timestamps = {}
     depth_map = {}
-    entity_mentions_data = []
-
-    # Tool chain tracking
-    tool_chain_data = []
     prev_tool_call = None
-
-    # Tool input params tracking
-    tool_input_params_data = []
-
-    # Progress record tracking: tool_use_id -> agent_id
-    task_agent_map = {}
-
     is_first = True
 
     for entry in iter_session_entries(session_path):
         # Capture progress records for deterministic agent delegation linking
         if entry.entry_type == "progress":
             if entry.progress_parent_tool_id and entry.progress_agent_id:
-                task_agent_map[entry.progress_parent_tool_id] = entry.progress_agent_id
+                result.task_agent_map[entry.progress_parent_tool_id] = (
+                    entry.progress_agent_id
+                )
             continue
 
         # Extract metadata from first entry
         if is_first:
             is_first = False
-            cwd = entry.raw.get("cwd")
-            git_branch = entry.raw.get("gitBranch")
-            version = entry.raw.get("version")
-            slug = entry.raw.get("slug")
-            agent_id = entry.raw.get("agentId")
-            is_agent = agent_id is not None
-            if is_agent:
-                parent_session_id = entry.raw.get("sessionId")
+            result.cwd = entry.raw.get("cwd")
+            result.git_branch = entry.raw.get("gitBranch")
+            result.version = entry.raw.get("version")
+            result.slug = entry.raw.get("slug")
+            result.agent_id = entry.raw.get("agentId")
+            result.is_agent = result.agent_id is not None
+            if result.is_agent:
+                result.parent_session_id = entry.raw.get("sessionId")
 
         message_id = entry.uuid
         parent_id = entry.parent_uuid
@@ -132,15 +150,15 @@ def run_star_schema_etl(
         date_key = None
         time_key = None
         if timestamp is not None:
-            if first_timestamp is None:
-                first_timestamp = timestamp
-            last_timestamp = timestamp
+            if result.first_timestamp is None:
+                result.first_timestamp = timestamp
+            result.last_timestamp = timestamp
             date_key = int(timestamp.strftime("%Y%m%d"))
             time_key = int(timestamp.strftime("%H%M"))
-            dates_seen.add(date_key)
+            result.dates_seen.add(date_key)
 
         if model:
-            models_seen.add(model)
+            result.models_seen.add(model)
 
         # Process content
         has_tool_use = False
@@ -154,7 +172,7 @@ def run_star_schema_etl(
             text_content = content
             content_block_count = 1
             block_id = f"{message_id}-0"
-            content_blocks_data.append(
+            result.content_blocks_data.append(
                 {
                     "content_block_id": block_id,
                     "message_id": message_id,
@@ -168,7 +186,7 @@ def run_star_schema_etl(
                     "content_json": json.dumps({"type": "text", "text": content}),
                 }
             )
-            total_content_blocks += 1
+            result.total_content_blocks += 1
 
         elif isinstance(content, list):
             texts = []
@@ -188,7 +206,7 @@ def run_star_schema_etl(
                     texts.append(text)
                     if should_track:
                         _add_content_block(
-                            content_blocks_data,
+                            result.content_blocks_data,
                             message_id,
                             session_key,
                             "text",
@@ -199,14 +217,14 @@ def run_star_schema_etl(
                             truncate_output,
                             block,
                         )
-                        total_content_blocks += 1
+                        result.total_content_blocks += 1
 
                 elif block_type == "tool_use":
                     has_tool_use = True
                     tool_use_id = block.get("id")
                     tool_name = block.get("name", "unknown")
                     tool_input = block.get("input", {})
-                    tools_seen.add(tool_name)
+                    result.tools_seen.add(tool_name)
 
                     input_json = json.dumps(tool_input)
                     input_summary = input_json[:truncate_output]
@@ -262,7 +280,7 @@ def run_star_schema_etl(
                             # For complex types (list, dict), serialize
                             param_text = json.dumps(param_value)[:2000]
 
-                        tool_input_params_data.append(
+                        result.tool_input_params_data.append(
                             {
                                 "param_id": param_id,
                                 "tool_call_id": tool_use_id,
@@ -278,8 +296,8 @@ def run_star_schema_etl(
                     file_path = extract_file_path_from_tool(tool_name, tool_input)
                     if file_path:
                         file_info = extract_file_info(file_path)
-                        if file_info and file_path not in files_seen:
-                            files_seen[file_path] = file_info
+                        if file_info and file_path not in result.files_seen:
+                            result.files_seen[file_path] = file_info
 
                         operation_type = get_operation_type(tool_name)
                         file_content = tool_input.get("content", "")
@@ -287,7 +305,7 @@ def run_star_schema_etl(
                             len(file_content) if isinstance(file_content, str) else 0
                         )
 
-                        file_operations_data.append(
+                        result.file_operations_data.append(
                             {
                                 "file_operation_id": f"{tool_use_id}-file",
                                 "tool_call_id": tool_use_id,
@@ -307,7 +325,7 @@ def run_star_schema_etl(
                     # Track tool chain
                     tool_key = generate_dimension_key(tool_name)
                     chain_id = f"{session_key}-chain"
-                    step_position = len(tool_chain_data)
+                    step_position = len(result.tool_chain_data)
 
                     time_since_prev = None
                     prev_tool_key_val = None
@@ -317,7 +335,7 @@ def run_star_schema_etl(
                             time_since_prev = (timestamp - prev_ts).total_seconds()
                         prev_tool_key_val = prev_tool_call[1]
 
-                    tool_chain_data.append(
+                    result.tool_chain_data.append(
                         {
                             "chain_step_id": f"{chain_id}-{step_position}",
                             "session_key": session_key,
@@ -333,7 +351,7 @@ def run_star_schema_etl(
 
                     if should_track:
                         _add_content_block(
-                            content_blocks_data,
+                            result.content_blocks_data,
                             message_id,
                             session_key,
                             "tool_use",
@@ -344,7 +362,7 @@ def run_star_schema_etl(
                             truncate_output,
                             block,
                         )
-                        total_content_blocks += 1
+                        result.total_content_blocks += 1
 
                 elif block_type == "tool_result":
                     has_tool_result = True
@@ -366,7 +384,7 @@ def run_star_schema_etl(
 
                     if tool_use_id and tool_use_id in tool_use_map:
                         tool_info = tool_use_map[tool_use_id]
-                        tool_calls_data.append(
+                        result.tool_calls_data.append(
                             {
                                 "tool_call_id": tool_use_id,
                                 "session_key": session_key,
@@ -390,7 +408,7 @@ def run_star_schema_etl(
                         )
 
                         if is_error:
-                            errors_data.append(
+                            result.errors_data.append(
                                 {
                                     "error_id": f"{tool_use_id}-error",
                                     "tool_call_id": tool_use_id,
@@ -408,7 +426,7 @@ def run_star_schema_etl(
 
                     if should_track:
                         _add_content_block(
-                            content_blocks_data,
+                            result.content_blocks_data,
                             message_id,
                             session_key,
                             "tool_result",
@@ -419,16 +437,16 @@ def run_star_schema_etl(
                             truncate_output,
                             block,
                         )
-                        total_content_blocks += 1
+                        result.total_content_blocks += 1
 
                 elif block_type == "thinking":
                     has_thinking = True
-                    thinking_count += 1
+                    result.thinking_count += 1
                     thinking_text = block.get("thinking", "")
 
                     if should_track:
                         _add_content_block(
-                            content_blocks_data,
+                            result.content_blocks_data,
                             message_id,
                             session_key,
                             "thinking",
@@ -439,11 +457,11 @@ def run_star_schema_etl(
                             truncate_output,
                             block,
                         )
-                        total_content_blocks += 1
+                        result.total_content_blocks += 1
 
                 elif block_type == "image":
                     if should_track:
-                        content_blocks_data.append(
+                        result.content_blocks_data.append(
                             {
                                 "content_block_id": f"{message_id}-{idx}",
                                 "message_id": message_id,
@@ -461,7 +479,7 @@ def run_star_schema_etl(
                                 ),
                             }
                         )
-                        total_content_blocks += 1
+                        result.total_content_blocks += 1
 
             text_content = " ".join(texts)
 
@@ -470,8 +488,8 @@ def run_star_schema_etl(
             extracted_blocks = extract_code_blocks(text_content)
             for cb_idx, cb in enumerate(extracted_blocks):
                 language = cb["language"]
-                languages_seen.add(language)
-                code_blocks_data.append(
+                result.languages_seen.add(language)
+                result.code_blocks_data.append(
                     {
                         "code_block_id": f"{message_id}-code-{cb_idx}",
                         "message_id": message_id,
@@ -487,12 +505,12 @@ def run_star_schema_etl(
                 )
 
             entities = extract_entities(text_content, message_id, session_key)
-            entity_mentions_data.extend(entities)
+            result.entity_mentions_data.extend(entities)
 
         if entry.entry_type == "user":
-            user_count += 1
+            result.user_count += 1
         else:
-            assistant_count += 1
+            result.assistant_count += 1
 
         word_cnt = count_words(text_content)
         token_est = estimate_tokens(text_content)
@@ -514,7 +532,7 @@ def run_star_schema_etl(
         message_type_key = generate_dimension_key(entry.entry_type)
         model_key = generate_dimension_key(model) if model else None
 
-        messages_data.append(
+        result.messages_data.append(
             {
                 "message_id": message_id,
                 "session_key": session_key,
@@ -542,59 +560,7 @@ def run_star_schema_etl(
             }
         )
 
-    # ==========================================================================
-    # Phase 2: Load Dimensions
-    # ==========================================================================
-
-    _load_dimensions(
-        conn,
-        project_key,
-        project_path,
-        project_name,
-        session_key,
-        session_id,
-        cwd,
-        git_branch,
-        version,
-        slug,
-        first_timestamp,
-        last_timestamp,
-        is_agent,
-        agent_id,
-        parent_session_id,
-        tools_seen,
-        models_seen,
-        dates_seen,
-        messages_data,
-        files_seen,
-        languages_seen,
-    )
-
-    # ==========================================================================
-    # Phase 3: Load Facts
-    # ==========================================================================
-
-    _load_facts(
-        conn,
-        session_key,
-        project_key,
-        messages_data,
-        content_blocks_data,
-        tool_calls_data,
-        user_count,
-        assistant_count,
-        thinking_count,
-        total_content_blocks,
-        first_timestamp,
-        last_timestamp,
-        file_operations_data,
-        code_blocks_data,
-        errors_data,
-        entity_mentions_data,
-        tool_chain_data,
-        tool_input_params_data,
-        task_agent_map,
-    )
+    return result
 
 
 def _add_content_block(
@@ -627,27 +593,7 @@ def _add_content_block(
 
 
 def _load_dimensions(
-    conn,
-    project_key,
-    project_path,
-    project_name,
-    session_key,
-    session_id,
-    cwd,
-    git_branch,
-    version,
-    slug,
-    first_timestamp,
-    last_timestamp,
-    is_agent,
-    agent_id,
-    parent_session_id,
-    tools_seen,
-    models_seen,
-    dates_seen,
-    messages_data,
-    files_seen,
-    languages_seen,
+    conn, project_key, project_path, project_name, session_key, session_id, result
 ):
     """Load all dimension tables."""
 
@@ -662,11 +608,13 @@ def _load_dimensions(
 
     # dim_session
     parent_session_key = (
-        generate_dimension_key(parent_session_id) if parent_session_id else None
+        generate_dimension_key(result.parent_session_id)
+        if result.parent_session_id
+        else None
     )
     # Attempt depth_level calculation for agents with known parents
     depth_level = 0
-    if is_agent and parent_session_key:
+    if result.is_agent and parent_session_key:
         parent_depth = conn.execute(
             "SELECT depth_level FROM dim_session WHERE session_key = ?",
             [parent_session_key],
@@ -688,14 +636,14 @@ def _load_dimensions(
                 session_key,
                 session_id,
                 project_key,
-                cwd,
-                git_branch,
-                version,
-                slug,
-                first_timestamp,
-                last_timestamp,
-                is_agent,
-                agent_id,
+                result.cwd,
+                result.git_branch,
+                result.version,
+                result.slug,
+                result.first_timestamp,
+                result.last_timestamp,
+                result.is_agent,
+                result.agent_id,
                 parent_session_key,
                 depth_level,
                 None,  # chain_key - populated by batch export
@@ -706,7 +654,7 @@ def _load_dimensions(
         )
 
     # dim_tool
-    for tool_name in tools_seen:
+    for tool_name in result.tools_seen:
         tool_key = generate_dimension_key(tool_name)
         if not conn.execute(
             "SELECT 1 FROM dim_tool WHERE tool_key = ?", [tool_key]
@@ -718,7 +666,7 @@ def _load_dimensions(
             )
 
     # dim_model
-    for model_name in models_seen:
+    for model_name in result.models_seen:
         model_key = generate_dimension_key(model_name)
         if not conn.execute(
             "SELECT 1 FROM dim_model WHERE model_key = ?", [model_key]
@@ -754,7 +702,7 @@ def _load_dimensions(
         "December",
     ]
 
-    for date_key in dates_seen:
+    for date_key in result.dates_seen:
         if not conn.execute(
             "SELECT 1 FROM dim_date WHERE date_key = ?", [date_key]
         ).fetchone():
@@ -786,7 +734,7 @@ def _load_dimensions(
                 pass
 
     # dim_time
-    times_seen = {msg["time_key"] for msg in messages_data if msg["time_key"]}
+    times_seen = {msg["time_key"] for msg in result.messages_data if msg["time_key"]}
     for time_key in times_seen:
         if not conn.execute(
             "SELECT 1 FROM dim_time WHERE time_key = ?", [time_key]
@@ -800,7 +748,7 @@ def _load_dimensions(
             )
 
     # dim_file
-    for file_path, file_info in files_seen.items():
+    for _file_path, file_info in result.files_seen.items():
         if not conn.execute(
             "SELECT 1 FROM dim_file WHERE file_key = ?", [file_info["file_key"]]
         ).fetchone():
@@ -816,7 +764,7 @@ def _load_dimensions(
             )
 
     # dim_programming_language
-    for language in languages_seen:
+    for language in result.languages_seen:
         lang_key = generate_dimension_key(language)
         if not conn.execute(
             "SELECT 1 FROM dim_programming_language WHERE language_key = ?", [lang_key]
@@ -839,31 +787,11 @@ def _load_dimensions(
         )
 
 
-def _load_facts(
-    conn,
-    session_key,
-    project_key,
-    messages_data,
-    content_blocks_data,
-    tool_calls_data,
-    user_count,
-    assistant_count,
-    thinking_count,
-    total_content_blocks,
-    first_timestamp,
-    last_timestamp,
-    file_operations_data,
-    code_blocks_data,
-    errors_data,
-    entity_mentions_data,
-    tool_chain_data,
-    tool_input_params_data,
-    task_agent_map=None,
-):
+def _load_facts(conn, session_key, project_key, result):
     """Load all fact tables."""
 
     # fact_messages
-    for msg in messages_data:
+    for msg in result.messages_data:
         conn.execute(
             """INSERT INTO fact_messages
                (message_id, session_key, project_key, message_type_key, model_key,
@@ -898,7 +826,7 @@ def _load_facts(
         )
 
     # fact_content_blocks
-    for block in content_blocks_data:
+    for block in result.content_blocks_data:
         conn.execute(
             """INSERT INTO fact_content_blocks VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             [
@@ -916,7 +844,7 @@ def _load_facts(
         )
 
     # fact_tool_calls
-    for tc in tool_calls_data:
+    for tc in result.tool_calls_data:
         conn.execute(
             """INSERT INTO fact_tool_calls VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             [
@@ -943,12 +871,14 @@ def _load_facts(
 
     # fact_session_summary
     session_duration = 0
-    if first_timestamp and last_timestamp:
-        session_duration = int((last_timestamp - first_timestamp).total_seconds())
+    if result.first_timestamp and result.last_timestamp:
+        session_duration = int(
+            (result.last_timestamp - result.first_timestamp).total_seconds()
+        )
 
     first_date_key = None
-    if first_timestamp:
-        first_date_key = int(first_timestamp.strftime("%Y%m%d"))
+    if result.first_timestamp:
+        first_date_key = int(result.first_timestamp.strftime("%Y%m%d"))
 
     conn.execute(
         """INSERT INTO fact_session_summary VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
@@ -956,20 +886,20 @@ def _load_facts(
             session_key,
             project_key,
             first_date_key,
-            user_count + assistant_count,
-            user_count,
-            assistant_count,
-            len(tool_calls_data),
-            thinking_count,
-            total_content_blocks,
+            result.user_count + result.assistant_count,
+            result.user_count,
+            result.assistant_count,
+            len(result.tool_calls_data),
+            result.thinking_count,
+            result.total_content_blocks,
             session_duration,
-            first_timestamp,
-            last_timestamp,
+            result.first_timestamp,
+            result.last_timestamp,
         ],
     )
 
     # fact_file_operations
-    for fop in file_operations_data:
+    for fop in result.file_operations_data:
         conn.execute(
             """INSERT INTO fact_file_operations VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             [
@@ -987,7 +917,7 @@ def _load_facts(
         )
 
     # fact_code_blocks
-    for cb in code_blocks_data:
+    for cb in result.code_blocks_data:
         conn.execute(
             """INSERT INTO fact_code_blocks VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             [
@@ -1005,7 +935,7 @@ def _load_facts(
         )
 
     # fact_errors
-    for err in errors_data:
+    for err in result.errors_data:
         conn.execute(
             """INSERT INTO fact_errors VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             [
@@ -1022,7 +952,7 @@ def _load_facts(
         )
 
     # fact_entity_mentions
-    for em in entity_mentions_data:
+    for em in result.entity_mentions_data:
         conn.execute(
             """INSERT INTO fact_entity_mentions VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             [
@@ -1039,7 +969,7 @@ def _load_facts(
         )
 
     # fact_tool_chain_steps
-    for tc in tool_chain_data:
+    for tc in result.tool_chain_data:
         conn.execute(
             """INSERT INTO fact_tool_chain_steps VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
             [
@@ -1055,7 +985,7 @@ def _load_facts(
         )
 
     # fact_tool_input_params
-    for param in tool_input_params_data:
+    for param in result.tool_input_params_data:
         conn.execute(
             """INSERT INTO fact_tool_input_params VALUES (?, ?, ?, ?, ?, ?, ?)""",
             [
@@ -1070,8 +1000,8 @@ def _load_facts(
         )
 
     # stg_task_agent_map (progress record links: tool_use_id -> agent_id)
-    if task_agent_map:
-        for tool_use_id, agent_id in task_agent_map.items():
+    if result.task_agent_map:
+        for tool_use_id, agent_id in result.task_agent_map.items():
             conn.execute(
                 "INSERT INTO stg_task_agent_map VALUES (?, ?, ?)",
                 [tool_use_id, agent_id, session_key],
