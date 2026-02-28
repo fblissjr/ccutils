@@ -99,7 +99,7 @@ def shorten_model_name(model_id: str | None) -> str:
 def derive_project_name(cwd: str | None, folder_name: str) -> str:
     """Derive a readable project name from cwd or folder name.
 
-    Prefers cwd (e.g., /Users/fredbliss/workspace/ccutils -> ccutils)
+    Prefers cwd (e.g., /Users/dev/workspace/myproject -> myproject)
     because it's the actual directory name, not an encoded path.
 
     Falls back to folder_name parsing (same logic as get_project_display_name).

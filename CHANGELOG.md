@@ -2,6 +2,26 @@
 
 All notable changes to this project will be documented in this file.
 
+## 0.10.1
+
+### Fixed
+- **Master index HTML rendering**: `_generate_master_index()` now passes `total_projects`, `total_sessions`, `recent_date`, and `global_search_js` to the template -- previously rendered empty
+- **Project index HTML rendering**: `_generate_project_index()` now passes `session_count` to the template
+- **CSS class mismatch**: `.index-item-number` in 3 templates renamed to `.index-item-num` to match stylesheet
+- **33 missing CSS definitions**: Added styles for `.file-tool-*`, `.edit-*`, `.tool-header`, `.tool-icon`, `.todo-header`, `.todo-items`, `.index-commit-*`, `.search-result-*`, `.search-modal`, `.disabled`, `.continuation`, `.commit-card-hash`, `.image-block`, `.date`
+- **Docstring privacy**: Removed hardcoded username from `metadata.py` docstring
+
+### Changed
+- **Score-based intent classification**: `classify_intent()` now counts keyword matches per intent and returns the one with the most hits (ties broken by priority order). Fixes compound messages like "implement new error handling" being misclassified as `bug_fix` instead of `feature`
+
+### Removed
+- Dead templates: `star_schema_dashboard.html`, `data_explorer.html` (never loaded by any Python code)
+- Dead code: `entity_type_key` generation in `extractors.py` (unused since degenerate dimension switch)
+
+### Internal
+- Split `test_star_schema.py` (3382 lines, 38 classes) into 4 focused files: `_ddl`, `_etl`, `_analytics`, `_advanced`
+- Shared fixtures extracted to `conftest.py`
+
 ## 0.10.0
 
 ### Breaking Changes
