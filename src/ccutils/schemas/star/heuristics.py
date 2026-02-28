@@ -40,13 +40,28 @@ _ERROR_RULES = [
 def classify_intent(first_user_message):
     """Classify session intent from the first user message.
 
+    Uses score-based classification: counts keyword matches per intent,
+    returns the intent with the most hits. Ties broken by priority order
+    (bug_fix > refactor > debug > test > docs > review > feature).
+
     Returns one of: bug_fix, feature, refactor, debug, test, docs, review, explore.
     """
     if not first_user_message:
         return "explore"
 
+    scores = {}
     for intent, pattern in _INTENT_RULES:
-        if pattern.search(first_user_message):
+        hits = len(pattern.findall(first_user_message))
+        if hits > 0:
+            scores[intent] = hits
+
+    if not scores:
+        return "explore"
+
+    max_score = max(scores.values())
+    # Priority order as tiebreaker
+    for intent, _ in _INTENT_RULES:
+        if scores.get(intent) == max_score:
             return intent
 
     return "explore"

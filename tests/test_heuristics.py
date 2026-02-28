@@ -63,6 +63,37 @@ class TestClassifyIntent:
         assert classify_intent("FIX the BUG") == "bug_fix"
         assert classify_intent("ADD a feature") == "feature"
 
+    def test_compound_intent_most_keywords_wins(self):
+        # "Create tests for the refactor" - 2 test keywords (tests, coverage implied) vs 1 refactor
+        assert (
+            classify_intent(
+                "write tests and add test coverage for the refactored module"
+            )
+            == "test"
+        )
+
+    def test_compound_bug_vs_feature(self):
+        # "Implement new error handling" - "implement", "new" = 2 feature keywords vs "error" = 1 bug_fix
+        assert classify_intent("implement new error handling") == "feature"
+
+    def test_compound_debug_vs_bugfix(self):
+        # "Fix the debugging logic" - "fix" = 1 bug_fix, "debug" = 1 debug; tie goes to priority (bug_fix)
+        assert classify_intent("fix the debugging logic") == "bug_fix"
+
+    def test_compound_multiple_feature_keywords(self):
+        # Multiple feature keywords should beat single other
+        assert classify_intent("add a new feature to create user profiles") == "feature"
+
+    def test_single_keyword_unchanged(self):
+        # Existing single-keyword behavior must be preserved
+        assert classify_intent("fix the login") == "bug_fix"
+        assert classify_intent("refactor the module") == "refactor"
+        assert classify_intent("debug the issue") == "debug"
+        assert classify_intent("write a test") == "test"
+        assert classify_intent("update the docs") == "docs"
+        assert classify_intent("review the PR") == "review"
+        assert classify_intent("add a button") == "feature"
+
 
 class TestClassifyComplexity:
     """Tests for complexity classification from session metrics."""
