@@ -57,6 +57,11 @@ from .utils import maybe_open_browser
     is_flag=True,
     help="List conversations in the export without converting.",
 )
+@click.option(
+    "--private",
+    is_flag=True,
+    help="Sanitize file paths in output to remove home directory and absolute paths.",
+)
 def import_cmd(
     export_path,
     output,
@@ -66,6 +71,7 @@ def import_cmd(
     interactive,
     open_browser,
     list_only,
+    private,
 ):
     """Import a Claude.ai account export (from Settings > Privacy).
 
@@ -138,9 +144,9 @@ def import_cmd(
     )
 
     if output_format == "html":
-        _export_to_html(parsed, output, open_browser)
+        _export_to_html(parsed, output, open_browser, private=private)
     elif output_format == "duckdb":
-        _export_to_duckdb(parsed, output, include_thinking)
+        _export_to_duckdb(parsed, output, include_thinking, private=private)
 
 
 def _list_conversations(conversations):
@@ -181,7 +187,7 @@ def _interactive_select(conversations):
     return selected if selected else []
 
 
-def _export_to_html(parsed, output, open_browser):
+def _export_to_html(parsed, output, open_browser, private=False):
     """Export parsed data to HTML."""
     loglines = parsed["loglines"]
     sessions = _group_loglines_by_session(loglines)
@@ -195,7 +201,9 @@ def _export_to_html(parsed, output, open_browser):
     for session_id, session_loglines in sessions.items():
         session_name = session_id[:8]
         session_output = output / session_name
-        generate_html(loglines=session_loglines, output_dir=session_output)
+        generate_html(
+            loglines=session_loglines, output_dir=session_output, private=private
+        )
         click.echo(f"  Generated: {session_output}")
 
     # Create index if multiple sessions
@@ -275,7 +283,7 @@ def _resolve_db_path(output):
     return p
 
 
-def _export_to_duckdb(parsed, output, include_thinking):
+def _export_to_duckdb(parsed, output, include_thinking, private=False):
     """Export parsed data to DuckDB."""
     loglines = parsed["loglines"]
     sessions = _group_loglines_by_session(loglines)
@@ -294,6 +302,7 @@ def _export_to_duckdb(parsed, output, include_thinking):
             include_thinking=include_thinking,
             loglines=session_loglines,
             session_id_override=session_id,
+            private=private,
         )
 
     conn.close()

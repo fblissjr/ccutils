@@ -104,6 +104,11 @@ from .utils import maybe_open_browser
     default=None,
     help="Override default ColBERT model for embeddings.",
 )
+@click.option(
+    "--private",
+    is_flag=True,
+    help="Sanitize file paths in output to remove home directory and absolute paths.",
+)
 def all_cmd(
     source,
     output,
@@ -120,6 +125,7 @@ def all_cmd(
     include_thinking,
     embed,
     embed_model,
+    private,
 ):
     """Convert all local Claude Code sessions to HTML, DuckDB, or JSON archives.
 
@@ -219,6 +225,7 @@ def all_cmd(
             include_agents=include_agents,
             progress_callback=html_progress,
             no_search_index=no_search_index,
+            private=private,
         )
 
     # Generate DuckDB if requested (simple or star schema)
@@ -238,6 +245,7 @@ def all_cmd(
             progress_callback=on_progress if output_format != "both" else None,
             max_workers=jobs,
             batch_size=batch_size,
+            private=private,
         )
         if stats is None:
             stats = duckdb_stats
@@ -280,6 +288,7 @@ def all_cmd(
             progress_callback=on_progress,
             max_workers=jobs,
             batch_size=batch_size,
+            private=private,
         )
         if stats is None:
             stats = duckdb_stats
@@ -302,6 +311,7 @@ def all_cmd(
             session_paths,
             json_path,
             include_thinking=include_thinking,
+            private=private,
         )
         stats = {
             "total_projects": len(projects),

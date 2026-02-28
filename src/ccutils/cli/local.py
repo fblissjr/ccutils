@@ -117,6 +117,11 @@ from .utils import maybe_open_browser
     is_flag=True,
     help="Show all sessions in a flat list sorted by date (disables project grouping).",
 )
+@click.option(
+    "--private",
+    is_flag=True,
+    help="Sanitize file paths in output to remove home directory and absolute paths.",
+)
 def local_cmd(
     output,
     output_auto,
@@ -131,6 +136,7 @@ def local_cmd(
     include_thinking,
     expand_chains,
     flat,
+    private,
 ):
     """Select and convert local Claude Code sessions to HTML or DuckDB.
 
@@ -211,14 +217,16 @@ def local_cmd(
     if fmt == "html":
         if len(selected) == 1 and not agent_map:
             # Single session, no agents - use existing simple path
-            generate_html(selected[0], output, github_repo=repo)
+            generate_html(selected[0], output, github_repo=repo, private=private)
         else:
             # Multiple sessions or has agents - use batch structure with master index
             output.mkdir(parents=True, exist_ok=True)
             for idx, session_file in enumerate(selected, 1):
                 session_output = output / session_file.stem
                 click.echo(f"[{idx}/{len(selected)}] {session_file.name}")
-                generate_html(session_file, session_output, github_repo=repo)
+                generate_html(
+                    session_file, session_output, github_repo=repo, private=private
+                )
             # Generate master index with agent relationships
             generate_multi_session_index(output, selected, agent_map=agent_map)
             click.echo(f"Generated {len(selected)} session(s) with master index")
@@ -238,6 +246,7 @@ def local_cmd(
                     session_file,
                     session_file.parent.name,
                     include_thinking=include_thinking,
+                    private=private,
                 )
             conn.close()
         else:  # star schema
@@ -249,6 +258,7 @@ def local_cmd(
                     session_file,
                     session_file.parent.name,
                     include_thinking=include_thinking,
+                    private=private,
                 )
             # Generate semantic model metadata after all ETL is complete
             create_semantic_model(conn)
@@ -269,7 +279,7 @@ def local_cmd(
             json_path.parent.mkdir(parents=True, exist_ok=True)
             click.echo(f"Exporting {len(selected)} session(s) to JSON...")
             export_sessions_to_json(
-                selected, json_path, include_thinking=include_thinking
+                selected, json_path, include_thinking=include_thinking, private=private
             )
             click.echo(f"Exported to {json_path}")
         else:  # star schema
@@ -292,6 +302,7 @@ def local_cmd(
                     session_file,
                     session_file.parent.name,
                     include_thinking=include_thinking,
+                    private=private,
                 )
             create_semantic_model(conn)
             export_star_schema_to_json(conn, output_dir)

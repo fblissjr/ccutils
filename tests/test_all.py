@@ -366,7 +366,7 @@ class TestGenerateBatchHtml:
 
             original_generate_html = export_html.generate_html
 
-            def mock_generate_html(json_path, output_dir, github_repo=None):
+            def mock_generate_html(json_path, output_dir, github_repo=None, **kwargs):
                 if "session1" in str(json_path):
                     raise RuntimeError("Simulated failure")
                 return original_generate_html(json_path, output_dir, github_repo)

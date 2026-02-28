@@ -40,7 +40,12 @@ from .utils import is_url, fetch_url_to_tempfile, maybe_open_browser
     is_flag=True,
     help="Open the generated index.html in your default browser (default if no -o specified).",
 )
-def json_cmd(json_file, output, output_auto, repo, include_json, open_browser):
+@click.option(
+    "--private",
+    is_flag=True,
+    help="Sanitize file paths in output to remove home directory and absolute paths.",
+)
+def json_cmd(json_file, output, output_auto, repo, include_json, open_browser, private):
     """Convert a Claude Code session JSON/JSONL file or URL to HTML."""
     # Handle URL input
     if is_url(json_file):
@@ -70,7 +75,7 @@ def json_cmd(json_file, output, output_auto, repo, include_json, open_browser):
         )
 
     output = Path(output)
-    generate_html(json_file_path, output, github_repo=repo)
+    generate_html(json_file_path, output, github_repo=repo, private=private)
 
     # Show output directory
     click.echo(f"Output: {output.resolve()}")

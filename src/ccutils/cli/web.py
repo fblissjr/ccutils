@@ -62,6 +62,11 @@ from .utils import resolve_credentials, maybe_open_browser
     type=int,
     help="Request specific number of sessions per page (for debugging API).",
 )
+@click.option(
+    "--private",
+    is_flag=True,
+    help="Sanitize file paths in output to remove home directory and absolute paths.",
+)
 def web_cmd(
     session_id,
     output,
@@ -73,6 +78,7 @@ def web_cmd(
     open_browser,
     debug,
     limit,
+    private,
 ):
     """Select and convert a web session from the Claude API to HTML.
 
@@ -169,7 +175,10 @@ def web_cmd(
     output = Path(output)
     click.echo(f"Generating HTML in {output}/...")
     generate_html(
-        output_dir=output, github_repo=repo, loglines=session_data.get("loglines", [])
+        output_dir=output,
+        github_repo=repo,
+        loglines=session_data.get("loglines", []),
+        private=private,
     )
 
     # Show output directory
