@@ -4,6 +4,13 @@ All notable changes to this project will be documented in this file.
 
 ## 0.9.5
 
+### Added
+- **`--private` flag** for privacy-preserving exports: sanitizes absolute file paths in HTML, DuckDB, and JSON output
+  - `PathSanitizer` class converts cwd-relative paths to relative, home-relative to `~/...`, leaves system paths unchanged
+  - Applied at ETL time so all downstream consumers get clean data automatically
+  - Available on all commands: `local`, `all`, `json`, `web`, `import`
+  - 49 new tests (31 unit + 18 integration)
+
 ### Changed
 - `_export_to_html` cleanup: eliminated temp-file round-trip by passing loglines directly to `generate_html(loglines=)`, reused `_group_loglines_by_session` helper, simplified `auto_open` logic, removed unused `metadata` binding and `json` import
 
