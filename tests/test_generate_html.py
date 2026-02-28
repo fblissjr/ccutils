@@ -2152,3 +2152,77 @@ class TestFlatMode:
         # First should be newest, last should be oldest
         assert "Newest" in texts[0]
         assert "Oldest" in texts[-1]
+
+
+class TestMasterIndex:
+    """Tests for master index generation."""
+
+    def test_master_index_renders_totals_and_dates(self, tmp_path):
+        """Test that _generate_master_index passes total_projects, total_sessions,
+        recent_date, and global_search_js to the template."""
+        from ccutils.export.html import _generate_master_index
+
+        projects = [
+            {
+                "name": "alpha",
+                "sessions": [
+                    {"path": tmp_path / "a.jsonl", "mtime": 1700000000},
+                    {"path": tmp_path / "b.jsonl", "mtime": 1699000000},
+                ],
+            },
+            {
+                "name": "beta",
+                "sessions": [
+                    {"path": tmp_path / "c.jsonl", "mtime": 1698000000},
+                ],
+            },
+        ]
+
+        output_dir = tmp_path / "out"
+        output_dir.mkdir()
+
+        _generate_master_index(projects, output_dir, has_search_index=True)
+
+        html_content = (output_dir / "index.html").read_text(encoding="utf-8")
+
+        # Should contain total counts
+        assert "2 projects" in html_content
+        assert "3 sessions" in html_content
+
+        # Should contain recent_date for each project (not empty)
+        assert "2023-11-14" in html_content  # approx date for 1700000000
+
+        # Should contain global search JS (the IIFE from global_search.js)
+        assert "global-search-modal" in html_content
+
+    def test_project_index_renders_session_count(self, tmp_path):
+        """Test that _generate_project_index passes session_count to the template."""
+        from ccutils.export.html import _generate_project_index
+
+        project = {
+            "name": "alpha",
+            "sessions": [
+                {
+                    "path": tmp_path / "a.jsonl",
+                    "mtime": 1700000000,
+                    "summary": "First session",
+                    "size": 1024,
+                },
+                {
+                    "path": tmp_path / "b.jsonl",
+                    "mtime": 1699000000,
+                    "summary": "Second session",
+                    "size": 2048,
+                },
+            ],
+        }
+
+        output_dir = tmp_path / "out"
+        output_dir.mkdir()
+
+        _generate_project_index(project, output_dir)
+
+        html_content = (output_dir / "index.html").read_text(encoding="utf-8")
+
+        # Should contain session count
+        assert "2 sessions" in html_content

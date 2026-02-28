@@ -538,6 +538,7 @@ def _generate_project_index(project, output_dir):
         css=CSS,
         project_name=project["name"],
         sessions=sessions_data,
+        session_count=len(sessions_data),
     )
     (output_dir / "index.html").write_text(content, encoding="utf-8")
 
@@ -556,14 +557,24 @@ def _generate_master_index(projects, output_dir, has_search_index=False):
             {
                 "name": project["name"],
                 "session_count": len(project["sessions"]),
-                "most_recent": most_recent.strftime("%Y-%m-%d %H:%M"),
+                "recent_date": most_recent.strftime("%Y-%m-%d %H:%M"),
             }
         )
+
+    total_sessions = sum(p["session_count"] for p in projects_data)
+
+    # Load global search JS if search index is enabled
+    global_search_js = ""
+    if has_search_index:
+        global_search_js = _jinja_env.get_template("global_search.js").render()
 
     content = template.render(
         css=CSS,
         projects=projects_data,
+        total_projects=len(projects_data),
+        total_sessions=total_sessions,
         has_search_index=has_search_index,
+        global_search_js=global_search_js,
     )
     (output_dir / "index.html").write_text(content, encoding="utf-8")
 

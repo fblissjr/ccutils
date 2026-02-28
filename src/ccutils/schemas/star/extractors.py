@@ -90,8 +90,6 @@ def extract_entities(text, message_id, session_key):
 
     mentions = []
     for entity_type, pattern in ENTITY_PATTERNS.items():
-        entity_type_key = generate_dimension_key(entity_type)
-
         for match in pattern.finditer(text):
             matched_text = match.group(0)
             groups = [g for g in match.groups() if g]
@@ -120,7 +118,6 @@ def extract_entities(text, message_id, session_key):
                     "mention_id": mention_id,
                     "message_id": message_id,
                     "session_key": session_key,
-                    "entity_type_key": entity_type_key,
                     "entity_type": entity_type,
                     "entity_text": matched_text[:500],
                     "entity_normalized": matched_text.lower()[:500],

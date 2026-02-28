@@ -163,7 +163,7 @@
 
 {# Index item (prompt) - rendered_content and stats_html are pre-rendered so need |safe #}
 {% macro index_item(prompt_num, link, timestamp, rendered_content, stats_html) %}
-<div class="index-item"><a href="{{ link }}"><div class="index-item-header"><span class="index-item-number">#{{ prompt_num }}</span><time datetime="{{ timestamp }}" data-timestamp="{{ timestamp }}">{{ timestamp }}</time></div><div class="index-item-content">{{ rendered_content|safe }}</div></a>{{ stats_html|safe }}</div>
+<div class="index-item"><a href="{{ link }}"><div class="index-item-header"><span class="index-item-num">#{{ prompt_num }}</span><time datetime="{{ timestamp }}" data-timestamp="{{ timestamp }}">{{ timestamp }}</time></div><div class="index-item-content">{{ rendered_content|safe }}</div></a>{{ stats_html|safe }}</div>
 {%- endmacro %}
 
 {# Index commit #}
