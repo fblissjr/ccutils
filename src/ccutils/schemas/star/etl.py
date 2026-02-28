@@ -6,6 +6,7 @@ from datetime import datetime
 from pathlib import Path
 
 from ...parsers.jsonl_reader import iter_session_entries
+from ...sanitize import PathSanitizer
 from .extractors import (
     LANGUAGE_EXTENSIONS,
     calculate_conversation_depth,
@@ -71,7 +72,12 @@ class StarExtractionResult:
 
 
 def run_star_schema_etl(
-    conn, session_path, project_name, include_thinking=False, truncate_output=2000
+    conn,
+    session_path,
+    project_name,
+    include_thinking=False,
+    truncate_output=2000,
+    private=False,
 ):
     """Run ETL to populate star schema from a session file.
 
@@ -86,6 +92,7 @@ def run_star_schema_etl(
         project_name: Name of the project
         include_thinking: Whether to include thinking blocks
         truncate_output: Max characters for tool output (default 2000)
+        private: If True, sanitize paths to remove sensitive directory info
     """
     session_path = Path(session_path)
     session_id = session_path.stem
@@ -94,11 +101,26 @@ def run_star_schema_etl(
     project_key = generate_dimension_key(project_path)
 
     result = _extract_star_data(
-        session_path, session_key, project_key, include_thinking, truncate_output
+        session_path,
+        session_key,
+        project_key,
+        include_thinking,
+        truncate_output,
+        private,
     )
 
+    # Create sanitizer for dimension loading (display values only)
+    sanitizer = PathSanitizer(result.cwd) if private else None
+
     _load_dimensions(
-        conn, project_key, project_path, project_name, session_key, session_id, result
+        conn,
+        project_key,
+        project_path,
+        project_name,
+        session_key,
+        session_id,
+        result,
+        sanitizer,
     )
     _load_facts(conn, session_key, project_key, result)
 
@@ -114,6 +136,7 @@ class BlockContext:
     timestamp: datetime | None
     truncate_output: int
     idx: int  # block index
+    sanitizer: PathSanitizer | None = None
 
 
 def _handle_tool_use_block(result, block, ctx, tool_use_map, prev_tool_call):
@@ -128,7 +151,6 @@ def _handle_tool_use_block(result, block, ctx, tool_use_map, prev_tool_call):
     result.tools_seen.add(tool_name)
 
     input_json = json.dumps(tool_input)
-    input_summary = input_json[: ctx.truncate_output]
 
     # Extract common parameters for direct columns
     extracted_file_path = extract_file_path_from_tool(tool_name, tool_input)
@@ -139,6 +161,16 @@ def _handle_tool_use_block(result, block, ctx, tool_use_map, prev_tool_call):
         tool_input.get("pattern") if tool_name.lower() == "grep" else None
     )
     extracted_query = tool_input.get("query") or tool_input.get("url")
+
+    # Sanitize paths if private mode
+    if ctx.sanitizer:
+        input_json = ctx.sanitizer.sanitize_json_string(input_json)
+        if extracted_file_path:
+            extracted_file_path = ctx.sanitizer.sanitize_path(extracted_file_path)
+        if extracted_command:
+            extracted_command = ctx.sanitizer.sanitize_text(extracted_command)
+
+    input_summary = input_json[: ctx.truncate_output]
 
     tool_use_map[tool_use_id] = {
         "message_id": ctx.message_id,
@@ -171,8 +203,12 @@ def _handle_tool_use_block(result, block, ctx, tool_use_map, prev_tool_call):
             param_number = float(param_value)
         elif isinstance(param_value, str):
             param_text = param_value[:2000]
+            if ctx.sanitizer:
+                param_text = ctx.sanitizer.sanitize_text(param_text)
         else:
             param_text = json.dumps(param_value)[:2000]
+            if ctx.sanitizer:
+                param_text = ctx.sanitizer.sanitize_json_string(param_text)
 
         result.tool_input_params_data.append(
             {
@@ -186,7 +222,7 @@ def _handle_tool_use_block(result, block, ctx, tool_use_map, prev_tool_call):
             }
         )
 
-    # Track file operations
+    # Track file operations (use sanitized path for display, original for keys)
     file_path = extract_file_path_from_tool(tool_name, tool_input)
     if file_path:
         file_info = extract_file_info(file_path)
@@ -273,6 +309,9 @@ def _handle_tool_result_block(result, block, ctx, tool_use_map):
     else:
         result_text = str(result_content)
 
+    if ctx.sanitizer:
+        result_text = ctx.sanitizer.sanitize_text(result_text)
+
     output_text = result_text[: ctx.truncate_output]
     output_char_count = len(result_text)
 
@@ -332,7 +371,12 @@ def _handle_tool_result_block(result, block, ctx, tool_use_map):
 
 
 def _extract_star_data(
-    session_path, session_key, project_key, include_thinking, truncate_output
+    session_path,
+    session_key,
+    project_key,
+    include_thinking,
+    truncate_output,
+    private=False,
 ):
     """Extract all data from a session file for star schema loading.
 
@@ -346,6 +390,7 @@ def _extract_star_data(
     depth_map = {}
     prev_tool_call = None
     is_first = True
+    sanitizer = None
 
     for entry in iter_session_entries(session_path):
         # Capture progress records for deterministic agent delegation linking
@@ -367,6 +412,9 @@ def _extract_star_data(
             result.is_agent = result.agent_id is not None
             if result.is_agent:
                 result.parent_session_id = entry.raw.get("sessionId")
+
+            if private:
+                sanitizer = PathSanitizer(result.cwd)
 
         message_id = entry.uuid
         parent_id = entry.parent_uuid
@@ -437,6 +485,7 @@ def _extract_star_data(
                     timestamp=timestamp,
                     truncate_output=truncate_output,
                     idx=idx,
+                    sanitizer=sanitizer,
                 )
 
                 if block_type == "text":
@@ -621,17 +670,27 @@ def _add_content_block(
 
 
 def _load_dimensions(
-    conn, project_key, project_path, project_name, session_key, session_id, result
+    conn,
+    project_key,
+    project_path,
+    project_name,
+    session_key,
+    session_id,
+    result,
+    sanitizer=None,
 ):
     """Load all dimension tables."""
 
-    # dim_project
+    # dim_project (sanitize project_path for display)
+    display_project_path = (
+        sanitizer.sanitize_project_path(project_path) if sanitizer else project_path
+    )
     if not conn.execute(
         "SELECT 1 FROM dim_project WHERE project_key = ?", [project_key]
     ).fetchone():
         conn.execute(
             "INSERT INTO dim_project VALUES (?, ?, ?)",
-            [project_key, project_path, project_name],
+            [project_key, display_project_path, project_name],
         )
 
     # dim_session
@@ -650,6 +709,9 @@ def _load_dimensions(
         if parent_depth is not None:
             depth_level = parent_depth[0] + 1
 
+    # Sanitize cwd for display
+    display_cwd = sanitizer.sanitize_cwd() if sanitizer else result.cwd
+
     if not conn.execute(
         "SELECT 1 FROM dim_session WHERE session_key = ?", [session_key]
     ).fetchone():
@@ -664,7 +726,7 @@ def _load_dimensions(
                 session_key,
                 session_id,
                 project_key,
-                result.cwd,
+                display_cwd,
                 result.git_branch,
                 result.version,
                 result.slug,
@@ -775,19 +837,29 @@ def _load_dimensions(
                 [time_key, hour, minute, time_of_day],
             )
 
-    # dim_file
+    # dim_file (sanitize paths for display, keep keys from original)
     for _file_path, file_info in result.files_seen.items():
         if not conn.execute(
             "SELECT 1 FROM dim_file WHERE file_key = ?", [file_info["file_key"]]
         ).fetchone():
+            display_file_path = (
+                sanitizer.sanitize_path(file_info["file_path"])
+                if sanitizer
+                else file_info["file_path"]
+            )
+            display_dir_path = (
+                sanitizer.sanitize_path(file_info["directory_path"])
+                if sanitizer
+                else file_info["directory_path"]
+            )
             conn.execute(
                 "INSERT INTO dim_file VALUES (?, ?, ?, ?, ?)",
                 [
                     file_info["file_key"],
-                    file_info["file_path"],
+                    display_file_path,
                     file_info["file_name"],
                     file_info["file_extension"],
-                    file_info["directory_path"],
+                    display_dir_path,
                 ],
             )
 
