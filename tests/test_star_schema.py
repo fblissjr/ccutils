@@ -300,28 +300,6 @@ class TestCreateStarSchema:
         assert result is not None
         conn.close()
 
-    def test_creates_dim_message_type_table(self, output_dir):
-        """Test that dim_message_type dimension table is created."""
-        db_path = output_dir / "test.duckdb"
-        conn = create_star_schema(db_path)
-
-        result = conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='table' AND name='dim_message_type'"
-        ).fetchone()
-        assert result is not None
-        conn.close()
-
-    def test_creates_dim_content_block_type_table(self, output_dir):
-        """Test that dim_content_block_type dimension table is created."""
-        db_path = output_dir / "test.duckdb"
-        conn = create_star_schema(db_path)
-
-        result = conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='table' AND name='dim_content_block_type'"
-        ).fetchone()
-        assert result is not None
-        conn.close()
-
     def test_creates_fact_messages_table(self, output_dir):
         """Test that fact_messages table is created."""
         db_path = output_dir / "test.duckdb"
@@ -362,17 +340,6 @@ class TestCreateStarSchema:
 
         result = conn.execute(
             "SELECT name FROM sqlite_master WHERE type='table' AND name='fact_session_summary'"
-        ).fetchone()
-        assert result is not None
-        conn.close()
-
-    def test_creates_stg_raw_messages_table(self, output_dir):
-        """Test that staging table for raw messages is created."""
-        db_path = output_dir / "test.duckdb"
-        conn = create_star_schema(db_path)
-
-        result = conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='table' AND name='stg_raw_messages'"
         ).fetchone()
         assert result is not None
         conn.close()
@@ -524,7 +491,7 @@ class TestFactMessagesTable:
         column_names = [c[0] for c in columns]
         assert "session_key" in column_names
         assert "project_key" in column_names
-        assert "message_type_key" in column_names
+        assert "message_type" in column_names
         assert "model_key" in column_names
         assert "date_key" in column_names
         assert "time_key" in column_names
@@ -851,9 +818,8 @@ class TestContentBlockGranularity:
         )
 
         result = conn.execute(
-            """SELECT COUNT(*) FROM fact_content_blocks fcb
-               JOIN dim_content_block_type dcbt ON fcb.content_block_type_key = dcbt.content_block_type_key
-               WHERE dcbt.block_type = 'text'"""
+            """SELECT COUNT(*) FROM fact_content_blocks
+               WHERE block_type = 'text'"""
         ).fetchone()
         # At least 3 text blocks from assistant messages
         assert result[0] >= 3
@@ -868,9 +834,8 @@ class TestContentBlockGranularity:
         )
 
         result = conn.execute(
-            """SELECT COUNT(*) FROM fact_content_blocks fcb
-               JOIN dim_content_block_type dcbt ON fcb.content_block_type_key = dcbt.content_block_type_key
-               WHERE dcbt.block_type = 'tool_use'"""
+            """SELECT COUNT(*) FROM fact_content_blocks
+               WHERE block_type = 'tool_use'"""
         ).fetchone()
         assert result[0] == 2  # Write and Read tool_use blocks
         conn.close()
@@ -886,9 +851,8 @@ class TestContentBlockGranularity:
         )
 
         result = conn.execute(
-            """SELECT COUNT(*) FROM fact_content_blocks fcb
-               JOIN dim_content_block_type dcbt ON fcb.content_block_type_key = dcbt.content_block_type_key
-               WHERE dcbt.block_type = 'thinking'"""
+            """SELECT COUNT(*) FROM fact_content_blocks
+               WHERE block_type = 'thinking'"""
         ).fetchone()
         assert result[0] == 1  # One thinking block
         conn.close()
@@ -903,11 +867,10 @@ class TestContentBlockGranularity:
 
         # The assistant message asst-002 has: thinking (0), text (1), tool_use (2)
         result = conn.execute(
-            """SELECT fcb.block_index, dcbt.block_type
-               FROM fact_content_blocks fcb
-               JOIN dim_content_block_type dcbt ON fcb.content_block_type_key = dcbt.content_block_type_key
-               WHERE fcb.message_id = 'asst-002'
-               ORDER BY fcb.block_index"""
+            """SELECT block_index, block_type
+               FROM fact_content_blocks
+               WHERE message_id = 'asst-002'
+               ORDER BY block_index"""
         ).fetchall()
         assert len(result) == 3
         assert result[0][1] == "thinking"
@@ -945,10 +908,10 @@ class TestNoHardConstraints:
         # Should be able to insert with non-existent dimension key
         conn.execute(
             """INSERT INTO fact_messages
-               (message_id, session_key, project_key, message_type_key, model_key,
+               (message_id, session_key, project_key, message_type, model_key,
                 date_key, time_key, timestamp, content_length, content_block_count,
                 has_tool_use, has_tool_result, has_thinking)
-               VALUES ('test-001', 'nonexistent', 'nonexistent', 'nonexistent', 'nonexistent',
+               VALUES ('test-001', 'nonexistent', 'nonexistent', 'user', 'nonexistent',
                        99999999, 9999, '2025-01-01', 100, 1, false, false, false)"""
         )
         result = conn.execute(
@@ -1264,38 +1227,14 @@ class TestGranularDimensions:
         assert "directory_path" in column_names
         conn.close()
 
-    def test_creates_dim_programming_language_table(self, output_dir):
-        """Test that dim_programming_language table is created."""
+    def test_dim_file_has_language_column(self, output_dir):
+        """Test that dim_file has language column (replaces dim_programming_language)."""
         db_path = output_dir / "test.duckdb"
         conn = create_star_schema(db_path)
 
-        result = conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='table' AND name='dim_programming_language'"
-        ).fetchone()
-        assert result is not None
-        conn.close()
-
-    def test_dim_programming_language_has_required_columns(self, output_dir):
-        """Test that dim_programming_language has all required columns."""
-        db_path = output_dir / "test.duckdb"
-        conn = create_star_schema(db_path)
-
-        columns = conn.execute("DESCRIBE dim_programming_language").fetchall()
+        columns = conn.execute("DESCRIBE dim_file").fetchall()
         column_names = [c[0] for c in columns]
-        assert "language_key" in column_names
-        assert "language_name" in column_names
-        assert "file_extensions" in column_names
-        conn.close()
-
-    def test_creates_dim_error_type_table(self, output_dir):
-        """Test that dim_error_type table is created."""
-        db_path = output_dir / "test.duckdb"
-        conn = create_star_schema(db_path)
-
-        result = conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='table' AND name='dim_error_type'"
-        ).fetchone()
-        assert result is not None
+        assert "language" in column_names
         conn.close()
 
 
@@ -1350,7 +1289,7 @@ class TestGranularFactTables:
         assert "code_block_id" in column_names
         assert "message_id" in column_names
         assert "session_key" in column_names
-        assert "language_key" in column_names
+        assert "language" in column_names
         assert "line_count" in column_names
         assert "char_count" in column_names
         assert "code_text" in column_names
@@ -1429,9 +1368,8 @@ class TestGranularETL:
         )
 
         result = conn.execute(
-            """SELECT dpl.language_name, fcb.line_count
-               FROM fact_code_blocks fcb
-               JOIN dim_programming_language dpl ON fcb.language_key = dpl.language_key"""
+            """SELECT language, line_count
+               FROM fact_code_blocks"""
         ).fetchall()
         # Should detect Python code blocks
         languages = [r[0] for r in result]
@@ -1548,10 +1486,9 @@ class TestCodeBlockAnalytics:
         )
 
         result = conn.execute(
-            """SELECT dpl.language_name, COUNT(*) as block_count, SUM(fcb.line_count) as total_lines
-               FROM fact_code_blocks fcb
-               JOIN dim_programming_language dpl ON fcb.language_key = dpl.language_key
-               GROUP BY dpl.language_name"""
+            """SELECT language, COUNT(*) as block_count, SUM(line_count) as total_lines
+               FROM fact_code_blocks
+               GROUP BY language"""
         ).fetchall()
         lang_stats = {r[0]: (r[1], r[2]) for r in result}
         assert "python" in lang_stats
@@ -1629,10 +1566,9 @@ class TestTokenAndCostAnalytics:
         )
 
         result = conn.execute(
-            """SELECT dmt.message_type, SUM(fm.estimated_tokens) as total_tokens, AVG(fm.word_count) as avg_words
+            """SELECT fm.message_type, SUM(fm.estimated_tokens) as total_tokens, AVG(fm.word_count) as avg_words
                FROM fact_messages fm
-               JOIN dim_message_type dmt ON fm.message_type_key = dmt.message_type_key
-               GROUP BY dmt.message_type"""
+               GROUP BY fm.message_type"""
         ).fetchall()
         msg_types = {r[0]: (r[1], r[2]) for r in result}
         assert "user" in msg_types
@@ -1721,32 +1657,6 @@ class TestConversationDepthTracking:
 class TestEntityExtractionTables:
     """Tests for entity extraction schema tables."""
 
-    def test_creates_dim_entity_type_table(self, output_dir):
-        """Test that dim_entity_type table is created."""
-        db_path = output_dir / "test.duckdb"
-        conn = create_star_schema(db_path)
-
-        result = conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='table' AND name='dim_entity_type'"
-        ).fetchone()
-        assert result is not None
-        conn.close()
-
-    def test_dim_entity_type_prepopulated(self, output_dir):
-        """Test that dim_entity_type is pre-populated with known types."""
-        db_path = output_dir / "test.duckdb"
-        conn = create_star_schema(db_path)
-
-        result = conn.execute(
-            "SELECT entity_type FROM dim_entity_type ORDER BY entity_type"
-        ).fetchall()
-        entity_types = [r[0] for r in result]
-        assert "file_path" in entity_types
-        assert "url" in entity_types
-        assert "function_name" in entity_types
-        assert "class_name" in entity_types
-        conn.close()
-
     def test_creates_fact_entity_mentions_table(self, output_dir):
         """Test that fact_entity_mentions table is created."""
         db_path = output_dir / "test.duckdb"
@@ -1767,7 +1677,7 @@ class TestEntityExtractionTables:
         column_names = [c[0] for c in columns]
         assert "mention_id" in column_names
         assert "message_id" in column_names
-        assert "entity_type_key" in column_names
+        assert "entity_type" in column_names
         assert "entity_text" in column_names
         assert "entity_normalized" in column_names
         assert "context_snippet" in column_names
@@ -1786,10 +1696,9 @@ class TestEntityExtractionETL:
         )
 
         result = conn.execute(
-            """SELECT em.entity_text, et.entity_type
+            """SELECT em.entity_text, em.entity_type
                FROM fact_entity_mentions em
-               JOIN dim_entity_type et ON em.entity_type_key = et.entity_type_key
-               WHERE et.entity_type = 'file_path'"""
+               WHERE em.entity_type = 'file_path'"""
         ).fetchall()
         # Should find file paths from messages
         file_paths = [r[0] for r in result]
@@ -1807,10 +1716,9 @@ class TestEntityExtractionETL:
         )
 
         result = conn.execute(
-            """SELECT em.entity_text, et.entity_type
+            """SELECT em.entity_text, em.entity_type
                FROM fact_entity_mentions em
-               JOIN dim_entity_type et ON em.entity_type_key = et.entity_type_key
-               WHERE et.entity_type = 'function_name'"""
+               WHERE em.entity_type = 'function_name'"""
         ).fetchall()
         # Should find function names like 'login', 'validate_credentials'
         func_names = [r[0] for r in result]
@@ -1902,223 +1810,6 @@ class TestToolChainETL:
         conn.close()
 
 
-# =============================================================================
-# LLM Enrichment Schema Tests
-# =============================================================================
-
-
-class TestLLMEnrichmentTables:
-    """Tests for LLM enrichment schema tables."""
-
-    def test_creates_dim_intent_table(self, output_dir):
-        """Test that dim_intent table is created."""
-        db_path = output_dir / "test.duckdb"
-        conn = create_star_schema(db_path)
-
-        result = conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='table' AND name='dim_intent'"
-        ).fetchone()
-        assert result is not None
-        conn.close()
-
-    def test_dim_intent_prepopulated(self, output_dir):
-        """Test that dim_intent is pre-populated with common intents."""
-        db_path = output_dir / "test.duckdb"
-        conn = create_star_schema(db_path)
-
-        result = conn.execute(
-            "SELECT intent_name FROM dim_intent ORDER BY intent_name"
-        ).fetchall()
-        intent_names = [r[0] for r in result]
-        assert "bug_fix" in intent_names
-        assert "feature" in intent_names
-        assert "question" in intent_names
-        assert "refactor" in intent_names
-        conn.close()
-
-    def test_creates_dim_sentiment_table(self, output_dir):
-        """Test that dim_sentiment table is created."""
-        db_path = output_dir / "test.duckdb"
-        conn = create_star_schema(db_path)
-
-        result = conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='table' AND name='dim_sentiment'"
-        ).fetchone()
-        assert result is not None
-        conn.close()
-
-    def test_dim_sentiment_prepopulated(self, output_dir):
-        """Test that dim_sentiment is pre-populated."""
-        db_path = output_dir / "test.duckdb"
-        conn = create_star_schema(db_path)
-
-        result = conn.execute(
-            "SELECT sentiment_name, valence FROM dim_sentiment ORDER BY sentiment_name"
-        ).fetchall()
-        sentiment_dict = {r[0]: r[1] for r in result}
-        assert "neutral" in sentiment_dict
-        assert "positive" in sentiment_dict
-        assert "negative" in sentiment_dict
-        # Check valence values are reasonable
-        assert sentiment_dict["positive"] > 0
-        assert sentiment_dict["negative"] < 0
-        conn.close()
-
-    def test_creates_dim_topic_table(self, output_dir):
-        """Test that dim_topic table is created."""
-        db_path = output_dir / "test.duckdb"
-        conn = create_star_schema(db_path)
-
-        result = conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='table' AND name='dim_topic'"
-        ).fetchone()
-        assert result is not None
-        conn.close()
-
-    def test_dim_topic_prepopulated(self, output_dir):
-        """Test that dim_topic is pre-populated with common topics."""
-        db_path = output_dir / "test.duckdb"
-        conn = create_star_schema(db_path)
-
-        result = conn.execute(
-            "SELECT topic_name FROM dim_topic ORDER BY topic_name"
-        ).fetchall()
-        topic_names = [r[0] for r in result]
-        assert "frontend" in topic_names
-        assert "backend" in topic_names
-        assert "database" in topic_names
-        assert "testing" in topic_names
-        conn.close()
-
-    def test_creates_fact_message_enrichment_table(self, output_dir):
-        """Test that fact_message_enrichment table is created."""
-        db_path = output_dir / "test.duckdb"
-        conn = create_star_schema(db_path)
-
-        result = conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='table' AND name='fact_message_enrichment'"
-        ).fetchone()
-        assert result is not None
-        conn.close()
-
-    def test_creates_fact_message_topics_table(self, output_dir):
-        """Test that fact_message_topics table is created."""
-        db_path = output_dir / "test.duckdb"
-        conn = create_star_schema(db_path)
-
-        result = conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='table' AND name='fact_message_topics'"
-        ).fetchone()
-        assert result is not None
-        conn.close()
-
-    def test_creates_fact_session_insights_table(self, output_dir):
-        """Test that fact_session_insights table is created."""
-        db_path = output_dir / "test.duckdb"
-        conn = create_star_schema(db_path)
-
-        result = conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='table' AND name='fact_session_insights'"
-        ).fetchone()
-        assert result is not None
-        conn.close()
-
-
-# =============================================================================
-# LLM Enrichment Pipeline Tests
-# =============================================================================
-
-
-from ccutils import run_llm_enrichment, run_session_insights_enrichment
-
-
-class TestLLMEnrichmentPipeline:
-    """Tests for the LLM enrichment pipeline functions."""
-
-    def test_run_llm_enrichment_with_mock_function(
-        self, sample_session_file, output_dir
-    ):
-        """Test that run_llm_enrichment works with a mock enrichment function."""
-        db_path = output_dir / "test.duckdb"
-        conn = create_star_schema(db_path)
-        run_star_schema_etl(conn, sample_session_file, "test-project")
-
-        # Mock enrichment function
-        def mock_enrich(messages):
-            results = []
-            for msg in messages:
-                results.append(
-                    {
-                        "message_id": msg["message_id"],
-                        "intent": "question",
-                        "sentiment": "neutral",
-                        "topics": ["frontend", "testing"],
-                        "complexity_score": 0.5,
-                        "confidence_score": 0.9,
-                    }
-                )
-            return results
-
-        result = run_llm_enrichment(conn, mock_enrich, batch_size=10)
-        assert result["messages_enriched"] > 0
-        assert result["topics_assigned"] > 0
-
-        # Verify data was inserted
-        enrichment_count = conn.execute(
-            "SELECT COUNT(*) FROM fact_message_enrichment"
-        ).fetchone()[0]
-        assert enrichment_count > 0
-
-        topic_count = conn.execute(
-            "SELECT COUNT(*) FROM fact_message_topics"
-        ).fetchone()[0]
-        assert topic_count > 0
-        conn.close()
-
-    def test_run_llm_enrichment_returns_zero_when_no_messages(self, output_dir):
-        """Test that run_llm_enrichment returns zero when no un-enriched messages."""
-        db_path = output_dir / "test.duckdb"
-        conn = create_star_schema(db_path)
-        # No ETL run, so no messages to enrich
-
-        def mock_enrich(messages):
-            return []
-
-        result = run_llm_enrichment(conn, mock_enrich)
-        assert result["messages_enriched"] == 0
-        assert result["topics_assigned"] == 0
-        conn.close()
-
-    def test_run_session_insights_with_mock_function(
-        self, sample_session_file, output_dir
-    ):
-        """Test that run_session_insights_enrichment works with a mock function."""
-        db_path = output_dir / "test.duckdb"
-        conn = create_star_schema(db_path)
-        run_star_schema_etl(conn, sample_session_file, "test-project")
-
-        # Mock insight function
-        def mock_insight(session_data):
-            return {
-                "summary_text": "User requested help writing a hello world program.",
-                "key_decisions": "Used Python for simplicity.",
-                "outcome_status": "success",
-                "task_completed": True,
-                "primary_intent": "feature",
-                "complexity_score": 0.3,
-            }
-
-        result = run_session_insights_enrichment(conn, mock_insight)
-        assert result["sessions_enriched"] > 0
-
-        # Verify data was inserted
-        insight_count = conn.execute(
-            "SELECT COUNT(*) FROM fact_session_insights"
-        ).fetchone()[0]
-        assert insight_count > 0
-        conn.close()
-
-
 class TestConversationFlowAnalytics:
     """Tests for conversation flow analytics using new columns."""
 
@@ -2131,11 +1822,10 @@ class TestConversationFlowAnalytics:
         )
 
         result = conn.execute(
-            """SELECT dmt.message_type, AVG(fm.response_time_seconds) as avg_response_time
+            """SELECT fm.message_type, AVG(fm.response_time_seconds) as avg_response_time
                FROM fact_messages fm
-               JOIN dim_message_type dmt ON fm.message_type_key = dmt.message_type_key
                WHERE fm.response_time_seconds IS NOT NULL
-               GROUP BY dmt.message_type"""
+               GROUP BY fm.message_type"""
         ).fetchall()
         assert len(result) > 0
         conn.close()
@@ -3493,145 +3183,51 @@ class TestAgentDelegations:
 
 
 # =============================================================================
-# Phase 4: Hierarchy Placeholder Tests
+# Phase 4: Session Heuristic Classification Tests
 # =============================================================================
 
 
-class TestHierarchyTables:
-    """Tests for dim_goal, dim_task, dim_attempt tables."""
+class TestSessionHeuristicColumns:
+    """Tests for dim_session heuristic classification columns (intent, complexity, outcome, domain)."""
 
-    def test_dim_goal_table_created(self, output_dir):
-        """Test that dim_goal table exists."""
-        db_path = output_dir / "test.duckdb"
-        conn = create_star_schema(db_path)
-
-        columns = conn.execute("DESCRIBE dim_goal").fetchall()
-        column_names = [c[0] for c in columns]
-        assert "goal_key" in column_names
-        assert "goal_description" in column_names
-        assert "source" in column_names
-        conn.close()
-
-    def test_dim_task_table_created(self, output_dir):
-        """Test that dim_task table exists."""
-        db_path = output_dir / "test.duckdb"
-        conn = create_star_schema(db_path)
-
-        columns = conn.execute("DESCRIBE dim_task").fetchall()
-        column_names = [c[0] for c in columns]
-        assert "task_key" in column_names
-        assert "goal_key" in column_names
-        assert "task_description" in column_names
-        assert "task_type" in column_names
-        conn.close()
-
-    def test_dim_attempt_table_created(self, output_dir):
-        """Test that dim_attempt table exists."""
-        db_path = output_dir / "test.duckdb"
-        conn = create_star_schema(db_path)
-
-        columns = conn.execute("DESCRIBE dim_attempt").fetchall()
-        column_names = [c[0] for c in columns]
-        assert "attempt_key" in column_names
-        assert "task_key" in column_names
-        assert "session_key" in column_names
-        assert "outcome" in column_names
-        conn.close()
-
-    def test_dim_session_has_hierarchy_columns(self, output_dir):
-        """Test that dim_session has goal_key, task_key, attempt_key."""
+    def test_dim_session_has_heuristic_columns(self, output_dir):
+        """Test that dim_session has intent, complexity, outcome, domain columns."""
         db_path = output_dir / "test.duckdb"
         conn = create_star_schema(db_path)
 
         columns = conn.execute("DESCRIBE dim_session").fetchall()
         column_names = [c[0] for c in columns]
-        assert "goal_key" in column_names
-        assert "task_key" in column_names
-        assert "attempt_key" in column_names
+        assert "intent" in column_names
+        assert "complexity" in column_names
+        assert "outcome" in column_names
+        assert "domain" in column_names
         conn.close()
 
-    def test_hierarchy_columns_nullable_by_default(
-        self, sample_session_file, output_dir
-    ):
-        """Test that hierarchy columns are NULL by default."""
+    def test_heuristic_columns_populated_by_etl(self, sample_session_file, output_dir):
+        """Test that heuristic columns are populated during ETL."""
         db_path = output_dir / "test.duckdb"
         conn = create_star_schema(db_path)
         run_star_schema_etl(conn, sample_session_file, "test-project")
 
         result = conn.execute(
-            "SELECT goal_key, task_key, attempt_key FROM dim_session"
+            "SELECT intent, complexity, outcome, domain FROM dim_session"
         ).fetchone()
-        assert result[0] is None  # goal_key
-        assert result[1] is None  # task_key
-        assert result[2] is None  # attempt_key
+        # Heuristic columns should be populated (not all NULL)
+        assert result is not None
+        # intent should be a string value
+        assert result[0] is not None
         conn.close()
 
-
-class TestGoalTaskEnrichment:
-    """Tests for run_goal_task_enrichment function."""
-
-    def test_enrichment_populates_tables(self, sample_session_file, output_dir):
-        """Test that enrichment populates goal/task/attempt tables."""
-        from ccutils import run_goal_task_enrichment
-
+    def test_dim_session_no_hierarchy_keys(self, output_dir):
+        """Test that dim_session no longer has goal_key, task_key, attempt_key."""
         db_path = output_dir / "test.duckdb"
         conn = create_star_schema(db_path)
-        run_star_schema_etl(conn, sample_session_file, "test-project")
 
-        def mock_classify(session_data):
-            return {
-                "goal": {
-                    "goal_description": "Build hello world app",
-                    "goal_status": "completed",
-                },
-                "task": {
-                    "task_description": "Create Python hello world",
-                    "task_type": "implement",
-                    "task_status": "completed",
-                },
-                "attempt": {
-                    "attempt_description": "First implementation attempt",
-                    "approach": "direct",
-                    "outcome": "success",
-                },
-            }
-
-        result = run_goal_task_enrichment(conn, mock_classify)
-        assert result["goals_created"] == 1
-        assert result["tasks_created"] == 1
-        assert result["attempts_created"] == 1
-        assert result["sessions_linked"] == 1
-
-        # Verify session linked
-        session = conn.execute(
-            "SELECT goal_key, task_key, attempt_key FROM dim_session"
-        ).fetchone()
-        assert session[0] is not None
-        assert session[1] is not None
-        assert session[2] is not None
-        conn.close()
-
-    def test_enrichment_idempotent(self, sample_session_file, output_dir):
-        """Test that running enrichment twice doesn't duplicate."""
-        from ccutils import run_goal_task_enrichment
-
-        db_path = output_dir / "test.duckdb"
-        conn = create_star_schema(db_path)
-        run_star_schema_etl(conn, sample_session_file, "test-project")
-
-        def mock_classify(session_data):
-            return {
-                "goal": {"goal_description": "Build hello world app"},
-                "task": {"task_description": "Create hello world"},
-            }
-
-        run_goal_task_enrichment(conn, mock_classify)
-        result2 = run_goal_task_enrichment(conn, mock_classify)
-
-        # Second run should find no unenriched sessions
-        assert result2["goals_created"] == 0
-        assert result2["tasks_created"] == 0
-        assert result2["sessions_linked"] == 0
+        columns = conn.execute("DESCRIBE dim_session").fetchall()
+        column_names = [c[0] for c in columns]
+        assert "goal_key" not in column_names
+        assert "task_key" not in column_names
+        assert "attempt_key" not in column_names
         conn.close()
 
 
@@ -3767,9 +3363,6 @@ class TestNewTablesJsonExport:
         export_star_schema_to_json(conn, json_dir)
 
         assert (json_dir / "dimensions" / "dim_session_chain.json").exists()
-        assert (json_dir / "dimensions" / "dim_goal.json").exists()
-        assert (json_dir / "dimensions" / "dim_task.json").exists()
-        assert (json_dir / "dimensions" / "dim_attempt.json").exists()
         conn.close()
 
     def test_json_export_includes_new_fact_tables(self, session_with_slug, output_dir):
