@@ -121,6 +121,7 @@ def extract_entities(text, message_id, session_key):
                     "message_id": message_id,
                     "session_key": session_key,
                     "entity_type_key": entity_type_key,
+                    "entity_type": entity_type,
                     "entity_text": matched_text[:500],
                     "entity_normalized": matched_text.lower()[:500],
                     "context_snippet": context[:200],

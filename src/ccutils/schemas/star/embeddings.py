@@ -59,7 +59,7 @@ class EmbeddingPipeline:
             self._model = models.ColBERT(self.model_name)
         return self._model
 
-    def embed_sessions(self, conn, content_type="summary", batch_size=32):
+    def embed_sessions(self, conn, content_type="first_user_message", batch_size=32):
         """Embed session content into fact_session_embeddings.
 
         Args:
@@ -78,29 +78,21 @@ class EmbeddingPipeline:
         ).fetchall()
         existing_keys = {r[0] for r in existing}
 
-        if content_type == "summary":
-            sessions = conn.execute(
-                """SELECT s.session_key, i.summary_text
-                   FROM dim_session s
-                   LEFT JOIN fact_session_insights i ON s.session_key = i.session_key
-                   WHERE i.summary_text IS NOT NULL AND LENGTH(i.summary_text) > 0"""
-            ).fetchall()
-            texts = {r[0]: r[1] for r in sessions if r[0] not in existing_keys}
-        else:
-            sessions = conn.execute(
-                """SELECT fm.session_key, fm.content_text
-                   FROM fact_messages fm
-                   JOIN dim_message_type mt ON fm.message_type_key = mt.message_type_key
-                   WHERE mt.message_type = 'user'
-                     AND fm.content_text IS NOT NULL
-                     AND LENGTH(fm.content_text) > 0
-                   ORDER BY fm.timestamp"""
-            ).fetchall()
-            # Take first user message per session
-            texts = {}
-            for r in sessions:
-                if r[0] not in existing_keys and r[0] not in texts:
-                    texts[r[0]] = r[1]
+        # Always use first_user_message (summary mode removed --
+        # it depended on LLM enrichment tables that no longer exist)
+        sessions = conn.execute(
+            """SELECT fm.session_key, fm.content_text
+               FROM fact_messages fm
+               WHERE fm.message_type = 'user'
+                 AND fm.content_text IS NOT NULL
+                 AND LENGTH(fm.content_text) > 0
+               ORDER BY fm.timestamp"""
+        ).fetchall()
+        # Take first user message per session
+        texts = {}
+        for r in sessions:
+            if r[0] not in existing_keys and r[0] not in texts:
+                texts[r[0]] = r[1]
 
         if not texts:
             return {"sessions_embedded": 0}
@@ -186,8 +178,7 @@ class EmbeddingPipeline:
             agent_msg = conn.execute(
                 """SELECT fm.content_text
                    FROM fact_messages fm
-                   JOIN dim_message_type mt ON fm.message_type_key = mt.message_type_key
-                   WHERE fm.session_key = ? AND mt.message_type = 'user'
+                   WHERE fm.session_key = ? AND fm.message_type = 'user'
                      AND fm.content_text IS NOT NULL
                    ORDER BY fm.timestamp LIMIT 1""",
                 [agent_sk],
@@ -259,7 +250,6 @@ class EmbeddingPipeline:
             # Fallback: no clustering without sklearn
             return {"sessions_clustered": 0, "clusters_found": 0}
 
-        now = datetime.now()
         clustered = 0
 
         for cluster_id in range(n_clusters):
@@ -269,35 +259,14 @@ class EmbeddingPipeline:
             if not cluster_sessions:
                 continue
 
-            task_desc = f"auto_cluster_{cluster_id}"
-            task_key = generate_dimension_key(task_desc)
-
-            if not conn.execute(
-                "SELECT 1 FROM dim_task WHERE task_key = ?", [task_key]
-            ).fetchone():
-                conn.execute(
-                    """INSERT INTO dim_task
-                       (task_key, goal_key, task_description, task_type,
-                        task_status, created_at, completed_at, source)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-                    [
-                        task_key,
-                        None,
-                        task_desc,
-                        "cluster",
-                        "auto_classified",
-                        now,
-                        None,
-                        "auto_inferred",
-                    ],
-                )
+            cluster_label = f"cluster_{cluster_id}"
 
             for sk in cluster_sessions:
                 conn.execute(
                     """UPDATE dim_session
-                       SET task_key = COALESCE(task_key, ?)
-                       WHERE session_key = ? AND task_key IS NULL""",
-                    [task_key, sk],
+                       SET domain = COALESCE(domain, ?)
+                       WHERE session_key = ? AND (domain IS NULL OR domain = 'unknown')""",
+                    [cluster_label, sk],
                 )
                 clustered += 1
 

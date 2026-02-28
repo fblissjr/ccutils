@@ -1,19 +1,27 @@
-"""Star schema DDL - creates the dimensional model tables."""
+"""Star schema DDL - creates the dimensional model tables.
+
+22 tables + 8 views. Tiny lookup dimensions (message_type, content_block_type,
+error_type, entity_type, programming_language) replaced by degenerate VARCHAR
+columns on fact tables. LLM enrichment tables removed entirely -- replaced by
+heuristic classification columns on dim_session.
+"""
 
 import duckdb
-
-from .utils import generate_dimension_key
 
 
 def create_star_schema(db_path):
     """Create DuckDB database with star schema for transcript analytics.
 
     This creates a dimensional model with:
-    - Staging table for raw data
-    - Dimension tables with hash-based surrogate keys
-    - Fact tables for messages, tool calls, content blocks, and session summaries
+    - 6 core dimensions (session, project, tool, model, date, time)
+    - 6 core facts (messages, tool_calls, session_summary, file_operations, errors, tool_chain_steps)
+    - 2 granular dimensions (file, session_chain)
+    - 3 granular facts (content_blocks, code_blocks, entity_mentions)
+    - 3 agent/bridge/staging tables
+    - 2 optional tables (embeddings, tool_input_params)
+    - 8 semantic views
 
-    No hard PK/FK constraints are used - relies on soft business rules.
+    No hard PK/FK constraints - relies on soft business rules.
 
     Args:
         db_path: Path to the DuckDB database file
@@ -24,27 +32,8 @@ def create_star_schema(db_path):
     conn = duckdb.connect(str(db_path))
 
     # =========================================================================
-    # Staging Table
+    # Staging Tables
     # =========================================================================
-    conn.execute(
-        """
-        CREATE OR REPLACE TABLE stg_raw_messages (
-            session_id VARCHAR,
-            project_name VARCHAR,
-            project_path VARCHAR,
-            message_id VARCHAR,
-            parent_id VARCHAR,
-            message_type VARCHAR,
-            timestamp TIMESTAMP,
-            model VARCHAR,
-            cwd VARCHAR,
-            git_branch VARCHAR,
-            version VARCHAR,
-            content_json JSON,
-            content_text TEXT
-        )
-    """
-    )
 
     conn.execute(
         """
@@ -57,7 +46,7 @@ def create_star_schema(db_path):
     )
 
     # =========================================================================
-    # Core Dimension Tables
+    # Core Dimension Tables (6)
     # =========================================================================
 
     conn.execute(
@@ -107,9 +96,10 @@ def create_star_schema(db_path):
             parent_session_key VARCHAR,
             depth_level INTEGER DEFAULT 0,
             chain_key VARCHAR,
-            goal_key VARCHAR,
-            task_key VARCHAR,
-            attempt_key VARCHAR
+            intent VARCHAR,
+            complexity VARCHAR,
+            outcome VARCHAR,
+            domain VARCHAR
         )
     """
     )
@@ -126,7 +116,8 @@ def create_star_schema(db_path):
             day_name VARCHAR,
             month_name VARCHAR,
             quarter INTEGER,
-            is_weekend BOOLEAN
+            is_weekend BOOLEAN,
+            week_of_year INTEGER
         )
     """
     )
@@ -142,26 +133,8 @@ def create_star_schema(db_path):
     """
     )
 
-    conn.execute(
-        """
-        CREATE OR REPLACE TABLE dim_message_type (
-            message_type_key VARCHAR,
-            message_type VARCHAR
-        )
-    """
-    )
-
-    conn.execute(
-        """
-        CREATE OR REPLACE TABLE dim_content_block_type (
-            content_block_type_key VARCHAR,
-            block_type VARCHAR
-        )
-    """
-    )
-
     # =========================================================================
-    # Core Fact Tables
+    # Core Fact Tables (6)
     # =========================================================================
 
     conn.execute(
@@ -170,7 +143,7 @@ def create_star_schema(db_path):
             message_id VARCHAR,
             session_key VARCHAR,
             project_key VARCHAR,
-            message_type_key VARCHAR,
+            message_type VARCHAR,
             model_key VARCHAR,
             date_key INTEGER,
             time_key INTEGER,
@@ -194,23 +167,6 @@ def create_star_schema(db_path):
 
     conn.execute(
         """
-        CREATE OR REPLACE TABLE fact_content_blocks (
-            content_block_id VARCHAR,
-            message_id VARCHAR,
-            session_key VARCHAR,
-            content_block_type_key VARCHAR,
-            date_key INTEGER,
-            time_key INTEGER,
-            block_index INTEGER,
-            content_length INTEGER,
-            content_text TEXT,
-            content_json JSON
-        )
-    """
-    )
-
-    conn.execute(
-        """
         CREATE OR REPLACE TABLE fact_tool_calls (
             tool_call_id VARCHAR,
             session_key VARCHAR,
@@ -223,6 +179,7 @@ def create_star_schema(db_path):
             input_char_count INTEGER,
             output_char_count INTEGER,
             is_error BOOLEAN,
+            duration_seconds FLOAT,
             input_json JSON,
             input_summary TEXT,
             output_text TEXT,
@@ -246,52 +203,17 @@ def create_star_schema(db_path):
             total_tool_calls INTEGER,
             total_thinking_blocks INTEGER,
             total_content_blocks INTEGER,
+            total_errors INTEGER,
+            unique_tools_used INTEGER,
+            unique_files_touched INTEGER,
+            max_conversation_depth INTEGER,
+            total_estimated_tokens INTEGER,
             session_duration_seconds INTEGER,
             first_timestamp TIMESTAMP,
             last_timestamp TIMESTAMP
         )
     """
     )
-
-    # =========================================================================
-    # Granular Dimensions
-    # =========================================================================
-
-    conn.execute(
-        """
-        CREATE OR REPLACE TABLE dim_file (
-            file_key VARCHAR,
-            file_path VARCHAR,
-            file_name VARCHAR,
-            file_extension VARCHAR,
-            directory_path VARCHAR
-        )
-    """
-    )
-
-    conn.execute(
-        """
-        CREATE OR REPLACE TABLE dim_programming_language (
-            language_key VARCHAR,
-            language_name VARCHAR,
-            file_extensions VARCHAR
-        )
-    """
-    )
-
-    conn.execute(
-        """
-        CREATE OR REPLACE TABLE dim_error_type (
-            error_type_key VARCHAR,
-            error_type VARCHAR,
-            error_category VARCHAR
-        )
-    """
-    )
-
-    # =========================================================================
-    # Granular Fact Tables
-    # =========================================================================
 
     conn.execute(
         """
@@ -312,29 +234,12 @@ def create_star_schema(db_path):
 
     conn.execute(
         """
-        CREATE OR REPLACE TABLE fact_code_blocks (
-            code_block_id VARCHAR,
-            message_id VARCHAR,
-            session_key VARCHAR,
-            language_key VARCHAR,
-            date_key INTEGER,
-            time_key INTEGER,
-            block_index INTEGER,
-            line_count INTEGER,
-            char_count INTEGER,
-            code_text TEXT
-        )
-    """
-    )
-
-    conn.execute(
-        """
         CREATE OR REPLACE TABLE fact_errors (
             error_id VARCHAR,
             tool_call_id VARCHAR,
             session_key VARCHAR,
             tool_key VARCHAR,
-            error_type_key VARCHAR,
+            error_type VARCHAR,
             date_key INTEGER,
             time_key INTEGER,
             error_message TEXT,
@@ -342,40 +247,6 @@ def create_star_schema(db_path):
         )
     """
     )
-
-    # =========================================================================
-    # Entity Extraction Tables
-    # =========================================================================
-
-    conn.execute(
-        """
-        CREATE OR REPLACE TABLE dim_entity_type (
-            entity_type_key VARCHAR,
-            entity_type VARCHAR,
-            extraction_method VARCHAR
-        )
-    """
-    )
-
-    conn.execute(
-        """
-        CREATE OR REPLACE TABLE fact_entity_mentions (
-            mention_id VARCHAR,
-            message_id VARCHAR,
-            session_key VARCHAR,
-            entity_type_key VARCHAR,
-            entity_text VARCHAR,
-            entity_normalized VARCHAR,
-            context_snippet TEXT,
-            position_start INTEGER,
-            position_end INTEGER
-        )
-    """
-    )
-
-    # =========================================================================
-    # Tool Chain Tracking
-    # =========================================================================
 
     conn.execute(
         """
@@ -387,14 +258,29 @@ def create_star_schema(db_path):
             tool_key VARCHAR,
             step_position INTEGER,
             prev_tool_key VARCHAR,
+            next_tool_key VARCHAR,
+            is_error BOOLEAN,
             time_since_prev_seconds FLOAT
         )
     """
     )
 
     # =========================================================================
-    # Session Chain Dimension
+    # Granular Dimensions (2)
     # =========================================================================
+
+    conn.execute(
+        """
+        CREATE OR REPLACE TABLE dim_file (
+            file_key VARCHAR,
+            file_path VARCHAR,
+            file_name VARCHAR,
+            file_extension VARCHAR,
+            directory_path VARCHAR,
+            language VARCHAR
+        )
+    """
+    )
 
     conn.execute(
         """
@@ -408,6 +294,60 @@ def create_star_schema(db_path):
             first_timestamp TIMESTAMP,
             last_timestamp TIMESTAMP,
             total_duration_seconds INTEGER
+        )
+    """
+    )
+
+    # =========================================================================
+    # Granular Fact Tables (3)
+    # =========================================================================
+
+    conn.execute(
+        """
+        CREATE OR REPLACE TABLE fact_content_blocks (
+            content_block_id VARCHAR,
+            message_id VARCHAR,
+            session_key VARCHAR,
+            block_type VARCHAR,
+            date_key INTEGER,
+            time_key INTEGER,
+            block_index INTEGER,
+            content_length INTEGER,
+            content_text TEXT,
+            content_json JSON
+        )
+    """
+    )
+
+    conn.execute(
+        """
+        CREATE OR REPLACE TABLE fact_code_blocks (
+            code_block_id VARCHAR,
+            message_id VARCHAR,
+            session_key VARCHAR,
+            language VARCHAR,
+            date_key INTEGER,
+            time_key INTEGER,
+            block_index INTEGER,
+            line_count INTEGER,
+            char_count INTEGER,
+            code_text TEXT
+        )
+    """
+    )
+
+    conn.execute(
+        """
+        CREATE OR REPLACE TABLE fact_entity_mentions (
+            mention_id VARCHAR,
+            message_id VARCHAR,
+            session_key VARCHAR,
+            entity_type VARCHAR,
+            entity_text VARCHAR,
+            entity_normalized VARCHAR,
+            context_snippet TEXT,
+            position_start INTEGER,
+            position_end INTEGER
         )
     """
     )
@@ -432,75 +372,10 @@ def create_star_schema(db_path):
             completion_status VARCHAR,
             delegation_timestamp TIMESTAMP,
             completion_timestamp TIMESTAMP,
-            match_confidence FLOAT
-        )
-    """
-    )
-
-    # =========================================================================
-    # Goal > Task > Attempt Hierarchy
-    # =========================================================================
-
-    conn.execute(
-        """
-        CREATE OR REPLACE TABLE dim_goal (
-            goal_key VARCHAR,
-            goal_description TEXT,
-            goal_status VARCHAR,
-            created_at TIMESTAMP,
-            completed_at TIMESTAMP,
-            source VARCHAR
-        )
-    """
-    )
-
-    conn.execute(
-        """
-        CREATE OR REPLACE TABLE dim_task (
-            task_key VARCHAR,
-            goal_key VARCHAR,
-            task_description TEXT,
-            task_type VARCHAR,
-            task_status VARCHAR,
-            created_at TIMESTAMP,
-            completed_at TIMESTAMP,
-            source VARCHAR
-        )
-    """
-    )
-
-    conn.execute(
-        """
-        CREATE OR REPLACE TABLE dim_attempt (
-            attempt_key VARCHAR,
-            task_key VARCHAR,
-            session_key VARCHAR,
-            chain_key VARCHAR,
-            attempt_description TEXT,
-            approach VARCHAR,
-            outcome VARCHAR,
-            started_at TIMESTAMP,
-            ended_at TIMESTAMP,
-            source VARCHAR
-        )
-    """
-    )
-
-    # =========================================================================
-    # Session Embeddings
-    # =========================================================================
-
-    conn.execute(
-        """
-        CREATE OR REPLACE TABLE fact_session_embeddings (
-            embedding_key VARCHAR,
-            session_key VARCHAR,
-            content_type VARCHAR,
-            embedding_model VARCHAR,
-            embedding_dim INTEGER,
-            mean_embedding FLOAT[64],
-            embedded_at TIMESTAMP,
-            content_hash VARCHAR
+            match_confidence FLOAT,
+            agent_tool_calls INTEGER,
+            agent_errors INTEGER,
+            agent_duration_seconds INTEGER
         )
     """
     )
@@ -527,8 +402,23 @@ def create_star_schema(db_path):
     )
 
     # =========================================================================
-    # Tool Input Parameters (Un-nested key-value pairs)
+    # Optional Tables (require pylate)
     # =========================================================================
+
+    conn.execute(
+        """
+        CREATE OR REPLACE TABLE fact_session_embeddings (
+            embedding_key VARCHAR,
+            session_key VARCHAR,
+            content_type VARCHAR,
+            embedding_model VARCHAR,
+            embedding_dim INTEGER,
+            mean_embedding FLOAT[64],
+            embedded_at TIMESTAMP,
+            content_hash VARCHAR
+        )
+    """
+    )
 
     conn.execute(
         """
@@ -545,214 +435,36 @@ def create_star_schema(db_path):
     )
 
     # =========================================================================
-    # LLM Enrichment Tables
+    # Semantic Views (8)
     # =========================================================================
 
-    conn.execute(
-        """
-        CREATE OR REPLACE TABLE dim_intent (
-            intent_key VARCHAR,
-            intent_name VARCHAR,
-            intent_category VARCHAR,
-            description TEXT
-        )
-    """
-    )
-
-    conn.execute(
-        """
-        CREATE OR REPLACE TABLE dim_topic (
-            topic_key VARCHAR,
-            topic_name VARCHAR,
-            topic_category VARCHAR
-        )
-    """
-    )
-
-    conn.execute(
-        """
-        CREATE OR REPLACE TABLE dim_sentiment (
-            sentiment_key VARCHAR,
-            sentiment_name VARCHAR,
-            valence FLOAT
-        )
-    """
-    )
-
-    conn.execute(
-        """
-        CREATE OR REPLACE TABLE fact_message_enrichment (
-            enrichment_id VARCHAR,
-            message_id VARCHAR,
-            session_key VARCHAR,
-            intent_key VARCHAR,
-            sentiment_key VARCHAR,
-            complexity_score FLOAT,
-            confidence_score FLOAT,
-            enrichment_model VARCHAR,
-            enriched_at TIMESTAMP
-        )
-    """
-    )
-
-    conn.execute(
-        """
-        CREATE OR REPLACE TABLE fact_message_topics (
-            message_topic_id VARCHAR,
-            message_id VARCHAR,
-            topic_key VARCHAR,
-            relevance_score FLOAT
-        )
-    """
-    )
-
-    conn.execute(
-        """
-        CREATE OR REPLACE TABLE fact_session_insights (
-            insight_id VARCHAR,
-            session_key VARCHAR,
-            summary_text TEXT,
-            key_decisions TEXT,
-            outcome_status VARCHAR,
-            task_completed BOOLEAN,
-            primary_intent_key VARCHAR,
-            complexity_score FLOAT,
-            enrichment_model VARCHAR,
-            enriched_at TIMESTAMP
-        )
-    """
-    )
-
-    # =========================================================================
-    # Pre-populate Reference Data
-    # =========================================================================
-
-    _populate_reference_data(conn)
-
-    return conn
-
-
-def _populate_reference_data(conn):
-    """Pre-populate dimension tables with reference data."""
-
-    # Entity types
-    entity_types = [
-        ("file_path", "regex"),
-        ("url", "regex"),
-        ("function_name", "regex"),
-        ("class_name", "regex"),
-        ("variable_name", "regex"),
-        ("package_name", "regex"),
-        ("error_code", "regex"),
-        ("git_ref", "regex"),
-    ]
-    for entity_type, method in entity_types:
-        key = generate_dimension_key(entity_type)
-        conn.execute(
-            "INSERT INTO dim_entity_type VALUES (?, ?, ?)",
-            [key, entity_type, method],
-        )
-
-    # Intents
-    intents = [
-        ("bug_fix", "problem_solving", "Fix a bug or error"),
-        ("feature", "development", "Add new functionality"),
-        ("refactor", "development", "Improve code structure"),
-        ("question", "inquiry", "Ask about code or concepts"),
-        ("explain", "inquiry", "Request explanation"),
-        ("review", "analysis", "Review or analyze code"),
-        ("test", "quality", "Write or run tests"),
-        ("debug", "problem_solving", "Debug an issue"),
-        ("config", "setup", "Configuration or setup"),
-        ("docs", "documentation", "Documentation work"),
-    ]
-    for intent_name, category, desc in intents:
-        key = generate_dimension_key(intent_name)
-        conn.execute(
-            "INSERT INTO dim_intent VALUES (?, ?, ?, ?)",
-            [key, intent_name, category, desc],
-        )
-
-    # Sentiments
-    sentiments = [
-        ("neutral", 0.0),
-        ("positive", 0.5),
-        ("negative", -0.5),
-        ("frustrated", -0.8),
-        ("satisfied", 0.8),
-        ("confused", -0.3),
-        ("curious", 0.3),
-    ]
-    for sentiment_name, valence in sentiments:
-        key = generate_dimension_key(sentiment_name)
-        conn.execute(
-            "INSERT INTO dim_sentiment VALUES (?, ?, ?)",
-            [key, sentiment_name, valence],
-        )
-
-    # Topics
-    topics = [
-        ("frontend", "domain"),
-        ("backend", "domain"),
-        ("database", "domain"),
-        ("api", "domain"),
-        ("auth", "domain"),
-        ("testing", "practice"),
-        ("deployment", "practice"),
-        ("security", "concern"),
-        ("performance", "concern"),
-        ("architecture", "design"),
-    ]
-    for topic_name, category in topics:
-        key = generate_dimension_key(topic_name)
-        conn.execute(
-            "INSERT INTO dim_topic VALUES (?, ?, ?)",
-            [key, topic_name, category],
-        )
-
-    # Message types
-    for msg_type in ["user", "assistant"]:
-        key = generate_dimension_key(msg_type)
-        conn.execute(
-            "INSERT INTO dim_message_type VALUES (?, ?)",
-            [key, msg_type],
-        )
-
-    # Content block types
-    for block_type in ["text", "tool_use", "tool_result", "thinking", "image"]:
-        key = generate_dimension_key(block_type)
-        conn.execute(
-            "INSERT INTO dim_content_block_type VALUES (?, ?)",
-            [key, block_type],
-        )
-
-    # =========================================================================
-    # Semantic Views - Pre-joined views for easy exploration
-    # =========================================================================
-
-    # Main semantic view: Sessions with all key metrics
     conn.execute(
         """
         CREATE OR REPLACE VIEW semantic_sessions AS
         SELECT
-            -- Session info
             ds.session_id,
             ds.cwd,
             ds.git_branch,
             ds.version,
             ds.first_timestamp,
             ds.last_timestamp,
-            -- Project info
+            ds.intent,
+            ds.complexity,
+            ds.outcome,
+            ds.domain,
             dp.project_name,
             dp.project_path,
-            -- Metrics
             fss.total_messages,
             fss.user_messages,
             fss.assistant_messages,
             fss.total_tool_calls,
             fss.total_thinking_blocks,
+            fss.total_errors,
+            fss.unique_tools_used,
+            fss.unique_files_touched,
+            fss.max_conversation_depth,
+            fss.total_estimated_tokens,
             fss.session_duration_seconds,
-            -- Date info
             dd.full_date,
             dd.day_name,
             dd.month_name,
@@ -765,12 +477,10 @@ def _populate_reference_data(conn):
     """
     )
 
-    # Messages with full context
     conn.execute(
         """
         CREATE OR REPLACE VIEW semantic_messages AS
         SELECT
-            -- Message info
             fm.message_id,
             fm.timestamp,
             fm.content_text,
@@ -781,23 +491,17 @@ def _populate_reference_data(conn):
             fm.has_thinking,
             fm.response_time_seconds,
             fm.conversation_depth,
-            -- Type
-            dmt.message_type,
-            -- Model
+            fm.message_type,
             dm.model_name,
             dm.model_family,
-            -- Session
             ds.session_id,
             ds.cwd,
-            -- Project
             dp.project_name,
-            -- Date/Time
             dd.full_date,
             dd.day_name,
             dt.hour,
             dt.time_of_day
         FROM fact_messages fm
-        JOIN dim_message_type dmt ON fm.message_type_key = dmt.message_type_key
         LEFT JOIN dim_model dm ON fm.model_key = dm.model_key
         JOIN dim_session ds ON fm.session_key = ds.session_key
         LEFT JOIN dim_project dp ON fm.project_key = dp.project_key
@@ -806,33 +510,27 @@ def _populate_reference_data(conn):
     """
     )
 
-    # Tool calls with full context
     conn.execute(
         """
         CREATE OR REPLACE VIEW semantic_tool_calls AS
         SELECT
-            -- Tool call info
             ftc.tool_call_id,
             ftc.timestamp,
             ftc.input_char_count,
             ftc.output_char_count,
             ftc.is_error,
+            ftc.duration_seconds,
             ftc.input_summary,
             ftc.output_text,
-            -- Extracted parameters
             ftc.file_path,
             ftc.command,
             ftc.pattern,
             ftc.query_text,
-            -- Tool
             dt.tool_name,
             dt.tool_category,
-            -- Session
             ds.session_id,
             ds.cwd,
-            -- Project
             dp.project_name,
-            -- Date/Time
             dd.full_date,
             dti.hour,
             dti.time_of_day
@@ -845,26 +543,21 @@ def _populate_reference_data(conn):
     """
     )
 
-    # File operations with full context
     conn.execute(
         """
         CREATE OR REPLACE VIEW semantic_file_operations AS
         SELECT
-            -- Operation info
             ffo.operation_type,
             ffo.file_size_chars,
             ffo.timestamp,
-            -- File
             df.file_path,
             df.file_name,
             df.file_extension,
             df.directory_path,
-            -- Tool
+            df.language,
             dt.tool_name,
             dt.tool_category,
-            -- Session
             ds.session_id,
-            -- Project
             dp.project_name
         FROM fact_file_operations ffo
         JOIN dim_file df ON ffo.file_key = df.file_key
@@ -874,7 +567,6 @@ def _populate_reference_data(conn):
     """
     )
 
-    # Session chains view
     conn.execute(
         """
         CREATE OR REPLACE VIEW semantic_session_chains AS
@@ -900,7 +592,6 @@ def _populate_reference_data(conn):
     """
     )
 
-    # Agent delegations view
     conn.execute(
         """
         CREATE OR REPLACE VIEW semantic_agent_delegations AS
@@ -913,27 +604,21 @@ def _populate_reference_data(conn):
             fad.match_confidence,
             fad.delegation_timestamp,
             fad.completion_timestamp,
-            -- Parent session
+            fad.agent_tool_calls,
+            fad.agent_errors,
+            fad.agent_duration_seconds,
             ps.session_id AS parent_session_id,
             ps.cwd AS parent_cwd,
-            -- Agent session
             ags.session_id AS agent_session_id,
             ags.depth_level AS agent_depth_level,
-            -- Agent metrics
-            fss.total_messages AS agent_total_messages,
-            fss.total_tool_calls AS agent_total_tool_calls,
-            fss.session_duration_seconds AS agent_duration_seconds,
-            -- Project
             dp.project_name
         FROM fact_agent_delegations fad
         JOIN dim_session ps ON fad.parent_session_key = ps.session_key
         JOIN dim_session ags ON fad.agent_session_key = ags.session_key
-        LEFT JOIN fact_session_summary fss ON ags.session_key = fss.session_key
         LEFT JOIN dim_project dp ON ps.project_key = dp.project_key
     """
     )
 
-    # File evolution across sessions
     conn.execute(
         """
         CREATE OR REPLACE VIEW semantic_file_evolution AS
@@ -942,6 +627,7 @@ def _populate_reference_data(conn):
             df.file_name,
             df.file_extension,
             df.directory_path,
+            df.language,
             COUNT(DISTINCT bsf.session_key) AS session_count,
             SUM(bsf.operation_count) AS total_operations,
             SUM(bsf.read_count) AS total_reads,
@@ -952,7 +638,29 @@ def _populate_reference_data(conn):
             MAX(bsf.last_operation_timestamp) AS last_seen
         FROM bridge_session_file bsf
         JOIN dim_file df ON bsf.file_key = df.file_key
-        GROUP BY df.file_path, df.file_name, df.file_extension, df.directory_path
+        GROUP BY df.file_path, df.file_name, df.file_extension, df.directory_path, df.language
         HAVING COUNT(DISTINCT bsf.session_key) > 1
     """
     )
+
+    conn.execute(
+        """
+        CREATE OR REPLACE VIEW semantic_tool_patterns AS
+        SELECT
+            dt1.tool_name AS tool_name,
+            dt2.tool_name AS next_tool_name,
+            COUNT(*) AS frequency,
+            AVG(ftcs.time_since_prev_seconds) AS avg_time_between,
+            SUM(CASE WHEN ftcs.is_error THEN 1 ELSE 0 END) AS error_count,
+            ROUND(SUM(CASE WHEN ftcs.is_error THEN 1 ELSE 0 END) * 100.0 / COUNT(*), 1) AS error_rate_pct
+        FROM fact_tool_chain_steps ftcs
+        JOIN dim_tool dt1 ON ftcs.tool_key = dt1.tool_key
+        LEFT JOIN dim_tool dt2 ON ftcs.next_tool_key = dt2.tool_key
+        WHERE ftcs.next_tool_key IS NOT NULL
+        GROUP BY dt1.tool_name, dt2.tool_name
+        HAVING COUNT(*) >= 2
+        ORDER BY frequency DESC
+    """
+    )
+
+    return conn

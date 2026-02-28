@@ -393,7 +393,7 @@ class TestExportStarSchemaToJson:
         with open(star_output / "meta.json") as f:
             meta = json.load(f)
 
-        assert meta["version"] == "1.0"
+        assert meta["version"] == "2.0"
         assert meta["schema_type"] == "star"
         assert "exported_at" in meta
         assert "tables" in meta

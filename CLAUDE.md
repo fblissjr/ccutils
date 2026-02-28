@@ -56,7 +56,7 @@ ccutils/
 │   │       ├── etl.py        # Main ETL pipeline
 │   │       ├── semantic.py   # Semantic model generation
 │   │       ├── extractors.py # Code blocks, entities, file extraction
-│   │       ├── enrichment.py # LLM enrichment functions
+│   │       ├── heuristics.py # Keyword/metric-based classification
 │   │       ├── json_export.py# JSON export for star schema
 │   │       └── utils.py      # Key generation, tool/model classification
 │   ├── export/                # Export format handlers
@@ -99,51 +99,36 @@ Three output formats with two schema types:
 - `--format duckdb` - DuckDB database file
 - `--format json` - Single JSON file with nested tables
 
-**Star schema** (25+ dimensional tables):
+**Star schema** (22 tables + 8 views):
 - `--format duckdb-star` - DuckDB database file
 - `--format json-star` - Directory with meta.json + dimensions/*.json + facts/*.json
-- Modular package at `schemas/star/` (schema, etl, semantic, extractors, enrichment, json_export, utils)
+- Modular package at `schemas/star/` (schema, etl, semantic, extractors, heuristics, json_export, utils)
 - See `create_star_schema()`, `run_star_schema_etl()`, `export_star_schema_to_json()` functions
+- Heuristic classification (intent, complexity, outcome, domain) runs during ETL -- no LLM required
 - Visual explorer at `explorer/`
 - Full documentation in docs/STAR_SCHEMA.md and docs/DATA_EXPLORER.md
 
 **Hybrid CLI**: Use `--schema simple|star` with `--format duckdb|json` for explicit control.
 
-### 3. Star Schema Tables
+### 3. Star Schema Tables (22 tables + 8 views)
 
-**Dimensions:**
-- dim_tool (with category classification)
-- dim_model (with family: opus/sonnet/haiku)
-- dim_date, dim_time (time dimensions)
-- dim_session, dim_project
-- dim_file, dim_programming_language
-- dim_error_type
-- dim_entity_type (for extracted entities)
-- dim_intent, dim_sentiment, dim_topic (for LLM enrichment)
+**Core Dimensions (6):** dim_session (with intent/complexity/outcome/domain heuristics), dim_project, dim_tool, dim_model, dim_date, dim_time
 
-**Facts:**
-- fact_messages (with response_time_seconds, conversation_depth)
-- fact_tool_calls
-- fact_content_blocks
-- fact_session_summary (pre-aggregated)
-- fact_file_operations
-- fact_code_blocks
-- fact_errors
-- fact_entity_mentions
-- fact_tool_chain_steps
-- fact_message_enrichment, fact_message_topics, fact_session_insights (LLM enrichment)
+**Core Facts (6):** fact_messages, fact_tool_calls (with duration_seconds), fact_session_summary (with total_errors, unique_tools_used, etc.), fact_file_operations, fact_errors (with heuristic error_type), fact_tool_chain_steps (with next_tool_key, is_error)
 
-### 4. LLM Enrichment Pipeline
+**Granular (5):** dim_file (with language), dim_session_chain, fact_content_blocks, fact_code_blocks, fact_entity_mentions
 
-For optional LLM-based classification:
+**Agent/Bridge/Staging (3):** fact_agent_delegations (with denormalized metrics), bridge_session_file, stg_task_agent_map
+
+**Optional (2):** fact_session_embeddings (pylate), fact_tool_input_params
+
+**Views (8):** semantic_sessions, semantic_messages, semantic_tool_calls, semantic_file_operations, semantic_session_chains, semantic_agent_delegations, semantic_file_evolution, semantic_tool_patterns
+
+### 4. Heuristic Classification
+
+Runs during ETL with zero external dependencies:
 ```python
-from ccutils import run_llm_enrichment, run_session_insights_enrichment
-
-# Enrich messages with intent, sentiment, topics
-run_llm_enrichment(conn, my_enrich_func)
-
-# Generate session-level insights
-run_session_insights_enrichment(conn, my_insight_func)
+from ccutils import classify_intent, classify_complexity, classify_outcome, classify_domain, classify_error_type
 ```
 
 ## Testing

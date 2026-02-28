@@ -5,7 +5,7 @@ from datetime import datetime
 from pathlib import Path
 
 
-# Tables organized by type
+# Tables organized by type (22 total)
 DIMENSION_TABLES = [
     "dim_tool",
     "dim_model",
@@ -14,18 +14,7 @@ DIMENSION_TABLES = [
     "dim_session_chain",
     "dim_date",
     "dim_time",
-    "dim_message_type",
-    "dim_content_block_type",
     "dim_file",
-    "dim_programming_language",
-    "dim_error_type",
-    "dim_entity_type",
-    "dim_intent",
-    "dim_topic",
-    "dim_sentiment",
-    "dim_goal",
-    "dim_task",
-    "dim_attempt",
 ]
 
 FACT_TABLES = [
@@ -39,12 +28,10 @@ FACT_TABLES = [
     "fact_entity_mentions",
     "fact_tool_chain_steps",
     "fact_tool_input_params",
-    "fact_message_enrichment",
-    "fact_message_topics",
-    "fact_session_insights",
     "fact_agent_delegations",
     "fact_session_embeddings",
     "bridge_session_file",
+    "stg_task_agent_map",
 ]
 
 # Key relationships for the star schema
@@ -97,12 +84,6 @@ RELATIONSHIPS = [
         "to_table": "dim_file",
         "to_column": "file_key",
     },
-    {
-        "from_table": "fact_code_blocks",
-        "from_column": "language_key",
-        "to_table": "dim_programming_language",
-        "to_column": "language_key",
-    },
 ]
 
 
@@ -152,7 +133,7 @@ def export_star_schema_to_json(conn, output_dir):
 
     # Write meta.json
     meta = {
-        "version": "1.0",
+        "version": "2.0",
         "schema_type": "star",
         "exported_at": datetime.now().astimezone().isoformat(),
         "tables": table_manifest,

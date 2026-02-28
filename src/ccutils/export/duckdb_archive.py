@@ -594,14 +594,29 @@ def _link_agent_delegations(conn):
 
         delegation_key = generate_dimension_key(parent_session_key, agent_session_key)
 
+        # Denormalize agent metrics from fact_session_summary
+        agent_tool_calls = None
+        agent_errors = None
+        agent_duration_seconds = None
+        agent_summary = conn.execute(
+            """SELECT total_tool_calls, total_errors, session_duration_seconds
+               FROM fact_session_summary WHERE session_key = ?""",
+            [agent_session_key],
+        ).fetchone()
+        if agent_summary:
+            agent_tool_calls = agent_summary[0]
+            agent_errors = agent_summary[1]
+            agent_duration_seconds = agent_summary[2]
+
         conn.execute(
             """INSERT INTO fact_agent_delegations
                (delegation_key, parent_session_key, agent_session_key,
                 task_tool_call_id, date_key, time_key,
                 task_description, task_prompt, subagent_type,
                 agent_output, completion_status,
-                delegation_timestamp, completion_timestamp, match_confidence)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                delegation_timestamp, completion_timestamp, match_confidence,
+                agent_tool_calls, agent_errors, agent_duration_seconds)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             [
                 delegation_key,
                 parent_session_key,
@@ -617,6 +632,9 @@ def _link_agent_delegations(conn):
                 tc_timestamp,
                 agent_last_ts,
                 match_confidence,
+                agent_tool_calls,
+                agent_errors,
+                agent_duration_seconds,
             ],
         )
 

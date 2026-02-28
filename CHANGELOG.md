@@ -2,6 +2,39 @@
 
 All notable changes to this project will be documented in this file.
 
+## 0.10.0
+
+### Breaking Changes
+- **Star schema rebuilt from 37 tables to 22 tables + 8 views**
+  - 15 tables removed: stg_raw_messages, dim_message_type, dim_content_block_type, dim_error_type, dim_entity_type, dim_programming_language, dim_intent, dim_topic, dim_sentiment, dim_goal, dim_task, dim_attempt, fact_message_enrichment, fact_message_topics, fact_session_insights
+  - LLM enrichment pipeline (`enrichment.py`) deleted -- required user-provided callbacks that nobody used
+  - Removed exports: `run_llm_enrichment`, `run_session_insights_enrichment`, `run_goal_task_enrichment`
+  - `_populate_reference_data()` removed -- pre-populated dimension rows were misleading
+  - JSON export meta.json version changed from "1.0" to "2.0"
+
+### Added
+- **Heuristic classification** runs during ETL with zero external dependencies (no LLM, no API key)
+  - `classify_intent()`: bug_fix, feature, refactor, debug, test, docs, review, explore (from first user message keywords)
+  - `classify_complexity()`: trivial, simple, moderate, complex (from session metrics)
+  - `classify_outcome()`: success, failure, unknown (from last assistant message + error rate)
+  - `classify_domain()`: web, backend, data, devops, docs, mixed, unknown (from file extensions)
+  - `classify_error_type()`: permission_denied, file_not_found, syntax_error, timeout, import_error, tool_error (from error text)
+  - Results stored on `dim_session` (intent, complexity, outcome, domain) and `fact_errors` (error_type)
+  - 39 tests for heuristic classifiers
+- **Tool call duration tracking**: `duration_seconds` on `fact_tool_calls` (time between invoke and result)
+- **Tool chain enhancements**: `next_tool_key` and `is_error` on `fact_tool_chain_steps`
+- **Enhanced session summary**: `total_errors`, `unique_tools_used`, `unique_files_touched`, `max_conversation_depth`, `total_estimated_tokens` on `fact_session_summary`
+- **Agent delegation metrics**: `agent_tool_calls`, `agent_errors`, `agent_duration_seconds` denormalized on `fact_agent_delegations`
+- **File language detection**: `language` column on `dim_file` inferred from extension
+- **Week of year**: `week_of_year` column on `dim_date`
+- **New view**: `semantic_tool_patterns` -- common tool sequences with frequency and error rates
+
+### Changed
+- 6 low-cardinality dimension tables replaced with degenerate VARCHAR columns on fact tables (Kimball best practice)
+- Embedding pipeline default changed from "summary" to "first_user_message" (summary depended on removed LLM enrichment)
+- `dim_session` no longer has `goal_key`, `task_key`, `attempt_key` columns
+- Star schema docs (`docs/STAR_SCHEMA.md`) fully rewritten
+
 ## 0.9.5
 
 ### Added

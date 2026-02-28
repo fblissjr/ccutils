@@ -8,15 +8,22 @@ from pathlib import Path
 from ...parsers.jsonl_reader import iter_session_entries
 from ...sanitize import PathSanitizer
 from .extractors import (
-    LANGUAGE_EXTENSIONS,
     calculate_conversation_depth,
     count_words,
+    detect_language_from_extension,
     estimate_tokens,
     extract_code_blocks,
     extract_entities,
     extract_file_info,
     extract_file_path_from_tool,
     get_operation_type,
+)
+from .heuristics import (
+    classify_complexity,
+    classify_domain,
+    classify_error_type,
+    classify_intent,
+    classify_outcome,
 )
 from .utils import (
     generate_dimension_key,
@@ -64,11 +71,16 @@ class StarExtractionResult:
     tools_seen: set = field(default_factory=set)
     models_seen: set = field(default_factory=set)
     dates_seen: set = field(default_factory=set)
-    languages_seen: set = field(default_factory=set)
 
     # Dimension tracking dicts
     files_seen: dict = field(default_factory=dict)
     task_agent_map: dict = field(default_factory=dict)
+
+    # For heuristic classification
+    first_user_message: str | None = None
+    last_assistant_message: str | None = None
+    file_extensions_seen: list = field(default_factory=list)
+    max_depth: int = 0
 
 
 def run_star_schema_etl(
@@ -85,6 +97,7 @@ def run_star_schema_etl(
     1. Extracts raw data from the session file
     2. Transforms and loads dimension tables (with deduplication)
     3. Transforms and loads fact tables
+    4. Runs heuristic classification on the session
 
     Args:
         conn: DuckDB connection
@@ -228,6 +241,10 @@ def _handle_tool_use_block(result, block, ctx, tool_use_map, prev_tool_call):
         file_info = extract_file_info(file_path)
         if file_info and file_path not in result.files_seen:
             result.files_seen[file_path] = file_info
+            # Track file extensions for domain classification
+            ext = file_info.get("file_extension", "")
+            if ext:
+                result.file_extensions_seen.append(ext)
 
         operation_type = get_operation_type(tool_name)
         file_content = tool_input.get("content", "")
@@ -270,6 +287,8 @@ def _handle_tool_use_block(result, block, ctx, tool_use_map, prev_tool_call):
             "tool_key": tool_key,
             "step_position": step_position,
             "prev_tool_key": prev_tool_key_val,
+            "next_tool_key": None,  # backfilled after extraction
+            "is_error": False,  # backfilled after tool_result
             "time_since_prev_seconds": time_since_prev,
         }
     )
@@ -317,6 +336,12 @@ def _handle_tool_result_block(result, block, ctx, tool_use_map):
 
     if tool_use_id and tool_use_id in tool_use_map:
         tool_info = tool_use_map[tool_use_id]
+
+        # Calculate duration between invoke and result
+        duration_seconds = None
+        if tool_info["timestamp"] and ctx.timestamp:
+            duration_seconds = (ctx.timestamp - tool_info["timestamp"]).total_seconds()
+
         result.tool_calls_data.append(
             {
                 "tool_call_id": tool_use_id,
@@ -330,6 +355,7 @@ def _handle_tool_result_block(result, block, ctx, tool_use_map):
                 "input_char_count": tool_info["input_char_count"],
                 "output_char_count": output_char_count,
                 "is_error": is_error,
+                "duration_seconds": duration_seconds,
                 "input_json": tool_info["input_json"],
                 "input_summary": tool_info["input_summary"],
                 "output_text": output_text,
@@ -341,19 +367,26 @@ def _handle_tool_result_block(result, block, ctx, tool_use_map):
         )
 
         if is_error:
+            error_type = classify_error_type(output_text)
             result.errors_data.append(
                 {
                     "error_id": f"{tool_use_id}-error",
                     "tool_call_id": tool_use_id,
                     "session_key": ctx.session_key,
                     "tool_key": tool_info["tool_key"],
-                    "error_type_key": generate_dimension_key("tool_error"),
+                    "error_type": error_type,
                     "date_key": tool_info["date_key"],
                     "time_key": tool_info["time_key"],
                     "error_message": output_text,
                     "timestamp": tool_info["timestamp"],
                 }
             )
+
+            # Backfill is_error on the corresponding chain step
+            for step in result.tool_chain_data:
+                if step["tool_call_id"] == tool_use_id:
+                    step["is_error"] = True
+                    break
 
     _add_content_block(
         result.content_blocks_data,
@@ -453,7 +486,7 @@ def _extract_star_data(
                     "content_block_id": block_id,
                     "message_id": message_id,
                     "session_key": session_key,
-                    "content_block_type_key": generate_dimension_key("text"),
+                    "block_type": "text",
                     "date_key": date_key,
                     "time_key": time_key,
                     "block_index": 0,
@@ -543,9 +576,7 @@ def _extract_star_data(
                                 "content_block_id": f"{message_id}-{idx}",
                                 "message_id": message_id,
                                 "session_key": session_key,
-                                "content_block_type_key": generate_dimension_key(
-                                    "image"
-                                ),
+                                "block_type": "image",
                                 "date_key": date_key,
                                 "time_key": time_key,
                                 "block_index": idx,
@@ -565,13 +596,12 @@ def _extract_star_data(
             extracted_blocks = extract_code_blocks(text_content)
             for cb_idx, cb in enumerate(extracted_blocks):
                 language = cb["language"]
-                result.languages_seen.add(language)
                 result.code_blocks_data.append(
                     {
                         "code_block_id": f"{message_id}-code-{cb_idx}",
                         "message_id": message_id,
                         "session_key": session_key,
-                        "language_key": generate_dimension_key(language),
+                        "language": language,
                         "date_key": date_key,
                         "time_key": time_key,
                         "block_index": cb_idx,
@@ -584,10 +614,15 @@ def _extract_star_data(
             entities = extract_entities(text_content, message_id, session_key)
             result.entity_mentions_data.extend(entities)
 
+        # Track first user message and last assistant message for heuristics
         if entry.entry_type == "user":
             result.user_count += 1
+            if result.first_user_message is None and text_content:
+                result.first_user_message = text_content
         else:
             result.assistant_count += 1
+            if text_content:
+                result.last_assistant_message = text_content
 
         word_cnt = count_words(text_content)
         token_est = estimate_tokens(text_content)
@@ -602,11 +637,12 @@ def _extract_star_data(
             message_id, parent_id, depth_map
         )
         depth_map[message_id] = conversation_depth
+        if conversation_depth > result.max_depth:
+            result.max_depth = conversation_depth
 
         if timestamp:
             message_timestamps[message_id] = timestamp
 
-        message_type_key = generate_dimension_key(entry.entry_type)
         model_key = generate_dimension_key(model) if model else None
 
         result.messages_data.append(
@@ -614,7 +650,7 @@ def _extract_star_data(
                 "message_id": message_id,
                 "session_key": session_key,
                 "project_key": project_key,
-                "message_type_key": message_type_key,
+                "message_type": entry.entry_type,
                 "model_key": model_key,
                 "date_key": date_key,
                 "time_key": time_key,
@@ -637,6 +673,12 @@ def _extract_star_data(
             }
         )
 
+    # Backfill next_tool_key on chain steps
+    for i in range(len(result.tool_chain_data) - 1):
+        result.tool_chain_data[i]["next_tool_key"] = result.tool_chain_data[i + 1][
+            "tool_key"
+        ]
+
     return result
 
 
@@ -658,7 +700,7 @@ def _add_content_block(
             "content_block_id": f"{message_id}-{idx}",
             "message_id": message_id,
             "session_key": session_key,
-            "content_block_type_key": generate_dimension_key(block_type),
+            "block_type": block_type,
             "date_key": date_key,
             "time_key": time_key,
             "block_index": idx,
@@ -693,13 +735,12 @@ def _load_dimensions(
             [project_key, display_project_path, project_name],
         )
 
-    # dim_session
+    # dim_session with heuristic classification
     parent_session_key = (
         generate_dimension_key(result.parent_session_id)
         if result.parent_session_id
         else None
     )
-    # Attempt depth_level calculation for agents with known parents
     depth_level = 0
     if result.is_agent and parent_session_key:
         parent_depth = conn.execute(
@@ -709,8 +750,27 @@ def _load_dimensions(
         if parent_depth is not None:
             depth_level = parent_depth[0] + 1
 
-    # Sanitize cwd for display
     display_cwd = sanitizer.sanitize_cwd() if sanitizer else result.cwd
+
+    # Heuristic classification
+    error_rate = (
+        len(result.errors_data) / len(result.tool_calls_data)
+        if result.tool_calls_data
+        else 0.0
+    )
+    agent_depth = 0
+    if result.is_agent:
+        agent_depth = depth_level
+
+    intent = classify_intent(result.first_user_message)
+    complexity = classify_complexity(
+        tool_count=len(result.tool_calls_data),
+        msg_count=result.user_count + result.assistant_count,
+        agent_depth=agent_depth,
+        error_count=len(result.errors_data),
+    )
+    outcome = classify_outcome(result.last_assistant_message, error_rate=error_rate)
+    domain = classify_domain(result.file_extensions_seen)
 
     if not conn.execute(
         "SELECT 1 FROM dim_session WHERE session_key = ?", [session_key]
@@ -719,9 +779,9 @@ def _load_dimensions(
             """INSERT INTO dim_session
                (session_key, session_id, project_key, cwd, git_branch, version,
                 slug, first_timestamp, last_timestamp, is_agent, agent_id,
-                parent_session_key, depth_level,
-                chain_key, goal_key, task_key, attempt_key)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                parent_session_key, depth_level, chain_key,
+                intent, complexity, outcome, domain)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             [
                 session_key,
                 session_id,
@@ -737,9 +797,10 @@ def _load_dimensions(
                 parent_session_key,
                 depth_level,
                 None,  # chain_key - populated by batch export
-                None,  # goal_key - populated by enrichment
-                None,  # task_key - populated by enrichment
-                None,  # attempt_key - populated by enrichment
+                intent,
+                complexity,
+                outcome,
+                domain,
             ],
         )
 
@@ -767,7 +828,7 @@ def _load_dimensions(
                 [model_key, model_name, family],
             )
 
-    # dim_date
+    # dim_date (with week_of_year)
     day_names = [
         "Monday",
         "Tuesday",
@@ -804,9 +865,10 @@ def _load_dimensions(
                 day_of_week = full_date.weekday()
                 quarter = (month - 1) // 3 + 1
                 is_weekend = day_of_week >= 5
+                week_of_year = full_date.isocalendar()[1]
 
                 conn.execute(
-                    """INSERT INTO dim_date VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    """INSERT INTO dim_date VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                     [
                         date_key,
                         full_date.date(),
@@ -818,6 +880,7 @@ def _load_dimensions(
                         month_names[month - 1],
                         quarter,
                         is_weekend,
+                        week_of_year,
                     ],
                 )
             except ValueError:
@@ -837,7 +900,7 @@ def _load_dimensions(
                 [time_key, hour, minute, time_of_day],
             )
 
-    # dim_file (sanitize paths for display, keep keys from original)
+    # dim_file (with language inferred from extension)
     for _file_path, file_info in result.files_seen.items():
         if not conn.execute(
             "SELECT 1 FROM dim_file WHERE file_key = ?", [file_info["file_key"]]
@@ -852,49 +915,28 @@ def _load_dimensions(
                 if sanitizer
                 else file_info["directory_path"]
             )
+            language = detect_language_from_extension(file_info["file_path"])
             conn.execute(
-                "INSERT INTO dim_file VALUES (?, ?, ?, ?, ?)",
+                "INSERT INTO dim_file VALUES (?, ?, ?, ?, ?, ?)",
                 [
                     file_info["file_key"],
                     display_file_path,
                     file_info["file_name"],
                     file_info["file_extension"],
                     display_dir_path,
+                    language,
                 ],
             )
-
-    # dim_programming_language
-    for language in result.languages_seen:
-        lang_key = generate_dimension_key(language)
-        if not conn.execute(
-            "SELECT 1 FROM dim_programming_language WHERE language_key = ?", [lang_key]
-        ).fetchone():
-            extensions = LANGUAGE_EXTENSIONS.get(language, [])
-            ext_str = ",".join(extensions) if extensions else ""
-            conn.execute(
-                "INSERT INTO dim_programming_language VALUES (?, ?, ?)",
-                [lang_key, language, ext_str],
-            )
-
-    # dim_error_type
-    error_type_key = generate_dimension_key("tool_error")
-    if not conn.execute(
-        "SELECT 1 FROM dim_error_type WHERE error_type_key = ?", [error_type_key]
-    ).fetchone():
-        conn.execute(
-            "INSERT INTO dim_error_type VALUES (?, ?, ?)",
-            [error_type_key, "tool_error", "execution"],
-        )
 
 
 def _load_facts(conn, session_key, project_key, result):
     """Load all fact tables."""
 
-    # fact_messages
+    # fact_messages (message_type is now degenerate VARCHAR)
     for msg in result.messages_data:
         conn.execute(
             """INSERT INTO fact_messages
-               (message_id, session_key, project_key, message_type_key, model_key,
+               (message_id, session_key, project_key, message_type, model_key,
                 date_key, time_key, parent_message_id, timestamp, content_length,
                 content_block_count, has_tool_use, has_tool_result, has_thinking,
                 word_count, estimated_tokens, response_time_seconds, conversation_depth,
@@ -904,7 +946,7 @@ def _load_facts(conn, session_key, project_key, result):
                 msg["message_id"],
                 msg["session_key"],
                 msg["project_key"],
-                msg["message_type_key"],
+                msg["message_type"],
                 msg["model_key"],
                 msg["date_key"],
                 msg["time_key"],
@@ -925,7 +967,7 @@ def _load_facts(conn, session_key, project_key, result):
             ],
         )
 
-    # fact_content_blocks
+    # fact_content_blocks (block_type is now degenerate VARCHAR)
     for block in result.content_blocks_data:
         conn.execute(
             """INSERT INTO fact_content_blocks VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
@@ -933,7 +975,7 @@ def _load_facts(conn, session_key, project_key, result):
                 block["content_block_id"],
                 block["message_id"],
                 block["session_key"],
-                block["content_block_type_key"],
+                block["block_type"],
                 block["date_key"],
                 block["time_key"],
                 block["block_index"],
@@ -943,10 +985,11 @@ def _load_facts(conn, session_key, project_key, result):
             ],
         )
 
-    # fact_tool_calls
+    # fact_tool_calls (with duration_seconds)
     for tc in result.tool_calls_data:
         conn.execute(
-            """INSERT INTO fact_tool_calls VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            """INSERT INTO fact_tool_calls VALUES
+               (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             [
                 tc["tool_call_id"],
                 tc["session_key"],
@@ -959,6 +1002,7 @@ def _load_facts(conn, session_key, project_key, result):
                 tc["input_char_count"],
                 tc["output_char_count"],
                 tc["is_error"],
+                tc["duration_seconds"],
                 tc["input_json"],
                 tc["input_summary"],
                 tc["output_text"],
@@ -969,7 +1013,7 @@ def _load_facts(conn, session_key, project_key, result):
             ],
         )
 
-    # fact_session_summary
+    # fact_session_summary (enhanced metrics)
     session_duration = 0
     if result.first_timestamp and result.last_timestamp:
         session_duration = int(
@@ -980,8 +1024,13 @@ def _load_facts(conn, session_key, project_key, result):
     if result.first_timestamp:
         first_date_key = int(result.first_timestamp.strftime("%Y%m%d"))
 
+    total_estimated_tokens = sum(
+        msg.get("estimated_tokens", 0) for msg in result.messages_data
+    )
+
     conn.execute(
-        """INSERT INTO fact_session_summary VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        """INSERT INTO fact_session_summary VALUES
+           (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         [
             session_key,
             project_key,
@@ -992,6 +1041,11 @@ def _load_facts(conn, session_key, project_key, result):
             len(result.tool_calls_data),
             result.thinking_count,
             result.total_content_blocks,
+            len(result.errors_data),
+            len(result.tools_seen),
+            len(result.files_seen),
+            result.max_depth,
+            total_estimated_tokens,
             session_duration,
             result.first_timestamp,
             result.last_timestamp,
@@ -1016,7 +1070,7 @@ def _load_facts(conn, session_key, project_key, result):
             ],
         )
 
-    # fact_code_blocks
+    # fact_code_blocks (language is now degenerate VARCHAR)
     for cb in result.code_blocks_data:
         conn.execute(
             """INSERT INTO fact_code_blocks VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
@@ -1024,7 +1078,7 @@ def _load_facts(conn, session_key, project_key, result):
                 cb["code_block_id"],
                 cb["message_id"],
                 cb["session_key"],
-                cb["language_key"],
+                cb["language"],
                 cb["date_key"],
                 cb["time_key"],
                 cb["block_index"],
@@ -1034,7 +1088,7 @@ def _load_facts(conn, session_key, project_key, result):
             ],
         )
 
-    # fact_errors
+    # fact_errors (error_type is now degenerate VARCHAR from heuristic)
     for err in result.errors_data:
         conn.execute(
             """INSERT INTO fact_errors VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
@@ -1043,7 +1097,7 @@ def _load_facts(conn, session_key, project_key, result):
                 err["tool_call_id"],
                 err["session_key"],
                 err["tool_key"],
-                err["error_type_key"],
+                err["error_type"],
                 err["date_key"],
                 err["time_key"],
                 err["error_message"],
@@ -1051,7 +1105,7 @@ def _load_facts(conn, session_key, project_key, result):
             ],
         )
 
-    # fact_entity_mentions
+    # fact_entity_mentions (entity_type is now degenerate VARCHAR)
     for em in result.entity_mentions_data:
         conn.execute(
             """INSERT INTO fact_entity_mentions VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
@@ -1059,7 +1113,7 @@ def _load_facts(conn, session_key, project_key, result):
                 em["mention_id"],
                 em["message_id"],
                 em["session_key"],
-                em["entity_type_key"],
+                em["entity_type"],
                 em["entity_text"],
                 em["entity_normalized"],
                 em["context_snippet"],
@@ -1068,10 +1122,10 @@ def _load_facts(conn, session_key, project_key, result):
             ],
         )
 
-    # fact_tool_chain_steps
+    # fact_tool_chain_steps (with next_tool_key and is_error)
     for tc in result.tool_chain_data:
         conn.execute(
-            """INSERT INTO fact_tool_chain_steps VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            """INSERT INTO fact_tool_chain_steps VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             [
                 tc["chain_step_id"],
                 tc["session_key"],
@@ -1080,6 +1134,8 @@ def _load_facts(conn, session_key, project_key, result):
                 tc["tool_key"],
                 tc["step_position"],
                 tc["prev_tool_key"],
+                tc["next_tool_key"],
+                tc["is_error"],
                 tc["time_since_prev_seconds"],
             ],
         )

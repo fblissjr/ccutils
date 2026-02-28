@@ -4,17 +4,19 @@ This package provides:
 - DuckDB star schema creation for transcript analytics
 - Semantic model generation for data exploration
 - ETL pipeline for loading session data
-- LLM enrichment pipeline for message classification
+- Heuristic classification for session categorization
 - JSON export for star schema data
 """
 
 from .embeddings import EmbeddingPipeline
-from .enrichment import (
-    run_goal_task_enrichment,
-    run_llm_enrichment,
-    run_session_insights_enrichment,
-)
 from .etl import run_star_schema_etl
+from .heuristics import (
+    classify_complexity,
+    classify_domain,
+    classify_error_type,
+    classify_intent,
+    classify_outcome,
+)
 from .json_export import export_star_schema_to_json
 from .schema import create_star_schema
 from .semantic import create_semantic_model
@@ -35,10 +37,12 @@ __all__ = [
     "run_star_schema_etl",
     # JSON export
     "export_star_schema_to_json",
-    # LLM enrichment
-    "run_llm_enrichment",
-    "run_session_insights_enrichment",
-    "run_goal_task_enrichment",
+    # Heuristic classification
+    "classify_intent",
+    "classify_complexity",
+    "classify_outcome",
+    "classify_domain",
+    "classify_error_type",
     # Embedding pipeline
     "EmbeddingPipeline",
     # Utilities
