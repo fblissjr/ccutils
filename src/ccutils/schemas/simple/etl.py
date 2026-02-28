@@ -9,6 +9,7 @@ from datetime import datetime
 from pathlib import Path
 
 from ...parsers.jsonl_reader import iter_loglines, iter_session_entries
+from ...sanitize import PathSanitizer
 from .schema import create_duckdb_schema
 
 
@@ -20,6 +21,7 @@ def export_session_to_duckdb(
     truncate_output=2000,
     loglines=None,
     session_id_override=None,
+    private=False,
 ):
     """Export a single session to DuckDB.
 
@@ -31,6 +33,7 @@ def export_session_to_duckdb(
         truncate_output: Max characters for tool output (default 2000)
         loglines: Optional pre-parsed logline dicts (skips file reading)
         session_id_override: Optional session ID (used with loglines instead of path.stem)
+        private: If True, sanitize paths to remove sensitive directory info
     """
     if loglines is not None:
         entries_iter = iter_loglines(loglines)
@@ -54,6 +57,9 @@ def export_session_to_duckdb(
     agent_id = None
     parent_session_id = None
 
+    # Privacy sanitizer (created after cwd is known)
+    sanitizer = None
+
     # Maps to link tool_use to tool_result
     tool_use_map = {}
     thinking_id = 0
@@ -74,6 +80,12 @@ def export_session_to_duckdb(
             is_agent = agent_id is not None
             if is_agent:
                 parent_session_id = entry.raw.get("sessionId")
+
+            # Create sanitizer after cwd is known
+            if private:
+                sanitizer = PathSanitizer(cwd)
+            else:
+                sanitizer = None
 
         uuid = entry.uuid
         parent_uuid = entry.parent_uuid
@@ -112,14 +124,19 @@ def export_session_to_duckdb(
                     tool_input = block.get("input", {})
 
                     if isinstance(tool_input, dict):
-                        input_summary = json.dumps(tool_input)[:truncate_output]
+                        input_json_str = json.dumps(tool_input)
                     else:
-                        input_summary = str(tool_input)[:truncate_output]
+                        input_json_str = json.dumps(tool_input)
+
+                    if sanitizer:
+                        input_json_str = sanitizer.sanitize_json_string(input_json_str)
+
+                    input_summary = input_json_str[:truncate_output]
 
                     tool_use_map[tool_id] = {
                         "message_id": uuid,
                         "tool_name": tool_name,
-                        "input_json": json.dumps(tool_input),
+                        "input_json": input_json_str,
                         "input_summary": input_summary,
                         "timestamp": timestamp,
                     }
@@ -132,6 +149,9 @@ def export_session_to_duckdb(
                         output_text = result_content[:truncate_output]
                     else:
                         output_text = str(result_content)[:truncate_output]
+
+                    if sanitizer:
+                        output_text = sanitizer.sanitize_text(output_text)
 
                     if tool_id in tool_use_map:
                         tool_info = tool_use_map[tool_id]
@@ -184,6 +204,10 @@ def export_session_to_duckdb(
             assistant_count += 1
 
         # Insert message
+        content_json = json.dumps(content) if isinstance(content, list) else None
+        if sanitizer and content_json:
+            content_json = sanitizer.sanitize_json_string(content_json)
+
         conn.execute(
             """
             INSERT INTO messages (
@@ -200,7 +224,7 @@ def export_session_to_duckdb(
                 timestamp,
                 model,
                 text_content,
-                json.dumps(content) if isinstance(content, list) else None,
+                content_json,
                 has_tool_use,
                 has_tool_result,
                 has_thinking,
@@ -210,6 +234,14 @@ def export_session_to_duckdb(
 
     # Insert session metadata
     if session_id:
+        # Sanitize session-level paths if private mode
+        insert_cwd = sanitizer.sanitize_cwd() if sanitizer else cwd
+        insert_project_path = (
+            sanitizer.sanitize_project_path(session_path_str)
+            if sanitizer
+            else session_path_str
+        )
+
         conn.execute(
             """
             INSERT INTO sessions (
@@ -221,7 +253,7 @@ def export_session_to_duckdb(
         """,
             [
                 session_id,
-                session_path_str,
+                insert_project_path,
                 project_name,
                 first_timestamp,
                 last_timestamp,
@@ -229,7 +261,7 @@ def export_session_to_duckdb(
                 user_count,
                 assistant_count,
                 tool_use_count,
-                cwd,
+                insert_cwd,
                 git_branch,
                 version,
                 is_agent,
@@ -240,13 +272,16 @@ def export_session_to_duckdb(
         )
 
 
-def _extract_session_data(session_path, include_thinking=False, truncate_output=2000):
+def _extract_session_data(
+    session_path, include_thinking=False, truncate_output=2000, private=False
+):
     """Extract session data from a JSONL file.
 
     Args:
         session_path: Path to the JSONL session file
         include_thinking: Whether to include thinking blocks
         truncate_output: Max characters for tool output
+        private: If True, sanitize paths to remove sensitive directory info
 
     Returns:
         dict with session, messages, tool_calls, thinking keys
@@ -279,6 +314,7 @@ def _extract_session_data(session_path, include_thinking=False, truncate_output=
     tool_use_map = {}  # tool_use_id -> tool info
     thinking_id = 0
     is_first = True
+    sanitizer = None
 
     for entry in iter_session_entries(session_path):
         if entry.entry_type == "progress":
@@ -287,7 +323,8 @@ def _extract_session_data(session_path, include_thinking=False, truncate_output=
         # Extract metadata from first entry
         if is_first:
             is_first = False
-            session_meta["cwd"] = entry.raw.get("cwd")
+            cwd = entry.raw.get("cwd")
+            session_meta["cwd"] = cwd
             session_meta["git_branch"] = entry.raw.get("gitBranch")
             session_meta["version"] = entry.raw.get("version")
             agent_id = entry.raw.get("agentId")
@@ -295,6 +332,13 @@ def _extract_session_data(session_path, include_thinking=False, truncate_output=
             session_meta["is_agent"] = agent_id is not None
             if agent_id:
                 session_meta["parent_session_id"] = entry.raw.get("sessionId")
+
+            if private:
+                sanitizer = PathSanitizer(cwd)
+                session_meta["cwd"] = sanitizer.sanitize_cwd()
+                session_meta["project_path"] = sanitizer.sanitize_project_path(
+                    session_meta["project_path"]
+                )
 
         uuid = entry.uuid
         parent_uuid = entry.parent_uuid
@@ -334,6 +378,13 @@ def _extract_session_data(session_path, include_thinking=False, truncate_output=
                     tool_name = block.get("name", "")
                     tool_input = block.get("input", {})
 
+                    # Sanitize input before serializing
+                    if sanitizer and isinstance(tool_input, dict):
+                        sanitized_str = sanitizer.sanitize_json_string(
+                            json.dumps(tool_input)
+                        )
+                        tool_input = json.loads(sanitized_str)
+
                     if isinstance(tool_input, dict):
                         input_summary = json.dumps(tool_input)[:truncate_output]
                     else:
@@ -357,6 +408,9 @@ def _extract_session_data(session_path, include_thinking=False, truncate_output=
                         output_text = result_content[:truncate_output]
                     else:
                         output_text = str(result_content)[:truncate_output]
+
+                    if sanitizer:
+                        output_text = sanitizer.sanitize_text(output_text)
 
                     if tool_id in tool_use_map:
                         tool_info = tool_use_map[tool_id]
@@ -424,7 +478,11 @@ def _extract_session_data(session_path, include_thinking=False, truncate_output=
 
 
 def export_sessions_to_json(
-    session_paths, output_path, include_thinking=False, truncate_output=2000
+    session_paths,
+    output_path,
+    include_thinking=False,
+    truncate_output=2000,
+    private=False,
 ):
     """Export sessions to JSON format (simple schema).
 
@@ -433,6 +491,7 @@ def export_sessions_to_json(
         output_path: Path for output JSON file
         include_thinking: Whether to include thinking blocks
         truncate_output: Max characters for tool output (default 2000)
+        private: If True, sanitize paths to remove sensitive directory info
     """
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -444,7 +503,7 @@ def export_sessions_to_json(
 
     for session_path in session_paths:
         session_data = _extract_session_data(
-            session_path, include_thinking, truncate_output
+            session_path, include_thinking, truncate_output, private=private
         )
         sessions.append(session_data["session"])
         messages.extend(session_data["messages"])
