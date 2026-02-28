@@ -434,6 +434,7 @@ def generate_batch_html(
     include_agents=False,
     progress_callback=None,
     no_search_index=False,
+    private=False,
 ):
     """Generate HTML archive for all sessions in a Claude projects folder.
 
@@ -478,7 +479,7 @@ def generate_batch_html(
 
             # Generate transcript HTML with error handling
             try:
-                generate_html(session["path"], session_dir)
+                generate_html(session["path"], session_dir, private=private)
                 successful_sessions += 1
             except Exception as e:
                 failed_sessions.append(
@@ -656,7 +657,82 @@ def generate_multi_session_index(
     return index_path
 
 
-def generate_html(json_path=None, output_dir=None, github_repo=None, loglines=None):
+def _sanitize_loglines(loglines):
+    """Sanitize paths in loglines for private mode.
+
+    Extracts cwd from the first logline's raw data, creates a PathSanitizer,
+    then deep-walks all loglines to sanitize tool_use input dicts and
+    tool_result content strings.
+    """
+    from ..sanitize import PathSanitizer
+
+    if not loglines:
+        return loglines
+
+    # Extract cwd from first logline
+    cwd = None
+    for entry in loglines:
+        cwd = entry.get("cwd")
+        if cwd:
+            break
+
+    if not cwd:
+        return loglines
+
+    sanitizer = PathSanitizer(cwd)
+
+    for entry in loglines:
+        message_data = entry.get("message", {})
+        content = message_data.get("content")
+        if not isinstance(content, list):
+            continue
+
+        for block in content:
+            if not isinstance(block, dict):
+                continue
+
+            block_type = block.get("type")
+
+            if block_type == "tool_use":
+                tool_input = block.get("input", {})
+                if isinstance(tool_input, dict):
+                    # Sanitize known path fields
+                    if "file_path" in tool_input and isinstance(
+                        tool_input["file_path"], str
+                    ):
+                        tool_input["file_path"] = sanitizer.sanitize_path(
+                            tool_input["file_path"]
+                        )
+                    if "command" in tool_input and isinstance(
+                        tool_input["command"], str
+                    ):
+                        tool_input["command"] = sanitizer.sanitize_text(
+                            tool_input["command"]
+                        )
+                    if "content" in tool_input and isinstance(
+                        tool_input["content"], str
+                    ):
+                        tool_input["content"] = sanitizer.sanitize_text(
+                            tool_input["content"]
+                        )
+                    if "path" in tool_input and isinstance(tool_input["path"], str):
+                        tool_input["path"] = sanitizer.sanitize_path(tool_input["path"])
+
+            elif block_type == "tool_result":
+                result_content = block.get("content", "")
+                if isinstance(result_content, str):
+                    block["content"] = sanitizer.sanitize_text(result_content)
+
+    return loglines
+
+
+def generate_html(
+    json_path=None,
+    output_dir=None,
+    github_repo=None,
+    loglines=None,
+    private=False,
+):
     """Generate HTML transcript from a session file or pre-parsed loglines.
 
     Args:
@@ -664,6 +740,7 @@ def generate_html(json_path=None, output_dir=None, github_repo=None, loglines=No
         output_dir: Directory to write HTML files
         github_repo: Optional GitHub repo for commit links (format: "owner/repo")
         loglines: Optional pre-parsed list of log entries (skips file parsing)
+        private: If True, sanitize paths to remove sensitive directory info
 
     Returns:
         Path to output directory
@@ -677,6 +754,10 @@ def generate_html(json_path=None, output_dir=None, github_repo=None, loglines=No
             raise ValueError("Either json_path or loglines must be provided")
         data = parse_session_file(json_path)
         loglines = data.get("loglines", [])
+
+    # Sanitize paths in loglines if private mode
+    if private:
+        loglines = _sanitize_loglines(loglines)
 
     # Auto-detect GitHub repo if not provided
     if github_repo is None:

@@ -33,6 +33,7 @@ def generate_duckdb_archive(
     progress_callback=None,
     max_workers=1,
     batch_size=10,
+    private=False,
 ):
     """Generate DuckDB archive for all sessions.
 
@@ -103,6 +104,7 @@ def generate_duckdb_archive(
             start_time,
             failed_sessions,
             schema_type,
+            private,
         )
         successful_sessions = len(session_tasks) - len(failed_sessions)
     else:
@@ -115,6 +117,7 @@ def generate_duckdb_archive(
                     project_name,
                     include_thinking=include_thinking,
                     truncate_output=truncate_output,
+                    private=private,
                 )
                 successful_sessions += 1
             except Exception as e:
@@ -181,6 +184,7 @@ def _process_parallel(
     start_time,
     failed_sessions,
     schema_type,
+    private=False,
 ):
     """Process sessions in batches with progress reporting.
 
@@ -205,6 +209,7 @@ def _process_parallel(
                     project_name,
                     include_thinking=include_thinking,
                     truncate_output=truncate_output,
+                    private=private,
                 )
             except Exception as e:
                 failed_sessions.append(
@@ -277,6 +282,7 @@ def generate_star_json_archive(
     progress_callback=None,
     max_workers=1,
     batch_size=10,
+    private=False,
 ):
     """Generate star schema JSON archive for all sessions.
 
@@ -315,6 +321,7 @@ def generate_star_json_archive(
             progress_callback=progress_callback,
             max_workers=max_workers,
             batch_size=batch_size,
+            private=private,
         )
 
         # Export to JSON
