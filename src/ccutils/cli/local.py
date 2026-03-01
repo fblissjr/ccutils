@@ -123,6 +123,16 @@ from .utils import maybe_open_browser
     is_flag=True,
     help="Sanitize file paths in output to remove home directory and absolute paths.",
 )
+@click.option(
+    "--embed",
+    is_flag=True,
+    help="Run ColBERT embedding pipeline after star schema ETL (requires pylate).",
+)
+@click.option(
+    "--embed-model",
+    default=None,
+    help="Override default ColBERT model for embeddings.",
+)
 def local_cmd(
     output,
     output_auto,
@@ -138,6 +148,8 @@ def local_cmd(
     expand_chains,
     flat,
     private,
+    embed,
+    embed_model,
 ):
     """Select and convert local Claude Code sessions to HTML or DuckDB.
 
@@ -263,6 +275,10 @@ def local_cmd(
                 )
             finalize_star_schema(conn)
             create_semantic_model(conn)
+
+            if embed:
+                _run_embedding_pipeline(conn, embed_model)
+
             conn.close()
 
         click.echo(f"Exported to {db_path}")
@@ -307,6 +323,10 @@ def local_cmd(
                 )
             finalize_star_schema(conn)
             create_semantic_model(conn)
+
+            if embed:
+                _run_embedding_pipeline(conn, embed_model)
+
             export_star_schema_to_json(conn, output_dir)
             conn.close()
             click.echo(f"Exported to {output_dir}/")
@@ -325,6 +345,26 @@ def local_cmd(
 
     if open_browser and fmt == "html":
         maybe_open_browser(output)
+
+
+def _run_embedding_pipeline(conn, embed_model=None):
+    """Run ColBERT embedding pipeline on a star schema connection."""
+    try:
+        from ..schemas.star.embeddings import EmbeddingPipeline
+
+        click.echo("Running ColBERT embedding pipeline...")
+        pipeline = EmbeddingPipeline(model_name=embed_model)
+        result = pipeline.embed_sessions(conn)
+        click.echo(f"  Embedded {result['sessions_embedded']} sessions")
+        match_result = pipeline.match_delegations(conn)
+        if match_result["delegations_rescored"] > 0:
+            click.echo(
+                f"  Re-scored {match_result['delegations_rescored']} delegations"
+            )
+    except ImportError:
+        click.echo(
+            "Warning: pylate not installed. " "Install with: uv add ccutils[colbert]"
+        )
 
 
 def _flat_mode_selection(projects_folder, limit, project_filter, expand_chains, style):
