@@ -342,12 +342,8 @@ def finalize_star_schema(conn):
     - fact_agent_delegations (agent-to-parent Task tool linking)
     - bridge_session_file (cross-session file operation aggregation)
 
-    Safe to call multiple times -- clears derived tables before repopulating.
+    Safe to call multiple times -- each step clears before repopulating.
     """
-    # Clear derived tables for idempotency
-    conn.execute("DELETE FROM bridge_session_file")
-    conn.execute("DELETE FROM fact_agent_delegations")
-
     _calculate_session_depths(conn)
     _build_session_chains(conn)
     _link_agent_delegations(conn)
@@ -478,7 +474,10 @@ def _link_agent_delegations(conn):
     The deterministic path uses stg_task_agent_map (populated from progress
     records during ETL) joined with dim_session.agent_id to find the exact
     tool_call_id for each agent session.
+
+    Idempotent: clears fact_agent_delegations before repopulating.
     """
+    conn.execute("DELETE FROM fact_agent_delegations")
     import json
 
     # Build deterministic lookup: agent_id -> tool_use_id
@@ -663,7 +662,10 @@ def _build_session_file_bridge(conn):
 
     Aggregates fact_file_operations into per-(session, file) summaries
     with operation counts broken down by type.
+
+    Idempotent: clears bridge_session_file before repopulating.
     """
+    conn.execute("DELETE FROM bridge_session_file")
     conn.execute(
         """
         INSERT INTO bridge_session_file
