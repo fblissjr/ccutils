@@ -9,6 +9,15 @@ All notable changes to this project will be documented in this file.
   - `semantic_project_context`: sessions with first/last messages, intent, metrics -- ordered by recency
   - `semantic_project_files`: file activity aggregated by project with session count, read/write/edit totals
 - **Session message columns**: `first_user_message` and `last_assistant_message` persisted on `dim_session` (truncated to 500 chars) -- previously extracted during ETL but discarded after heuristic classification
+- **Date/time on all semantic views**: Every view now exposes a DATE field and time_of_day for filtering and sorting
+  - `semantic_sessions`: `session_datetime`, `time_of_day`, `hour` from dim_time
+  - `semantic_file_operations`: `full_date`, `time_of_day` from dim_date/dim_time
+  - `semantic_session_chains`: `chain_start_date` derived from first_timestamp
+  - `semantic_agent_delegations`: `delegation_date`, `time_of_day` from dim_date/dim_time
+  - `semantic_file_evolution`: `first_seen_date`, `last_seen_date` derived from timestamps
+  - `semantic_project_context`: `session_date`, `time_of_day` from dim_time
+  - `semantic_project_files`: `last_touched_date` derived from timestamp
+- **time_key on fact_session_summary**: Enables dim_time joins for session-level views
 
 ### Changed
 - View count updated from 8 to 10 across all docs and docstrings

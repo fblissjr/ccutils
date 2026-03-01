@@ -861,3 +861,37 @@ class TestSessionHeuristicColumns:
         assert "task_key" not in column_names
         assert "attempt_key" not in column_names
         conn.close()
+
+
+class TestFactSessionSummaryTimeKeyETL:
+    """Tests for time_key population on fact_session_summary."""
+
+    def test_time_key_populated_from_first_timestamp(
+        self, sample_session_file, output_dir
+    ):
+        """Test that time_key is computed from the session's first timestamp."""
+        db_path = output_dir / "test.duckdb"
+        conn = create_star_schema(db_path)
+        run_star_schema_etl(conn, sample_session_file, "test-project")
+
+        result = conn.execute("SELECT time_key FROM fact_session_summary").fetchone()
+        assert result is not None
+        assert result[0] is not None
+        # sample_session_file has timestamps at 10:00 AM -> time_key = 1000
+        assert result[0] == 1000
+        conn.close()
+
+    def test_time_key_matches_dim_time(self, sample_session_file, output_dir):
+        """Test that fact_session_summary.time_key has a matching dim_time row."""
+        db_path = output_dir / "test.duckdb"
+        conn = create_star_schema(db_path)
+        run_star_schema_etl(conn, sample_session_file, "test-project")
+
+        result = conn.execute(
+            """SELECT dt.time_of_day
+               FROM fact_session_summary fss
+               JOIN dim_time dt ON fss.time_key = dt.time_key"""
+        ).fetchone()
+        assert result is not None
+        assert result[0] == "morning"
+        conn.close()

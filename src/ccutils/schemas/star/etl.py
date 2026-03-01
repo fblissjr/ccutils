@@ -1028,8 +1028,10 @@ def _load_facts(conn, session_key, project_key, result):
         )
 
     first_date_key = None
+    first_time_key = None
     if result.first_timestamp:
         first_date_key = int(result.first_timestamp.strftime("%Y%m%d"))
+        first_time_key = int(result.first_timestamp.strftime("%H%M"))
 
     total_estimated_tokens = sum(
         msg.get("estimated_tokens", 0) for msg in result.messages_data
@@ -1037,11 +1039,12 @@ def _load_facts(conn, session_key, project_key, result):
 
     conn.execute(
         """INSERT INTO fact_session_summary VALUES
-           (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+           (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         [
             session_key,
             project_key,
             first_date_key,
+            first_time_key,
             result.user_count + result.assistant_count,
             result.user_count,
             result.assistant_count,

@@ -418,6 +418,168 @@ class TestDimSessionMessageColumns:
         conn.close()
 
 
+class TestFactSessionSummaryTimeKey:
+    """Tests for time_key on fact_session_summary."""
+
+    def test_fact_session_summary_has_time_key(self, output_dir):
+        """Test that fact_session_summary has time_key column."""
+        db_path = output_dir / "test.duckdb"
+        conn = create_star_schema(db_path)
+
+        columns = conn.execute("DESCRIBE fact_session_summary").fetchall()
+        column_names = [c[0] for c in columns]
+        assert "time_key" in column_names
+        conn.close()
+
+
+class TestViewDateTimeColumns:
+    """Tests for date/time columns on semantic views."""
+
+    def test_semantic_sessions_has_session_datetime(self, output_dir):
+        """Test that semantic_sessions has session_datetime column."""
+        db_path = output_dir / "test.duckdb"
+        conn = create_star_schema(db_path)
+
+        columns = conn.execute(
+            "SELECT column_name FROM information_schema.columns "
+            "WHERE table_name = 'semantic_sessions'"
+        ).fetchall()
+        column_names = [c[0] for c in columns]
+        assert "session_datetime" in column_names
+        conn.close()
+
+    def test_semantic_sessions_has_time_of_day(self, output_dir):
+        """Test that semantic_sessions has time_of_day from dim_time."""
+        db_path = output_dir / "test.duckdb"
+        conn = create_star_schema(db_path)
+
+        columns = conn.execute(
+            "SELECT column_name FROM information_schema.columns "
+            "WHERE table_name = 'semantic_sessions'"
+        ).fetchall()
+        column_names = [c[0] for c in columns]
+        assert "time_of_day" in column_names
+        conn.close()
+
+    def test_semantic_file_operations_has_full_date(self, output_dir):
+        """Test that semantic_file_operations has full_date from dim_date."""
+        db_path = output_dir / "test.duckdb"
+        conn = create_star_schema(db_path)
+
+        columns = conn.execute(
+            "SELECT column_name FROM information_schema.columns "
+            "WHERE table_name = 'semantic_file_operations'"
+        ).fetchall()
+        column_names = [c[0] for c in columns]
+        assert "full_date" in column_names
+        conn.close()
+
+    def test_semantic_file_operations_has_time_of_day(self, output_dir):
+        """Test that semantic_file_operations has time_of_day from dim_time."""
+        db_path = output_dir / "test.duckdb"
+        conn = create_star_schema(db_path)
+
+        columns = conn.execute(
+            "SELECT column_name FROM information_schema.columns "
+            "WHERE table_name = 'semantic_file_operations'"
+        ).fetchall()
+        column_names = [c[0] for c in columns]
+        assert "time_of_day" in column_names
+        conn.close()
+
+    def test_semantic_session_chains_has_chain_start_date(self, output_dir):
+        """Test that semantic_session_chains has chain_start_date."""
+        db_path = output_dir / "test.duckdb"
+        conn = create_star_schema(db_path)
+
+        columns = conn.execute(
+            "SELECT column_name FROM information_schema.columns "
+            "WHERE table_name = 'semantic_session_chains'"
+        ).fetchall()
+        column_names = [c[0] for c in columns]
+        assert "chain_start_date" in column_names
+        conn.close()
+
+    def test_semantic_agent_delegations_has_delegation_date(self, output_dir):
+        """Test that semantic_agent_delegations has delegation_date."""
+        db_path = output_dir / "test.duckdb"
+        conn = create_star_schema(db_path)
+
+        columns = conn.execute(
+            "SELECT column_name FROM information_schema.columns "
+            "WHERE table_name = 'semantic_agent_delegations'"
+        ).fetchall()
+        column_names = [c[0] for c in columns]
+        assert "delegation_date" in column_names
+        conn.close()
+
+    def test_semantic_agent_delegations_has_time_of_day(self, output_dir):
+        """Test that semantic_agent_delegations has time_of_day."""
+        db_path = output_dir / "test.duckdb"
+        conn = create_star_schema(db_path)
+
+        columns = conn.execute(
+            "SELECT column_name FROM information_schema.columns "
+            "WHERE table_name = 'semantic_agent_delegations'"
+        ).fetchall()
+        column_names = [c[0] for c in columns]
+        assert "time_of_day" in column_names
+        conn.close()
+
+    def test_semantic_file_evolution_has_date_columns(self, output_dir):
+        """Test that semantic_file_evolution has first_seen_date and last_seen_date."""
+        db_path = output_dir / "test.duckdb"
+        conn = create_star_schema(db_path)
+
+        columns = conn.execute(
+            "SELECT column_name FROM information_schema.columns "
+            "WHERE table_name = 'semantic_file_evolution'"
+        ).fetchall()
+        column_names = [c[0] for c in columns]
+        assert "first_seen_date" in column_names
+        assert "last_seen_date" in column_names
+        conn.close()
+
+    def test_semantic_project_context_has_session_date(self, output_dir):
+        """Test that semantic_project_context has session_date."""
+        db_path = output_dir / "test.duckdb"
+        conn = create_star_schema(db_path)
+
+        columns = conn.execute(
+            "SELECT column_name FROM information_schema.columns "
+            "WHERE table_name = 'semantic_project_context'"
+        ).fetchall()
+        column_names = [c[0] for c in columns]
+        assert "session_date" in column_names
+        conn.close()
+
+    def test_semantic_project_context_has_time_of_day(self, output_dir):
+        """Test that semantic_project_context has time_of_day."""
+        db_path = output_dir / "test.duckdb"
+        conn = create_star_schema(db_path)
+
+        columns = conn.execute(
+            "SELECT column_name FROM information_schema.columns "
+            "WHERE table_name = 'semantic_project_context'"
+        ).fetchall()
+        column_names = [c[0] for c in columns]
+        assert "time_of_day" in column_names
+        conn.close()
+
+    def test_semantic_project_files_has_last_touched_date(self, output_dir):
+        """Test that semantic_project_files has last_touched_date."""
+        db_path = output_dir / "test.duckdb"
+        conn = create_star_schema(db_path)
+
+        columns = conn.execute(
+            "SELECT column_name FROM information_schema.columns "
+            "WHERE table_name = 'semantic_project_files'"
+        ).fetchall()
+        column_names = [c[0] for c in columns]
+        assert "last_touched_date" in column_names
+        conn.close()
+
+
 class TestProjectContextViews:
     """Tests for semantic_project_context and semantic_project_files views."""
 

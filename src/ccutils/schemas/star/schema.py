@@ -199,6 +199,7 @@ def create_star_schema(db_path):
             session_key VARCHAR,
             project_key VARCHAR,
             date_key INTEGER,
+            time_key INTEGER,
             total_messages INTEGER,
             user_messages INTEGER,
             assistant_messages INTEGER,
@@ -448,7 +449,7 @@ def create_star_schema(db_path):
             ds.cwd,
             ds.git_branch,
             ds.version,
-            ds.first_timestamp,
+            ds.first_timestamp AS session_datetime,
             ds.last_timestamp,
             ds.intent,
             ds.complexity,
@@ -471,11 +472,14 @@ def create_star_schema(db_path):
             dd.day_name,
             dd.month_name,
             dd.year,
-            dd.is_weekend
+            dd.is_weekend,
+            dti.hour,
+            dti.time_of_day
         FROM fact_session_summary fss
         JOIN dim_session ds ON fss.session_key = ds.session_key
         JOIN dim_project dp ON fss.project_key = dp.project_key
         LEFT JOIN dim_date dd ON fss.date_key = dd.date_key
+        LEFT JOIN dim_time dti ON fss.time_key = dti.time_key
     """
     )
 
@@ -560,12 +564,16 @@ def create_star_schema(db_path):
             dt.tool_name,
             dt.tool_category,
             ds.session_id,
-            dp.project_name
+            dp.project_name,
+            dd.full_date,
+            dti.time_of_day
         FROM fact_file_operations ffo
         JOIN dim_file df ON ffo.file_key = df.file_key
         JOIN dim_tool dt ON ffo.tool_key = dt.tool_key
         JOIN dim_session ds ON ffo.session_key = ds.session_key
         LEFT JOIN dim_project dp ON ds.project_key = dp.project_key
+        LEFT JOIN dim_date dd ON ffo.date_key = dd.date_key
+        LEFT JOIN dim_time dti ON ffo.time_key = dti.time_key
     """
     )
 
@@ -576,6 +584,7 @@ def create_star_schema(db_path):
             dsc.chain_key,
             dsc.slug,
             dsc.session_count,
+            CAST(dsc.first_timestamp AS DATE) AS chain_start_date,
             dsc.first_timestamp AS chain_first_timestamp,
             dsc.last_timestamp AS chain_last_timestamp,
             dsc.total_duration_seconds,
@@ -604,8 +613,10 @@ def create_star_schema(db_path):
             fad.subagent_type,
             fad.completion_status,
             fad.match_confidence,
+            dd.full_date AS delegation_date,
             fad.delegation_timestamp,
             fad.completion_timestamp,
+            dti.time_of_day,
             fad.agent_tool_calls,
             fad.agent_errors,
             fad.agent_duration_seconds,
@@ -618,6 +629,8 @@ def create_star_schema(db_path):
         JOIN dim_session ps ON fad.parent_session_key = ps.session_key
         JOIN dim_session ags ON fad.agent_session_key = ags.session_key
         LEFT JOIN dim_project dp ON ps.project_key = dp.project_key
+        LEFT JOIN dim_date dd ON fad.date_key = dd.date_key
+        LEFT JOIN dim_time dti ON fad.time_key = dti.time_key
     """
     )
 
@@ -636,7 +649,9 @@ def create_star_schema(db_path):
             SUM(bsf.write_count) AS total_writes,
             SUM(bsf.edit_count) AS total_edits,
             SUM(bsf.total_chars_written) AS total_chars_written,
+            CAST(MIN(bsf.first_operation_timestamp) AS DATE) AS first_seen_date,
             MIN(bsf.first_operation_timestamp) AS first_seen,
+            CAST(MAX(bsf.last_operation_timestamp) AS DATE) AS last_seen_date,
             MAX(bsf.last_operation_timestamp) AS last_seen
         FROM bridge_session_file bsf
         JOIN dim_file df ON bsf.file_key = df.file_key
@@ -672,7 +687,9 @@ def create_star_schema(db_path):
             ds.session_id,
             dp.project_name,
             ds.slug,
+            CAST(ds.first_timestamp AS DATE) AS session_date,
             ds.first_timestamp AS created_at,
+            dti.time_of_day,
             ds.git_branch,
             ds.intent,
             ds.complexity,
@@ -690,6 +707,7 @@ def create_star_schema(db_path):
         FROM dim_session ds
         JOIN dim_project dp ON ds.project_key = dp.project_key
         LEFT JOIN fact_session_summary fss ON ds.session_key = fss.session_key
+        LEFT JOIN dim_time dti ON fss.time_key = dti.time_key
         ORDER BY ds.first_timestamp DESC
     """
     )
@@ -706,6 +724,7 @@ def create_star_schema(db_path):
             SUM(bsf.read_count) AS total_reads,
             SUM(bsf.write_count) AS total_writes,
             SUM(bsf.edit_count) AS total_edits,
+            CAST(MAX(ds.first_timestamp) AS DATE) AS last_touched_date,
             MAX(ds.first_timestamp) AS last_touched
         FROM bridge_session_file bsf
         JOIN dim_file df ON bsf.file_key = df.file_key

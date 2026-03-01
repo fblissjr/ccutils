@@ -242,6 +242,7 @@ One row per session with pre-aggregated metrics.
 | session_key | VARCHAR | PK, FK to dim_session |
 | project_key | VARCHAR | FK to dim_project |
 | date_key | INTEGER | FK to dim_date |
+| time_key | INTEGER | FK to dim_time |
 | total_messages | INTEGER | Total message count |
 | user_messages | INTEGER | User message count |
 | assistant_messages | INTEGER | Assistant message count |
@@ -468,7 +469,7 @@ Key-value extraction of tool input parameters.
 All views use the `semantic_` prefix and join facts with dimensions for easy querying. These are the fastest way to get started -- no manual JOINs required.
 
 ### semantic_sessions
-Sessions enriched with project info, summary metrics, and heuristic classifications.
+Sessions enriched with project info, summary metrics, heuristic classifications, and date/time.
 
 ```sql
 -- Complex bug fixes in a specific project
@@ -477,6 +478,12 @@ SELECT session_id, intent, complexity, total_tool_calls, total_errors,
 FROM semantic_sessions
 WHERE intent = 'bug_fix' AND complexity = 'complex'
 ORDER BY total_errors DESC;
+
+-- Recent sessions sorted by datetime
+SELECT session_id, project_name, full_date, time_of_day,
+       session_datetime, total_messages
+FROM semantic_sessions
+ORDER BY session_datetime DESC LIMIT 20;
 
 -- Weekend warrior: sessions by day of week
 SELECT day_name, COUNT(*) as sessions, AVG(total_messages) as avg_msgs
@@ -587,11 +594,12 @@ ORDER BY frequency DESC LIMIT 15;
 ```
 
 ### semantic_project_context
-Sessions enriched with project info, first/last messages, and summary metrics. Designed for catching up on a project -- what sessions happened, what was worked on, what the user asked for.
+Sessions enriched with project info, first/last messages, summary metrics, and date/time. Designed for catching up on a project -- what sessions happened, what was worked on, what the user asked for.
 
 ```sql
 -- Get up to speed on a project (most recent sessions first)
-SELECT session_id, project_name, intent, complexity, outcome,
+SELECT session_id, project_name, session_date, time_of_day,
+       intent, complexity, outcome,
        first_user_message, last_assistant_message,
        total_messages, total_tool_calls, total_errors
 FROM semantic_project_context
@@ -603,6 +611,12 @@ SELECT project_name, first_user_message, last_assistant_message,
        created_at, intent
 FROM semantic_project_context
 LIMIT 1;
+
+-- Filter by date
+SELECT session_id, first_user_message, total_messages
+FROM semantic_project_context
+WHERE session_date = '2025-01-20'
+ORDER BY created_at DESC;
 ```
 
 ### semantic_project_files
