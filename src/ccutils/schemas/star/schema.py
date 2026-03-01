@@ -671,7 +671,7 @@ def create_star_schema(db_path):
         SELECT
             ds.session_id,
             dp.project_name,
-            ds.slug AS title,
+            ds.slug,
             ds.first_timestamp AS created_at,
             ds.git_branch,
             ds.intent,
