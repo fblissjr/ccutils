@@ -1,6 +1,6 @@
 # Star Schema DuckDB Implementation
 
-Last updated: 2026-02-28
+Last updated: 2026-03-01
 
 A dimensional data model for Claude Code transcript analytics with 22 tables and 8 views. Designed for questions the simple 4-table schema cannot answer: intent classification, tool duration analysis, cross-session file tracking, time-of-day patterns, tool sequence analysis, and semantic similarity clustering.
 
@@ -15,6 +15,9 @@ ccutils local --format json-star -o ./star-export/
 
 # Or generate from all sessions
 ccutils all --format duckdb-star -o ./analytics
+
+# With ColBERT embeddings (requires pylate)
+ccutils local --format duckdb-star --embed -o ./analytics
 
 # Launch the visual Data Explorer
 ccutils explore ./analytics/archive.duckdb
@@ -45,10 +48,11 @@ JOIN dim_file df ON bsf.file_key = df.file_key
 GROUP BY df.file_path ORDER BY modifications DESC LIMIT 20;
 
 -- Am I more productive mornings or evenings?
-SELECT dti.time_of_day, COUNT(*) as sessions, AVG(fss.total_messages) as avg_msgs
-FROM fact_session_summary fss
-JOIN dim_time dti ON fss.time_key = dti.time_key
-GROUP BY dti.time_of_day;
+SELECT dt.time_of_day, COUNT(DISTINCT fm.session_key) as sessions,
+       COUNT(*) as messages
+FROM fact_messages fm
+JOIN dim_time dt ON fm.time_key = dt.time_key
+GROUP BY dt.time_of_day;
 ```
 
 See [DATA_EXPLORER.md](DATA_EXPLORER.md) for the visual interface.
@@ -62,6 +66,7 @@ The star schema follows dimensional modeling best practices:
 - **Dimension tables** contain descriptive attributes (who, what, when, where)
 - **Fact tables** contain measurable events and metrics
 - **Hash-based surrogate keys** link facts to dimensions (no hard PK/FK constraints)
+- **Integer keys** for date and time dimensions (efficient joins)
 - **Degenerate dimensions** for low-cardinality categoricals (message_type, block_type, error_type, entity_type, language) -- stored directly on fact tables instead of in separate lookup tables
 - **Heuristic classification** runs during ETL with zero external dependencies (no LLM, no API key)
 
@@ -74,8 +79,20 @@ The star schema follows dimensional modeling best practices:
 | Granular dimensions | 2 | dim_file, dim_session_chain |
 | Granular facts | 3 | fact_content_blocks, fact_code_blocks, fact_entity_mentions |
 | Agent/bridge/staging | 3 | fact_agent_delegations, bridge_session_file, stg_task_agent_map |
-| Optional (require pylate) | 2 | fact_session_embeddings, fact_tool_input_params |
+| Optional | 2 | fact_session_embeddings (requires pylate), fact_tool_input_params |
 | **Total** | **22 tables** | + 8 semantic views |
+
+## ETL Pipeline Order
+
+```
+create_star_schema(conn)       # DDL: create all 22 tables + 8 views
+run_star_schema_etl(conn, ...) # Per-session ETL (call once per session)
+finalize_star_schema(conn)     # Post-ETL: chains, delegations, file bridge, depths
+create_semantic_model(conn)    # Semantic views metadata for Data Explorer
+# Optional: EmbeddingPipeline(conn).embed_sessions(conn)
+```
+
+`finalize_star_schema()` must be called after all sessions are loaded. It populates cross-session tables: `dim_session_chain`, `fact_agent_delegations`, `bridge_session_file`, and `dim_session.depth_level`. Both `local` and `all` commands call it automatically.
 
 ---
 
@@ -91,13 +108,17 @@ One row per Claude Code session.
 | session_key | VARCHAR | PK (hash of session_id) |
 | session_id | VARCHAR | Original session UUID |
 | project_key | VARCHAR | FK to dim_project |
-| chain_key | VARCHAR | FK to dim_session_chain |
-| slug | VARCHAR | Session slug for chain grouping |
 | cwd | VARCHAR | Working directory |
+| git_branch | VARCHAR | Git branch at session start |
+| version | VARCHAR | Claude Code version |
+| slug | VARCHAR | Session slug for chain grouping |
+| first_timestamp | TIMESTAMP | First message time |
+| last_timestamp | TIMESTAMP | Last message time |
 | is_agent | BOOLEAN | Whether this is an agent session |
 | agent_id | VARCHAR | Agent identifier |
-| parent_session_id | VARCHAR | Parent session UUID if agent |
-| depth_level | INTEGER | Nesting depth (0=root) |
+| parent_session_key | VARCHAR | FK to dim_session (parent) |
+| depth_level | INTEGER | Nesting depth (0=root, populated by finalize) |
+| chain_key | VARCHAR | FK to dim_session_chain (populated by finalize) |
 | intent | VARCHAR | Heuristic: bug_fix, feature, refactor, debug, test, docs, review, explore |
 | complexity | VARCHAR | Heuristic: trivial, simple, moderate, complex |
 | outcome | VARCHAR | Heuristic: success, failure, unknown |
@@ -126,8 +147,8 @@ One row per model string.
 
 | Column | Type | Description |
 |--------|------|-------------|
-| model_key | VARCHAR | PK (hash of model_id) |
-| model_id | VARCHAR | Full model identifier |
+| model_key | VARCHAR | PK (hash of model_name) |
+| model_name | VARCHAR | Full model identifier |
 | model_family | VARCHAR | Family: opus, sonnet, haiku |
 
 #### dim_date
@@ -135,12 +156,15 @@ One row per calendar date.
 
 | Column | Type | Description |
 |--------|------|-------------|
-| date_key | VARCHAR | PK (hash of date) |
+| date_key | INTEGER | PK (YYYYMMDD integer) |
 | full_date | DATE | Calendar date |
 | year | INTEGER | Year |
 | month | INTEGER | Month (1-12) |
 | day | INTEGER | Day of month |
-| day_of_week | VARCHAR | Day name |
+| day_of_week | INTEGER | Day of week (0-6) |
+| day_name | VARCHAR | Day name (Monday, etc.) |
+| month_name | VARCHAR | Month name (January, etc.) |
+| quarter | INTEGER | Quarter (1-4) |
 | is_weekend | BOOLEAN | Weekend flag |
 | week_of_year | INTEGER | ISO week number |
 
@@ -149,7 +173,7 @@ One row per hour:minute.
 
 | Column | Type | Description |
 |--------|------|-------------|
-| time_key | VARCHAR | PK (hash of time) |
+| time_key | INTEGER | PK (HHMM integer) |
 | hour | INTEGER | Hour (0-23) |
 | minute | INTEGER | Minute (0-59) |
 | time_of_day | VARCHAR | morning, afternoon, evening, night |
@@ -161,81 +185,90 @@ One row per message.
 
 | Column | Type | Description |
 |--------|------|-------------|
-| message_key | VARCHAR | PK |
+| message_id | VARCHAR | PK |
 | session_key | VARCHAR | FK to dim_session |
-| model_key | VARCHAR | FK to dim_model |
-| date_key | VARCHAR | FK to dim_date |
-| time_key | VARCHAR | FK to dim_time |
+| project_key | VARCHAR | FK to dim_project |
 | message_type | VARCHAR | Degenerate: user, assistant, system |
-| message_index | INTEGER | Position in conversation |
-| conversation_depth | INTEGER | Turn count at this point |
-| content_text | VARCHAR | Message text content |
-| has_tool_use | BOOLEAN | Contains tool calls |
-| has_thinking | BOOLEAN | Contains thinking blocks |
-| is_sidechain | BOOLEAN | Part of agent sidechain |
+| model_key | VARCHAR | FK to dim_model |
+| date_key | INTEGER | FK to dim_date |
+| time_key | INTEGER | FK to dim_time |
+| parent_message_id | VARCHAR | Parent message UUID |
 | timestamp | TIMESTAMP | Message timestamp |
-| cache_creation_input_tokens | INTEGER | Token count (cache create) |
-| cache_read_input_tokens | INTEGER | Token count (cache read) |
-| input_tokens | INTEGER | Input token count |
-| output_tokens | INTEGER | Output token count |
+| content_length | INTEGER | Character count |
+| content_block_count | INTEGER | Number of content blocks |
+| has_tool_use | BOOLEAN | Contains tool calls |
+| has_tool_result | BOOLEAN | Contains tool results |
+| has_thinking | BOOLEAN | Contains thinking blocks |
+| word_count | INTEGER | Word count |
+| estimated_tokens | INTEGER | Estimated token count |
+| response_time_seconds | FLOAT | Time since previous message |
+| conversation_depth | INTEGER | Turn count at this point |
+| content_text | TEXT | Message text content |
+| content_json | JSON | Raw content block JSON |
+| is_sidechain | BOOLEAN | Part of agent sidechain |
 
 #### fact_tool_calls
 One row per tool invocation.
 
 | Column | Type | Description |
 |--------|------|-------------|
-| tool_call_key | VARCHAR | PK |
+| tool_call_id | VARCHAR | PK |
 | session_key | VARCHAR | FK to dim_session |
 | tool_key | VARCHAR | FK to dim_tool |
-| date_key | VARCHAR | FK to dim_date |
-| time_key | VARCHAR | FK to dim_time |
-| tool_use_id | VARCHAR | Tool use identifier |
-| tool_input | VARCHAR | Raw JSON input |
-| tool_result | VARCHAR | Result text |
-| is_error | BOOLEAN | Whether the call errored |
-| error_message | VARCHAR | Error text if failed |
-| duration_seconds | FLOAT | Time between invoke and result |
-| file_path | VARCHAR | Extracted file path (if applicable) |
-| command | VARCHAR | Extracted command (if applicable) |
-| pattern | VARCHAR | Extracted pattern (if applicable) |
-| query_text | VARCHAR | Extracted query (if applicable) |
+| date_key | INTEGER | FK to dim_date |
+| time_key | INTEGER | FK to dim_time |
+| invoke_message_id | VARCHAR | Message containing the tool_use block |
+| result_message_id | VARCHAR | Message containing the tool_result block |
 | timestamp | TIMESTAMP | Invocation timestamp |
+| input_char_count | INTEGER | Input character count |
+| output_char_count | INTEGER | Output character count |
+| is_error | BOOLEAN | Whether the call errored |
+| duration_seconds | FLOAT | Time between invoke and result |
+| input_json | JSON | Raw input JSON |
+| input_summary | TEXT | Summarized input (file path, command, etc.) |
+| output_text | TEXT | Result text (truncated) |
+| file_path | VARCHAR | Extracted file path (if applicable) |
+| command | VARCHAR | Extracted command (if Bash) |
+| pattern | VARCHAR | Extracted pattern (if Grep/Glob) |
+| query_text | VARCHAR | Extracted query (if applicable) |
 
 #### fact_session_summary
 One row per session with pre-aggregated metrics.
 
 | Column | Type | Description |
 |--------|------|-------------|
-| summary_key | VARCHAR | PK |
-| session_key | VARCHAR | FK to dim_session |
+| session_key | VARCHAR | PK, FK to dim_session |
 | project_key | VARCHAR | FK to dim_project |
-| date_key | VARCHAR | FK to dim_date |
-| time_key | VARCHAR | FK to dim_time |
+| date_key | INTEGER | FK to dim_date |
 | total_messages | INTEGER | Total message count |
 | user_messages | INTEGER | User message count |
 | assistant_messages | INTEGER | Assistant message count |
 | total_tool_calls | INTEGER | Tool call count |
-| total_input_tokens | BIGINT | Total input tokens |
-| total_output_tokens | BIGINT | Total output tokens |
+| total_thinking_blocks | INTEGER | Thinking block count |
+| total_content_blocks | INTEGER | Content block count |
 | total_errors | INTEGER | Error count |
 | unique_tools_used | INTEGER | Distinct tools used |
 | unique_files_touched | INTEGER | Distinct files touched |
 | max_conversation_depth | INTEGER | Maximum conversation depth |
-| total_estimated_tokens | BIGINT | Estimated total tokens |
-| duration_seconds | FLOAT | Session duration |
-| start_time | TIMESTAMP | First message time |
-| end_time | TIMESTAMP | Last message time |
+| total_estimated_tokens | INTEGER | Estimated total tokens |
+| session_duration_seconds | INTEGER | Session duration |
+| first_timestamp | TIMESTAMP | First message time |
+| last_timestamp | TIMESTAMP | Last message time |
 
 #### fact_file_operations
 One row per file touch.
 
 | Column | Type | Description |
 |--------|------|-------------|
-| operation_key | VARCHAR | PK |
+| file_operation_id | VARCHAR | PK |
+| tool_call_id | VARCHAR | FK to fact_tool_calls |
 | session_key | VARCHAR | FK to dim_session |
 | file_key | VARCHAR | FK to dim_file |
 | tool_key | VARCHAR | FK to dim_tool |
+| date_key | INTEGER | FK to dim_date |
+| time_key | INTEGER | FK to dim_time |
 | operation_type | VARCHAR | Degenerate: read, write, edit |
+| file_size_chars | INTEGER | Characters in file content |
 | timestamp | TIMESTAMP | Operation timestamp |
 
 #### fact_errors
@@ -243,11 +276,14 @@ One row per error occurrence.
 
 | Column | Type | Description |
 |--------|------|-------------|
-| error_key | VARCHAR | PK |
+| error_id | VARCHAR | PK |
+| tool_call_id | VARCHAR | FK to fact_tool_calls |
 | session_key | VARCHAR | FK to dim_session |
 | tool_key | VARCHAR | FK to dim_tool |
-| error_type | VARCHAR | Heuristic classification (permission_denied, file_not_found, syntax_error, timeout, import_error, tool_error) |
-| error_message | VARCHAR | Error text |
+| error_type | VARCHAR | Heuristic: permission_denied, file_not_found, syntax_error, timeout, import_error, tool_error |
+| date_key | INTEGER | FK to dim_date |
+| time_key | INTEGER | FK to dim_time |
+| error_message | TEXT | Error text |
 | timestamp | TIMESTAMP | Error timestamp |
 
 #### fact_tool_chain_steps
@@ -255,14 +291,16 @@ One row per step in a tool invocation chain.
 
 | Column | Type | Description |
 |--------|------|-------------|
-| chain_step_key | VARCHAR | PK |
+| chain_step_id | VARCHAR | PK |
 | session_key | VARCHAR | FK to dim_session |
+| chain_id | VARCHAR | Groups steps in the same chain |
+| tool_call_id | VARCHAR | FK to fact_tool_calls |
 | tool_key | VARCHAR | FK to dim_tool |
-| chain_position | INTEGER | Position in chain |
-| tool_use_id | VARCHAR | Tool use identifier |
+| step_position | INTEGER | Position in chain (0-based) |
+| prev_tool_key | VARCHAR | FK to dim_tool for previous step |
 | next_tool_key | VARCHAR | FK to dim_tool for next step |
 | is_error | BOOLEAN | Whether this step errored |
-| timestamp | TIMESTAMP | Step timestamp |
+| time_since_prev_seconds | FLOAT | Seconds since previous step |
 
 ### Granular Dimensions
 
@@ -275,19 +313,23 @@ One row per file path.
 | file_path | VARCHAR | Full file path |
 | file_name | VARCHAR | File name only |
 | file_extension | VARCHAR | Extension (e.g., ".py") |
-| directory | VARCHAR | Parent directory |
+| directory_path | VARCHAR | Parent directory |
 | language | VARCHAR | Inferred programming language |
 
 #### dim_session_chain
-One row per chain (group of resumed sessions sharing a slug).
+One row per chain (group of resumed sessions sharing a slug). Populated by `finalize_star_schema()`.
 
 | Column | Type | Description |
 |--------|------|-------------|
 | chain_key | VARCHAR | PK (hash of slug) |
 | slug | VARCHAR | Shared slug |
+| project_key | VARCHAR | FK to dim_project |
+| first_session_key | VARCHAR | Earliest session in chain |
+| last_session_key | VARCHAR | Latest session in chain |
 | session_count | INTEGER | Number of sessions in chain |
-| first_session_id | VARCHAR | Earliest session |
-| last_session_id | VARCHAR | Latest session |
+| first_timestamp | TIMESTAMP | Earliest session start |
+| last_timestamp | TIMESTAMP | Latest session end |
+| total_duration_seconds | INTEGER | Chain total duration |
 
 ### Granular Facts
 
@@ -296,70 +338,88 @@ One row per content block within a message.
 
 | Column | Type | Description |
 |--------|------|-------------|
-| content_block_key | VARCHAR | PK |
+| content_block_id | VARCHAR | PK |
+| message_id | VARCHAR | FK to fact_messages |
 | session_key | VARCHAR | FK to dim_session |
-| message_key | VARCHAR | FK to fact_messages |
 | block_type | VARCHAR | Degenerate: text, tool_use, tool_result, thinking, image |
+| date_key | INTEGER | FK to dim_date |
+| time_key | INTEGER | FK to dim_time |
 | block_index | INTEGER | Position within message |
-| content_text | VARCHAR | Block text |
-| timestamp | TIMESTAMP | Block timestamp |
+| content_length | INTEGER | Character count |
+| content_text | TEXT | Block text content |
+| content_json | JSON | Raw block JSON |
 
 #### fact_code_blocks
 One row per code block extracted from messages.
 
 | Column | Type | Description |
 |--------|------|-------------|
-| code_block_key | VARCHAR | PK |
+| code_block_id | VARCHAR | PK |
+| message_id | VARCHAR | FK to fact_messages |
 | session_key | VARCHAR | FK to dim_session |
 | language | VARCHAR | Degenerate: python, javascript, etc. |
-| code_text | VARCHAR | Code content |
+| date_key | INTEGER | FK to dim_date |
+| time_key | INTEGER | FK to dim_time |
+| block_index | INTEGER | Position within message |
 | line_count | INTEGER | Number of lines |
-| source_context | VARCHAR | Where the code appeared |
-| timestamp | TIMESTAMP | Extraction timestamp |
+| char_count | INTEGER | Character count |
+| code_text | TEXT | Code content |
 
 #### fact_entity_mentions
 One row per entity mention (file, function, class, etc.).
 
 | Column | Type | Description |
 |--------|------|-------------|
-| mention_key | VARCHAR | PK |
+| mention_id | VARCHAR | PK |
+| message_id | VARCHAR | FK to fact_messages |
 | session_key | VARCHAR | FK to dim_session |
 | entity_type | VARCHAR | Degenerate: file, function, class, variable, module, url, error, command |
-| entity_name | VARCHAR | Entity identifier |
-| mention_count | INTEGER | Occurrences |
-| timestamp | TIMESTAMP | First mention timestamp |
+| entity_text | VARCHAR | Raw entity text |
+| entity_normalized | VARCHAR | Normalized form |
+| context_snippet | TEXT | Surrounding text for context |
+| position_start | INTEGER | Start position in message |
+| position_end | INTEGER | End position in message |
 
 ### Agent/Bridge/Staging
 
 #### fact_agent_delegations
-One row per agent delegation (Task tool invocation).
+One row per agent delegation (Task tool invocation). Populated by `finalize_star_schema()`.
 
 | Column | Type | Description |
 |--------|------|-------------|
 | delegation_key | VARCHAR | PK |
 | parent_session_key | VARCHAR | FK to dim_session (parent) |
 | agent_session_key | VARCHAR | FK to dim_session (agent) |
-| tool_use_id | VARCHAR | Task tool_use_id |
-| subagent_type | VARCHAR | Agent type |
-| task_description | VARCHAR | Task description |
-| task_prompt | VARCHAR | Task prompt text |
+| task_tool_call_id | VARCHAR | FK to fact_tool_calls |
+| date_key | INTEGER | FK to dim_date |
+| time_key | INTEGER | FK to dim_time |
+| task_description | TEXT | Task description from tool input |
+| task_prompt | TEXT | Task prompt text |
+| subagent_type | VARCHAR | Agent type (e.g., "Explore", "Plan") |
+| agent_output | TEXT | Agent result text |
+| completion_status | VARCHAR | Status of delegation |
+| delegation_timestamp | TIMESTAMP | When agent was invoked |
+| completion_timestamp | TIMESTAMP | When agent completed |
 | match_confidence | FLOAT | Link confidence (1.0=deterministic, 0.5-0.8=heuristic) |
 | agent_tool_calls | INTEGER | Denormalized: tool calls in agent session |
 | agent_errors | INTEGER | Denormalized: errors in agent session |
-| agent_duration_seconds | FLOAT | Denormalized: agent session duration |
-| timestamp | TIMESTAMP | Delegation timestamp |
+| agent_duration_seconds | INTEGER | Denormalized: agent session duration |
 
 #### bridge_session_file
-One row per (session, file) pair for cross-session file tracking.
+One row per (session, file) pair for cross-session file tracking. Populated by `finalize_star_schema()`.
 
 | Column | Type | Description |
 |--------|------|-------------|
-| bridge_key | VARCHAR | PK |
+| session_file_key | VARCHAR | PK |
 | session_key | VARCHAR | FK to dim_session |
 | file_key | VARCHAR | FK to dim_file |
+| first_operation_timestamp | TIMESTAMP | Earliest operation on this file |
+| last_operation_timestamp | TIMESTAMP | Latest operation on this file |
+| operation_count | INTEGER | Total operations |
 | read_count | INTEGER | Read operations |
 | write_count | INTEGER | Write operations |
 | edit_count | INTEGER | Edit operations |
+| total_chars_written | INTEGER | Total characters written |
 
 #### stg_task_agent_map
 Staging table for deterministic agent delegation linking from progress records.
@@ -367,13 +427,13 @@ Staging table for deterministic agent delegation linking from progress records.
 | Column | Type | Description |
 |--------|------|-------------|
 | tool_use_id | VARCHAR | Task tool_use_id |
-| agent_session_id | VARCHAR | Agent session UUID |
+| agent_id | VARCHAR | Agent identifier |
 | session_key | VARCHAR | FK to dim_session (parent) |
 
-### Optional (require pylate)
+### Optional
 
 #### fact_session_embeddings
-ColBERT embeddings for semantic similarity. Requires `pip install ccutils[colbert]`.
+ColBERT embeddings for semantic similarity. Requires `uv add ccutils[colbert]`.
 
 | Column | Type | Description |
 |--------|------|-------------|
@@ -381,8 +441,8 @@ ColBERT embeddings for semantic similarity. Requires `pip install ccutils[colber
 | session_key | VARCHAR | FK to dim_session |
 | content_type | VARCHAR | What was embedded (default: first_user_message) |
 | embedding_model | VARCHAR | Model used |
-| embedding_dim | INTEGER | Embedding dimensions |
-| mean_embedding | FLOAT[] | Mean-pooled embedding vector |
+| embedding_dim | INTEGER | Embedding dimensions (64) |
+| mean_embedding | FLOAT[64] | Mean-pooled embedding vector |
 | embedded_at | TIMESTAMP | When embedding was computed |
 | content_hash | VARCHAR | MD5 of embedded content |
 
@@ -391,72 +451,300 @@ Key-value extraction of tool input parameters.
 
 | Column | Type | Description |
 |--------|------|-------------|
-| param_key | VARCHAR | PK |
-| tool_call_key | VARCHAR | FK to fact_tool_calls |
+| param_id | VARCHAR | PK |
+| tool_call_id | VARCHAR | FK to fact_tool_calls |
 | session_key | VARCHAR | FK to dim_session |
-| param_name | VARCHAR | Parameter name |
-| param_value | VARCHAR | Parameter value |
+| param_key | VARCHAR | Parameter name |
+| param_value_text | VARCHAR | Text value |
+| param_value_number | FLOAT | Numeric value |
+| param_value_bool | BOOLEAN | Boolean value |
 
 ---
 
 ## Semantic Views
 
-All views use the `semantic_` prefix and join facts with dimensions for easy querying.
+All views use the `semantic_` prefix and join facts with dimensions for easy querying. These are the fastest way to get started -- no manual JOINs required.
 
 ### semantic_sessions
 Sessions enriched with project info, summary metrics, and heuristic classifications.
 
 ```sql
-SELECT * FROM semantic_sessions WHERE intent = 'bug_fix' AND complexity = 'complex';
+-- Complex bug fixes in a specific project
+SELECT session_id, intent, complexity, total_tool_calls, total_errors,
+       session_duration_seconds
+FROM semantic_sessions
+WHERE intent = 'bug_fix' AND complexity = 'complex'
+ORDER BY total_errors DESC;
+
+-- Weekend warrior: sessions by day of week
+SELECT day_name, COUNT(*) as sessions, AVG(total_messages) as avg_msgs
+FROM semantic_sessions
+GROUP BY day_name ORDER BY sessions DESC;
 ```
 
 ### semantic_messages
 Messages with session, model, and time context.
 
 ```sql
-SELECT * FROM semantic_messages WHERE model_family = 'opus' AND time_of_day = 'night';
+-- Late-night opus sessions
+SELECT session_id, content_text, response_time_seconds
+FROM semantic_messages
+WHERE model_family = 'opus' AND time_of_day = 'night'
+ORDER BY response_time_seconds DESC LIMIT 20;
+
+-- Message volume by model family
+SELECT model_family, COUNT(*) as messages, AVG(word_count) as avg_words
+FROM semantic_messages
+WHERE message_type = 'assistant'
+GROUP BY model_family;
 ```
 
 ### semantic_tool_calls
 Tool calls with tool info, session context, and duration.
 
 ```sql
-SELECT * FROM semantic_tool_calls WHERE tool_category = 'file_edit' ORDER BY duration_seconds DESC;
+-- Slowest tool calls
+SELECT tool_name, tool_category, duration_seconds, file_path, command
+FROM semantic_tool_calls
+WHERE duration_seconds > 5
+ORDER BY duration_seconds DESC LIMIT 20;
+
+-- Error rate by tool category
+SELECT tool_category,
+       COUNT(*) as calls,
+       SUM(CASE WHEN is_error THEN 1 ELSE 0 END) as errors,
+       ROUND(100.0 * SUM(CASE WHEN is_error THEN 1 ELSE 0 END) / COUNT(*), 1) as error_pct
+FROM semantic_tool_calls
+GROUP BY tool_category ORDER BY error_pct DESC;
 ```
 
 ### semantic_file_operations
 File operations with file info, tool, and session context.
 
 ```sql
-SELECT * FROM semantic_file_operations WHERE language = 'python';
+-- Most-edited Python files
+SELECT file_path, COUNT(*) as operations,
+       SUM(file_size_chars) as total_chars
+FROM semantic_file_operations
+WHERE language = 'python' AND operation_type = 'edit'
+GROUP BY file_path ORDER BY operations DESC LIMIT 20;
 ```
 
 ### semantic_session_chains
 Session chains with aggregate metrics across all member sessions.
 
 ```sql
-SELECT * FROM semantic_session_chains WHERE session_count > 3;
+-- Long-running chains (3+ resumed sessions)
+SELECT slug, session_count, total_duration_seconds,
+       SUM(total_messages) as chain_messages, SUM(total_tool_calls) as chain_tools
+FROM semantic_session_chains
+GROUP BY slug, session_count, total_duration_seconds
+HAVING session_count > 2
+ORDER BY session_count DESC;
 ```
 
 ### semantic_agent_delegations
 Agent delegations with parent/agent session details and denormalized metrics.
 
 ```sql
-SELECT * FROM semantic_agent_delegations WHERE agent_errors > 0;
+-- Agent sessions that had errors
+SELECT parent_session_id, agent_session_id, subagent_type,
+       task_description, agent_tool_calls, agent_errors
+FROM semantic_agent_delegations
+WHERE agent_errors > 0
+ORDER BY agent_errors DESC;
 ```
 
 ### semantic_file_evolution
-Cross-session file activity aggregation.
+Cross-session file activity aggregation. Only includes files touched in 2+ sessions.
 
 ```sql
-SELECT * FROM semantic_file_evolution WHERE sessions_touched > 5 ORDER BY total_modifications DESC;
+-- Files with the most cross-session activity
+SELECT file_path, language, session_count,
+       total_operations, total_writes, total_edits
+FROM semantic_file_evolution
+ORDER BY session_count DESC LIMIT 20;
 ```
 
 ### semantic_tool_patterns
-Common tool sequences with frequency and error rates.
+Common tool sequences with frequency and error rates. Only includes patterns seen 2+ times.
 
 ```sql
-SELECT * FROM semantic_tool_patterns WHERE error_rate > 0.3 ORDER BY frequency DESC;
+-- Tool sequences most likely to produce errors
+SELECT tool_name, next_tool_name, frequency,
+       error_count, error_rate_pct, avg_time_between
+FROM semantic_tool_patterns
+WHERE error_rate_pct > 20
+ORDER BY frequency DESC;
+
+-- Most common tool pairs
+SELECT tool_name || ' -> ' || next_tool_name as pattern,
+       frequency, avg_time_between
+FROM semantic_tool_patterns
+ORDER BY frequency DESC LIMIT 15;
+```
+
+---
+
+## Example Queries (Raw Tables)
+
+These use direct table joins rather than semantic views, useful when you need columns the views don't expose.
+
+### Session Analysis
+
+```sql
+-- Sessions ranked by cost (estimated tokens)
+SELECT ds.session_id, dp.project_name, ds.intent, ds.complexity,
+       fss.total_estimated_tokens, fss.total_tool_calls,
+       fss.session_duration_seconds
+FROM fact_session_summary fss
+JOIN dim_session ds ON fss.session_key = ds.session_key
+JOIN dim_project dp ON fss.project_key = dp.project_key
+ORDER BY fss.total_estimated_tokens DESC LIMIT 20;
+
+-- Session complexity distribution by project
+SELECT dp.project_name, ds.complexity, COUNT(*) as sessions
+FROM dim_session ds
+JOIN dim_project dp ON ds.project_key = dp.project_key
+GROUP BY dp.project_name, ds.complexity
+ORDER BY dp.project_name, sessions DESC;
+
+-- Average session duration by intent
+SELECT ds.intent, COUNT(*) as sessions,
+       AVG(fss.session_duration_seconds) as avg_duration_sec,
+       AVG(fss.total_tool_calls) as avg_tools,
+       AVG(fss.total_errors) as avg_errors
+FROM fact_session_summary fss
+JOIN dim_session ds ON fss.session_key = ds.session_key
+GROUP BY ds.intent ORDER BY avg_duration_sec DESC;
+```
+
+### Tool Performance
+
+```sql
+-- Tool duration percentiles
+SELECT dt.tool_name,
+       COUNT(*) as calls,
+       ROUND(AVG(ftc.duration_seconds), 2) as avg_sec,
+       ROUND(PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY ftc.duration_seconds), 2) as p50,
+       ROUND(PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY ftc.duration_seconds), 2) as p95
+FROM fact_tool_calls ftc
+JOIN dim_tool dt ON ftc.tool_key = dt.tool_key
+WHERE ftc.duration_seconds IS NOT NULL
+GROUP BY dt.tool_name
+HAVING COUNT(*) >= 5
+ORDER BY avg_sec DESC;
+
+-- What commands are run most via Bash?
+SELECT ftc.command, COUNT(*) as uses,
+       SUM(CASE WHEN ftc.is_error THEN 1 ELSE 0 END) as errors
+FROM fact_tool_calls ftc
+JOIN dim_tool dt ON ftc.tool_key = dt.tool_key
+WHERE dt.tool_name = 'Bash' AND ftc.command IS NOT NULL
+GROUP BY ftc.command ORDER BY uses DESC LIMIT 20;
+```
+
+### Time Patterns
+
+```sql
+-- Activity heatmap: hour vs day of week
+SELECT dd.day_name, dt.hour, COUNT(*) as tool_calls
+FROM fact_tool_calls ftc
+JOIN dim_date dd ON ftc.date_key = dd.date_key
+JOIN dim_time dt ON ftc.time_key = dt.time_key
+GROUP BY dd.day_name, dt.hour
+ORDER BY dd.day_name, dt.hour;
+
+-- Weekend vs weekday productivity
+SELECT dd.is_weekend,
+       COUNT(DISTINCT fss.session_key) as sessions,
+       AVG(fss.total_messages) as avg_msgs,
+       AVG(fss.total_tool_calls) as avg_tools
+FROM fact_session_summary fss
+JOIN dim_date dd ON fss.date_key = dd.date_key
+GROUP BY dd.is_weekend;
+```
+
+### Error Analysis
+
+```sql
+-- Error types by tool
+SELECT dt.tool_name, fe.error_type, COUNT(*) as occurrences
+FROM fact_errors fe
+JOIN dim_tool dt ON fe.tool_key = dt.tool_key
+GROUP BY dt.tool_name, fe.error_type
+ORDER BY occurrences DESC LIMIT 20;
+
+-- Sessions with highest error rates
+SELECT ds.session_id, dp.project_name,
+       fss.total_errors, fss.total_tool_calls,
+       ROUND(100.0 * fss.total_errors / NULLIF(fss.total_tool_calls, 0), 1) as error_pct
+FROM fact_session_summary fss
+JOIN dim_session ds ON fss.session_key = ds.session_key
+JOIN dim_project dp ON fss.project_key = dp.project_key
+WHERE fss.total_tool_calls > 5
+ORDER BY error_pct DESC LIMIT 20;
+```
+
+### File Tracking
+
+```sql
+-- Files modified across the most sessions
+SELECT df.file_path, df.language,
+       COUNT(DISTINCT bsf.session_key) as sessions_touched,
+       SUM(bsf.edit_count) as total_edits,
+       SUM(bsf.total_chars_written) as total_chars
+FROM bridge_session_file bsf
+JOIN dim_file df ON bsf.file_key = df.file_key
+GROUP BY df.file_path, df.language
+ORDER BY sessions_touched DESC LIMIT 20;
+
+-- Most active directories
+SELECT df.directory_path, COUNT(DISTINCT df.file_key) as files,
+       COUNT(DISTINCT bsf.session_key) as sessions
+FROM bridge_session_file bsf
+JOIN dim_file df ON bsf.file_key = df.file_key
+GROUP BY df.directory_path
+ORDER BY files DESC LIMIT 15;
+```
+
+### Code Blocks
+
+```sql
+-- Languages used in code blocks
+SELECT language, COUNT(*) as blocks,
+       SUM(line_count) as total_lines, AVG(line_count) as avg_lines
+FROM fact_code_blocks
+WHERE language IS NOT NULL
+GROUP BY language ORDER BY blocks DESC;
+
+-- Largest code blocks written
+SELECT fcb.language, fcb.line_count, fcb.char_count,
+       ds.session_id, LEFT(fcb.code_text, 100) as preview
+FROM fact_code_blocks fcb
+JOIN dim_session ds ON fcb.session_key = ds.session_key
+ORDER BY fcb.char_count DESC LIMIT 10;
+```
+
+### Agent Delegations
+
+```sql
+-- Agent type usage and performance
+SELECT fad.subagent_type,
+       COUNT(*) as delegations,
+       AVG(fad.agent_tool_calls) as avg_tools,
+       AVG(fad.agent_errors) as avg_errors,
+       AVG(fad.agent_duration_seconds) as avg_duration
+FROM fact_agent_delegations fad
+GROUP BY fad.subagent_type ORDER BY delegations DESC;
+
+-- Deepest agent nesting
+SELECT ds.session_id, ds.depth_level, ds.agent_id,
+       dp.project_name
+FROM dim_session ds
+JOIN dim_project dp ON ds.project_key = dp.project_key
+WHERE ds.depth_level > 0
+ORDER BY ds.depth_level DESC;
 ```
 
 ---
@@ -539,8 +827,10 @@ Classified from error message text on `fact_errors`:
 | What kinds of sessions do I have? | `SELECT intent, COUNT(*) FROM dim_session GROUP BY intent` | Not possible |
 | Which tools are slowest? | `AVG(duration_seconds)` on fact_tool_calls | No duration tracking |
 | Most-touched file across sessions? | bridge_session_file aggregation | Per-session only |
-| Productive times of day? | dim_time join + fact_session_summary | No time dimension |
+| Productive times of day? | dim_time join on fact_messages | No time dimension |
 | Tool sequences that lead to errors? | fact_tool_chain_steps with next_tool_key + is_error | No chain tracking |
+| How deep is agent nesting? | dim_session.depth_level | No depth tracking |
+| What code was generated? | fact_code_blocks with language + line_count | No code extraction |
 | Find similar sessions? | fact_session_embeddings with pylate | No embeddings |
 
 ---
@@ -566,7 +856,7 @@ output_dir/
 
 ## Embedding Pipeline (Optional)
 
-Requires the `colbert` extra: `pip install ccutils[colbert]`
+Requires the `colbert` extra: `uv add ccutils[colbert]`
 
 ```python
 from ccutils import EmbeddingPipeline
@@ -580,5 +870,6 @@ pipeline.cluster_sessions(conn)   # cluster sessions by similarity -> dim_sessio
 CLI integration:
 
 ```bash
+ccutils local --format duckdb-star --embed -o ./analytics
 ccutils all --format duckdb-star --embed -o ./analytics
 ```
