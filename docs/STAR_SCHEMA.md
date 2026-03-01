@@ -466,7 +466,7 @@ SELECT * FROM semantic_tool_patterns WHERE error_rate > 0.3 ORDER BY frequency D
 The star schema runs heuristic classification during ETL with zero external dependencies. Results are stored on `dim_session`.
 
 ### Intent
-Classified from the first user message using keyword matching:
+Classified from the first user message using score-based keyword matching. Each intent's keywords are checked against the message; the intent with the most keyword hits wins. On ties, priority order is used as tiebreaker. This correctly handles compound messages like "implement new error handling" (feature, not bug_fix).
 
 | Intent | Triggers |
 |--------|----------|

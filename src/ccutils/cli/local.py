@@ -37,6 +37,7 @@ from ..schemas.star import (
     run_star_schema_etl,
 )
 from ..export import (
+    finalize_star_schema,
     generate_html,
     generate_multi_session_index,
 )
@@ -260,7 +261,7 @@ def local_cmd(
                     include_thinking=include_thinking,
                     private=private,
                 )
-            # Generate semantic model metadata after all ETL is complete
+            finalize_star_schema(conn)
             create_semantic_model(conn)
             conn.close()
 
@@ -304,6 +305,7 @@ def local_cmd(
                     include_thinking=include_thinking,
                     private=private,
                 )
+            finalize_star_schema(conn)
             create_semantic_model(conn)
             export_star_schema_to_json(conn, output_dir)
             conn.close()

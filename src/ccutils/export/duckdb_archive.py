@@ -2,7 +2,7 @@
 
 This module provides functions for creating DuckDB database archives
 from Claude Code session files. Supports both simple (4-table) and
-star (25+ table dimensional) schemas.
+star (22 tables + 8 views) schemas.
 """
 
 import os
@@ -37,7 +37,7 @@ def generate_duckdb_archive(
 ):
     """Generate DuckDB archive for all sessions.
 
-    Supports both simple (4-table) and star (25+ dimensional tables) schemas.
+    Supports both simple (4-table) and star (22 tables + 8 views) schemas.
     Uses a stage-and-load pattern for efficient batch processing:
     - Stage: Parse sessions (parallelizable with max_workers)
     - Load: Bulk insert in batches (batch_size sessions per transaction)
@@ -149,10 +149,7 @@ def generate_duckdb_archive(
 
     # Post-ETL batch processing for star schema
     if schema_type == "star":
-        _calculate_session_depths(conn)
-        _build_session_chains(conn)
-        _link_agent_delegations(conn)
-        _build_session_file_bridge(conn)
+        finalize_star_schema(conn)
 
     # Get final row counts
     final_row_count = _count_rows(conn, schema_type)
@@ -333,6 +330,28 @@ def generate_star_json_archive(
     stats["output_dir"] = output_dir
     stats["db_path"] = None  # No DuckDB file for JSON export
     return stats
+
+
+def finalize_star_schema(conn):
+    """Run post-ETL processing for star schema.
+
+    Must be called after all sessions have been loaded via run_star_schema_etl().
+    Populates cross-session tables that require all data to be present:
+    - dim_session.depth_level (parent-child depth calculation)
+    - dim_session_chain (session chain grouping by slug)
+    - fact_agent_delegations (agent-to-parent Task tool linking)
+    - bridge_session_file (cross-session file operation aggregation)
+
+    Safe to call multiple times -- clears derived tables before repopulating.
+    """
+    # Clear derived tables for idempotency
+    conn.execute("DELETE FROM bridge_session_file")
+    conn.execute("DELETE FROM fact_agent_delegations")
+
+    _calculate_session_depths(conn)
+    _build_session_chains(conn)
+    _link_agent_delegations(conn)
+    _build_session_file_bridge(conn)
 
 
 def _calculate_session_depths(conn):

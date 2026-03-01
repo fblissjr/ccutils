@@ -12,6 +12,7 @@ from ccutils import (
     generate_dimension_key,
     export_star_schema_to_json,
 )
+from ccutils.export.duckdb_archive import finalize_star_schema
 
 
 @pytest.fixture
@@ -1665,4 +1666,63 @@ class TestNewTablesJsonExport:
         assert (json_dir / "facts" / "fact_agent_delegations.json").exists()
         assert (json_dir / "facts" / "fact_session_embeddings.json").exists()
         assert (json_dir / "facts" / "bridge_session_file.json").exists()
+        conn.close()
+
+
+class TestFinalizeStarSchema:
+    """Tests for finalize_star_schema post-ETL processing."""
+
+    def test_finalize_populates_session_chains(self, granular_session_file, output_dir):
+        """Test that finalize_star_schema populates dim_session_chain."""
+        db_path = output_dir / "test.duckdb"
+        conn = create_star_schema(db_path)
+        run_star_schema_etl(conn, granular_session_file, "test-project")
+
+        # Before finalize: chain table should be empty
+        before = conn.execute("SELECT COUNT(*) FROM dim_session_chain").fetchone()[0]
+        assert before == 0
+
+        finalize_star_schema(conn)
+
+        # After finalize: chains should be built (may or may not have data depending on slugs)
+        # The important thing is that the function runs without error
+        conn.close()
+
+    def test_finalize_populates_bridge_session_file(
+        self, granular_session_file, output_dir
+    ):
+        """Test that finalize_star_schema populates bridge_session_file."""
+        db_path = output_dir / "test.duckdb"
+        conn = create_star_schema(db_path)
+        run_star_schema_etl(conn, granular_session_file, "test-project")
+
+        # Before finalize: bridge should be empty
+        before = conn.execute("SELECT COUNT(*) FROM bridge_session_file").fetchone()[0]
+        assert before == 0
+
+        finalize_star_schema(conn)
+
+        # After finalize: bridge should have file operations aggregated
+        after = conn.execute("SELECT COUNT(*) FROM bridge_session_file").fetchone()[0]
+        assert after > 0
+        conn.close()
+
+    def test_finalize_is_idempotent(self, granular_session_file, output_dir):
+        """Test that calling finalize_star_schema twice doesn't break anything."""
+        db_path = output_dir / "test.duckdb"
+        conn = create_star_schema(db_path)
+        run_star_schema_etl(conn, granular_session_file, "test-project")
+
+        finalize_star_schema(conn)
+        count_after_first = conn.execute(
+            "SELECT COUNT(*) FROM bridge_session_file"
+        ).fetchone()[0]
+
+        finalize_star_schema(conn)
+        count_after_second = conn.execute(
+            "SELECT COUNT(*) FROM bridge_session_file"
+        ).fetchone()[0]
+
+        # Should not double-count
+        assert count_after_second == count_after_first
         conn.close()

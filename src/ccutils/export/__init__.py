@@ -4,7 +4,11 @@ This package provides functions for exporting session data to various formats
 including DuckDB databases, JSON files, and HTML archives.
 """
 
-from .duckdb_archive import generate_duckdb_archive, generate_star_json_archive
+from .duckdb_archive import (
+    finalize_star_schema,
+    generate_duckdb_archive,
+    generate_star_json_archive,
+)
 from .html import (
     CSS,
     JS,
@@ -41,6 +45,7 @@ from .html import (
 
 __all__ = [
     # DuckDB archive
+    "finalize_star_schema",
     "generate_duckdb_archive",
     "generate_star_json_archive",
     # HTML generation
