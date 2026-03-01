@@ -10,6 +10,7 @@ All notable changes to this project will be documented in this file.
 - **CSS class mismatch**: `.index-item-number` in 3 templates renamed to `.index-item-num` to match stylesheet
 - **33 missing CSS definitions**: Added styles for `.file-tool-*`, `.edit-*`, `.tool-header`, `.tool-icon`, `.todo-header`, `.todo-items`, `.index-commit-*`, `.search-result-*`, `.search-modal`, `.disabled`, `.continuation`, `.commit-card-hash`, `.image-block`, `.date`
 - **Docstring privacy**: Removed hardcoded username from `metadata.py` docstring
+- **Star schema post-ETL wiring**: `local` command now runs post-ETL steps (session chains, agent delegations, file bridge, depth calculation) that were previously only called by the `all` command. New `finalize_star_schema()` public function.
 
 ### Changed
 - **Score-based intent classification**: `classify_intent()` now counts keyword matches per intent and returns the one with the most hits (ties broken by priority order). Fixes compound messages like "implement new error handling" being misclassified as `bug_fix` instead of `feature`
@@ -21,6 +22,9 @@ All notable changes to this project will be documented in this file.
 ### Internal
 - Split `test_star_schema.py` (3382 lines, 38 classes) into 4 focused files: `_ddl`, `_etl`, `_analytics`, `_advanced`
 - Shared fixtures extracted to `conftest.py`
+- README.md rewritten for accuracy (22 tables, heuristic classification, all CLI options)
+- Source docstrings updated from "25+ tables" to "22 tables + 8 views"
+- STAR_SCHEMA.md intent section updated to document score-based matching
 
 ## 0.10.0
 
