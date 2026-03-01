@@ -50,7 +50,7 @@ ccutils/
 │   │   │   ├── __init__.py
 │   │   │   ├── schema.py     # DDL for simple schema
 │   │   │   └── etl.py        # Simple schema ETL
-│   │   └── star/             # Star schema (25+ tables)
+│   │   └── star/             # Star schema (22 tables + 8 views)
 │   │       ├── __init__.py   # Public API exports
 │   │       ├── schema.py     # DDL for star schema tables
 │   │       ├── etl.py        # Main ETL pipeline
@@ -69,12 +69,22 @@ ccutils/
 │   │   └── js/{app,state,duckdb,query-builder,ui}.js
 │   └── templates/            # Jinja2 templates for HTML export
 │       ├── base.html
+│       ├── macros.html       # Shared rendering macros (tools, messages, etc.)
 │       ├── page.html
-│       └── star_schema_dashboard.html
+│       ├── master_index.html # Archive-level index
+│       ├── project_index.html
+│       ├── index.html        # Per-session index
+│       ├── search.js         # Per-session search (Jinja2 template)
+│       └── global_search.js  # Archive-wide search (Jinja2 template)
 ├── tests/
-│   ├── test_generate_html.py         # HTML generation tests
+│   ├── conftest.py                   # Shared fixtures (sample_session_file, etc.)
+│   ├── test_generate_html.py         # HTML generation + snapshot tests
+│   ├── test_heuristics.py            # Heuristic classification tests
 │   ├── test_metadata.py              # SessionMetadata extraction tests
-│   ├── test_star_schema.py           # Star schema & ETL tests
+│   ├── test_star_schema_ddl.py       # Star schema DDL + column validation
+│   ├── test_star_schema_etl.py       # Star schema ETL population
+│   ├── test_star_schema_analytics.py # Analytics queries + semantic model
+│   ├── test_star_schema_advanced.py  # Entities, chains, agents, embeddings
 │   ├── test_json_export.py           # JSON export tests
 │   └── test_all.py                   # Batch conversion tests
 ├── docs/
@@ -139,7 +149,7 @@ Run all tests:
 
 Run star schema tests specifically:
 
-    uv run pytest tests/test_star_schema.py -v
+    uv run pytest tests/test_star_schema_ddl.py tests/test_star_schema_etl.py tests/test_star_schema_analytics.py tests/test_star_schema_advanced.py -v
 
 Run with coverage:
 
@@ -150,7 +160,7 @@ Run with coverage:
 ### Adding a new dimension
 1. Add CREATE TABLE statement in `schemas/star/schema.py`
 2. Add ETL logic in `schemas/star/etl.py` to populate the dimension
-3. Write tests in `test_star_schema.py`
+3. Write tests in `test_star_schema_ddl.py` (schema) and `test_star_schema_etl.py` (ETL)
 4. Update docs/STAR_SCHEMA.md
 
 ### Adding a new fact table
@@ -159,3 +169,11 @@ Run with coverage:
 3. Add INSERT statement in ETL loading phase
 4. Write tests covering schema and ETL
 5. Update documentation
+
+## HTML Export Gotchas
+
+- CSS classes used in `templates/macros.html` MUST be defined in `static/transcript.css` -- Jinja2 won't warn
+- `--snapshot-update` needed after ANY change to `transcript.css` or `macros.html` (CSS is inlined in every page)
+- `global_search.js` and `search.js` are Jinja2 templates (not static files) -- rendered via `_jinja_env.get_template()`
+- Template variables render empty (not error) if not passed -- always test rendered HTML for expected content
+- Never use real usernames/paths in docstrings or test fixtures -- use `/Users/dev/workspace/project`
