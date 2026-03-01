@@ -96,11 +96,13 @@ ccutils/
 ## Key Components
 
 ### 1. CLI Commands
-- `local` - Two-phase session picker: select project(s) then session(s) with rich metadata tables. `--flat` for legacy single-list mode.
-- `web` - Import from Claude API
-- `json` - Convert specific JSON/JSONL files
-- `all` - Batch convert all sessions
+- `local` - Two-phase session picker: select project(s) then session(s) with rich metadata tables. `--flat` for legacy single-list mode. **default command**
+- `web` - Import from Claude API (auto-detects credentials from macOS keychain)
+- `json` - Convert specific JSON/JSONL files or URLs
+- `all` - Batch convert all sessions (supports parallel processing with `-j`)
 - `explore` - Launch Data Explorer web server
+- `import` - Import Claude.ai account exports (Settings > Privacy > Export)
+- `schema` - Inspect JSON structure without exposing content (safe to share publicly)
 
 ### 2. Export Formats
 Three output formats with two schema types:
@@ -113,8 +115,10 @@ Three output formats with two schema types:
 - `--format duckdb-star` - DuckDB database file
 - `--format json-star` - Directory with meta.json + dimensions/*.json + facts/*.json
 - Modular package at `schemas/star/` (schema, etl, semantic, extractors, heuristics, json_export, utils)
-- See `create_star_schema()`, `run_star_schema_etl()`, `export_star_schema_to_json()` functions
-- Heuristic classification (intent, complexity, outcome, domain) runs during ETL -- no LLM required
+- See `create_star_schema()`, `run_star_schema_etl()`, `finalize_star_schema()`, `export_star_schema_to_json()` functions
+- `finalize_star_schema(conn)` MUST be called after all ETL runs -- populates session chains, agent delegations, file bridge, depth levels
+- Heuristic classification (intent, complexity, outcome, domain, error_type) runs during ETL -- no LLM required
+- `--embed` flag available on both `local` and `all` commands (requires pylate optional dependency)
 - Visual explorer at `explorer/`
 - Full documentation in docs/STAR_SCHEMA.md and docs/DATA_EXPLORER.md
 
@@ -167,8 +171,18 @@ Run with coverage:
 1. Add CREATE TABLE statement in `schemas/star/schema.py`
 2. Add data collection logic in ETL extraction phase
 3. Add INSERT statement in ETL loading phase
-4. Write tests covering schema and ETL
-5. Update documentation
+4. If the table is derived from cross-session data (like `bridge_session_file`), add a post-ETL function in `duckdb_archive.py` and call it from `finalize_star_schema()`
+5. Write tests covering schema and ETL
+6. Update documentation
+
+### Star schema ETL pipeline order
+```
+create_star_schema(conn)       # DDL
+run_star_schema_etl(conn, ...) # Per-session ETL (call once per session)
+finalize_star_schema(conn)     # Post-ETL: chains, delegations, file bridge, depths
+create_semantic_model(conn)    # Semantic views metadata
+# Optional: EmbeddingPipeline(conn).embed_sessions(conn)
+```
 
 ## HTML Export Gotchas
 

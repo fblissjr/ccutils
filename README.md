@@ -57,6 +57,7 @@ ccutils local --format duckdb-star -o ./analytics # Star schema DuckDB
 ccutils local -p myproject                       # Filter by project name
 ccutils local --flat                             # Legacy single-list mode
 ccutils local --include-subagents                # Include agent sessions
+ccutils local --format duckdb-star --embed -o .  # With ColBERT embeddings
 ```
 
 ### all
@@ -206,11 +207,14 @@ ccutils local --format json-star -o ./star-export/
 --expand-chains            Show individual sessions in resumed chains
 -p, --project TEXT         Filter by project name
 
+# Embeddings (local and all commands, star schema only)
+--embed                    Run ColBERT embedding pipeline (requires pylate)
+--embed-model TEXT         Override default ColBERT model
+
 # Batch processing (all command)
 -j, --jobs N               Parallel workers (default: 1)
 --batch-size N             Sessions per transaction (default: 10)
 --no-search-index          Skip search index generation
---embed                    Run ColBERT embedding pipeline (requires pylate)
 ```
 
 ## Documentation
