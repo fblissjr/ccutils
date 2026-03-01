@@ -392,3 +392,53 @@ class TestNoHardConstraints:
         ).fetchone()
         assert result[0] == 1
         conn.close()
+
+
+class TestDimSessionMessageColumns:
+    """Tests for first_user_message and last_assistant_message on dim_session."""
+
+    def test_dim_session_has_first_user_message(self, output_dir):
+        """Test that dim_session has first_user_message column."""
+        db_path = output_dir / "test.duckdb"
+        conn = create_star_schema(db_path)
+
+        columns = conn.execute("DESCRIBE dim_session").fetchall()
+        column_names = [c[0] for c in columns]
+        assert "first_user_message" in column_names
+        conn.close()
+
+    def test_dim_session_has_last_assistant_message(self, output_dir):
+        """Test that dim_session has last_assistant_message column."""
+        db_path = output_dir / "test.duckdb"
+        conn = create_star_schema(db_path)
+
+        columns = conn.execute("DESCRIBE dim_session").fetchall()
+        column_names = [c[0] for c in columns]
+        assert "last_assistant_message" in column_names
+        conn.close()
+
+
+class TestProjectContextViews:
+    """Tests for semantic_project_context and semantic_project_files views."""
+
+    def test_creates_semantic_project_context_view(self, output_dir):
+        """Test that semantic_project_context view is created."""
+        db_path = output_dir / "test.duckdb"
+        conn = create_star_schema(db_path)
+
+        result = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='view' AND name='semantic_project_context'"
+        ).fetchone()
+        assert result is not None
+        conn.close()
+
+    def test_creates_semantic_project_files_view(self, output_dir):
+        """Test that semantic_project_files view is created."""
+        db_path = output_dir / "test.duckdb"
+        conn = create_star_schema(db_path)
+
+        result = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='view' AND name='semantic_project_files'"
+        ).fetchone()
+        assert result is not None
+        conn.close()

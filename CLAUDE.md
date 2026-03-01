@@ -50,7 +50,7 @@ ccutils/
 │   │   │   ├── __init__.py
 │   │   │   ├── schema.py     # DDL for simple schema
 │   │   │   └── etl.py        # Simple schema ETL
-│   │   └── star/             # Star schema (22 tables + 8 views)
+│   │   └── star/             # Star schema (22 tables + 10 views)
 │   │       ├── __init__.py   # Public API exports
 │   │       ├── schema.py     # DDL for star schema tables
 │   │       ├── etl.py        # Main ETL pipeline
@@ -111,7 +111,7 @@ Three output formats with two schema types:
 - `--format duckdb` - DuckDB database file
 - `--format json` - Single JSON file with nested tables
 
-**Star schema** (22 tables + 8 views):
+**Star schema** (22 tables + 10 views):
 - `--format duckdb-star` - DuckDB database file
 - `--format json-star` - Directory with meta.json + dimensions/*.json + facts/*.json
 - Modular package at `schemas/star/` (schema, etl, semantic, extractors, heuristics, json_export, utils)
@@ -124,7 +124,7 @@ Three output formats with two schema types:
 
 **Hybrid CLI**: Use `--schema simple|star` with `--format duckdb|json` for explicit control.
 
-### 3. Star Schema Tables (22 tables + 8 views)
+### 3. Star Schema Tables (22 tables + 10 views)
 
 **Core Dimensions (6):** dim_session (with intent/complexity/outcome/domain heuristics), dim_project, dim_tool, dim_model, dim_date, dim_time
 
@@ -136,7 +136,7 @@ Three output formats with two schema types:
 
 **Optional (2):** fact_session_embeddings (pylate), fact_tool_input_params
 
-**Views (8):** semantic_sessions, semantic_messages, semantic_tool_calls, semantic_file_operations, semantic_session_chains, semantic_agent_delegations, semantic_file_evolution, semantic_tool_patterns
+**Views (10):** semantic_sessions, semantic_messages, semantic_tool_calls, semantic_file_operations, semantic_session_chains, semantic_agent_delegations, semantic_file_evolution, semantic_tool_patterns, semantic_project_context, semantic_project_files
 
 ### 4. Heuristic Classification
 

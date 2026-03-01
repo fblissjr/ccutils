@@ -25,7 +25,7 @@ ccutils
 # Export to DuckDB for SQL analytics
 ccutils local --format duckdb -o ./archive
 
-# Export with star schema (22 tables + 8 views)
+# Export with star schema (22 tables + 10 views)
 ccutils local --format duckdb-star -o ./analytics
 
 # Launch visual data explorer
@@ -122,7 +122,7 @@ ccutils local --format duckdb -o ./archive
 
 Tables: `sessions`, `messages`, `tool_calls`, `thinking`
 
-#### Star Schema (22 tables + 8 views)
+#### Star Schema (22 tables + 10 views)
 
 ```bash
 ccutils local --format duckdb-star -o ./analytics
@@ -135,7 +135,7 @@ Dimensional model designed for analytics:
 - **5 granular tables:** files (with language detection), session chains, content blocks, code blocks, entity mentions
 - **3 agent/bridge tables:** agent delegations (with denormalized metrics), cross-session file tracking, task-agent mapping
 - **2 optional:** ColBERT embeddings, tool input parameters
-- **8 semantic views:** pre-joined views for common queries
+- **10 semantic views:** pre-joined views for common queries (includes project context and file tracking)
 
 #### Heuristic Classification
 
@@ -225,7 +225,7 @@ ccutils local --format json-star -o ./star-export/
 ## Development
 
 ```bash
-uv run pytest              # Run tests (~660 passing)
+uv run pytest              # Run tests (~672 passing)
 uv run ccutils --help      # Run development version
 uv run black .             # Format code
 uv run pytest --cov=ccutils  # Coverage

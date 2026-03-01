@@ -2,6 +2,18 @@
 
 All notable changes to this project will be documented in this file.
 
+## 0.10.2
+
+### Added
+- **Project context views**: Two new semantic views for catching up on project state
+  - `semantic_project_context`: sessions with first/last messages, intent, metrics -- ordered by recency
+  - `semantic_project_files`: file activity aggregated by project with session count, read/write/edit totals
+- **Session message columns**: `first_user_message` and `last_assistant_message` persisted on `dim_session` (truncated to 500 chars) -- previously extracted during ETL but discarded after heuristic classification
+
+### Changed
+- View count updated from 8 to 10 across all docs and docstrings
+- Embedding pipeline docs updated to honestly describe current status (infrastructure for future semantic search, no built-in query consumer yet)
+
 ## 0.10.1
 
 ### Fixed

@@ -1,6 +1,6 @@
 """Star schema DDL - creates the dimensional model tables.
 
-22 tables + 8 views. Tiny lookup dimensions (message_type, content_block_type,
+22 tables + 10 views. Tiny lookup dimensions (message_type, content_block_type,
 error_type, entity_type, programming_language) replaced by degenerate VARCHAR
 columns on fact tables. LLM enrichment tables removed entirely -- replaced by
 heuristic classification columns on dim_session.
@@ -19,7 +19,7 @@ def create_star_schema(db_path):
     - 3 granular facts (content_blocks, code_blocks, entity_mentions)
     - 3 agent/bridge/staging tables
     - 2 optional tables (embeddings, tool_input_params)
-    - 8 semantic views
+    - 10 semantic views
 
     No hard PK/FK constraints - relies on soft business rules.
 
@@ -99,7 +99,9 @@ def create_star_schema(db_path):
             intent VARCHAR,
             complexity VARCHAR,
             outcome VARCHAR,
-            domain VARCHAR
+            domain VARCHAR,
+            first_user_message VARCHAR,
+            last_assistant_message VARCHAR
         )
     """
     )
@@ -435,7 +437,7 @@ def create_star_schema(db_path):
     )
 
     # =========================================================================
-    # Semantic Views (8)
+    # Semantic Views (10)
     # =========================================================================
 
     conn.execute(
@@ -660,6 +662,57 @@ def create_star_schema(db_path):
         GROUP BY dt1.tool_name, dt2.tool_name
         HAVING COUNT(*) >= 2
         ORDER BY frequency DESC
+    """
+    )
+
+    conn.execute(
+        """
+        CREATE OR REPLACE VIEW semantic_project_context AS
+        SELECT
+            ds.session_id,
+            dp.project_name,
+            ds.slug AS title,
+            ds.first_timestamp AS created_at,
+            ds.git_branch,
+            ds.intent,
+            ds.complexity,
+            ds.outcome,
+            ds.domain,
+            ds.first_user_message,
+            ds.last_assistant_message,
+            fss.total_messages,
+            fss.user_messages,
+            fss.assistant_messages,
+            fss.total_tool_calls,
+            fss.unique_tools_used,
+            fss.total_errors,
+            fss.total_estimated_tokens
+        FROM dim_session ds
+        JOIN dim_project dp ON ds.project_key = dp.project_key
+        LEFT JOIN fact_session_summary fss ON ds.session_key = fss.session_key
+        ORDER BY ds.first_timestamp DESC
+    """
+    )
+
+    conn.execute(
+        """
+        CREATE OR REPLACE VIEW semantic_project_files AS
+        SELECT
+            dp.project_name,
+            df.file_path,
+            df.file_extension,
+            df.language,
+            COUNT(DISTINCT ds.session_id) AS sessions_touching_file,
+            SUM(bsf.read_count) AS total_reads,
+            SUM(bsf.write_count) AS total_writes,
+            SUM(bsf.edit_count) AS total_edits,
+            MAX(ds.first_timestamp) AS last_touched
+        FROM bridge_session_file bsf
+        JOIN dim_file df ON bsf.file_key = df.file_key
+        JOIN dim_session ds ON bsf.session_key = ds.session_key
+        JOIN dim_project dp ON ds.project_key = dp.project_key
+        GROUP BY dp.project_name, df.file_path, df.file_extension, df.language
+        ORDER BY sessions_touching_file DESC
     """
     )
 

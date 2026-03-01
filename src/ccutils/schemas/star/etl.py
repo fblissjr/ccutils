@@ -780,8 +780,9 @@ def _load_dimensions(
                (session_key, session_id, project_key, cwd, git_branch, version,
                 slug, first_timestamp, last_timestamp, is_agent, agent_id,
                 parent_session_key, depth_level, chain_key,
-                intent, complexity, outcome, domain)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                intent, complexity, outcome, domain,
+                first_user_message, last_assistant_message)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             [
                 session_key,
                 session_id,
@@ -801,6 +802,12 @@ def _load_dimensions(
                 complexity,
                 outcome,
                 domain,
+                result.first_user_message[:500] if result.first_user_message else None,
+                (
+                    result.last_assistant_message[:500]
+                    if result.last_assistant_message
+                    else None
+                ),
             ],
         )
 

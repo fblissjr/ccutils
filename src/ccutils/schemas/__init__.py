@@ -2,7 +2,7 @@
 
 This package provides two schemas:
 - simple: 4 tables (sessions, messages, tool_calls, thinking)
-- star: 22 tables + 8 views for dimensional analytics
+- star: 22 tables + 10 views for dimensional analytics
 
 Use resolve_schema_format() to handle CLI schema/format combinations.
 """

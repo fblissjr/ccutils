@@ -2,7 +2,7 @@
 
 This module provides functions for creating DuckDB database archives
 from Claude Code session files. Supports both simple (4-table) and
-star (22 tables + 8 views) schemas.
+star (22 tables + 10 views) schemas.
 """
 
 import os
@@ -37,7 +37,7 @@ def generate_duckdb_archive(
 ):
     """Generate DuckDB archive for all sessions.
 
-    Supports both simple (4-table) and star (22 tables + 8 views) schemas.
+    Supports both simple (4-table) and star (22 tables + 10 views) schemas.
     Uses a stage-and-load pattern for efficient batch processing:
     - Stage: Parse sessions (parallelizable with max_workers)
     - Load: Bulk insert in batches (batch_size sessions per transaction)

@@ -2,7 +2,7 @@
 
 Last updated: 2026-03-01
 
-A dimensional data model for Claude Code transcript analytics with 22 tables and 8 views. Designed for questions the simple 4-table schema cannot answer: intent classification, tool duration analysis, cross-session file tracking, time-of-day patterns, tool sequence analysis, and semantic similarity clustering.
+A dimensional data model for Claude Code transcript analytics with 22 tables and 10 views. Designed for questions the simple 4-table schema cannot answer: intent classification, tool duration analysis, cross-session file tracking, time-of-day patterns, tool sequence analysis, project context recovery, and semantic similarity clustering.
 
 ## Quick Start (CLI)
 
@@ -80,12 +80,12 @@ The star schema follows dimensional modeling best practices:
 | Granular facts | 3 | fact_content_blocks, fact_code_blocks, fact_entity_mentions |
 | Agent/bridge/staging | 3 | fact_agent_delegations, bridge_session_file, stg_task_agent_map |
 | Optional | 2 | fact_session_embeddings (requires pylate), fact_tool_input_params |
-| **Total** | **22 tables** | + 8 semantic views |
+| **Total** | **22 tables** | + 10 semantic views |
 
 ## ETL Pipeline Order
 
 ```
-create_star_schema(conn)       # DDL: create all 22 tables + 8 views
+create_star_schema(conn)       # DDL: create all 22 tables + 10 views
 run_star_schema_etl(conn, ...) # Per-session ETL (call once per session)
 finalize_star_schema(conn)     # Post-ETL: chains, delegations, file bridge, depths
 create_semantic_model(conn)    # Semantic views metadata for Data Explorer
@@ -123,6 +123,8 @@ One row per Claude Code session.
 | complexity | VARCHAR | Heuristic: trivial, simple, moderate, complex |
 | outcome | VARCHAR | Heuristic: success, failure, unknown |
 | domain | VARCHAR | Heuristic: web, backend, data, devops, docs, mixed, unknown |
+| first_user_message | VARCHAR | First user message text (truncated to 500 chars) |
+| last_assistant_message | VARCHAR | Last assistant message text (truncated to 500 chars) |
 
 #### dim_project
 One row per project (working directory).
@@ -584,6 +586,42 @@ FROM semantic_tool_patterns
 ORDER BY frequency DESC LIMIT 15;
 ```
 
+### semantic_project_context
+Sessions enriched with project info, first/last messages, and summary metrics. Designed for catching up on a project -- what sessions happened, what was worked on, what the user asked for.
+
+```sql
+-- Get up to speed on a project (most recent sessions first)
+SELECT session_id, project_name, intent, complexity, outcome,
+       first_user_message, last_assistant_message,
+       total_messages, total_tool_calls, total_errors
+FROM semantic_project_context
+WHERE project_name = 'my-project'
+LIMIT 10;
+
+-- What was the last thing worked on?
+SELECT project_name, first_user_message, last_assistant_message,
+       created_at, intent
+FROM semantic_project_context
+LIMIT 1;
+```
+
+### semantic_project_files
+File activity aggregated by project. Shows which files matter most and when they were last touched. Requires `finalize_star_schema()` to populate `bridge_session_file`.
+
+```sql
+-- Most important files in a project (by session count)
+SELECT file_path, language, sessions_touching_file,
+       total_reads, total_writes, total_edits, last_touched
+FROM semantic_project_files
+WHERE project_name = 'my-project'
+ORDER BY sessions_touching_file DESC LIMIT 20;
+
+-- Recently touched files across all projects
+SELECT project_name, file_path, last_touched
+FROM semantic_project_files
+ORDER BY last_touched DESC LIMIT 20;
+```
+
 ---
 
 ## Example Queries (Raw Tables)
@@ -858,13 +896,19 @@ output_dir/
 
 Requires the `colbert` extra: `uv add ccutils[colbert]`
 
+The `--embed` flag runs a ColBERT pipeline that stores 64-dimensional mean-pooled vectors in `fact_session_embeddings`:
+
+- `embed_sessions(conn)` -- embeds each session's first user message using `mxbai-edge-colbert-v0-32m`
+- `match_delegations(conn)` -- re-scores agent delegation confidence using semantic similarity
+- `cluster_sessions(conn)` -- KMeans clustering of sessions by embedding similarity
+
 ```python
 from ccutils import EmbeddingPipeline
 
-pipeline = EmbeddingPipeline()  # lazy model loading (mxbai-edge-colbert-v0-32m)
-pipeline.embed_sessions(conn)   # embed first user message per session
-pipeline.match_delegations(conn)  # re-score agent delegation confidence
-pipeline.cluster_sessions(conn)   # cluster sessions by similarity -> dim_session.domain
+pipeline = EmbeddingPipeline()  # lazy model loading
+pipeline.embed_sessions(conn)
+pipeline.match_delegations(conn)
+pipeline.cluster_sessions(conn)
 ```
 
 CLI integration:
@@ -873,3 +917,5 @@ CLI integration:
 ccutils local --format duckdb-star --embed -o ./analytics
 ccutils all --format duckdb-star --embed -o ./analytics
 ```
+
+**Current status:** The vectors are stored and queryable via raw SQL but there is no built-in search interface or downstream query consumer. This is infrastructure for future semantic search (similar session lookup, project clustering). To use the embeddings today, query `fact_session_embeddings` directly.

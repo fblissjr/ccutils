@@ -789,6 +789,67 @@ class TestSessionHeuristicColumns:
         assert result[0] is not None
         conn.close()
 
+    def test_first_user_message_populated(self, sample_session_file, output_dir):
+        """Test that first_user_message is populated from the first user message."""
+        db_path = output_dir / "test.duckdb"
+        conn = create_star_schema(db_path)
+        run_star_schema_etl(conn, sample_session_file, "test-project")
+
+        result = conn.execute("SELECT first_user_message FROM dim_session").fetchone()
+        assert result is not None
+        assert result[0] is not None
+        assert "hello world" in result[0].lower()
+        conn.close()
+
+    def test_last_assistant_message_populated(self, sample_session_file, output_dir):
+        """Test that last_assistant_message is populated from the last assistant message."""
+        db_path = output_dir / "test.duckdb"
+        conn = create_star_schema(db_path)
+        run_star_schema_etl(conn, sample_session_file, "test-project")
+
+        result = conn.execute(
+            "SELECT last_assistant_message FROM dim_session"
+        ).fetchone()
+        assert result is not None
+        assert result[0] is not None
+        # Last assistant message is "Done! I've created hello.py..."
+        assert "hello.py" in result[0].lower()
+        conn.close()
+
+    def test_message_columns_truncated_to_500_chars(self, output_dir):
+        """Test that message columns are truncated to 500 chars."""
+        import tempfile
+
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".jsonl", delete=False) as f:
+            f.write(
+                json.dumps(
+                    {
+                        "type": "user",
+                        "uuid": "user-001",
+                        "parentUuid": None,
+                        "sessionId": "session-trunc",
+                        "timestamp": "2025-01-15T10:00:00.000Z",
+                        "cwd": "/home/user/project",
+                        "message": {
+                            "role": "user",
+                            "content": "x" * 1000,
+                        },
+                    }
+                )
+                + "\n"
+            )
+            f.flush()
+            session_path = Path(f.name)
+
+        db_path = output_dir / "test.duckdb"
+        conn = create_star_schema(db_path)
+        run_star_schema_etl(conn, session_path, "test-project")
+
+        result = conn.execute("SELECT first_user_message FROM dim_session").fetchone()
+        assert result is not None
+        assert len(result[0]) == 500
+        conn.close()
+
     def test_dim_session_no_hierarchy_keys(self, output_dir):
         """Test that dim_session no longer has goal_key, task_key, attempt_key."""
         db_path = output_dir / "test.duckdb"
