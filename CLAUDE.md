@@ -126,7 +126,7 @@ Three output formats with two schema types:
 
 ### 3. Star Schema Tables (22 tables + 10 views)
 
-**Core Dimensions (6):** dim_session (with intent/complexity/outcome/domain heuristics), dim_project, dim_tool, dim_model, dim_date, dim_time
+**Core Dimensions (6):** dim_session (with intent/complexity/outcome/domain heuristics + first_user_message/last_assistant_message), dim_project, dim_tool, dim_model, dim_date, dim_time
 
 **Core Facts (6):** fact_messages, fact_tool_calls (with duration_seconds), fact_session_summary (with total_errors, unique_tools_used, etc.), fact_file_operations, fact_errors (with heuristic error_type), fact_tool_chain_steps (with next_tool_key, is_error)
 

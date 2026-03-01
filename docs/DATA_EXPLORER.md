@@ -19,9 +19,11 @@ ccutils explore
 
 ```python
 from ccutils import create_star_schema, run_star_schema_etl
+from ccutils.export import finalize_star_schema
 
 conn = create_star_schema("analytics.duckdb")
 run_star_schema_etl(conn, "session.jsonl", project_name="My Project")
+finalize_star_schema(conn)  # populates cross-session tables
 conn.close()
 ```
 

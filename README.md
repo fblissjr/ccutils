@@ -171,6 +171,11 @@ SELECT df.file_path, SUM(bsf.write_count + bsf.edit_count) as modifications
 FROM bridge_session_file bsf
 JOIN dim_file df ON bsf.file_key = df.file_key
 GROUP BY df.file_path ORDER BY modifications DESC LIMIT 20;
+
+-- Catch up on a project (what was worked on recently)
+SELECT first_user_message, last_assistant_message, intent, created_at
+FROM semantic_project_context
+WHERE project_name = 'my-project' LIMIT 5;
 ```
 
 ### JSON Export

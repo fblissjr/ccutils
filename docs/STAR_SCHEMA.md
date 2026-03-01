@@ -870,6 +870,8 @@ Classified from error message text on `fact_errors`:
 | How deep is agent nesting? | dim_session.depth_level | No depth tracking |
 | What code was generated? | fact_code_blocks with language + line_count | No code extraction |
 | Find similar sessions? | fact_session_embeddings with pylate | No embeddings |
+| Catch up on a project? | semantic_project_context with first/last messages | Not possible |
+| Which files matter most? | semantic_project_files with session counts | Per-session only |
 
 ---
 
