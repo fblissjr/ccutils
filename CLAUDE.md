@@ -112,11 +112,13 @@ Three output formats with two schema types:
 - See `create_star_schema()`, `run_star_schema_etl()`, `finalize_star_schema()`, `export_star_schema_to_json()` functions
 - `finalize_star_schema(conn)` MUST be called after all ETL runs -- populates session chains, agent delegations, file bridge, depth levels, and `_incl_agents` metric rollup
 - Heuristic classification (intent, complexity, outcome, domain, error_type) runs during ETL -- no LLM required
-- `--embed` flag available on both `local` and `all` commands (requires pylate optional dependency)
+- `--embed [MODEL]` flag available on both `local` and `all` commands (requires pylate optional dependency)
 - Visual explorer at `explorer/`
 - Full documentation in docs/STAR_SCHEMA.md and docs/DATA_EXPLORER.md
 
-**Hybrid CLI**: Use `--schema simple|star` with `--format duckdb|json` for explicit control.
+**Schema inference**: Schema type is auto-inferred from `--format` -- `duckdb-star` and `json-star` use star schema, plain `duckdb` and `json` use simple schema.
+
+**Defaults**: Thinking blocks and subagents/agents are included by default. Use `--no-thinking`, `--no-subagents` (local), or `--no-agents` (all) to exclude them.
 
 ### 3. Star Schema Tables (22 tables + 10 views)
 

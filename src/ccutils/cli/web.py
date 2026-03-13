@@ -1,6 +1,5 @@
 """Web session import command."""
 
-import json
 import tempfile
 from pathlib import Path
 
@@ -26,25 +25,13 @@ from .utils import resolve_credentials, maybe_open_browser
     type=click.Path(),
     help="Output directory. If not specified, writes to temp dir and opens in browser.",
 )
-@click.option(
-    "-a",
-    "--output-auto",
-    is_flag=True,
-    help="Auto-name output subdirectory based on session ID (uses -o as parent, or current dir).",
-)
 @click.option("--token", help="API access token (auto-detected from keychain on macOS)")
 @click.option(
     "--org-uuid", help="Organization UUID (auto-detected from ~/.claude.json)"
 )
 @click.option(
     "--repo",
-    help="GitHub repo (owner/name). Filters session list and sets default for commit links.",
-)
-@click.option(
-    "--json",
-    "include_json",
-    is_flag=True,
-    help="Include the JSON session data in the output directory.",
+    help="GitHub repo (owner/name). Filters session list.",
 )
 @click.option(
     "--open",
@@ -70,11 +57,9 @@ from .utils import resolve_credentials, maybe_open_browser
 def web_cmd(
     session_id,
     output,
-    output_auto,
     token,
     org_uuid,
     repo,
-    include_json,
     open_browser,
     debug,
     limit,
@@ -163,13 +148,8 @@ def web_cmd(
         raise click.ClickException(f"Network error: {e}")
 
     # Determine output directory and whether to open browser
-    # If no -o specified, use temp dir and open browser by default
-    auto_open = output is None and not output_auto
-    if output_auto:
-        # Use -o as parent dir (or current dir), with auto-named subdirectory
-        parent_dir = Path(output) if output else Path(".")
-        output = parent_dir / session_id
-    elif output is None:
+    auto_open = output is None
+    if output is None:
         output = Path(tempfile.gettempdir()) / f"claude-session-{session_id}"
 
     output = Path(output)
@@ -183,15 +163,6 @@ def web_cmd(
 
     # Show output directory
     click.echo(f"Output: {output.resolve()}")
-
-    # Save JSON session data if requested
-    if include_json:
-        output.mkdir(exist_ok=True)
-        json_dest = output / f"{session_id}.json"
-        with open(json_dest, "w") as f:
-            json.dump(session_data, f, indent=2)
-        json_size_kb = json_dest.stat().st_size / 1024
-        click.echo(f"JSON: {json_dest} ({json_size_kb:.1f} KB)")
 
     if open_browser or auto_open:
         maybe_open_browser(output)

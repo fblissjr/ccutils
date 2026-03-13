@@ -432,8 +432,8 @@ class TestAllCommand:
         assert result.exit_code == 0
         assert (output_dir / "index.html").exists()
 
-    def test_all_include_agents_flag(self, mock_projects_dir, output_dir):
-        """Test --include-agents flag includes agent sessions."""
+    def test_all_includes_agents_by_default(self, mock_projects_dir, output_dir):
+        """Test that agent sessions are included by default."""
         runner = CliRunner()
         result = runner.invoke(
             cli,
@@ -443,15 +443,35 @@ class TestAllCommand:
                 str(mock_projects_dir),
                 "--output",
                 str(output_dir),
-                "--include-agents",
             ],
         )
 
         assert result.exit_code == 0
-        # Should have agent directory in project-a
+        # Should have agent directory in project-a (agents included by default)
         project_a_dir = output_dir / "project-a"
         session_dirs = [d for d in project_a_dir.iterdir() if d.is_dir()]
         assert len(session_dirs) == 3  # 2 regular + 1 agent
+
+    def test_all_no_agents_flag(self, mock_projects_dir, output_dir):
+        """Test --no-agents flag excludes agent sessions."""
+        runner = CliRunner()
+        result = runner.invoke(
+            cli,
+            [
+                "all",
+                "--source",
+                str(mock_projects_dir),
+                "--output",
+                str(output_dir),
+                "--no-agents",
+            ],
+        )
+
+        assert result.exit_code == 0
+        # Should NOT have agent directory in project-a
+        project_a_dir = output_dir / "project-a"
+        session_dirs = [d for d in project_a_dir.iterdir() if d.is_dir()]
+        assert len(session_dirs) == 2  # 2 regular, agent excluded
 
     def test_all_quiet_flag(self, mock_projects_dir, output_dir):
         """Test --quiet flag suppresses non-error output."""

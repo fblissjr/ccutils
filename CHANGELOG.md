@@ -2,6 +2,22 @@
 
 All notable changes to this project will be documented in this file.
 
+## 0.12.0
+
+### Changed
+- **CLI simplification**: Opinionated defaults, removed dead weight, grouped options
+  - Thinking blocks and subagents/agents now **included by default** -- use `--no-thinking`, `--no-subagents` (local), `--no-agents` (all) to opt out
+  - Removed `--schema` flag (auto-inferred from `--format`)
+  - Removed `--json` flag (include JSONL in output) from `local`, `web`, `convert`
+  - Removed `-a`/`--output-auto` from `local`, `web`, `convert`
+  - Removed `--repo` from `local` and `convert` (kept on `web` for session filtering)
+  - Removed `--limit` from `local` (hardcoded to 100)
+  - Merged `--embed` + `--embed-model` into single `--embed [MODEL]` flag
+  - Options grouped into sections (Output, Selection, Content, Processing, Embeddings) via `click-option-group`
+
+### Added
+- `click-option-group` dependency for grouped CLI help output
+
 ## 0.11.0
 
 ### Added

@@ -1,6 +1,6 @@
 [project]
 name = "ccutils"
-version = "0.11.0"
+version = "0.12.0"
 description = "Claude utilities for session transcripts, star schema analytics, data exploration, and probably more as it comes up as a use case in my day to day"
 readme = "README.md"
 license = "Apache-2.0"
@@ -14,6 +14,7 @@ requires-python = ">=3.10"
 dependencies = [
     "click",
     "click-default-group",
+    "click-option-group>=0.5.9",
     "duckdb",
     "httpx",
     "jinja2",

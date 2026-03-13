@@ -30,23 +30,6 @@ class TestConvertCommandHTML:
         assert result.exit_code != 0
         assert "not found" in result.output.lower() or "Error" in result.output
 
-    def test_include_json_flag(self, sample_session_file, output_dir):
-        """--json flag copies original JSON to output."""
-        runner = CliRunner()
-        result = runner.invoke(
-            cli,
-            [
-                "convert",
-                str(sample_session_file),
-                "-o",
-                str(output_dir),
-                "--json",
-            ],
-        )
-
-        assert result.exit_code == 0
-        assert "JSON:" in result.output
-
     def test_private_flag(self, sample_session_file, output_dir):
         """--private flag is accepted."""
         runner = CliRunner()
@@ -107,8 +90,8 @@ class TestConvertCommandDuckDB:
         assert "Exported to" in result.output
         assert db_path.exists()
 
-    def test_include_thinking_flag(self, sample_session_file, output_dir):
-        """--include-thinking flag is accepted for DuckDB."""
+    def test_thinking_included_by_default(self, sample_session_file, output_dir):
+        """Thinking blocks are included by default in DuckDB export."""
         db_path = output_dir / "test.duckdb"
         runner = CliRunner()
         result = runner.invoke(
@@ -120,7 +103,25 @@ class TestConvertCommandDuckDB:
                 "duckdb",
                 "-o",
                 str(db_path),
-                "--include-thinking",
+            ],
+        )
+
+        assert result.exit_code == 0
+
+    def test_no_thinking_flag(self, sample_session_file, output_dir):
+        """--no-thinking flag is accepted for DuckDB."""
+        db_path = output_dir / "test.duckdb"
+        runner = CliRunner()
+        result = runner.invoke(
+            cli,
+            [
+                "convert",
+                str(sample_session_file),
+                "--format",
+                "duckdb",
+                "-o",
+                str(db_path),
+                "--no-thinking",
             ],
         )
 
@@ -175,29 +176,6 @@ class TestConvertCommandJSON:
         star_dir = output_dir / "star_out"
         assert star_dir.exists()
         assert (star_dir / "meta.json").exists()
-
-    def test_schema_override(self, sample_session_file, output_dir):
-        """--schema flag overrides format inference."""
-        runner = CliRunner()
-        result = runner.invoke(
-            cli,
-            [
-                "convert",
-                str(sample_session_file),
-                "--format",
-                "json",
-                "--schema",
-                "star",
-                "-o",
-                str(output_dir / "star_out"),
-            ],
-        )
-
-        assert result.exit_code == 0
-        # Should use star schema even though format was "json" not "json-star"
-        star_dir = output_dir / "star_out"
-        assert star_dir.exists()
-
 
 class TestConvertCommandURL:
     """Tests for convert command with URL input."""

@@ -374,8 +374,8 @@ class TestDuckdbCliOptions:
         assert (output_dir / "index.html").exists()
         assert (output_dir / "archive.duckdb").exists()
 
-    def test_include_thinking_flag(self, mock_projects_dir, output_dir):
-        """Test --include-thinking flag."""
+    def test_thinking_included_by_default(self, mock_projects_dir, output_dir):
+        """Test that thinking blocks are included by default."""
         runner = CliRunner()
         result = runner.invoke(
             cli,
@@ -387,7 +387,6 @@ class TestDuckdbCliOptions:
                 str(output_dir),
                 "--format",
                 "duckdb",
-                "--include-thinking",
             ],
         )
 
@@ -396,6 +395,30 @@ class TestDuckdbCliOptions:
         conn = duckdb.connect(str(db_path))
         result = conn.execute("SELECT COUNT(*) FROM thinking").fetchone()
         assert result[0] >= 1
+        conn.close()
+
+    def test_no_thinking_flag(self, mock_projects_dir, output_dir):
+        """Test --no-thinking flag excludes thinking blocks."""
+        runner = CliRunner()
+        result = runner.invoke(
+            cli,
+            [
+                "all",
+                "--source",
+                str(mock_projects_dir),
+                "--output",
+                str(output_dir),
+                "--format",
+                "duckdb",
+                "--no-thinking",
+            ],
+        )
+
+        assert result.exit_code == 0
+        db_path = output_dir / "archive.duckdb"
+        conn = duckdb.connect(str(db_path))
+        result = conn.execute("SELECT COUNT(*) FROM thinking").fetchone()
+        assert result[0] == 0
         conn.close()
 
 

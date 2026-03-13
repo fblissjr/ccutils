@@ -1,10 +1,10 @@
 """Single-file conversion command (convert JSON/JSONL to HTML, DuckDB, or JSON)."""
 
-import shutil
 import tempfile
 from pathlib import Path
 
 import click
+from click_option_group import optgroup
 
 from ..export import generate_html
 from ..export import finalize_star_schema
@@ -25,68 +25,43 @@ from .utils import is_url, fetch_url_to_tempfile, maybe_open_browser
 
 @click.command("convert")
 @click.argument("json_file", type=click.Path())
-@click.option(
+@optgroup.group("Output")
+@optgroup.option(
     "-o",
     "--output",
     type=click.Path(),
-    help="Output path. If not specified, writes to temp dir and opens in browser.",
+    help="Output path. If not specified, opens in browser.",
 )
-@click.option(
-    "-a",
-    "--output-auto",
-    is_flag=True,
-    help="Auto-name output subdirectory based on filename (uses -o as parent, or current dir).",
-)
-@click.option(
-    "--repo",
-    help="GitHub repo (owner/name) for commit links. Auto-detected from git push output if not specified.",
-)
-@click.option(
-    "--json",
-    "include_json",
-    is_flag=True,
-    help="Include the original JSON session file in the output directory (HTML mode only).",
-)
-@click.option(
-    "--open",
-    "open_browser",
-    is_flag=True,
-    help="Open the generated index.html in your default browser (default if no -o specified).",
-)
-@click.option(
+@optgroup.option(
     "--format",
     "output_format",
     type=click.Choice(["html", "duckdb", "duckdb-star", "json", "json-star"]),
     default="html",
     help="Output format: html (default), duckdb[-star], or json[-star].",
 )
-@click.option(
-    "--schema",
-    "schema_type",
-    type=click.Choice(["simple", "star"]),
-    default=None,
-    help="Data schema: simple (4 tables) or star (dimensional). Auto-inferred from format.",
-)
-@click.option(
-    "--include-thinking",
+@optgroup.option(
+    "--open",
+    "open_browser",
     is_flag=True,
-    help="Include thinking blocks in DuckDB/JSON export (can be large).",
+    help="Open result in browser (default if no -o).",
 )
-@click.option(
+@optgroup.group("Content")
+@optgroup.option(
+    "--no-thinking",
+    is_flag=True,
+    help="Exclude thinking blocks from export.",
+)
+@optgroup.option(
     "--private",
     is_flag=True,
-    help="Sanitize file paths in output to remove home directory and absolute paths.",
+    help="Sanitize file paths for sharing.",
 )
 def convert_cmd(
     json_file,
     output,
-    output_auto,
-    repo,
-    include_json,
-    open_browser,
     output_format,
-    schema_type,
-    include_thinking,
+    open_browser,
+    no_thinking,
     private,
 ):
     """Convert a single Claude Code session JSON/JSONL file or URL.
@@ -94,6 +69,8 @@ def convert_cmd(
     Supports all output formats: HTML (default), DuckDB, or JSON export
     with simple or star schema.
     """
+    include_thinking = not no_thinking
+
     # Handle URL input
     if is_url(json_file):
         click.echo(f"Fetching {json_file}...")
@@ -109,14 +86,11 @@ def convert_cmd(
         url_name = None
 
     # Resolve schema and format
-    schema, fmt = resolve_schema_format(schema_type, output_format)
+    schema, fmt = resolve_schema_format(None, output_format)
 
     # Determine output path
-    auto_open = output is None and not output_auto
-    if output_auto:
-        parent_dir = Path(output) if output else Path(".")
-        output = parent_dir / (url_name or json_file_path.stem)
-    elif output is None:
+    auto_open = output is None
+    if output is None:
         output = (
             Path(tempfile.gettempdir())
             / f"claude-session-{url_name or json_file_path.stem}"
@@ -126,16 +100,8 @@ def convert_cmd(
     project_name = url_name or json_file_path.parent.name or "unknown"
 
     if fmt == "html":
-        generate_html(json_file_path, output, github_repo=repo, private=private)
+        generate_html(json_file_path, output, private=private)
         click.echo(f"Output: {output.resolve()}")
-
-        # Copy JSON file to output directory if requested
-        if include_json:
-            output.mkdir(exist_ok=True)
-            json_dest = output / json_file_path.name
-            shutil.copy(json_file_path, json_dest)
-            json_size_kb = json_dest.stat().st_size / 1024
-            click.echo(f"JSON: {json_dest} ({json_size_kb:.1f} KB)")
 
         if open_browser or auto_open:
             maybe_open_browser(output)

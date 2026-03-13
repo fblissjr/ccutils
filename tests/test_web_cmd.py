@@ -79,22 +79,6 @@ class TestWebCommandWithSessionId:
 
     @patch("ccutils.cli.web.fetch_session")
     @patch("ccutils.cli.web.resolve_credentials")
-    def test_json_flag_saves_session_data(self, mock_creds, mock_fetch, output_dir):
-        """--json flag saves raw session data."""
-        mock_creds.return_value = ("test-token", "test-org")
-        mock_fetch.return_value = _mock_session_data()
-
-        runner = CliRunner()
-        result = runner.invoke(
-            cli,
-            ["web", "test-session-id", "-o", str(output_dir), "--json"],
-        )
-
-        assert result.exit_code == 0
-        assert "JSON:" in result.output
-
-    @patch("ccutils.cli.web.fetch_session")
-    @patch("ccutils.cli.web.resolve_credentials")
     def test_private_flag(self, mock_creds, mock_fetch, output_dir):
         """--private flag is accepted."""
         mock_creds.return_value = ("test-token", "test-org")
