@@ -243,7 +243,6 @@ ccutils local --format json-star -o ./star-export/
 ```bash
 uv run pytest              # Run tests (~754 passing)
 uv run ccutils --help      # Run development version
-uv run black .             # Format code
 uv run pytest --cov=ccutils  # Coverage
 ```
 

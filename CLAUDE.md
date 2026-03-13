@@ -25,21 +25,27 @@ Commit early and often. Commits should bundle the test, implementation, and docu
 ccutils/
 ├── src/ccutils/
 │   ├── __init__.py           # Public API re-exports
+│   ├── sanitize.py           # Path sanitization for --private mode
 │   ├── cli/                   # CLI commands
 │   │   ├── __init__.py       # CLI group and entry point
-│   │   ├── local.py          # local command
+│   │   ├── local.py          # local command (default)
 │   │   ├── web.py            # web command
 │   │   ├── json_cmd.py       # convert command (single-file conversion)
 │   │   ├── all.py            # all command
 │   │   ├── explore.py        # explore command
+│   │   ├── import_cmd.py     # import command (Claude.ai exports)
+│   │   ├── schema.py         # schema command (JSON structure inspector)
 │   │   └── utils.py          # CLI utilities
 │   ├── api/                   # API client and credentials
 │   │   └── __init__.py
 │   ├── parsers/              # Session file parsing utilities
 │   │   ├── __init__.py       # Public API exports
+│   │   ├── jsonl_reader.py   # Canonical JSONL parser (iter_session_entries, iter_loglines)
 │   │   ├── session.py        # JSONL/JSON session parsing
 │   │   ├── discovery.py      # Session discovery + two-phase selection UI
-│   │   └── metadata.py       # SessionMetadata dataclass + rich extraction
+│   │   ├── metadata.py       # SessionMetadata dataclass + rich extraction
+│   │   ├── claude_ai.py      # Claude.ai export parser
+│   │   └── schema_inspector.py # JSON structure analysis
 │   ├── schemas/              # Schema definitions
 │   │   ├── __init__.py       # Unified exports for both schemas
 │   │   ├── simple/           # Simple 4-table schema
@@ -48,7 +54,7 @@ ccutils/
 │   │   │   └── etl.py        # Simple schema ETL
 │   │   └── star/             # Star schema (22 tables + 10 views)
 │   │       ├── __init__.py   # Public API exports
-│   │       ├── schema.py     # DDL for star schema tables
+│   │       ├── schema.py     # DDL for star schema tables + semantic views
 │   │       ├── etl.py        # Main ETL pipeline
 │   │       ├── semantic.py   # Semantic model generation
 │   │       ├── extractors.py # Code blocks, entities, file extraction
@@ -58,7 +64,14 @@ ccutils/
 │   ├── export/                # Export format handlers
 │   │   ├── __init__.py
 │   │   ├── html.py           # HTML generation
-│   │   └── duckdb_archive.py # DuckDB batch export
+│   │   └── duckdb_archive.py # DuckDB batch export + finalize_star_schema()
+│   ├── tui/                   # Terminal UI components
+│   │   ├── __init__.py
+│   │   ├── theme.py          # Color theme
+│   │   ├── formatters.py     # Label formatters
+│   │   ├── layout.py         # Table layout
+│   │   ├── components.py     # Reusable UI components
+│   │   └── selection.py      # Interactive selection
 │   ├── explorer/             # Data Explorer SPA
 │   │   ├── index.html
 │   │   ├── css/styles.css
@@ -73,7 +86,7 @@ ccutils/
 │       ├── search.js         # Per-session search (Jinja2 template)
 │       └── global_search.js  # Archive-wide search (Jinja2 template)
 ├── tests/
-│   ├── conftest.py                   # Shared fixtures (sample_session_file, etc.)
+│   ├── conftest.py                   # Shared fixtures
 │   ├── test_generate_html.py         # HTML generation + snapshot tests
 │   ├── test_heuristics.py            # Heuristic classification tests
 │   ├── test_metadata.py              # SessionMetadata extraction tests
@@ -82,12 +95,21 @@ ccutils/
 │   ├── test_star_schema_analytics.py # Analytics queries + semantic model
 │   ├── test_star_schema_advanced.py  # Entities, chains, agents, embeddings
 │   ├── test_json_export.py           # JSON export tests
+│   ├── test_duckdb_export.py         # DuckDB export + orphan tool uses
 │   ├── test_all.py                   # Batch conversion tests
 │   ├── test_convert_cmd.py           # Convert command tests (all formats)
 │   ├── test_schema_cmd.py            # Schema inspection command tests
 │   ├── test_import_cmd.py            # Import command tests
 │   ├── test_web_cmd.py               # Web command tests
-│   └── test_explore_cmd.py           # Explore command tests
+│   ├── test_explore_cmd.py           # Explore command tests
+│   ├── test_agent_discovery.py       # Agent session discovery + multi-session index
+│   ├── test_jsonl_reader.py          # JSONL parser tests
+│   ├── test_sanitize.py              # Path sanitization tests
+│   ├── test_tui.py                   # TUI component tests
+│   ├── test_web_repo.py              # Web repo extraction tests
+│   ├── test_api.py                   # API client tests
+│   ├── test_claude_ai_parser.py      # Claude.ai export parser tests
+│   └── test_search_index.py          # Search index tests
 ├── docs/
 │   ├── STAR_SCHEMA.md        # Star schema documentation
 │   └── DATA_EXPLORER.md      # Data explorer documentation
