@@ -253,7 +253,9 @@ One row per session with pre-aggregated metrics.
 | unique_tools_used | INTEGER | Distinct tools used |
 | unique_files_touched | INTEGER | Distinct files touched |
 | max_conversation_depth | INTEGER | Maximum conversation depth |
-| total_estimated_tokens | INTEGER | Estimated total tokens |
+| total_estimated_tokens | INTEGER | Estimated total tokens (text + thinking + tool I/O) |
+| total_thinking_tokens | INTEGER | Estimated tokens from thinking blocks |
+| total_tool_io_tokens | INTEGER | Estimated tokens from tool input/output |
 | session_duration_seconds | INTEGER | Session duration |
 | first_timestamp | TIMESTAMP | First message time |
 | last_timestamp | TIMESTAMP | Last message time |

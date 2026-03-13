@@ -41,7 +41,7 @@ ccutils local --format duckdb-star --private -o ./analytics
 |---------|-------------|
 | `local` | Two-phase session picker: projects then sessions with rich metadata -- **default** |
 | `web` | Import from Claude API (auto-detects credentials from macOS keychain) |
-| `json` | Convert specific JSON/JSONL file or URL |
+| `convert` | Convert a single JSON/JSONL file or URL (supports all output formats) |
 | `all` | Batch convert all sessions (HTML archive, DuckDB, or JSON) |
 | `explore` | Launch Data Explorer web UI for star schema databases |
 | `import` | Import Claude.ai account exports (Settings > Privacy > Export) |
@@ -70,6 +70,17 @@ ccutils all --format duckdb-star -o ./analytics   # Star schema for all sessions
 ccutils all --format duckdb-star --embed -o ./out # With ColBERT embeddings
 ccutils all -j 4 --batch-size 20 -o ./archive    # Parallel processing
 ccutils all --dry-run                            # Preview without converting
+```
+
+### convert
+
+Convert a single JSON/JSONL file or URL to any output format.
+
+```bash
+ccutils convert ./session.jsonl -o ./output --open  # HTML (default)
+ccutils convert ./session.jsonl --format duckdb -o ./out.duckdb
+ccutils convert ./session.jsonl --format json-star -o ./star-export
+ccutils convert https://example.com/session.jsonl   # URL input
 ```
 
 ### import
@@ -230,7 +241,7 @@ ccutils local --format json-star -o ./star-export/
 ## Development
 
 ```bash
-uv run pytest              # Run tests (~672 passing)
+uv run pytest              # Run tests (~741 passing)
 uv run ccutils --help      # Run development version
 uv run black .             # Format code
 uv run pytest --cov=ccutils  # Coverage
