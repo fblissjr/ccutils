@@ -1,12 +1,5 @@
 # Start Here
 
-| Document | Purpose |
-|----------|---------|
-| [internal/hub.md](internal/hub.md) | Central documentation hub |
-| [internal/state/current.md](internal/state/current.md) | Current project state - read first for active work |
-
----
-
 Uses uv. Run tests like this:
 
     uv run pytest
@@ -86,30 +79,8 @@ ccutils/
 │       ├── search.js         # Per-session search (Jinja2 template)
 │       └── global_search.js  # Archive-wide search (Jinja2 template)
 ├── tests/
-│   ├── conftest.py                   # Shared fixtures
-│   ├── test_generate_html.py         # HTML generation + snapshot tests
-│   ├── test_heuristics.py            # Heuristic classification tests
-│   ├── test_metadata.py              # SessionMetadata extraction tests
-│   ├── test_star_schema_ddl.py       # Star schema DDL + column validation
-│   ├── test_star_schema_etl.py       # Star schema ETL population
-│   ├── test_star_schema_analytics.py # Analytics queries + semantic model
-│   ├── test_star_schema_advanced.py  # Entities, chains, agents, embeddings
-│   ├── test_json_export.py           # JSON export tests
-│   ├── test_duckdb_export.py         # DuckDB export + orphan tool uses
-│   ├── test_all.py                   # Batch conversion tests
-│   ├── test_convert_cmd.py           # Convert command tests (all formats)
-│   ├── test_schema_cmd.py            # Schema inspection command tests
-│   ├── test_import_cmd.py            # Import command tests
-│   ├── test_web_cmd.py               # Web command tests
-│   ├── test_explore_cmd.py           # Explore command tests
-│   ├── test_agent_discovery.py       # Agent session discovery + multi-session index
-│   ├── test_jsonl_reader.py          # JSONL parser tests
-│   ├── test_sanitize.py              # Path sanitization tests
-│   ├── test_tui.py                   # TUI component tests
-│   ├── test_web_repo.py              # Web repo extraction tests
-│   ├── test_api.py                   # API client tests
-│   ├── test_claude_ai_parser.py      # Claude.ai export parser tests
-│   └── test_search_index.py          # Search index tests
+│   ├── conftest.py                   # Shared fixtures (sample_session_file, interrupted_session_file, etc.)
+│   └── test_*.py                     # 23 test files (star schema split across ddl/etl/analytics/advanced)
 ├── docs/
 │   ├── STAR_SCHEMA.md        # Star schema documentation
 │   └── DATA_EXPLORER.md      # Data explorer documentation
@@ -203,18 +174,17 @@ Run with coverage:
 ## Common Workflows
 
 ### Adding a new dimension
-1. Add CREATE TABLE statement in `schemas/star/schema.py`
-2. Add ETL logic in `schemas/star/etl.py` to populate the dimension
-3. Write tests in `test_star_schema_ddl.py` (schema) and `test_star_schema_etl.py` (ETL)
-4. Update docs/STAR_SCHEMA.md
+1. Write failing tests in `test_star_schema_ddl.py` (table exists, columns correct) and `test_star_schema_etl.py` (rows populated)
+2. Add CREATE TABLE in `schemas/star/schema.py`
+3. Add ETL logic in `schemas/star/etl.py`
+4. Run tests green, then update docs/STAR_SCHEMA.md
 
 ### Adding a new fact table
-1. Add CREATE TABLE statement in `schemas/star/schema.py`
-2. Add data collection logic in ETL extraction phase
-3. Add INSERT statement in ETL loading phase
-4. If the table is derived from cross-session data (like `bridge_session_file`), add a post-ETL function in `duckdb_archive.py` and call it from `finalize_star_schema()`
-5. Write tests covering schema and ETL
-6. Update documentation
+1. Write failing tests in `test_star_schema_ddl.py` (schema) and `test_star_schema_etl.py` or `test_star_schema_advanced.py` (ETL)
+2. Add CREATE TABLE in `schemas/star/schema.py`
+3. Add extraction + INSERT in `schemas/star/etl.py` (per-session) or `export/duckdb_archive.py` (post-ETL cross-session)
+4. If post-ETL, call from `finalize_star_schema()` and make idempotent (DELETE before INSERT)
+5. Run tests green, then update docs/STAR_SCHEMA.md
 
 ### Star schema ETL pipeline order
 ```
