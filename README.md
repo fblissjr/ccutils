@@ -22,65 +22,58 @@ uv run ccutils --help
 # Interactive two-phase picker - select projects, then sessions
 ccutils
 
+# Convert a single session file (opens in browser)
+ccutils session.jsonl
+
 # Export to DuckDB for SQL analytics
-ccutils local --format duckdb -o ./archive
+ccutils --format duckdb -o ./archive
 
 # Export with star schema (22 tables + 10 views)
-ccutils local --format duckdb-star -o ./analytics
+ccutils --format duckdb-star -o ./analytics
 
 # Launch visual data explorer
 ccutils explore ./analytics/archive.duckdb
-
-# Sanitize file paths for sharing
-ccutils local --format duckdb-star --private -o ./analytics
 ```
 
 ## Commands
 
 | Command | Description |
 |---------|-------------|
-| `local` | Two-phase session picker: projects then sessions with rich metadata -- **default** |
-| `web` | Import from Claude API (auto-detects credentials from macOS keychain) |
-| `convert` | Convert a single JSON/JSONL file or URL (supports all output formats) |
+| `local` | Interactive picker + single-file conversion -- **default** (no subcommand needed) |
 | `all` | Batch convert all sessions (HTML archive, DuckDB, or JSON) |
+| `web` | Import from Claude API (auto-detects credentials from macOS keychain) |
 | `explore` | Launch Data Explorer web UI for star schema databases |
 | `import` | Import Claude.ai account exports (Settings > Privacy > Export) |
 | `schema` | Inspect JSON structure without exposing content (safe to share publicly) |
 
 ### local (default)
 
-Two-phase interactive picker: first select project(s), then select session(s) within them. Uses rich terminal tables with metadata like model, branch, duration, and message count.
+The default command. With no arguments, launches a two-phase interactive picker (projects then sessions). Pass a session file to convert it directly.
+
+Thinking blocks and subagent sessions are included by default.
 
 ```bash
-ccutils                                          # Interactive picker, opens in browser
-ccutils local --format duckdb-star -o ./analytics # Star schema DuckDB
-ccutils local -p myproject                       # Filter by project name
-ccutils local --flat                             # Legacy single-list mode
-ccutils local --include-subagents                # Include agent sessions
-ccutils local --format duckdb-star --embed -o .  # With ColBERT embeddings
+ccutils                                          # Interactive picker
+ccutils session.jsonl                            # Convert file, open in browser
+ccutils session.jsonl --format duckdb-star -o .  # Star schema from file
+ccutils --format duckdb-star -o ./analytics      # Pick sessions, star schema
+ccutils -p myproject                             # Filter by project name
+ccutils --flat                                   # Legacy single-list mode
+ccutils --no-thinking --no-subagents             # Exclude thinking/agents
+ccutils --format duckdb-star --embed -o .        # With ColBERT embeddings
 ```
 
 ### all
 
-Batch convert every session. Supports parallel processing and HTML archive generation with search.
+Batch convert every session. Agents and thinking blocks included by default.
 
 ```bash
 ccutils all -o ./archive                         # HTML archive with search index
 ccutils all --format duckdb-star -o ./analytics   # Star schema for all sessions
 ccutils all --format duckdb-star --embed -o ./out # With ColBERT embeddings
 ccutils all -j 4 --batch-size 20 -o ./archive    # Parallel processing
+ccutils all --no-agents --no-thinking             # Exclude agents and thinking
 ccutils all --dry-run                            # Preview without converting
-```
-
-### convert
-
-Convert a single JSON/JSONL file or URL to any output format.
-
-```bash
-ccutils convert ./session.jsonl -o ./output --open  # HTML (default)
-ccutils convert ./session.jsonl --format duckdb -o ./out.duckdb
-ccutils convert ./session.jsonl --format json-star -o ./star-export
-ccutils convert https://example.com/session.jsonl   # URL input
 ```
 
 ### import
@@ -114,12 +107,14 @@ ccutils schema ./export --json > schema.json     # Machine-readable output
 
 ## Export Formats
 
+Schema type is auto-inferred from `--format`: `duckdb-star` and `json-star` use star schema, plain `duckdb` and `json` use simple.
+
 ### HTML Transcripts
 
 Clean, mobile-friendly HTML with pagination, commit timeline, tool stats, and full-text search.
 
 ```bash
-ccutils local -o ./transcript --open
+ccutils -o ./transcript --open
 ccutils all -o ./archive                    # Archive with master index and search
 ```
 
@@ -128,7 +123,7 @@ ccutils all -o ./archive                    # Archive with master index and sear
 #### Simple Schema (4 tables)
 
 ```bash
-ccutils local --format duckdb -o ./archive
+ccutils --format duckdb -o ./archive
 ```
 
 Tables: `sessions`, `messages`, `tool_calls`, `thinking`
@@ -136,7 +131,7 @@ Tables: `sessions`, `messages`, `tool_calls`, `thinking`
 #### Star Schema (22 tables + 10 views)
 
 ```bash
-ccutils local --format duckdb-star -o ./analytics
+ccutils --format duckdb-star -o ./analytics
 ```
 
 Dimensional model designed for analytics:
@@ -193,10 +188,10 @@ WHERE project_name = 'my-project' LIMIT 5;
 
 ```bash
 # Simple schema - single file
-ccutils local --format json -o ./sessions.json
+ccutils --format json -o ./sessions.json
 
 # Star schema - directory structure (dimensions/ + facts/ + meta.json)
-ccutils local --format json-star -o ./star-export/
+ccutils --format json-star -o ./star-export/
 ```
 
 ## Common Options
@@ -204,19 +199,14 @@ ccutils local --format json-star -o ./star-export/
 ```bash
 # Output
 -o, --output PATH          Output directory or file
--a, --output-auto          Auto-name based on session
+--format FORMAT            html, duckdb, duckdb-star, json, json-star
 --open                     Open result in browser
 
-# Format
---format FORMAT            html, duckdb, duckdb-star, json, json-star
---schema SCHEMA            simple or star (auto-inferred from format)
-
-# Content
---include-thinking         Include thinking blocks (can be large)
---include-subagents        Include related agent sessions
-
-# Privacy
---private                  Sanitize file paths (removes home directory, absolute paths)
+# Content (included by default -- use flags to exclude)
+--no-thinking              Exclude thinking blocks
+--no-subagents             Exclude related agent sessions (local)
+--no-agents                Exclude agent-* session files (all)
+--private                  Sanitize file paths for sharing
 
 # Selection (local command)
 --flat                     Flat single-list mode (skip project grouping)
@@ -224,8 +214,7 @@ ccutils local --format json-star -o ./star-export/
 -p, --project TEXT         Filter by project name
 
 # Embeddings (local and all commands, star schema only)
---embed                    Run ColBERT embedding pipeline (requires pylate)
---embed-model TEXT         Override default ColBERT model
+--embed [MODEL]            Run ColBERT embeddings (optionally specify model)
 
 # Batch processing (all command)
 -j, --jobs N               Parallel workers (default: 1)
@@ -241,7 +230,7 @@ ccutils local --format json-star -o ./star-export/
 ## Development
 
 ```bash
-uv run pytest              # Run tests (~754 passing)
+uv run pytest              # Run tests (~737 passing)
 uv run ccutils --help      # Run development version
 uv run pytest --cov=ccutils  # Coverage
 ```

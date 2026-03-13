@@ -21,9 +21,8 @@ ccutils/
 │   ├── sanitize.py           # Path sanitization for --private mode
 │   ├── cli/                   # CLI commands
 │   │   ├── __init__.py       # CLI group and entry point
-│   │   ├── local.py          # local command (default) -- also handles single-file conversion
+│   │   ├── local.py          # local command (default) -- picker + single-file conversion
 │   │   ├── web.py            # web command
-│   │   ├── json_cmd.py       # (deprecated) convert command alias lives in __init__.py now
 │   │   ├── all.py            # all command
 │   │   ├── explore.py        # explore command
 │   │   ├── import_cmd.py     # import command (Claude.ai exports)
