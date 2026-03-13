@@ -121,7 +121,7 @@ Three output formats with two schema types:
 - `--format json-star` - Directory with meta.json + dimensions/*.json + facts/*.json
 - Modular package at `schemas/star/` (schema, etl, semantic, extractors, heuristics, json_export, utils)
 - See `create_star_schema()`, `run_star_schema_etl()`, `finalize_star_schema()`, `export_star_schema_to_json()` functions
-- `finalize_star_schema(conn)` MUST be called after all ETL runs -- populates session chains, agent delegations, file bridge, depth levels
+- `finalize_star_schema(conn)` MUST be called after all ETL runs -- populates session chains, agent delegations, file bridge, depth levels, and `_incl_agents` metric rollup
 - Heuristic classification (intent, complexity, outcome, domain, error_type) runs during ETL -- no LLM required
 - `--embed` flag available on both `local` and `all` commands (requires pylate optional dependency)
 - Visual explorer at `explorer/`
@@ -133,7 +133,7 @@ Three output formats with two schema types:
 
 **Core Dimensions (6):** dim_session (with intent/complexity/outcome/domain heuristics + first_user_message/last_assistant_message), dim_project, dim_tool, dim_model, dim_date, dim_time
 
-**Core Facts (6):** fact_messages, fact_tool_calls (with duration_seconds), fact_session_summary (with total_errors, unique_tools_used, etc.), fact_file_operations, fact_errors (with heuristic error_type), fact_tool_chain_steps (with next_tool_key, is_error)
+**Core Facts (6):** fact_messages, fact_tool_calls (with duration_seconds), fact_session_summary (with _incl_agents rollup, total_errors, unique_tools_used, etc.), fact_file_operations, fact_errors (with heuristic error_type), fact_tool_chain_steps (with next_tool_key, is_error)
 
 **Granular (5):** dim_file (with language), dim_session_chain, fact_content_blocks, fact_code_blocks, fact_entity_mentions
 
@@ -152,7 +152,7 @@ Both schemas estimate tokens using a word-count heuristic (`estimate_tokens()` i
 Token counts cover text blocks, thinking blocks, tool input JSON, and tool result text.
 
 **Simple schema:** `sessions.estimated_tokens` (total across all sources)
-**Star schema:** `fact_session_summary` has `total_estimated_tokens`, `total_thinking_tokens`, `total_tool_io_tokens`
+**Star schema:** `fact_session_summary` has `total_estimated_tokens`, `total_thinking_tokens`, `total_tool_io_tokens`, plus `_incl_agents` rollup columns (`total_estimated_tokens_incl_agents`, `total_tool_calls_incl_agents`, `total_errors_incl_agents`, `total_duration_incl_agents`) populated by `finalize_star_schema()`
 
 ### 5. Simple Schema ETL Architecture
 

@@ -42,9 +42,6 @@ class SimpleExtractionResult:
     tool_use_count: int = 0
     total_estimated_tokens: int = 0
 
-    # Remaining tool uses that never got a result
-    orphan_tool_uses: list[dict] = field(default_factory=list)
-
 
 def _extract_session_core(
     session_path,
@@ -248,11 +245,11 @@ def _extract_session_core(
             }
         )
 
-    # Collect any remaining tool uses (no result received)
+    # Collect any remaining tool uses (no result received) into tool_calls
     for tool_info in tool_use_map.values():
         tool_info["result_message_id"] = None
         tool_info["output_text"] = None
-        result.orphan_tool_uses.append(tool_info)
+        result.tool_calls.append(tool_info)
 
     return result
 
@@ -311,29 +308,6 @@ def export_session_to_duckdb(
                 tc["input_json_str"],
                 tc["input_summary"],
                 tc["output_text"],
-                tc["timestamp"],
-            ],
-        )
-
-    # Insert orphan tool uses (tool_use with no matching tool_result)
-    for tc in result.orphan_tool_uses:
-        conn.execute(
-            """
-            INSERT INTO tool_calls (
-                tool_use_id, session_id, message_id,
-                result_message_id, tool_name, input_json,
-                input_summary, output_text, timestamp
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """,
-            [
-                tc["tool_use_id"],
-                result.session_id,
-                tc["message_id"],
-                None,
-                tc["tool_name"],
-                tc["input_json_str"],
-                tc["input_summary"],
-                None,
                 tc["timestamp"],
             ],
         )
@@ -486,22 +460,6 @@ def _extract_session_data(
                 "input_json": tc["input_json"],
                 "input_summary": tc["input_summary"],
                 "output_text": tc["output_text"],
-                "timestamp": tc["timestamp_raw"],
-            }
-        )
-
-    # Add orphan tool uses (no result received)
-    for tc in result.orphan_tool_uses:
-        tool_calls.append(
-            {
-                "tool_use_id": tc["tool_use_id"],
-                "session_id": tc["session_id"],
-                "message_id": tc["message_id"],
-                "result_message_id": None,
-                "tool_name": tc["tool_name"],
-                "input_json": tc["input_json"],
-                "input_summary": tc["input_summary"],
-                "output_text": None,
                 "timestamp": tc["timestamp_raw"],
             }
         )

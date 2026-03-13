@@ -142,7 +142,7 @@ ccutils local --format duckdb-star -o ./analytics
 Dimensional model designed for analytics:
 
 - **6 dimensions:** sessions (with heuristic classifications), projects, tools (with categories), models (with families), dates, times
-- **6 core facts:** messages, tool calls (with duration tracking), session summaries, file operations, errors (with type classification), tool chain steps
+- **6 core facts:** messages, tool calls (with duration tracking), session summaries (with inclusive agent metric rollup), file operations, errors (with type classification), tool chain steps
 - **5 granular tables:** files (with language detection), session chains, content blocks, code blocks, entity mentions
 - **3 agent/bridge tables:** agent delegations (with denormalized metrics), cross-session file tracking, task-agent mapping
 - **2 optional:** ColBERT embeddings, tool input parameters
@@ -241,7 +241,7 @@ ccutils local --format json-star -o ./star-export/
 ## Development
 
 ```bash
-uv run pytest              # Run tests (~741 passing)
+uv run pytest              # Run tests (~754 passing)
 uv run ccutils --help      # Run development version
 uv run black .             # Format code
 uv run pytest --cov=ccutils  # Coverage

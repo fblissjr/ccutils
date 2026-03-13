@@ -160,7 +160,7 @@ def _handle_tool_use_block(result, block, ctx, tool_use_map, prev_tool_call):
     """Handle a tool_use content block during extraction.
 
     Populates tool_use_map, tool_input_params, file operations, and tool chain data.
-    Returns updated prev_tool_call tuple.
+    Returns (tool_use_id, tool_key, timestamp, input_tokens) tuple.
     """
     tool_use_id = block.get("id")
     tool_name = block.get("name", "unknown")
@@ -168,7 +168,8 @@ def _handle_tool_use_block(result, block, ctx, tool_use_map, prev_tool_call):
     result.tools_seen.add(tool_name)
 
     input_json = json.dumps(tool_input)
-    result.tool_io_estimated_tokens += estimate_tokens(input_json)
+    input_tokens = estimate_tokens(input_json)
+    result.tool_io_estimated_tokens += input_tokens
 
     # Extract common parameters for direct columns
     extracted_file_path = extract_file_path_from_tool(tool_name, tool_input)
@@ -312,13 +313,14 @@ def _handle_tool_use_block(result, block, ctx, tool_use_map, prev_tool_call):
     )
     result.total_content_blocks += 1
 
-    return (tool_use_id, tool_key, ctx.timestamp)
+    return (tool_use_id, tool_key, ctx.timestamp, input_tokens)
 
 
 def _handle_tool_result_block(result, block, ctx, tool_use_map):
     """Handle a tool_result content block during extraction.
 
     Resolves tool_use_map entries, appends to tool_calls_data and errors_data.
+    Returns the estimated token count for the tool result text.
     """
     tool_use_id = block.get("tool_use_id")
     result_content = block.get("content", "")
@@ -338,7 +340,8 @@ def _handle_tool_result_block(result, block, ctx, tool_use_map):
 
     output_text = result_text[: ctx.truncate_output]
     output_char_count = len(result_text)
-    result.tool_io_estimated_tokens += estimate_tokens(result_text)
+    result_tokens = estimate_tokens(result_text)
+    result.tool_io_estimated_tokens += result_tokens
 
     if tool_use_id and tool_use_id in tool_use_map:
         tool_info = tool_use_map.pop(tool_use_id)
@@ -407,6 +410,7 @@ def _handle_tool_result_block(result, block, ctx, tool_use_map):
         block,
     )
     result.total_content_blocks += 1
+    return result_tokens
 
 
 def _extract_star_data(
@@ -507,8 +511,6 @@ def _extract_star_data(
 
         elif isinstance(content, list):
             texts = []
-            msg_thinking_tokens = 0
-            msg_tool_io_tokens = 0
             for idx, block in enumerate(content):
                 if not isinstance(block, dict):
                     continue
@@ -551,27 +553,16 @@ def _extract_star_data(
 
                 elif block_type == "tool_use":
                     has_tool_use = True
-                    # Track tool I/O tokens before handler (which updates session accumulator)
-                    tool_input_json = json.dumps(block.get("input", {}))
-                    msg_tool_io_tokens += estimate_tokens(tool_input_json)
                     prev_tool_call = _handle_tool_use_block(
                         result, block, ctx, tool_use_map, prev_tool_call
                     )
+                    msg_tool_io_tokens += prev_tool_call[3]
 
                 elif block_type == "tool_result":
                     has_tool_result = True
-                    # Track tool result tokens before handler
-                    result_content = block.get("content", "")
-                    if isinstance(result_content, list):
-                        result_text = " ".join(
-                            str(item.get("text", ""))
-                            for item in result_content
-                            if isinstance(item, dict)
-                        )
-                    else:
-                        result_text = str(result_content)
-                    msg_tool_io_tokens += estimate_tokens(result_text)
-                    _handle_tool_result_block(result, block, ctx, tool_use_map)
+                    msg_tool_io_tokens += _handle_tool_result_block(
+                        result, block, ctx, tool_use_map
+                    )
 
                 elif block_type == "thinking":
                     has_thinking = True

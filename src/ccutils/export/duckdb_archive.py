@@ -515,13 +515,6 @@ def _link_agent_delegations(conn):
         agent_first_ts = agent_row[2]
         agent_last_ts = agent_row[3]
 
-        # Skip if delegation already exists
-        if conn.execute(
-            "SELECT 1 FROM fact_agent_delegations WHERE agent_session_key = ?",
-            [agent_session_key],
-        ).fetchone():
-            continue
-
         # Find Task tool calls in the parent session
         task_calls = conn.execute(
             """

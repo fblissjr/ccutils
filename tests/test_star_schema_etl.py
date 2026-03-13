@@ -900,105 +900,13 @@ class TestFactSessionSummaryTimeKeyETL:
 class TestOrphanToolUsesStar:
     """Tests for tool_use blocks with no matching tool_result in star schema."""
 
-    @pytest.fixture
-    def interrupted_star_session(self, output_dir):
-        """Session where the last tool_use never received a result."""
-        session_file = output_dir / "interrupted.jsonl"
-        session_file.write_text(
-            json.dumps(
-                {
-                    "type": "user",
-                    "uuid": "user-001",
-                    "parentUuid": None,
-                    "sessionId": "session-interrupted",
-                    "timestamp": "2025-01-01T10:00:00.000Z",
-                    "cwd": "/home/user/project",
-                    "message": {"role": "user", "content": "Read and edit the config"},
-                }
-            )
-            + "\n"
-            + json.dumps(
-                {
-                    "type": "assistant",
-                    "uuid": "asst-001",
-                    "parentUuid": "user-001",
-                    "sessionId": "session-interrupted",
-                    "timestamp": "2025-01-01T10:00:05.000Z",
-                    "message": {
-                        "role": "assistant",
-                        "model": "claude-sonnet-4-20250514",
-                        "content": [
-                            {"type": "text", "text": "Let me read that."},
-                            {
-                                "type": "tool_use",
-                                "id": "tool-matched",
-                                "name": "Read",
-                                "input": {
-                                    "file_path": "/home/user/project/config.yaml"
-                                },
-                            },
-                        ],
-                    },
-                }
-            )
-            + "\n"
-            + json.dumps(
-                {
-                    "type": "user",
-                    "uuid": "user-002",
-                    "parentUuid": "asst-001",
-                    "sessionId": "session-interrupted",
-                    "timestamp": "2025-01-01T10:00:10.000Z",
-                    "message": {
-                        "role": "user",
-                        "content": [
-                            {
-                                "type": "tool_result",
-                                "tool_use_id": "tool-matched",
-                                "content": "key: value",
-                            }
-                        ],
-                    },
-                }
-            )
-            + "\n"
-            + json.dumps(
-                {
-                    "type": "assistant",
-                    "uuid": "asst-002",
-                    "parentUuid": "user-002",
-                    "sessionId": "session-interrupted",
-                    "timestamp": "2025-01-01T10:00:15.000Z",
-                    "message": {
-                        "role": "assistant",
-                        "model": "claude-sonnet-4-20250514",
-                        "content": [
-                            {"type": "text", "text": "Now let me edit it."},
-                            {
-                                "type": "tool_use",
-                                "id": "tool-orphan",
-                                "name": "Edit",
-                                "input": {
-                                    "file_path": "/home/user/project/config.yaml",
-                                    "old_string": "key: value",
-                                    "new_string": "key: new_value",
-                                },
-                            },
-                        ],
-                    },
-                }
-            )
-            + "\n"
-        )
-        return session_file
-
     def test_star_includes_orphan_tool_calls(
-        self, interrupted_star_session, output_dir
+        self, interrupted_session_file, output_dir
     ):
         """Star schema fact_tool_calls should include orphan tool uses."""
         db_path = output_dir / "test.duckdb"
         conn = create_star_schema(db_path)
-        run_star_schema_etl(conn, interrupted_star_session, "test-project")
+        run_star_schema_etl(conn, interrupted_session_file, "test-project")
 
         rows = conn.execute(
             "SELECT tool_call_id, result_message_id, output_text "
@@ -1018,11 +926,11 @@ class TestOrphanToolUsesStar:
         assert matched[2] is not None
         conn.close()
 
-    def test_orphan_not_counted_as_error(self, interrupted_star_session, output_dir):
+    def test_orphan_not_counted_as_error(self, interrupted_session_file, output_dir):
         """Orphan tool uses should not appear in fact_errors."""
         db_path = output_dir / "test.duckdb"
         conn = create_star_schema(db_path)
-        run_star_schema_etl(conn, interrupted_star_session, "test-project")
+        run_star_schema_etl(conn, interrupted_session_file, "test-project")
 
         error_count = conn.execute("SELECT COUNT(*) FROM fact_errors").fetchone()[0]
         assert error_count == 0
