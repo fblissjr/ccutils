@@ -6,7 +6,6 @@ star (22 tables + 10 views) schemas.
 """
 
 import os
-import tempfile
 import time
 from pathlib import Path
 
@@ -18,6 +17,7 @@ from ..schemas import (
     export_session_to_duckdb,
     create_star_schema,
     run_star_schema_etl,
+    create_semantic_model,
     export_star_schema_to_json,
 )
 from ..schemas.star.utils import generate_dimension_key
@@ -150,6 +150,7 @@ def generate_duckdb_archive(
     # Post-ETL batch processing for star schema
     if schema_type == "star":
         finalize_star_schema(conn)
+        create_semantic_model(conn)
 
     # Get final row counts
     final_row_count = _count_rows(conn, schema_type)
