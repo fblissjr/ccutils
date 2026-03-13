@@ -315,6 +315,29 @@ def export_session_to_duckdb(
             ],
         )
 
+    # Insert orphan tool uses (tool_use with no matching tool_result)
+    for tc in result.orphan_tool_uses:
+        conn.execute(
+            """
+            INSERT INTO tool_calls (
+                tool_use_id, session_id, message_id,
+                result_message_id, tool_name, input_json,
+                input_summary, output_text, timestamp
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+            [
+                tc["tool_use_id"],
+                result.session_id,
+                tc["message_id"],
+                None,
+                tc["tool_name"],
+                tc["input_json_str"],
+                tc["input_summary"],
+                None,
+                tc["timestamp"],
+            ],
+        )
+
     # Insert thinking blocks
     for tb in result.thinking_blocks:
         conn.execute(

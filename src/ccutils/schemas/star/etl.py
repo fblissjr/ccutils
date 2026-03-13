@@ -341,7 +341,7 @@ def _handle_tool_result_block(result, block, ctx, tool_use_map):
     result.tool_io_estimated_tokens += estimate_tokens(result_text)
 
     if tool_use_id and tool_use_id in tool_use_map:
-        tool_info = tool_use_map[tool_use_id]
+        tool_info = tool_use_map.pop(tool_use_id)
 
         # Calculate duration between invoke and result
         duration_seconds = None
@@ -685,6 +685,32 @@ def _extract_star_data(
         result.tool_chain_data[i]["next_tool_key"] = result.tool_chain_data[i + 1][
             "tool_key"
         ]
+
+    # Include orphan tool uses (tool_use with no matching tool_result)
+    for tool_use_id, tool_info in tool_use_map.items():
+        result.tool_calls_data.append(
+            {
+                "tool_call_id": tool_use_id,
+                "session_key": session_key,
+                "tool_key": tool_info["tool_key"],
+                "date_key": tool_info["date_key"],
+                "time_key": tool_info["time_key"],
+                "invoke_message_id": tool_info["message_id"],
+                "result_message_id": None,
+                "timestamp": tool_info["timestamp"],
+                "input_char_count": tool_info["input_char_count"],
+                "output_char_count": 0,
+                "is_error": False,
+                "duration_seconds": None,
+                "input_json": tool_info["input_json"],
+                "input_summary": tool_info["input_summary"],
+                "output_text": None,
+                "file_path": tool_info["file_path"],
+                "command": tool_info["command"],
+                "pattern": tool_info["pattern"],
+                "query_text": tool_info["query_text"],
+            }
+        )
 
     return result
 

@@ -11,6 +11,7 @@ All notable changes to this project will be documented in this file.
 - **CLI test coverage**: New test files for 5 previously untested commands -- `test_convert_cmd.py`, `test_schema_cmd.py`, `test_import_cmd.py`, `test_web_cmd.py`, `test_explore_cmd.py`
 
 ### Fixed
+- **Orphan tool use preservation**: Tool calls interrupted before receiving a result (session killed mid-tool) are now stored in both simple and star schema DuckDB exports with NULL `output_text` and `result_message_id` -- previously silently dropped, creating asymmetry with JSON export which already included them
 - **Token estimation accuracy**: Star schema ETL now counts thinking blocks and tool input/output in token estimates (previously only counted text blocks)
 - **CSS brace bug in import command**: Multi-session index used `.format()` which conflicted with CSS `{}` braces -- switched to f-string with doubled braces
 - **Simple ETL duplication**: Extracted `_extract_session_core()` and `SimpleExtractionResult` dataclass to share ~200 lines of logic between DuckDB and JSON export paths

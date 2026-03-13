@@ -399,6 +399,147 @@ class TestDuckdbCliOptions:
         conn.close()
 
 
+class TestOrphanToolUses:
+    """Tests for tool_use blocks with no matching tool_result."""
+
+    @pytest.fixture
+    def interrupted_session_file(self, output_dir):
+        """Session where the last tool_use never received a result."""
+        session_file = output_dir / "interrupted.jsonl"
+        session_file.write_text(
+            json.dumps(
+                {
+                    "type": "user",
+                    "uuid": "user-001",
+                    "parentUuid": None,
+                    "sessionId": "session-interrupted",
+                    "timestamp": "2025-01-01T10:00:00.000Z",
+                    "cwd": "/home/user/project",
+                    "message": {"role": "user", "content": "Read the config file"},
+                }
+            )
+            + "\n"
+            + json.dumps(
+                {
+                    "type": "assistant",
+                    "uuid": "asst-001",
+                    "parentUuid": "user-001",
+                    "sessionId": "session-interrupted",
+                    "timestamp": "2025-01-01T10:00:05.000Z",
+                    "message": {
+                        "role": "assistant",
+                        "model": "claude-sonnet-4-20250514",
+                        "content": [
+                            {"type": "text", "text": "Let me read that."},
+                            {
+                                "type": "tool_use",
+                                "id": "tool-matched",
+                                "name": "Read",
+                                "input": {
+                                    "file_path": "/home/user/project/config.yaml"
+                                },
+                            },
+                        ],
+                    },
+                }
+            )
+            + "\n"
+            + json.dumps(
+                {
+                    "type": "user",
+                    "uuid": "user-002",
+                    "parentUuid": "asst-001",
+                    "sessionId": "session-interrupted",
+                    "timestamp": "2025-01-01T10:00:10.000Z",
+                    "message": {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "tool_result",
+                                "tool_use_id": "tool-matched",
+                                "content": "key: value",
+                            }
+                        ],
+                    },
+                }
+            )
+            + "\n"
+            + json.dumps(
+                {
+                    "type": "assistant",
+                    "uuid": "asst-002",
+                    "parentUuid": "user-002",
+                    "sessionId": "session-interrupted",
+                    "timestamp": "2025-01-01T10:00:15.000Z",
+                    "message": {
+                        "role": "assistant",
+                        "model": "claude-sonnet-4-20250514",
+                        "content": [
+                            {"type": "text", "text": "Now let me edit it."},
+                            {
+                                "type": "tool_use",
+                                "id": "tool-orphan",
+                                "name": "Edit",
+                                "input": {
+                                    "file_path": "/home/user/project/config.yaml",
+                                    "old_string": "key: value",
+                                    "new_string": "key: new_value",
+                                },
+                            },
+                        ],
+                    },
+                }
+            )
+            + "\n"
+        )
+        return session_file
+
+    def test_duckdb_includes_orphan_tool_uses(
+        self, interrupted_session_file, output_dir
+    ):
+        """DuckDB should include tool_use blocks that never got a result."""
+        db_path = output_dir / "test.duckdb"
+        conn = create_duckdb_schema(db_path)
+        export_session_to_duckdb(conn, interrupted_session_file, "test-project")
+
+        rows = conn.execute(
+            "SELECT tool_use_id, tool_name, output_text, result_message_id "
+            "FROM tool_calls ORDER BY tool_name"
+        ).fetchall()
+
+        assert (
+            len(rows) == 2
+        ), f"Expected 2 tool calls (1 matched + 1 orphan), got {len(rows)}"
+
+        # Edit is the orphan (no result), Read is matched
+        edit_row = [r for r in rows if r[1] == "Edit"][0]
+        read_row = [r for r in rows if r[1] == "Read"][0]
+
+        assert edit_row[2] is None  # output_text NULL for orphan
+        assert edit_row[3] is None  # result_message_id NULL for orphan
+        assert read_row[2] is not None  # matched tool has output
+        assert read_row[3] is not None  # matched tool has result_message_id
+
+        conn.close()
+
+    def test_json_includes_orphan_tool_uses(self, interrupted_session_file, output_dir):
+        """JSON export should include orphan tool uses too."""
+        from ccutils import export_sessions_to_json
+
+        json_path = output_dir / "export.json"
+        export_sessions_to_json([interrupted_session_file], json_path)
+
+        with open(json_path) as f:
+            data = json.load(f)
+
+        tool_calls = data["tables"]["tool_calls"]
+        assert len(tool_calls) == 2
+
+        orphan = [tc for tc in tool_calls if tc["tool_name"] == "Edit"][0]
+        assert orphan["output_text"] is None
+        assert orphan["result_message_id"] is None
+
+
 class TestDuckdbFullTextSearch:
     """Tests for full-text search functionality."""
 
