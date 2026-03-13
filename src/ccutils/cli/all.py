@@ -13,7 +13,7 @@ from ..export import (
     generate_duckdb_archive,
     generate_star_json_archive,
 )
-from .utils import maybe_open_browser
+from .utils import maybe_open_browser, run_embedding_pipeline
 
 
 @click.command("all")
@@ -254,29 +254,11 @@ def all_cmd(
 
     # Run embedding pipeline if requested (star schema only)
     if embed and duckdb_stats and duckdb_stats.get("db_path"):
-        if not quiet:
-            click.echo("\nRunning ColBERT embedding pipeline...")
-        try:
-            import duckdb as _duckdb
+        import duckdb as _duckdb
 
-            from ..schemas.star.embeddings import EmbeddingPipeline
-
-            emb_conn = _duckdb.connect(str(duckdb_stats["db_path"]))
-            pipeline = EmbeddingPipeline(model_name=embed_model)
-            result = pipeline.embed_sessions(emb_conn)
-            if not quiet:
-                click.echo(f"  Embedded {result['sessions_embedded']} sessions")
-            match_result = pipeline.match_delegations(emb_conn)
-            if not quiet and match_result["delegations_rescored"] > 0:
-                click.echo(
-                    f"  Re-scored {match_result['delegations_rescored']} delegations"
-                )
-            emb_conn.close()
-        except ImportError:
-            click.echo(
-                "Warning: pylate not installed. "
-                "Install with: uv add ccutils[colbert]"
-            )
+        emb_conn = _duckdb.connect(str(duckdb_stats["db_path"]))
+        run_embedding_pipeline(emb_conn, embed_model, quiet=quiet)
+        emb_conn.close()
 
     # Generate JSON star schema if requested
     if output_format == "json-star":

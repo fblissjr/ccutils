@@ -110,3 +110,31 @@ def maybe_open_browser(output_dir):
     """
     index_url = (output_dir / "index.html").resolve().as_uri()
     webbrowser.open(index_url)
+
+
+def run_embedding_pipeline(conn, embed_model=None, quiet=False):
+    """Run ColBERT embedding pipeline on a star schema connection.
+
+    Args:
+        conn: DuckDB connection with star schema.
+        embed_model: Model name override, or None for default.
+        quiet: Suppress output.
+    """
+    try:
+        from ..schemas.star.embeddings import EmbeddingPipeline
+
+        if not quiet:
+            click.echo("Running ColBERT embedding pipeline...")
+        pipeline = EmbeddingPipeline(model_name=embed_model)
+        result = pipeline.embed_sessions(conn)
+        if not quiet:
+            click.echo(f"  Embedded {result['sessions_embedded']} sessions")
+        match_result = pipeline.match_delegations(conn)
+        if not quiet and match_result["delegations_rescored"] > 0:
+            click.echo(
+                f"  Re-scored {match_result['delegations_rescored']} delegations"
+            )
+    except ImportError:
+        click.echo(
+            "Warning: pylate not installed. Install with: uv add ccutils[colbert]"
+        )

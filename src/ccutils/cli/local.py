@@ -41,7 +41,7 @@ from ..export import (
     generate_html,
     generate_multi_session_index,
 )
-from .utils import maybe_open_browser
+from .utils import maybe_open_browser, run_embedding_pipeline
 
 
 @click.command("local")
@@ -155,13 +155,11 @@ def _convert_file(input_file, output, output_format, open_browser,
     if not json_file_path.exists():
         raise click.ClickException(f"File not found: {input_file}")
 
-    # Single file: default to temp dir + auto-open browser
-    auto_open = output is None
+    # Single file with no -o: use temp dir and auto-open browser
     if output is None:
+        open_browser = True
         output = Path(tempfile.gettempdir()) / f"claude-session-{json_file_path.stem}"
     output = Path(output)
-
-    project_name = json_file_path.parent.name or "unknown"
 
     _run_export_pipeline(
         session_files=[json_file_path],
@@ -169,9 +167,8 @@ def _convert_file(input_file, output, output_format, open_browser,
         output_format=output_format,
         include_thinking=include_thinking,
         private=private,
-        project_name=project_name,
+        project_name=json_file_path.parent.name or "unknown",
         open_browser=open_browser,
-        auto_open=auto_open,
     )
 
 
@@ -229,7 +226,6 @@ def _interactive_mode(output, output_format, open_browser, flat, expand_chains,
         include_thinking=include_thinking,
         private=private,
         open_browser=open_browser,
-        auto_open=False,
         agent_map=agent_map,
         embed=embed,
     )
@@ -242,7 +238,6 @@ def _run_export_pipeline(
     include_thinking,
     private,
     open_browser=False,
-    auto_open=False,
     project_name=None,
     agent_map=None,
     embed=None,
@@ -255,8 +250,7 @@ def _run_export_pipeline(
         output_format: One of html, duckdb, duckdb-star, json, json-star.
         include_thinking: Whether to include thinking blocks.
         private: Whether to sanitize file paths.
-        open_browser: Explicit --open flag.
-        auto_open: Auto-open browser (single file with no -o).
+        open_browser: Open result in browser after HTML export.
         project_name: Override project name (for single-file mode).
         agent_map: Agent session relationships (from interactive picker).
         embed: Embedding model name, "default", or None.
@@ -286,7 +280,7 @@ def _run_export_pipeline(
             click.echo(f"Generated {len(session_files)} session(s) with master index")
 
         click.echo(f"Output: {output.resolve()}")
-        if open_browser or auto_open:
+        if open_browser:
             maybe_open_browser(output)
 
     elif fmt == "duckdb":
@@ -322,7 +316,7 @@ def _run_export_pipeline(
             create_semantic_model(conn)
 
             if embed:
-                _run_embedding_pipeline(conn, embed_model)
+                run_embedding_pipeline(conn, embed_model)
 
             conn.close()
 
@@ -330,10 +324,9 @@ def _run_export_pipeline(
 
     elif fmt == "json":
         if schema == "simple":
-            if output.is_dir() or output.name == "" or output.suffix == "":
-                json_path = output / "sessions.json"
-            elif output.suffix != ".json":
-                json_path = output.with_suffix(".json")
+            # Determine JSON output path from user-provided output
+            if output.suffix == "" or output.suffix != ".json":
+                json_path = output / "sessions.json" if output.suffix == "" else output.with_suffix(".json")
             else:
                 json_path = output
             json_path.parent.mkdir(parents=True, exist_ok=True)
@@ -344,9 +337,8 @@ def _run_export_pipeline(
             )
             click.echo(f"Exported to {json_path}")
         else:  # star schema
-            if output.is_dir() or output.name in ("", "."):
-                output_dir = output / "star_schema"
-            elif output.suffix != "":
+            # Determine star schema output directory
+            if output.suffix != "":
                 output_dir = output.with_suffix("")
             else:
                 output_dir = output
@@ -367,31 +359,11 @@ def _run_export_pipeline(
             create_semantic_model(conn)
 
             if embed:
-                _run_embedding_pipeline(conn, embed_model)
+                run_embedding_pipeline(conn, embed_model)
 
             export_star_schema_to_json(conn, output_dir)
             conn.close()
             click.echo(f"Exported to {output_dir}/")
-
-
-def _run_embedding_pipeline(conn, embed_model=None):
-    """Run ColBERT embedding pipeline on a star schema connection."""
-    try:
-        from ..schemas.star.embeddings import EmbeddingPipeline
-
-        click.echo("Running ColBERT embedding pipeline...")
-        pipeline = EmbeddingPipeline(model_name=embed_model)
-        result = pipeline.embed_sessions(conn)
-        click.echo(f"  Embedded {result['sessions_embedded']} sessions")
-        match_result = pipeline.match_delegations(conn)
-        if match_result["delegations_rescored"] > 0:
-            click.echo(
-                f"  Re-scored {match_result['delegations_rescored']} delegations"
-            )
-    except ImportError:
-        click.echo(
-            "Warning: pylate not installed. " "Install with: uv add ccutils[colbert]"
-        )
 
 
 def _flat_mode_selection(projects_folder, limit, project_filter, expand_chains, style):
