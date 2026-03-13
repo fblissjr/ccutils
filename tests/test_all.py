@@ -628,11 +628,11 @@ class TestDuckDBStarSchema:
         assert result.exit_code == 0
 
 
-class TestJsonCommandWithUrl:
-    """Tests for the json command with URL support."""
+class TestConvertCommandWithUrl:
+    """Tests for the convert command with URL support."""
 
-    def test_json_command_accepts_url(self, output_dir):
-        """Test that json command can accept a URL starting with http:// or https://."""
+    def test_convert_command_accepts_url(self, output_dir):
+        """Test that convert command can accept a URL starting with http:// or https://."""
         from unittest.mock import patch, MagicMock
 
         # Sample JSONL content
@@ -653,7 +653,7 @@ class TestJsonCommandWithUrl:
             result = runner.invoke(
                 cli,
                 [
-                    "json",
+                    "convert",
                     "https://example.com/session.jsonl",
                     "-o",
                     str(output_dir),
@@ -669,8 +669,8 @@ class TestJsonCommandWithUrl:
         assert result.exit_code == 0
         assert (output_dir / "index.html").exists()
 
-    def test_json_command_accepts_http_url(self, output_dir):
-        """Test that json command can accept http:// URLs."""
+    def test_convert_command_accepts_http_url(self, output_dir):
+        """Test that convert command can accept http:// URLs."""
         from unittest.mock import patch, MagicMock
 
         jsonl_content = '{"type": "user", "timestamp": "2025-01-01T10:00:00.000Z", "message": {"role": "user", "content": "Hello"}}\n'
@@ -686,7 +686,7 @@ class TestJsonCommandWithUrl:
             result = runner.invoke(
                 cli,
                 [
-                    "json",
+                    "convert",
                     "http://example.com/session.jsonl",
                     "-o",
                     str(output_dir),
@@ -696,8 +696,8 @@ class TestJsonCommandWithUrl:
         mock_get.assert_called_once()
         assert result.exit_code == 0
 
-    def test_json_command_url_fetch_error(self, output_dir):
-        """Test that json command handles URL fetch errors gracefully."""
+    def test_convert_command_url_fetch_error(self, output_dir):
+        """Test that convert command handles URL fetch errors gracefully."""
         from unittest.mock import patch
         import httpx
 
@@ -709,7 +709,7 @@ class TestJsonCommandWithUrl:
             result = runner.invoke(
                 cli,
                 [
-                    "json",
+                    "convert",
                     "https://example.com/session.jsonl",
                     "-o",
                     str(output_dir),
@@ -719,8 +719,8 @@ class TestJsonCommandWithUrl:
         assert result.exit_code != 0
         assert "error" in result.output.lower() or "Error" in result.output
 
-    def test_json_command_still_works_with_local_file(self, output_dir):
-        """Test that json command still works with local file paths."""
+    def test_convert_command_still_works_with_local_file(self, output_dir):
+        """Test that convert command still works with local file paths."""
         # Create a temp JSONL file
         jsonl_file = output_dir / "test.jsonl"
         jsonl_file.write_text(
@@ -734,7 +734,7 @@ class TestJsonCommandWithUrl:
         result = runner.invoke(
             cli,
             [
-                "json",
+                "convert",
                 str(jsonl_file),
                 "-o",
                 str(html_output),

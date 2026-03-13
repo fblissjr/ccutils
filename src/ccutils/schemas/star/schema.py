@@ -35,52 +35,43 @@ def create_star_schema(db_path):
     # Staging Tables
     # =========================================================================
 
-    conn.execute(
-        """
+    conn.execute("""
         CREATE OR REPLACE TABLE stg_task_agent_map (
             tool_use_id VARCHAR,
             agent_id VARCHAR,
             session_key VARCHAR
         )
-    """
-    )
+    """)
 
     # =========================================================================
     # Core Dimension Tables (6)
     # =========================================================================
 
-    conn.execute(
-        """
+    conn.execute("""
         CREATE OR REPLACE TABLE dim_tool (
             tool_key VARCHAR,
             tool_name VARCHAR,
             tool_category VARCHAR
         )
-    """
-    )
+    """)
 
-    conn.execute(
-        """
+    conn.execute("""
         CREATE OR REPLACE TABLE dim_model (
             model_key VARCHAR,
             model_name VARCHAR,
             model_family VARCHAR
         )
-    """
-    )
+    """)
 
-    conn.execute(
-        """
+    conn.execute("""
         CREATE OR REPLACE TABLE dim_project (
             project_key VARCHAR,
             project_path VARCHAR,
             project_name VARCHAR
         )
-    """
-    )
+    """)
 
-    conn.execute(
-        """
+    conn.execute("""
         CREATE OR REPLACE TABLE dim_session (
             session_key VARCHAR,
             session_id VARCHAR,
@@ -103,11 +94,9 @@ def create_star_schema(db_path):
             first_user_message VARCHAR,
             last_assistant_message VARCHAR
         )
-    """
-    )
+    """)
 
-    conn.execute(
-        """
+    conn.execute("""
         CREATE OR REPLACE TABLE dim_date (
             date_key INTEGER,
             full_date DATE,
@@ -121,26 +110,22 @@ def create_star_schema(db_path):
             is_weekend BOOLEAN,
             week_of_year INTEGER
         )
-    """
-    )
+    """)
 
-    conn.execute(
-        """
+    conn.execute("""
         CREATE OR REPLACE TABLE dim_time (
             time_key INTEGER,
             hour INTEGER,
             minute INTEGER,
             time_of_day VARCHAR
         )
-    """
-    )
+    """)
 
     # =========================================================================
     # Core Fact Tables (6)
     # =========================================================================
 
-    conn.execute(
-        """
+    conn.execute("""
         CREATE OR REPLACE TABLE fact_messages (
             message_id VARCHAR,
             session_key VARCHAR,
@@ -164,11 +149,9 @@ def create_star_schema(db_path):
             content_json JSON,
             is_sidechain BOOLEAN DEFAULT FALSE
         )
-    """
-    )
+    """)
 
-    conn.execute(
-        """
+    conn.execute("""
         CREATE OR REPLACE TABLE fact_tool_calls (
             tool_call_id VARCHAR,
             session_key VARCHAR,
@@ -190,11 +173,9 @@ def create_star_schema(db_path):
             pattern VARCHAR,
             query_text VARCHAR
         )
-    """
-    )
+    """)
 
-    conn.execute(
-        """
+    conn.execute("""
         CREATE OR REPLACE TABLE fact_session_summary (
             session_key VARCHAR,
             project_key VARCHAR,
@@ -211,15 +192,15 @@ def create_star_schema(db_path):
             unique_files_touched INTEGER,
             max_conversation_depth INTEGER,
             total_estimated_tokens INTEGER,
+            total_thinking_tokens INTEGER,
+            total_tool_io_tokens INTEGER,
             session_duration_seconds INTEGER,
             first_timestamp TIMESTAMP,
             last_timestamp TIMESTAMP
         )
-    """
-    )
+    """)
 
-    conn.execute(
-        """
+    conn.execute("""
         CREATE OR REPLACE TABLE fact_file_operations (
             file_operation_id VARCHAR,
             tool_call_id VARCHAR,
@@ -232,11 +213,9 @@ def create_star_schema(db_path):
             file_size_chars INTEGER,
             timestamp TIMESTAMP
         )
-    """
-    )
+    """)
 
-    conn.execute(
-        """
+    conn.execute("""
         CREATE OR REPLACE TABLE fact_errors (
             error_id VARCHAR,
             tool_call_id VARCHAR,
@@ -248,11 +227,9 @@ def create_star_schema(db_path):
             error_message TEXT,
             timestamp TIMESTAMP
         )
-    """
-    )
+    """)
 
-    conn.execute(
-        """
+    conn.execute("""
         CREATE OR REPLACE TABLE fact_tool_chain_steps (
             chain_step_id VARCHAR,
             session_key VARCHAR,
@@ -265,15 +242,13 @@ def create_star_schema(db_path):
             is_error BOOLEAN,
             time_since_prev_seconds FLOAT
         )
-    """
-    )
+    """)
 
     # =========================================================================
     # Granular Dimensions (2)
     # =========================================================================
 
-    conn.execute(
-        """
+    conn.execute("""
         CREATE OR REPLACE TABLE dim_file (
             file_key VARCHAR,
             file_path VARCHAR,
@@ -282,11 +257,9 @@ def create_star_schema(db_path):
             directory_path VARCHAR,
             language VARCHAR
         )
-    """
-    )
+    """)
 
-    conn.execute(
-        """
+    conn.execute("""
         CREATE OR REPLACE TABLE dim_session_chain (
             chain_key VARCHAR,
             slug VARCHAR,
@@ -298,15 +271,13 @@ def create_star_schema(db_path):
             last_timestamp TIMESTAMP,
             total_duration_seconds INTEGER
         )
-    """
-    )
+    """)
 
     # =========================================================================
     # Granular Fact Tables (3)
     # =========================================================================
 
-    conn.execute(
-        """
+    conn.execute("""
         CREATE OR REPLACE TABLE fact_content_blocks (
             content_block_id VARCHAR,
             message_id VARCHAR,
@@ -319,11 +290,9 @@ def create_star_schema(db_path):
             content_text TEXT,
             content_json JSON
         )
-    """
-    )
+    """)
 
-    conn.execute(
-        """
+    conn.execute("""
         CREATE OR REPLACE TABLE fact_code_blocks (
             code_block_id VARCHAR,
             message_id VARCHAR,
@@ -336,11 +305,9 @@ def create_star_schema(db_path):
             char_count INTEGER,
             code_text TEXT
         )
-    """
-    )
+    """)
 
-    conn.execute(
-        """
+    conn.execute("""
         CREATE OR REPLACE TABLE fact_entity_mentions (
             mention_id VARCHAR,
             message_id VARCHAR,
@@ -352,15 +319,13 @@ def create_star_schema(db_path):
             position_start INTEGER,
             position_end INTEGER
         )
-    """
-    )
+    """)
 
     # =========================================================================
     # Agent Delegation Tracking
     # =========================================================================
 
-    conn.execute(
-        """
+    conn.execute("""
         CREATE OR REPLACE TABLE fact_agent_delegations (
             delegation_key VARCHAR,
             parent_session_key VARCHAR,
@@ -380,15 +345,13 @@ def create_star_schema(db_path):
             agent_errors INTEGER,
             agent_duration_seconds INTEGER
         )
-    """
-    )
+    """)
 
     # =========================================================================
     # Cross-Session Bridge Table
     # =========================================================================
 
-    conn.execute(
-        """
+    conn.execute("""
         CREATE OR REPLACE TABLE bridge_session_file (
             session_file_key VARCHAR,
             session_key VARCHAR,
@@ -401,15 +364,13 @@ def create_star_schema(db_path):
             edit_count INTEGER,
             total_chars_written INTEGER
         )
-    """
-    )
+    """)
 
     # =========================================================================
     # Optional Tables (require pylate)
     # =========================================================================
 
-    conn.execute(
-        """
+    conn.execute("""
         CREATE OR REPLACE TABLE fact_session_embeddings (
             embedding_key VARCHAR,
             session_key VARCHAR,
@@ -420,11 +381,9 @@ def create_star_schema(db_path):
             embedded_at TIMESTAMP,
             content_hash VARCHAR
         )
-    """
-    )
+    """)
 
-    conn.execute(
-        """
+    conn.execute("""
         CREATE OR REPLACE TABLE fact_tool_input_params (
             param_id VARCHAR,
             tool_call_id VARCHAR,
@@ -434,15 +393,13 @@ def create_star_schema(db_path):
             param_value_number FLOAT,
             param_value_bool BOOLEAN
         )
-    """
-    )
+    """)
 
     # =========================================================================
     # Semantic Views (10)
     # =========================================================================
 
-    conn.execute(
-        """
+    conn.execute("""
         CREATE OR REPLACE VIEW semantic_sessions AS
         SELECT
             ds.session_id,
@@ -480,11 +437,9 @@ def create_star_schema(db_path):
         JOIN dim_project dp ON fss.project_key = dp.project_key
         LEFT JOIN dim_date dd ON fss.date_key = dd.date_key
         LEFT JOIN dim_time dti ON fss.time_key = dti.time_key
-    """
-    )
+    """)
 
-    conn.execute(
-        """
+    conn.execute("""
         CREATE OR REPLACE VIEW semantic_messages AS
         SELECT
             fm.message_id,
@@ -513,11 +468,9 @@ def create_star_schema(db_path):
         LEFT JOIN dim_project dp ON fm.project_key = dp.project_key
         LEFT JOIN dim_date dd ON fm.date_key = dd.date_key
         LEFT JOIN dim_time dt ON fm.time_key = dt.time_key
-    """
-    )
+    """)
 
-    conn.execute(
-        """
+    conn.execute("""
         CREATE OR REPLACE VIEW semantic_tool_calls AS
         SELECT
             ftc.tool_call_id,
@@ -546,11 +499,9 @@ def create_star_schema(db_path):
         LEFT JOIN dim_project dp ON ds.project_key = dp.project_key
         LEFT JOIN dim_date dd ON ftc.date_key = dd.date_key
         LEFT JOIN dim_time dti ON ftc.time_key = dti.time_key
-    """
-    )
+    """)
 
-    conn.execute(
-        """
+    conn.execute("""
         CREATE OR REPLACE VIEW semantic_file_operations AS
         SELECT
             ffo.operation_type,
@@ -574,11 +525,9 @@ def create_star_schema(db_path):
         LEFT JOIN dim_project dp ON ds.project_key = dp.project_key
         LEFT JOIN dim_date dd ON ffo.date_key = dd.date_key
         LEFT JOIN dim_time dti ON ffo.time_key = dti.time_key
-    """
-    )
+    """)
 
-    conn.execute(
-        """
+    conn.execute("""
         CREATE OR REPLACE VIEW semantic_session_chains AS
         SELECT
             dsc.chain_key,
@@ -600,11 +549,9 @@ def create_star_schema(db_path):
         JOIN dim_session ds ON ds.chain_key = dsc.chain_key
         LEFT JOIN dim_project dp ON ds.project_key = dp.project_key
         LEFT JOIN fact_session_summary fss ON ds.session_key = fss.session_key
-    """
-    )
+    """)
 
-    conn.execute(
-        """
+    conn.execute("""
         CREATE OR REPLACE VIEW semantic_agent_delegations AS
         SELECT
             fad.delegation_key,
@@ -631,11 +578,9 @@ def create_star_schema(db_path):
         LEFT JOIN dim_project dp ON ps.project_key = dp.project_key
         LEFT JOIN dim_date dd ON fad.date_key = dd.date_key
         LEFT JOIN dim_time dti ON fad.time_key = dti.time_key
-    """
-    )
+    """)
 
-    conn.execute(
-        """
+    conn.execute("""
         CREATE OR REPLACE VIEW semantic_file_evolution AS
         SELECT
             df.file_path,
@@ -657,11 +602,9 @@ def create_star_schema(db_path):
         JOIN dim_file df ON bsf.file_key = df.file_key
         GROUP BY df.file_path, df.file_name, df.file_extension, df.directory_path, df.language
         HAVING COUNT(DISTINCT bsf.session_key) > 1
-    """
-    )
+    """)
 
-    conn.execute(
-        """
+    conn.execute("""
         CREATE OR REPLACE VIEW semantic_tool_patterns AS
         SELECT
             dt1.tool_name AS tool_name,
@@ -677,11 +620,9 @@ def create_star_schema(db_path):
         GROUP BY dt1.tool_name, dt2.tool_name
         HAVING COUNT(*) >= 2
         ORDER BY frequency DESC
-    """
-    )
+    """)
 
-    conn.execute(
-        """
+    conn.execute("""
         CREATE OR REPLACE VIEW semantic_project_context AS
         SELECT
             ds.session_id,
@@ -709,11 +650,9 @@ def create_star_schema(db_path):
         LEFT JOIN fact_session_summary fss ON ds.session_key = fss.session_key
         LEFT JOIN dim_time dti ON fss.time_key = dti.time_key
         ORDER BY ds.first_timestamp DESC
-    """
-    )
+    """)
 
-    conn.execute(
-        """
+    conn.execute("""
         CREATE OR REPLACE VIEW semantic_project_files AS
         SELECT
             dp.project_name,
@@ -732,7 +671,6 @@ def create_star_schema(db_path):
         JOIN dim_project dp ON ds.project_key = dp.project_key
         GROUP BY dp.project_name, df.file_path, df.file_extension, df.language
         ORDER BY sessions_touching_file DESC
-    """
-    )
+    """)
 
     return conn

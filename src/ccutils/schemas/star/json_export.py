@@ -4,7 +4,6 @@ import json
 from datetime import datetime
 from pathlib import Path
 
-
 # Tables organized by type (22 total)
 DIMENSION_TABLES = [
     "dim_tool",

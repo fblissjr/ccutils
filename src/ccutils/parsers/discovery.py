@@ -12,7 +12,6 @@ from .metadata import (
 )
 from .session import extract_session_metadata, extract_session_slug, get_session_summary
 
-
 # ---------------------------------------------------------------------------
 # Terminal width (delegated to tui.layout)
 # ---------------------------------------------------------------------------

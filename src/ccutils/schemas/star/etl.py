@@ -76,6 +76,10 @@ class StarExtractionResult:
     files_seen: dict = field(default_factory=dict)
     task_agent_map: dict = field(default_factory=dict)
 
+    # Token estimation breakdown
+    thinking_estimated_tokens: int = 0
+    tool_io_estimated_tokens: int = 0
+
     # For heuristic classification
     first_user_message: str | None = None
     last_assistant_message: str | None = None
@@ -164,6 +168,7 @@ def _handle_tool_use_block(result, block, ctx, tool_use_map, prev_tool_call):
     result.tools_seen.add(tool_name)
 
     input_json = json.dumps(tool_input)
+    result.tool_io_estimated_tokens += estimate_tokens(input_json)
 
     # Extract common parameters for direct columns
     extracted_file_path = extract_file_path_from_tool(tool_name, tool_input)
@@ -333,6 +338,7 @@ def _handle_tool_result_block(result, block, ctx, tool_use_map):
 
     output_text = result_text[: ctx.truncate_output]
     output_char_count = len(result_text)
+    result.tool_io_estimated_tokens += estimate_tokens(result_text)
 
     if tool_use_id and tool_use_id in tool_use_map:
         tool_info = tool_use_map[tool_use_id]
@@ -553,6 +559,7 @@ def _extract_star_data(
                     has_thinking = True
                     result.thinking_count += 1
                     thinking_text = block.get("thinking", "")
+                    result.thinking_estimated_tokens += estimate_tokens(thinking_text)
 
                     if should_track:
                         _add_content_block(
@@ -1033,13 +1040,18 @@ def _load_facts(conn, session_key, project_key, result):
         first_date_key = int(result.first_timestamp.strftime("%Y%m%d"))
         first_time_key = int(result.first_timestamp.strftime("%H%M"))
 
-    total_estimated_tokens = sum(
+    text_estimated_tokens = sum(
         msg.get("estimated_tokens", 0) for msg in result.messages_data
+    )
+    total_estimated_tokens = (
+        text_estimated_tokens
+        + result.thinking_estimated_tokens
+        + result.tool_io_estimated_tokens
     )
 
     conn.execute(
         """INSERT INTO fact_session_summary VALUES
-           (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+           (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         [
             session_key,
             project_key,
@@ -1056,6 +1068,8 @@ def _load_facts(conn, session_key, project_key, result):
             len(result.files_seen),
             result.max_depth,
             total_estimated_tokens,
+            result.thinking_estimated_tokens,
+            result.tool_io_estimated_tokens,
             session_duration,
             result.first_timestamp,
             result.last_timestamp,

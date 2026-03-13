@@ -10,7 +10,6 @@ from pathlib import Path
 
 from .session import extract_text_from_content
 
-
 # Messages to skip when looking for a meaningful summary
 SKIP_SUMMARY_PATTERNS = [
     "[request interrupted",

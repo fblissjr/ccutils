@@ -110,7 +110,7 @@ from .cli import (
     cli,
     main,
     local_cmd,
-    json_cmd,
+    convert_cmd,
     web_cmd,
     all_cmd,
     explore_cmd,

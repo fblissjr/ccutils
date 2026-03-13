@@ -582,7 +582,7 @@ class TestSessionJsonOption:
         runner = CliRunner()
         result = runner.invoke(
             cli,
-            ["json", str(fixture_path), "-o", str(output_dir), "--json"],
+            ["convert", str(fixture_path), "-o", str(output_dir), "--json"],
         )
 
         assert result.exit_code == 0
@@ -601,7 +601,7 @@ class TestSessionJsonOption:
         runner = CliRunner()
         result = runner.invoke(
             cli,
-            ["json", str(fixture_path), "-o", str(output_dir), "--json"],
+            ["convert", str(fixture_path), "-o", str(output_dir), "--json"],
         )
 
         assert result.exit_code == 0
@@ -709,7 +709,7 @@ class TestOpenOption:
         runner = CliRunner()
         result = runner.invoke(
             cli,
-            ["json", str(fixture_path), "-o", str(output_dir), "--open"],
+            ["convert", str(fixture_path), "-o", str(output_dir), "--open"],
         )
 
         assert result.exit_code == 0
@@ -1169,7 +1169,7 @@ class TestOutputAutoOption:
         runner = CliRunner()
         result = runner.invoke(
             cli,
-            ["json", str(fixture_path), "-a", "-o", str(tmp_path)],
+            ["convert", str(fixture_path), "-a", "-o", str(tmp_path)],
         )
 
         assert result.exit_code == 0
@@ -1192,7 +1192,7 @@ class TestOutputAutoOption:
         runner = CliRunner()
         result = runner.invoke(
             cli,
-            ["json", str(fixture_path), "-a"],
+            ["convert", str(fixture_path), "-a"],
         )
 
         assert result.exit_code == 0
@@ -1221,7 +1221,7 @@ class TestOutputAutoOption:
         runner = CliRunner()
         result = runner.invoke(
             cli,
-            ["json", str(fixture_path), "-a", "-o", str(tmp_path)],
+            ["convert", str(fixture_path), "-a", "-o", str(tmp_path)],
         )
 
         assert result.exit_code == 0
@@ -1318,7 +1318,7 @@ class TestOutputAutoOption:
         runner = CliRunner()
         result = runner.invoke(
             cli,
-            ["json", str(fixture_path), "-a"],
+            ["convert", str(fixture_path), "-a"],
         )
 
         assert result.exit_code == 0

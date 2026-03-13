@@ -33,7 +33,7 @@ ccutils/
 │   │   ├── __init__.py       # CLI group and entry point
 │   │   ├── local.py          # local command
 │   │   ├── web.py            # web command
-│   │   ├── json_cmd.py       # json command
+│   │   ├── json_cmd.py       # convert command (single-file conversion)
 │   │   ├── all.py            # all command
 │   │   ├── explore.py        # explore command
 │   │   └── utils.py          # CLI utilities
@@ -98,7 +98,7 @@ ccutils/
 ### 1. CLI Commands
 - `local` - Two-phase session picker: select project(s) then session(s) with rich metadata tables. `--flat` for legacy single-list mode. **default command**
 - `web` - Import from Claude API (auto-detects credentials from macOS keychain)
-- `json` - Convert specific JSON/JSONL files or URLs
+- `convert` - Convert a single JSON/JSONL file or URL (supports all output formats: html, duckdb, json)
 - `all` - Batch convert all sessions (supports parallel processing with `-j`)
 - `explore` - Launch Data Explorer web server
 - `import` - Import Claude.ai account exports (Settings > Privacy > Export)

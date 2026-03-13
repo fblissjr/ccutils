@@ -10,6 +10,7 @@ from pathlib import Path
 
 from ...parsers.jsonl_reader import iter_loglines, iter_session_entries
 from ...sanitize import PathSanitizer
+from ..star.extractors import estimate_tokens
 from .schema import create_duckdb_schema
 
 
@@ -51,6 +52,9 @@ def export_session_to_duckdb(
     user_count = 0
     assistant_count = 0
     tool_use_count = 0
+
+    # Token estimation
+    total_estimated_tokens = 0
 
     # Agent metadata
     is_agent = False
@@ -128,6 +132,8 @@ def export_session_to_duckdb(
                     else:
                         input_json_str = json.dumps(tool_input)
 
+                    total_estimated_tokens += estimate_tokens(input_json_str)
+
                     if sanitizer:
                         input_json_str = sanitizer.sanitize_json_string(input_json_str)
 
@@ -149,6 +155,12 @@ def export_session_to_duckdb(
                         output_text = result_content[:truncate_output]
                     else:
                         output_text = str(result_content)[:truncate_output]
+
+                    total_estimated_tokens += estimate_tokens(
+                        result_content
+                        if isinstance(result_content, str)
+                        else str(result_content)
+                    )
 
                     if sanitizer:
                         output_text = sanitizer.sanitize_text(output_text)
@@ -178,8 +190,9 @@ def export_session_to_duckdb(
 
                 elif block_type == "thinking":
                     has_thinking = True
+                    thinking_text = block.get("thinking", "")
+                    total_estimated_tokens += estimate_tokens(thinking_text)
                     if include_thinking:
-                        thinking_text = block.get("thinking", "")
                         thinking_id += 1
                         conn.execute(
                             """
@@ -196,6 +209,9 @@ def export_session_to_duckdb(
                         )
 
             text_content = " ".join(text_parts)
+
+        # Estimate tokens for text content (thinking and tool I/O estimated above)
+        total_estimated_tokens += estimate_tokens(text_content)
 
         # Count messages
         if entry.entry_type == "user":
@@ -247,9 +263,9 @@ def export_session_to_duckdb(
             INSERT INTO sessions (
                 session_id, project_path, project_name, first_timestamp, last_timestamp,
                 message_count, user_message_count, assistant_message_count,
-                tool_use_count, cwd, git_branch, version,
+                tool_use_count, estimated_tokens, cwd, git_branch, version,
                 is_agent, agent_id, parent_session_id, depth_level
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
             [
                 session_id,
@@ -261,6 +277,7 @@ def export_session_to_duckdb(
                 user_count,
                 assistant_count,
                 tool_use_count,
+                total_estimated_tokens,
                 insert_cwd,
                 git_branch,
                 version,
@@ -303,6 +320,7 @@ def _extract_session_data(
         "user_message_count": 0,
         "assistant_message_count": 0,
         "tool_use_count": 0,
+        "estimated_tokens": 0,
         "is_agent": False,
         "agent_id": None,
         "parent_session_id": None,
@@ -390,6 +408,13 @@ def _extract_session_data(
                     else:
                         input_summary = str(tool_input)[:truncate_output]
 
+                    input_json_str = (
+                        json.dumps(tool_input)
+                        if isinstance(tool_input, dict)
+                        else str(tool_input)
+                    )
+                    session_meta["estimated_tokens"] += estimate_tokens(input_json_str)
+
                     tool_use_map[tool_id] = {
                         "tool_use_id": tool_id,
                         "session_id": session_id,
@@ -409,6 +434,12 @@ def _extract_session_data(
                     else:
                         output_text = str(result_content)[:truncate_output]
 
+                    session_meta["estimated_tokens"] += estimate_tokens(
+                        result_content
+                        if isinstance(result_content, str)
+                        else str(result_content)
+                    )
+
                     if sanitizer:
                         output_text = sanitizer.sanitize_text(output_text)
 
@@ -421,8 +452,9 @@ def _extract_session_data(
 
                 elif block_type == "thinking":
                     has_thinking = True
+                    thinking_text = block.get("thinking", "")
+                    session_meta["estimated_tokens"] += estimate_tokens(thinking_text)
                     if include_thinking:
-                        thinking_text = block.get("thinking", "")
                         thinking_id += 1
                         thinking_blocks.append(
                             {
@@ -435,6 +467,9 @@ def _extract_session_data(
                         )
 
             text_content = " ".join(text_parts)
+
+        # Estimate tokens for text content (thinking and tool I/O estimated above)
+        session_meta["estimated_tokens"] += estimate_tokens(text_content)
 
         # Count messages
         if entry.entry_type == "user":

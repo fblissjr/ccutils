@@ -439,12 +439,10 @@ class TestRunStarSchemaETL:
         conn = create_star_schema(db_path)
         run_star_schema_etl(conn, sample_session_file, "test-project")
 
-        result = conn.execute(
-            """SELECT dt.tool_name, ft.input_char_count
+        result = conn.execute("""SELECT dt.tool_name, ft.input_char_count
                FROM fact_tool_calls ft
                JOIN dim_tool dt ON ft.tool_key = dt.tool_key
-               ORDER BY dt.tool_name"""
-        ).fetchall()
+               ORDER BY dt.tool_name""").fetchall()
         assert len(result) == 2
         tool_names = [r[0] for r in result]
         assert "Read" in tool_names
@@ -459,12 +457,10 @@ class TestRunStarSchemaETL:
         conn = create_star_schema(db_path)
         run_star_schema_etl(conn, sample_session_file, "test-project")
 
-        result = conn.execute(
-            """SELECT dd.year, dd.month, dd.day, COUNT(*) as msg_count
+        result = conn.execute("""SELECT dd.year, dd.month, dd.day, COUNT(*) as msg_count
                FROM fact_messages fm
                JOIN dim_date dd ON fm.date_key = dd.date_key
-               GROUP BY dd.year, dd.month, dd.day"""
-        ).fetchone()
+               GROUP BY dd.year, dd.month, dd.day""").fetchone()
         assert result[0] == 2025
         assert result[1] == 1
         assert result[2] == 15
@@ -483,10 +479,8 @@ class TestContentBlockGranularity:
             conn, sample_session_file, "test-project", include_thinking=True
         )
 
-        result = conn.execute(
-            """SELECT COUNT(*) FROM fact_content_blocks
-               WHERE block_type = 'text'"""
-        ).fetchone()
+        result = conn.execute("""SELECT COUNT(*) FROM fact_content_blocks
+               WHERE block_type = 'text'""").fetchone()
         # At least 3 text blocks from assistant messages
         assert result[0] >= 3
         conn.close()
@@ -499,10 +493,8 @@ class TestContentBlockGranularity:
             conn, sample_session_file, "test-project", include_thinking=True
         )
 
-        result = conn.execute(
-            """SELECT COUNT(*) FROM fact_content_blocks
-               WHERE block_type = 'tool_use'"""
-        ).fetchone()
+        result = conn.execute("""SELECT COUNT(*) FROM fact_content_blocks
+               WHERE block_type = 'tool_use'""").fetchone()
         assert result[0] == 2  # Write and Read tool_use blocks
         conn.close()
 
@@ -516,10 +508,8 @@ class TestContentBlockGranularity:
             conn, sample_session_file, "test-project", include_thinking=True
         )
 
-        result = conn.execute(
-            """SELECT COUNT(*) FROM fact_content_blocks
-               WHERE block_type = 'thinking'"""
-        ).fetchone()
+        result = conn.execute("""SELECT COUNT(*) FROM fact_content_blocks
+               WHERE block_type = 'thinking'""").fetchone()
         assert result[0] == 1  # One thinking block
         conn.close()
 
@@ -532,12 +522,10 @@ class TestContentBlockGranularity:
         )
 
         # The assistant message asst-002 has: thinking (0), text (1), tool_use (2)
-        result = conn.execute(
-            """SELECT block_index, block_type
+        result = conn.execute("""SELECT block_index, block_type
                FROM fact_content_blocks
                WHERE message_id = 'asst-002'
-               ORDER BY block_index"""
-        ).fetchall()
+               ORDER BY block_index""").fetchall()
         assert len(result) == 3
         assert result[0][1] == "thinking"
         assert result[1][1] == "text"
@@ -693,12 +681,10 @@ class TestGranularETL:
             conn, granular_session_file, "test-project", include_thinking=True
         )
 
-        result = conn.execute(
-            """SELECT ffo.operation_type, df.file_name
+        result = conn.execute("""SELECT ffo.operation_type, df.file_name
                FROM fact_file_operations ffo
                JOIN dim_file df ON ffo.file_key = df.file_key
-               ORDER BY df.file_name, ffo.operation_type"""
-        ).fetchall()
+               ORDER BY df.file_name, ffo.operation_type""").fetchall()
         # Should have read and edit operations on auth.py
         operations = [(r[0], r[1]) for r in result]
         assert ("read", "auth.py") in operations
@@ -713,10 +699,8 @@ class TestGranularETL:
             conn, granular_session_file, "test-project", include_thinking=True
         )
 
-        result = conn.execute(
-            """SELECT language, line_count
-               FROM fact_code_blocks"""
-        ).fetchall()
+        result = conn.execute("""SELECT language, line_count
+               FROM fact_code_blocks""").fetchall()
         # Should detect Python code blocks
         languages = [r[0] for r in result]
         assert "python" in languages
@@ -730,11 +714,9 @@ class TestGranularETL:
             conn, granular_session_file, "test-project", include_thinking=True
         )
 
-        result = conn.execute(
-            """SELECT fe.error_message, dt.tool_name
+        result = conn.execute("""SELECT fe.error_message, dt.tool_name
                FROM fact_errors fe
-               JOIN dim_tool dt ON fe.tool_key = dt.tool_key"""
-        ).fetchall()
+               JOIN dim_tool dt ON fe.tool_key = dt.tool_key""").fetchall()
         # Should have the pytest failure error
         assert len(result) >= 1
         conn.close()
@@ -887,11 +869,81 @@ class TestFactSessionSummaryTimeKeyETL:
         conn = create_star_schema(db_path)
         run_star_schema_etl(conn, sample_session_file, "test-project")
 
-        result = conn.execute(
-            """SELECT dt.time_of_day
+        result = conn.execute("""SELECT dt.time_of_day
                FROM fact_session_summary fss
-               JOIN dim_time dt ON fss.time_key = dt.time_key"""
-        ).fetchone()
+               JOIN dim_time dt ON fss.time_key = dt.time_key""").fetchone()
         assert result is not None
         assert result[0] == "morning"
+        conn.close()
+
+
+class TestTokenEstimation:
+    """Tests for comprehensive token estimation including thinking and tool I/O."""
+
+    def test_total_estimated_tokens_includes_thinking(
+        self, granular_session_file, output_dir
+    ):
+        """Test that total_estimated_tokens includes thinking block tokens."""
+        db_path = output_dir / "test.duckdb"
+        conn = create_star_schema(db_path)
+        run_star_schema_etl(
+            conn, granular_session_file, "test-project", include_thinking=True
+        )
+
+        result = conn.execute(
+            "SELECT total_estimated_tokens, total_thinking_tokens FROM fact_session_summary"
+        ).fetchone()
+        total_tokens, thinking_tokens = result
+        assert total_tokens > 0
+        assert thinking_tokens > 0
+        # Thinking tokens should be part of the total
+        assert total_tokens >= thinking_tokens
+        conn.close()
+
+    def test_total_estimated_tokens_includes_tool_io(
+        self, granular_session_file, output_dir
+    ):
+        """Test that total_estimated_tokens includes tool input/output tokens."""
+        db_path = output_dir / "test.duckdb"
+        conn = create_star_schema(db_path)
+        run_star_schema_etl(conn, granular_session_file, "test-project")
+
+        result = conn.execute(
+            "SELECT total_estimated_tokens, total_tool_io_tokens FROM fact_session_summary"
+        ).fetchone()
+        total_tokens, tool_io_tokens = result
+        assert total_tokens > 0
+        assert tool_io_tokens > 0
+        # Tool I/O tokens should be part of the total
+        assert total_tokens >= tool_io_tokens
+        conn.close()
+
+    def test_token_breakdown_sums_to_total(self, granular_session_file, output_dir):
+        """Test that thinking + tool_io + text tokens equal total."""
+        db_path = output_dir / "test.duckdb"
+        conn = create_star_schema(db_path)
+        run_star_schema_etl(
+            conn, granular_session_file, "test-project", include_thinking=True
+        )
+
+        result = conn.execute("""SELECT total_estimated_tokens, total_thinking_tokens,
+                      total_tool_io_tokens
+               FROM fact_session_summary""").fetchone()
+        total, thinking, tool_io = result
+        # Text tokens = total - thinking - tool_io
+        text_tokens = total - thinking - tool_io
+        assert text_tokens >= 0
+        assert total == text_tokens + thinking + tool_io
+        conn.close()
+
+    def test_session_summary_has_token_breakdown_columns(self, output_dir):
+        """Test that fact_session_summary has the new token breakdown columns."""
+        db_path = output_dir / "test.duckdb"
+        conn = create_star_schema(db_path)
+
+        columns = conn.execute("DESCRIBE fact_session_summary").fetchall()
+        column_names = [c[0] for c in columns]
+        assert "total_estimated_tokens" in column_names
+        assert "total_thinking_tokens" in column_names
+        assert "total_tool_io_tokens" in column_names
         conn.close()

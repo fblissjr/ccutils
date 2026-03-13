@@ -240,9 +240,7 @@ def _create_multi_session_index(output_dir, sessions, metadata):
     <h1>Claude.ai Export</h1>
     <p class="stats">Source: Claude.ai account export | Conversations: {conv_count}</p>
     <div class="sessions">
-""".format(
-        conv_count=len(sessions)
-    )
+""".format(conv_count=len(sessions))
 
     for session_id, loglines in sessions.items():
         session_name = html.escape(session_id[:8])

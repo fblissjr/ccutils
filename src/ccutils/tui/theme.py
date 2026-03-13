@@ -5,7 +5,6 @@ Single source of truth for all visual styling in the TUI.
 
 from prompt_toolkit.styles import Style
 
-
 # -- Semantic role -> prompt_toolkit style string (for questionary FormattedText) --
 STYLES = {
     "temporal": "fg:#e5c07b",  # warm yellow -- dates, times, durations

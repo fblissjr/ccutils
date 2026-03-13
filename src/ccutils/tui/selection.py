@@ -18,7 +18,6 @@ from .formatters import (
 from .layout import ColumnSpec, calculate_column_widths, get_terminal_width
 from .theme import STYLES, model_style_key
 
-
 # ---------------------------------------------------------------------------
 # Internal label builders (return list[tuple[str, str]])
 # ---------------------------------------------------------------------------
