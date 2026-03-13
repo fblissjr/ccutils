@@ -13,22 +13,6 @@ from .metadata import (
 from .session import extract_session_metadata, extract_session_slug, get_session_summary
 
 # ---------------------------------------------------------------------------
-# Terminal width (delegated to tui.layout)
-# ---------------------------------------------------------------------------
-
-
-def get_terminal_width():
-    """Get the current terminal width.
-
-    Returns:
-        Terminal width in columns, defaults to 80 if unable to determine.
-    """
-    from ..tui.layout import get_terminal_width as _get_terminal_width
-
-    return _get_terminal_width()
-
-
-# ---------------------------------------------------------------------------
 # Session discovery functions (data only, no display)
 # ---------------------------------------------------------------------------
 
