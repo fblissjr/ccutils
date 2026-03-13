@@ -5,7 +5,6 @@ from click_default_group import DefaultGroup
 
 from .local import local_cmd
 from .web import web_cmd
-from .json_cmd import convert_cmd
 from .all import all_cmd
 from .explore import explore_cmd
 from .import_cmd import import_cmd
@@ -31,12 +30,22 @@ def cli():
 
 # Register commands
 cli.add_command(local_cmd, "local")
-cli.add_command(convert_cmd, "convert")
 cli.add_command(web_cmd, "web")
 cli.add_command(all_cmd, "all")
 cli.add_command(explore_cmd, "explore")
 cli.add_command(import_cmd, "import")
 cli.add_command(schema_cmd, "schema")
+
+# Hidden alias: 'convert' -> 'local' for backwards compatibility.
+# Wrapping in a new click.Command so we can set hidden=True without affecting 'local'.
+_convert_alias = click.Command(
+    name="convert",
+    callback=local_cmd.callback,
+    params=local_cmd.params,
+    help=local_cmd.help,
+    hidden=True,
+)
+cli.add_command(_convert_alias, "convert")
 
 
 def main():
@@ -48,7 +57,6 @@ __all__ = [
     "cli",
     "main",
     "local_cmd",
-    "convert_cmd",
     "web_cmd",
     "all_cmd",
     "explore_cmd",

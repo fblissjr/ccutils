@@ -21,9 +21,9 @@ ccutils/
 │   ├── sanitize.py           # Path sanitization for --private mode
 │   ├── cli/                   # CLI commands
 │   │   ├── __init__.py       # CLI group and entry point
-│   │   ├── local.py          # local command (default)
+│   │   ├── local.py          # local command (default) -- also handles single-file conversion
 │   │   ├── web.py            # web command
-│   │   ├── json_cmd.py       # convert command (single-file conversion)
+│   │   ├── json_cmd.py       # (deprecated) convert command alias lives in __init__.py now
 │   │   ├── all.py            # all command
 │   │   ├── explore.py        # explore command
 │   │   ├── import_cmd.py     # import command (Claude.ai exports)
@@ -90,13 +90,13 @@ ccutils/
 ## Key Components
 
 ### 1. CLI Commands
-- `local` - Two-phase session picker: select project(s) then session(s) with rich metadata tables. `--flat` for legacy single-list mode. **default command**
+- `local` - **default command**: pass a file to convert it (`ccutils session.jsonl`), or no args for interactive two-phase picker. `--flat` for legacy single-list mode
 - `web` - Import from Claude API (auto-detects credentials from macOS keychain)
-- `convert` - Convert a single JSON/JSONL file or URL (supports all output formats: html, duckdb, json)
 - `all` - Batch convert all sessions (supports parallel processing with `-j`)
 - `explore` - Launch Data Explorer web server
 - `import` - Import Claude.ai account exports (Settings > Privacy > Export)
 - `schema` - Inspect JSON structure without exposing content (safe to share publicly)
+- `convert` - Hidden alias for `local` (backwards compatibility)
 
 ### 2. Export Formats
 Three output formats with two schema types:

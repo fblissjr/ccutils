@@ -1,5 +1,6 @@
-"""Local session selection and conversion command."""
+"""Session selection and conversion command."""
 
+import tempfile
 from pathlib import Path
 
 import click
@@ -44,12 +45,13 @@ from .utils import maybe_open_browser
 
 
 @click.command("local")
+@click.argument("input_file", required=False, default=None, type=click.Path())
 @optgroup.group("Output")
 @optgroup.option(
     "-o",
     "--output",
     type=click.Path(),
-    help="Output directory (default: ./claude-archive).",
+    help="Output directory (default: ./claude-archive or temp dir for single file).",
 )
 @optgroup.option(
     "--format",
@@ -106,6 +108,7 @@ from .utils import maybe_open_browser
     help="Run ColBERT embeddings (optionally specify model name).",
 )
 def local_cmd(
+    input_file,
     output,
     output_format,
     open_browser,
@@ -117,15 +120,65 @@ def local_cmd(
     private,
     embed,
 ):
-    """Select and convert local Claude Code sessions to HTML or DuckDB.
+    """Convert Claude Code sessions to HTML, DuckDB, or JSON.
 
-    Two-phase selection: first pick project(s), then pick session(s) within them.
-    Use --flat to skip project selection and show all sessions in a single list.
-    Supports multi-select: use SPACE to select multiple, ENTER to confirm.
+    With no arguments, launches an interactive picker for local sessions.
+    Pass a session file to convert it directly.
+
+    \b
+    Examples:
+      ccutils                                    # interactive picker
+      ccutils session.jsonl                      # convert file, open in browser
+      ccutils session.jsonl --format duckdb-star -o ./out  # star schema
+      ccutils --format duckdb-star -o ./archive  # pick sessions, star schema
     """
     include_thinking = not no_thinking
-    include_subagents = not no_subagents
 
+    if input_file:
+        # Direct file conversion mode
+        _convert_file(
+            input_file, output, output_format, open_browser,
+            include_thinking, private,
+        )
+    else:
+        # Interactive picker mode
+        _interactive_mode(
+            output, output_format, open_browser, flat, expand_chains,
+            project_filter, include_thinking, not no_subagents, private, embed,
+        )
+
+
+def _convert_file(input_file, output, output_format, open_browser,
+                   include_thinking, private):
+    """Convert a single session file to the requested format."""
+    json_file_path = Path(input_file)
+    if not json_file_path.exists():
+        raise click.ClickException(f"File not found: {input_file}")
+
+    # Single file: default to temp dir + auto-open browser
+    auto_open = output is None
+    if output is None:
+        output = Path(tempfile.gettempdir()) / f"claude-session-{json_file_path.stem}"
+    output = Path(output)
+
+    project_name = json_file_path.parent.name or "unknown"
+
+    _run_export_pipeline(
+        session_files=[json_file_path],
+        output=output,
+        output_format=output_format,
+        include_thinking=include_thinking,
+        private=private,
+        project_name=project_name,
+        open_browser=open_browser,
+        auto_open=auto_open,
+    )
+
+
+def _interactive_mode(output, output_format, open_browser, flat, expand_chains,
+                      project_filter, include_thinking, include_subagents,
+                      private, embed):
+    """Interactive session picker followed by export."""
     projects_folder = Path.home() / ".claude" / "projects"
 
     if not projects_folder.exists():
@@ -137,30 +190,18 @@ def local_cmd(
     style = questionary_style()
 
     if flat:
-        # --flat mode: use old behavior with improved formatting
         selected = _flat_mode_selection(
-            projects_folder,
-            100,
-            project_filter,
-            expand_chains,
-            style,
+            projects_folder, 100, project_filter, expand_chains, style,
         )
     else:
-        # Two-phase mode: project selection then session selection
         selected = _two_phase_selection(
-            projects_folder,
-            100,
-            project_filter,
-            expand_chains,
-            console,
-            style,
+            projects_folder, 100, project_filter, expand_chains, console, style,
         )
 
     if not selected:
         click.echo("No sessions selected.")
         return
 
-    # Flatten selection: chains return lists of paths, standalone return single paths
     selected = flatten_selected_sessions(selected)
     click.echo(f"Selected {len(selected)} session(s)")
 
@@ -176,13 +217,53 @@ def local_cmd(
                     if agent_path not in selected:
                         selected.append(agent_path)
 
-    # Determine output path - default to ./claude-archive
+    # Picker mode: default to ./claude-archive
     if output is None:
         output = Path("./claude-archive")
-
     output = Path(output)
 
-    # Resolve schema and format from potentially compound format names
+    _run_export_pipeline(
+        session_files=selected,
+        output=output,
+        output_format=output_format,
+        include_thinking=include_thinking,
+        private=private,
+        open_browser=open_browser,
+        auto_open=False,
+        agent_map=agent_map,
+        embed=embed,
+    )
+
+
+def _run_export_pipeline(
+    session_files,
+    output,
+    output_format,
+    include_thinking,
+    private,
+    open_browser=False,
+    auto_open=False,
+    project_name=None,
+    agent_map=None,
+    embed=None,
+):
+    """Shared export pipeline for all output formats.
+
+    Args:
+        session_files: List of Path objects to session JSONL files.
+        output: Output path (directory for HTML/JSON, file for DuckDB).
+        output_format: One of html, duckdb, duckdb-star, json, json-star.
+        include_thinking: Whether to include thinking blocks.
+        private: Whether to sanitize file paths.
+        open_browser: Explicit --open flag.
+        auto_open: Auto-open browser (single file with no -o).
+        project_name: Override project name (for single-file mode).
+        agent_map: Agent session relationships (from interactive picker).
+        embed: Embedding model name, "default", or None.
+    """
+    if agent_map is None:
+        agent_map = {}
+
     schema, fmt = resolve_schema_format(output_format)
 
     # Resolve embed model
@@ -190,23 +271,23 @@ def local_cmd(
     if embed and embed != "default":
         embed_model = embed
 
-    # Execute based on format
-    # Note: github_repo is auto-detected by generate_html() from git push output
+    # github_repo is auto-detected by generate_html() from git push output
     # in the JSONL session data, or from the current working directory's git remote.
     if fmt == "html":
-        if len(selected) == 1 and not agent_map:
-            # Single session, no agents - use existing simple path
-            generate_html(selected[0], output, private=private)
+        if len(session_files) == 1 and not agent_map:
+            generate_html(session_files[0], output, private=private)
         else:
-            # Multiple sessions or has agents - use batch structure with master index
             output.mkdir(parents=True, exist_ok=True)
-            for idx, session_file in enumerate(selected, 1):
+            for idx, session_file in enumerate(session_files, 1):
                 session_output = output / session_file.stem
-                click.echo(f"[{idx}/{len(selected)}] {session_file.name}")
+                click.echo(f"[{idx}/{len(session_files)}] {session_file.name}")
                 generate_html(session_file, session_output, private=private)
-            # Generate master index with agent relationships
-            generate_multi_session_index(output, selected, agent_map=agent_map)
-            click.echo(f"Generated {len(selected)} session(s) with master index")
+            generate_multi_session_index(output, session_files, agent_map=agent_map)
+            click.echo(f"Generated {len(session_files)} session(s) with master index")
+
+        click.echo(f"Output: {output.resolve()}")
+        if open_browser or auto_open:
+            maybe_open_browser(output)
 
     elif fmt == "duckdb":
         db_path = (
@@ -216,24 +297,24 @@ def local_cmd(
 
         if schema == "simple":
             conn = create_duckdb_schema(db_path)
-            for idx, session_file in enumerate(selected, 1):
-                click.echo(f"[{idx}/{len(selected)}] {session_file.name}")
+            for idx, session_file in enumerate(session_files, 1):
+                click.echo(f"[{idx}/{len(session_files)}] {session_file.name}")
                 export_session_to_duckdb(
                     conn,
                     session_file,
-                    session_file.parent.name,
+                    project_name or session_file.parent.name,
                     include_thinking=include_thinking,
                     private=private,
                 )
             conn.close()
         else:  # star schema
             conn = create_star_schema(db_path)
-            for idx, session_file in enumerate(selected, 1):
-                click.echo(f"[{idx}/{len(selected)}] {session_file.name}")
+            for idx, session_file in enumerate(session_files, 1):
+                click.echo(f"[{idx}/{len(session_files)}] {session_file.name}")
                 run_star_schema_etl(
                     conn,
                     session_file,
-                    session_file.parent.name,
+                    project_name or session_file.parent.name,
                     include_thinking=include_thinking,
                     private=private,
                 )
@@ -246,11 +327,9 @@ def local_cmd(
             conn.close()
 
         click.echo(f"Exported to {db_path}")
-        return  # Skip browser open for DuckDB
 
     elif fmt == "json":
         if schema == "simple":
-            # Handle directory paths (like ".") - generate default filename
             if output.is_dir() or output.name == "" or output.suffix == "":
                 json_path = output / "sessions.json"
             elif output.suffix != ".json":
@@ -258,14 +337,13 @@ def local_cmd(
             else:
                 json_path = output
             json_path.parent.mkdir(parents=True, exist_ok=True)
-            click.echo(f"Exporting {len(selected)} session(s) to JSON...")
+            click.echo(f"Exporting {len(session_files)} session(s) to JSON...")
             export_sessions_to_json(
-                selected, json_path, include_thinking=include_thinking, private=private
+                session_files, json_path,
+                include_thinking=include_thinking, private=private,
             )
             click.echo(f"Exported to {json_path}")
         else:  # star schema
-            # Star schema JSON exports to a directory
-            # Handle paths like "." or paths with extensions
             if output.is_dir() or output.name in ("", "."):
                 output_dir = output / "star_schema"
             elif output.suffix != "":
@@ -273,15 +351,15 @@ def local_cmd(
             else:
                 output_dir = output
             output_dir.mkdir(parents=True, exist_ok=True)
-            click.echo(f"Exporting {len(selected)} session(s) to star schema JSON...")
-            # First create DuckDB in memory, then export to JSON
+            click.echo(f"Exporting {len(session_files)} session(s) to star schema JSON...")
+
             conn = create_star_schema(":memory:")
-            for idx, session_file in enumerate(selected, 1):
-                click.echo(f"[{idx}/{len(selected)}] {session_file.name}")
+            for idx, session_file in enumerate(session_files, 1):
+                click.echo(f"[{idx}/{len(session_files)}] {session_file.name}")
                 run_star_schema_etl(
                     conn,
                     session_file,
-                    session_file.parent.name,
+                    project_name or session_file.parent.name,
                     include_thinking=include_thinking,
                     private=private,
                 )
@@ -294,13 +372,6 @@ def local_cmd(
             export_star_schema_to_json(conn, output_dir)
             conn.close()
             click.echo(f"Exported to {output_dir}/")
-        return  # Skip browser open for JSON
-
-    # Show output directory
-    click.echo(f"Output: {output.resolve()}")
-
-    if open_browser and fmt == "html":
-        maybe_open_browser(output)
 
 
 def _run_embedding_pipeline(conn, embed_model=None):

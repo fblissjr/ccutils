@@ -110,7 +110,6 @@ from .cli import (
     cli,
     main,
     local_cmd,
-    convert_cmd,
     web_cmd,
     all_cmd,
     explore_cmd,

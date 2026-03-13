@@ -648,100 +648,11 @@ class TestDuckDBStarSchema:
         assert result.exit_code == 0
 
 
-class TestConvertCommandWithUrl:
-    """Tests for the convert command with URL support."""
+class TestFileConversion:
+    """Tests for single-file conversion via positional arg."""
 
-    def test_convert_command_accepts_url(self, output_dir):
-        """Test that convert command can accept a URL starting with http:// or https://."""
-        from unittest.mock import patch, MagicMock
-
-        # Sample JSONL content
-        jsonl_content = (
-            '{"type": "user", "timestamp": "2025-01-01T10:00:00.000Z", "message": {"role": "user", "content": "Hello from URL"}}\n'
-            '{"type": "assistant", "timestamp": "2025-01-01T10:00:05.000Z", "message": {"role": "assistant", "content": [{"type": "text", "text": "Hi there!"}]}}\n'
-        )
-
-        # Mock the httpx.get response
-        mock_response = MagicMock()
-        mock_response.text = jsonl_content
-        mock_response.raise_for_status = MagicMock()
-
-        runner = CliRunner()
-        with patch(
-            "ccutils.cli.utils.httpx.get", return_value=mock_response
-        ) as mock_get:
-            result = runner.invoke(
-                cli,
-                [
-                    "convert",
-                    "https://example.com/session.jsonl",
-                    "-o",
-                    str(output_dir),
-                ],
-            )
-
-        # Check that the URL was fetched
-        mock_get.assert_called_once()
-        call_url = mock_get.call_args[0][0]
-        assert call_url == "https://example.com/session.jsonl"
-
-        # Check that HTML was generated
-        assert result.exit_code == 0
-        assert (output_dir / "index.html").exists()
-
-    def test_convert_command_accepts_http_url(self, output_dir):
-        """Test that convert command can accept http:// URLs."""
-        from unittest.mock import patch, MagicMock
-
-        jsonl_content = '{"type": "user", "timestamp": "2025-01-01T10:00:00.000Z", "message": {"role": "user", "content": "Hello"}}\n'
-
-        mock_response = MagicMock()
-        mock_response.text = jsonl_content
-        mock_response.raise_for_status = MagicMock()
-
-        runner = CliRunner()
-        with patch(
-            "ccutils.cli.utils.httpx.get", return_value=mock_response
-        ) as mock_get:
-            result = runner.invoke(
-                cli,
-                [
-                    "convert",
-                    "http://example.com/session.jsonl",
-                    "-o",
-                    str(output_dir),
-                ],
-            )
-
-        mock_get.assert_called_once()
-        assert result.exit_code == 0
-
-    def test_convert_command_url_fetch_error(self, output_dir):
-        """Test that convert command handles URL fetch errors gracefully."""
-        from unittest.mock import patch
-        import httpx
-
-        runner = CliRunner()
-        with patch(
-            "ccutils.cli.utils.httpx.get",
-            side_effect=httpx.RequestError("Network error"),
-        ):
-            result = runner.invoke(
-                cli,
-                [
-                    "convert",
-                    "https://example.com/session.jsonl",
-                    "-o",
-                    str(output_dir),
-                ],
-            )
-
-        assert result.exit_code != 0
-        assert "error" in result.output.lower() or "Error" in result.output
-
-    def test_convert_command_still_works_with_local_file(self, output_dir):
-        """Test that convert command still works with local file paths."""
-        # Create a temp JSONL file
+    def test_file_conversion_works(self, output_dir):
+        """Test that passing a file converts it directly."""
         jsonl_file = output_dir / "test.jsonl"
         jsonl_file.write_text(
             '{"type": "user", "timestamp": "2025-01-01T10:00:00.000Z", "message": {"role": "user", "content": "Hello local"}}\n'
@@ -752,13 +663,7 @@ class TestConvertCommandWithUrl:
 
         runner = CliRunner()
         result = runner.invoke(
-            cli,
-            [
-                "convert",
-                str(jsonl_file),
-                "-o",
-                str(html_output),
-            ],
+            cli, [str(jsonl_file), "-o", str(html_output)],
         )
 
         assert result.exit_code == 0

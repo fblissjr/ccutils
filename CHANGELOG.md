@@ -6,12 +6,13 @@ All notable changes to this project will be documented in this file.
 
 ### Changed
 - **CLI simplification**: Opinionated defaults, removed dead weight, grouped options
+  - `convert` command absorbed into `local` -- pass a file as positional arg to convert directly: `ccutils session.jsonl`
+  - No file arg = interactive picker (previous `local` behavior). File arg = convert it (previous `convert` behavior)
+  - URL input support removed (`curl url > file.jsonl && ccutils file.jsonl` instead)
+  - `convert` still works as a hidden alias for backwards compatibility
   - Thinking blocks and subagents/agents now **included by default** -- use `--no-thinking`, `--no-subagents` (local), `--no-agents` (all) to opt out
   - Removed `--schema` flag (auto-inferred from `--format`)
-  - Removed `--json` flag (include JSONL in output) from `local`, `web`, `convert`
-  - Removed `-a`/`--output-auto` from `local`, `web`, `convert`
-  - Removed `--repo` from `local` and `convert` (kept on `web` for session filtering)
-  - Removed `--limit` from `local` (hardcoded to 100)
+  - Removed `--json`, `--output-auto`, `--repo` (from local), `--limit` flags
   - Merged `--embed` + `--embed-model` into single `--embed [MODEL]` flag
   - Options grouped into sections (Output, Selection, Content, Processing, Embeddings) via `click-option-group`
 
