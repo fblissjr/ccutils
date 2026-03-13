@@ -80,12 +80,14 @@ class EmbeddingPipeline:
 
         # Always use first_user_message (summary mode removed --
         # it depended on LLM enrichment tables that no longer exist)
-        sessions = conn.execute("""SELECT fm.session_key, fm.content_text
+        sessions = conn.execute(
+            """SELECT fm.session_key, fm.content_text
                FROM fact_messages fm
                WHERE fm.message_type = 'user'
                  AND fm.content_text IS NOT NULL
                  AND LENGTH(fm.content_text) > 0
-               ORDER BY fm.timestamp""").fetchall()
+               ORDER BY fm.timestamp"""
+        ).fetchall()
         # Take first user message per session
         texts = {}
         for r in sessions:
@@ -221,9 +223,11 @@ class EmbeddingPipeline:
             dict with counts: sessions_clustered, clusters_found
         """
         # Get all session embeddings
-        rows = conn.execute("""SELECT session_key, mean_embedding
+        rows = conn.execute(
+            """SELECT session_key, mean_embedding
                FROM fact_session_embeddings
-               WHERE mean_embedding IS NOT NULL""").fetchall()
+               WHERE mean_embedding IS NOT NULL"""
+        ).fetchall()
 
         if len(rows) < 2:
             return {"sessions_clustered": 0, "clusters_found": 0}

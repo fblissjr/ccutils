@@ -362,7 +362,8 @@ def _calculate_session_depths(conn):
     # Root sessions already default to 0
     # Iteratively resolve children
     for _ in range(100):
-        updated = conn.execute("""
+        updated = conn.execute(
+            """
             UPDATE dim_session child
             SET depth_level = parent.depth_level + 1
             FROM dim_session parent
@@ -373,17 +374,20 @@ def _calculate_session_depths(conn):
               AND child.depth_level = 0
               AND parent.depth_level >= 0
               AND child.session_key != parent.session_key
-            """)
+            """
+        )
         if updated.fetchone() is None:
             break
         # Check if any rows were actually changed
-        remaining = conn.execute("""
+        remaining = conn.execute(
+            """
             SELECT COUNT(*) FROM dim_session child
             JOIN dim_session parent ON child.parent_session_key = parent.session_key
             WHERE child.is_agent = TRUE
               AND child.depth_level = 0
               AND parent.depth_level > 0
-            """).fetchone()
+            """
+        ).fetchone()
         if remaining is None or remaining[0] == 0:
             break
 
@@ -395,7 +399,8 @@ def _build_session_chains(conn):
     and updates dim_session.chain_key for all sessions in the chain.
     """
     # Find all distinct slugs with their sessions
-    slug_groups = conn.execute("""
+    slug_groups = conn.execute(
+        """
         SELECT slug, COUNT(*) as cnt,
                MIN(first_timestamp) as first_ts,
                MAX(last_timestamp) as last_ts,
@@ -405,7 +410,8 @@ def _build_session_chains(conn):
         FROM dim_session
         WHERE slug IS NOT NULL AND slug != ''
         GROUP BY slug
-        """).fetchall()
+        """
+    ).fetchall()
 
     for row in slug_groups:
         slug = row[0]
@@ -478,11 +484,13 @@ def _link_agent_delegations(conn):
     # from progress records captured during ETL
     deterministic_map = {}
     try:
-        map_rows = conn.execute("""
+        map_rows = conn.execute(
+            """
             SELECT tam.tool_use_id, tam.agent_id, ds.session_key
             FROM stg_task_agent_map tam
             JOIN dim_session ds ON ds.agent_id = tam.agent_id AND ds.is_agent = TRUE
-            """).fetchall()
+            """
+        ).fetchall()
         for row in map_rows:
             # agent_session_key -> tool_use_id
             deterministic_map[row[2]] = row[0]
@@ -491,11 +499,13 @@ def _link_agent_delegations(conn):
         pass
 
     # Find all agent sessions with parents
-    agents = conn.execute("""
+    agents = conn.execute(
+        """
         SELECT a.session_key, a.parent_session_key, a.first_timestamp, a.last_timestamp
         FROM dim_session a
         WHERE a.is_agent = TRUE AND a.parent_session_key IS NOT NULL
-        """).fetchall()
+        """
+    ).fetchall()
 
     for agent_row in agents:
         agent_session_key = agent_row[0]
@@ -656,7 +666,8 @@ def _build_session_file_bridge(conn):
     Idempotent: clears bridge_session_file before repopulating.
     """
     conn.execute("DELETE FROM bridge_session_file")
-    conn.execute("""
+    conn.execute(
+        """
         INSERT INTO bridge_session_file
         SELECT
             md5(ffo.session_key || '|' || ffo.file_key) AS session_file_key,
@@ -672,4 +683,5 @@ def _build_session_file_bridge(conn):
         FROM fact_file_operations ffo
         WHERE ffo.file_key IS NOT NULL
         GROUP BY ffo.session_key, ffo.file_key
-        """)
+        """
+    )

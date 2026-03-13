@@ -379,12 +379,14 @@ class TestNoHardConstraints:
         conn = create_star_schema(db_path)
 
         # Should be able to insert with non-existent dimension key
-        conn.execute("""INSERT INTO fact_messages
+        conn.execute(
+            """INSERT INTO fact_messages
                (message_id, session_key, project_key, message_type, model_key,
                 date_key, time_key, timestamp, content_length, content_block_count,
                 has_tool_use, has_tool_result, has_thinking)
                VALUES ('test-001', 'nonexistent', 'nonexistent', 'user', 'nonexistent',
-                       99999999, 9999, '2025-01-01', 100, 1, false, false, false)""")
+                       99999999, 9999, '2025-01-01', 100, 1, false, false, false)"""
+        )
         result = conn.execute(
             "SELECT COUNT(*) FROM fact_messages WHERE message_id = 'test-001'"
         ).fetchone()

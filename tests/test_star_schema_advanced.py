@@ -334,9 +334,11 @@ class TestEntityExtractionETL:
             conn, granular_session_file, "test-project", include_thinking=True
         )
 
-        result = conn.execute("""SELECT em.entity_text, em.entity_type
+        result = conn.execute(
+            """SELECT em.entity_text, em.entity_type
                FROM fact_entity_mentions em
-               WHERE em.entity_type = 'file_path'""").fetchall()
+               WHERE em.entity_type = 'file_path'"""
+        ).fetchall()
         # Should find file paths from messages
         file_paths = [r[0] for r in result]
         # The grep result contains /home/user/myproject/src/utils.py
@@ -352,9 +354,11 @@ class TestEntityExtractionETL:
             conn, granular_session_file, "test-project", include_thinking=True
         )
 
-        result = conn.execute("""SELECT em.entity_text, em.entity_type
+        result = conn.execute(
+            """SELECT em.entity_text, em.entity_type
                FROM fact_entity_mentions em
-               WHERE em.entity_type = 'function_name'""").fetchall()
+               WHERE em.entity_type = 'function_name'"""
+        ).fetchall()
         # Should find function names like 'login', 'validate_credentials'
         func_names = [r[0] for r in result]
         assert any("login" in fn for fn in func_names)
@@ -432,10 +436,12 @@ class TestToolChainETL:
             conn, granular_session_file, "test-project", include_thinking=True
         )
 
-        result = conn.execute("""SELECT step_position, time_since_prev_seconds
+        result = conn.execute(
+            """SELECT step_position, time_since_prev_seconds
                FROM fact_tool_chain_steps
                WHERE time_since_prev_seconds IS NOT NULL
-               ORDER BY step_position""").fetchall()
+               ORDER BY step_position"""
+        ).fetchall()
         # Should have time measurements for non-first steps
         assert len(result) > 0
         for _, time_since in result:
@@ -471,10 +477,12 @@ class TestToolCallsExtractedColumns:
         conn = create_star_schema(db_path)
         run_star_schema_etl(conn, sample_session_file, "test-project")
 
-        result = conn.execute("""SELECT tool_call_id, file_path
+        result = conn.execute(
+            """SELECT tool_call_id, file_path
                FROM fact_tool_calls ftc
                JOIN dim_tool dt ON ftc.tool_key = dt.tool_key
-               WHERE dt.tool_name = 'Write'""").fetchone()
+               WHERE dt.tool_name = 'Write'"""
+        ).fetchone()
 
         assert result is not None
         assert result[1] == "/home/user/project/hello.py"
@@ -486,10 +494,12 @@ class TestToolCallsExtractedColumns:
         conn = create_star_schema(db_path)
         run_star_schema_etl(conn, sample_session_file, "test-project")
 
-        result = conn.execute("""SELECT tool_call_id, file_path
+        result = conn.execute(
+            """SELECT tool_call_id, file_path
                FROM fact_tool_calls ftc
                JOIN dim_tool dt ON ftc.tool_key = dt.tool_key
-               WHERE dt.tool_name = 'Read'""").fetchone()
+               WHERE dt.tool_name = 'Read'"""
+        ).fetchone()
 
         assert result is not None
         assert result[1] == "/home/user/project/hello.py"
@@ -536,9 +546,11 @@ class TestFactToolInputParams:
         conn = create_star_schema(db_path)
         run_star_schema_etl(conn, sample_session_file, "test-project")
 
-        result = conn.execute("""SELECT param_value_text
+        result = conn.execute(
+            """SELECT param_value_text
                FROM fact_tool_input_params
-               WHERE param_key = 'file_path'""").fetchall()
+               WHERE param_key = 'file_path'"""
+        ).fetchall()
 
         file_paths = [r[0] for r in result]
         assert "/home/user/project/hello.py" in file_paths
@@ -550,9 +562,11 @@ class TestFactToolInputParams:
         conn = create_star_schema(db_path)
         run_star_schema_etl(conn, sample_session_file, "test-project")
 
-        result = conn.execute("""SELECT param_value_text
+        result = conn.execute(
+            """SELECT param_value_text
                FROM fact_tool_input_params
-               WHERE param_key = 'content'""").fetchone()
+               WHERE param_key = 'content'"""
+        ).fetchone()
 
         assert result is not None
         assert "Hello, World!" in result[0]

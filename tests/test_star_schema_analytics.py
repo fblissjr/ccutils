@@ -295,10 +295,12 @@ class TestStarSchemaAnalytics:
         conn = create_star_schema(db_path)
         run_star_schema_etl(conn, sample_session_file, "test-project")
 
-        result = conn.execute("""SELECT dt.tool_category, COUNT(*) as usage_count
+        result = conn.execute(
+            """SELECT dt.tool_category, COUNT(*) as usage_count
                FROM fact_tool_calls ft
                JOIN dim_tool dt ON ft.tool_key = dt.tool_key
-               GROUP BY dt.tool_category""").fetchall()
+               GROUP BY dt.tool_category"""
+        ).fetchall()
         # Both Write and Read are file_operations
         assert len(result) == 1
         assert result[0][0] == "file_operations"
@@ -311,12 +313,14 @@ class TestStarSchemaAnalytics:
         conn = create_star_schema(db_path)
         run_star_schema_etl(conn, sample_session_file, "test-project")
 
-        result = conn.execute("""SELECT dm.model_family, COUNT(*) as msg_count
+        result = conn.execute(
+            """SELECT dm.model_family, COUNT(*) as msg_count
                FROM fact_messages fm
                JOIN dim_model dm ON fm.model_key = dm.model_key
                WHERE fm.model_key IS NOT NULL
                GROUP BY dm.model_family
-               ORDER BY dm.model_family""").fetchall()
+               ORDER BY dm.model_family"""
+        ).fetchall()
         result_dict = {r[0]: r[1] for r in result}
         # 2 opus messages, 1 sonnet message
         assert result_dict.get("opus", 0) == 2
@@ -329,11 +333,13 @@ class TestStarSchemaAnalytics:
         conn = create_star_schema(db_path)
         run_star_schema_etl(conn, sample_session_file, "test-project")
 
-        result = conn.execute("""SELECT dp.project_name, ds.git_branch,
+        result = conn.execute(
+            """SELECT dp.project_name, ds.git_branch,
                       fs.total_messages, fs.total_tool_calls
                FROM fact_session_summary fs
                JOIN dim_session ds ON fs.session_key = ds.session_key
-               JOIN dim_project dp ON fs.project_key = dp.project_key""").fetchone()
+               JOIN dim_project dp ON fs.project_key = dp.project_key"""
+        ).fetchone()
         assert result[0] == "test-project"
         assert result[1] == "main"
         assert result[2] == 6
@@ -346,10 +352,12 @@ class TestStarSchemaAnalytics:
         conn = create_star_schema(db_path)
         run_star_schema_etl(conn, sample_session_file, "test-project")
 
-        result = conn.execute("""SELECT dt.time_of_day, COUNT(*) as msg_count
+        result = conn.execute(
+            """SELECT dt.time_of_day, COUNT(*) as msg_count
                FROM fact_messages fm
                JOIN dim_time dt ON fm.time_key = dt.time_key
-               GROUP BY dt.time_of_day""").fetchone()
+               GROUP BY dt.time_of_day"""
+        ).fetchone()
         # All messages at 10:00 AM are in "morning"
         assert result[0] == "morning"
         assert result[1] == 6
@@ -367,11 +375,13 @@ class TestFileOperationAnalytics:
             conn, granular_session_file, "test-project", include_thinking=True
         )
 
-        result = conn.execute("""SELECT df.file_name, COUNT(*) as op_count
+        result = conn.execute(
+            """SELECT df.file_name, COUNT(*) as op_count
                FROM fact_file_operations ffo
                JOIN dim_file df ON ffo.file_key = df.file_key
                GROUP BY df.file_name
-               ORDER BY op_count DESC""").fetchall()
+               ORDER BY op_count DESC"""
+        ).fetchall()
         # auth.py should have multiple operations
         assert len(result) > 0
         assert result[0][0] == "auth.py"  # Most accessed file
@@ -385,10 +395,12 @@ class TestFileOperationAnalytics:
             conn, granular_session_file, "test-project", include_thinking=True
         )
 
-        result = conn.execute("""SELECT df.file_extension, COUNT(*) as op_count
+        result = conn.execute(
+            """SELECT df.file_extension, COUNT(*) as op_count
                FROM fact_file_operations ffo
                JOIN dim_file df ON ffo.file_key = df.file_key
-               GROUP BY df.file_extension""").fetchall()
+               GROUP BY df.file_extension"""
+        ).fetchall()
         ext_counts = {r[0]: r[1] for r in result}
         assert ".py" in ext_counts
         conn.close()
@@ -401,10 +413,12 @@ class TestFileOperationAnalytics:
             conn, granular_session_file, "test-project", include_thinking=True
         )
 
-        result = conn.execute("""SELECT operation_type, COUNT(*) as count
+        result = conn.execute(
+            """SELECT operation_type, COUNT(*) as count
                FROM fact_file_operations
                GROUP BY operation_type
-               ORDER BY count DESC""").fetchall()
+               ORDER BY count DESC"""
+        ).fetchall()
         op_types = [r[0] for r in result]
         # Should have read and edit operations
         assert "read" in op_types
@@ -461,11 +475,13 @@ class TestErrorAnalytics:
             conn, granular_session_file, "test-project", include_thinking=True
         )
 
-        result = conn.execute("""SELECT dt.tool_name, COUNT(*) as error_count
+        result = conn.execute(
+            """SELECT dt.tool_name, COUNT(*) as error_count
                FROM fact_errors fe
                JOIN dim_tool dt ON fe.tool_key = dt.tool_key
                GROUP BY dt.tool_name
-               ORDER BY error_count DESC""").fetchall()
+               ORDER BY error_count DESC"""
+        ).fetchall()
         # Bash had an error in our test data
         tool_errors = {r[0]: r[1] for r in result}
         assert "Bash" in tool_errors
@@ -537,10 +553,12 @@ class TestResponseTimeTracking:
         run_star_schema_etl(conn, sample_session_file, "test-project")
 
         # Check that response times are populated
-        result = conn.execute("""SELECT message_id, response_time_seconds
+        result = conn.execute(
+            """SELECT message_id, response_time_seconds
                FROM fact_messages
                WHERE response_time_seconds IS NOT NULL
-               ORDER BY timestamp""").fetchall()
+               ORDER BY timestamp"""
+        ).fetchall()
         # First message should not have response time (no parent)
         # Subsequent messages should have response times
         assert len(result) > 0
@@ -571,9 +589,11 @@ class TestConversationDepthTracking:
         conn = create_star_schema(db_path)
         run_star_schema_etl(conn, sample_session_file, "test-project")
 
-        result = conn.execute("""SELECT message_id, conversation_depth
+        result = conn.execute(
+            """SELECT message_id, conversation_depth
                FROM fact_messages
-               ORDER BY timestamp""").fetchall()
+               ORDER BY timestamp"""
+        ).fetchall()
         # First message should have depth 0
         # Each subsequent message should increase depth
         assert result[0][1] == 0  # user-001 at depth 0
@@ -727,9 +747,11 @@ class TestCreateSemanticModel:
         conn = create_star_schema(db_path)
         create_semantic_model(conn)
 
-        result = conn.execute("""SELECT column_name, column_type
+        result = conn.execute(
+            """SELECT column_name, column_type
                FROM meta_semantic_model
-               WHERE column_name LIKE '%_key'""").fetchall()
+               WHERE column_name LIKE '%_key'"""
+        ).fetchall()
 
         # All *_key columns should be classified as 'key'
         for col_name, col_type in result:
@@ -844,9 +866,11 @@ class TestCreateSemanticModel:
         conn = create_star_schema(db_path)
         create_semantic_model(conn)
 
-        result = conn.execute("""SELECT DISTINCT table_name, table_display_name
+        result = conn.execute(
+            """SELECT DISTINCT table_name, table_display_name
                FROM meta_semantic_model
-               WHERE table_display_name IS NOT NULL""").fetchall()
+               WHERE table_display_name IS NOT NULL"""
+        ).fetchall()
 
         # Should have display names
         assert len(result) > 0
@@ -868,10 +892,12 @@ class TestCreateSemanticModel:
         create_semantic_model(conn)
 
         # Should not have duplicate rows
-        result = conn.execute("""SELECT table_name, column_name, COUNT(*) as cnt
+        result = conn.execute(
+            """SELECT table_name, column_name, COUNT(*) as cnt
                FROM meta_semantic_model
                GROUP BY table_name, column_name
-               HAVING COUNT(*) > 1""").fetchall()
+               HAVING COUNT(*) > 1"""
+        ).fetchall()
 
         assert len(result) == 0, f"Found duplicate entries: {result}"
         conn.close()

@@ -2,6 +2,23 @@
 
 All notable changes to this project will be documented in this file.
 
+## 0.11.0
+
+### Added
+- **`convert` command**: Renamed from `json`, now supports all output formats via `--format` (html, duckdb, duckdb-star, json, json-star) and `--schema` (simple, star) -- single entry point for converting JSON/JSONL files or URLs
+- **Token estimation breakdown**: `total_thinking_tokens` and `total_tool_io_tokens` columns on `fact_session_summary` -- thinking blocks and tool I/O were previously uncounted
+- **`estimated_tokens` column** on simple schema `sessions` table
+- **CLI test coverage**: New test files for 5 previously untested commands -- `test_convert_cmd.py`, `test_schema_cmd.py`, `test_import_cmd.py`, `test_web_cmd.py`, `test_explore_cmd.py`
+
+### Fixed
+- **Token estimation accuracy**: Star schema ETL now counts thinking blocks and tool input/output in token estimates (previously only counted text blocks)
+- **CSS brace bug in import command**: Multi-session index used `.format()` which conflicted with CSS `{}` braces -- switched to f-string with doubled braces
+- **Simple ETL duplication**: Extracted `_extract_session_core()` and `SimpleExtractionResult` dataclass to share ~200 lines of logic between DuckDB and JSON export paths
+
+### Removed
+- Dead `get_terminal_width` wrapper from `parsers/discovery.py`
+- `json` CLI command (replaced by `convert`)
+
 ## 0.10.2
 
 ### Added

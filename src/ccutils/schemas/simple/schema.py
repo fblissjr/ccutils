@@ -22,7 +22,8 @@ def create_duckdb_schema(db_path):
     conn = duckdb.connect(str(db_path))
 
     # Sessions table
-    conn.execute("""
+    conn.execute(
+        """
         CREATE OR REPLACE TABLE sessions (
             session_id VARCHAR,
             project_path VARCHAR,
@@ -42,10 +43,12 @@ def create_duckdb_schema(db_path):
             parent_session_id VARCHAR,
             depth_level INTEGER DEFAULT 0
         )
-    """)
+    """
+    )
 
     # Messages table
-    conn.execute("""
+    conn.execute(
+        """
         CREATE OR REPLACE TABLE messages (
             id VARCHAR,
             session_id VARCHAR,
@@ -60,10 +63,12 @@ def create_duckdb_schema(db_path):
             has_thinking BOOLEAN,
             is_sidechain BOOLEAN DEFAULT FALSE
         )
-    """)
+    """
+    )
 
     # Tool calls table
-    conn.execute("""
+    conn.execute(
+        """
         CREATE OR REPLACE TABLE tool_calls (
             tool_use_id VARCHAR,
             session_id VARCHAR,
@@ -75,10 +80,12 @@ def create_duckdb_schema(db_path):
             output_text TEXT,
             timestamp TIMESTAMP
         )
-    """)
+    """
+    )
 
     # Thinking table
-    conn.execute("""
+    conn.execute(
+        """
         CREATE OR REPLACE TABLE thinking (
             id INTEGER,
             session_id VARCHAR,
@@ -86,6 +93,7 @@ def create_duckdb_schema(db_path):
             thinking_text TEXT,
             timestamp TIMESTAMP
         )
-    """)
+    """
+    )
 
     return conn
