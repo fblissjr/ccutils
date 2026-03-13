@@ -1093,6 +1093,43 @@ class TestTokenEstimation:
         assert thinking + tool_io <= total
         conn.close()
 
+    def test_message_tokens_sum_to_session_total(
+        self, granular_session_file, output_dir
+    ):
+        """SUM(fact_messages.estimated_tokens) must equal session total."""
+        db_path = output_dir / "test.duckdb"
+        conn = create_star_schema(db_path)
+        run_star_schema_etl(
+            conn, granular_session_file, "test-project", include_thinking=True
+        )
+
+        session_total = conn.execute(
+            "SELECT total_estimated_tokens FROM fact_session_summary"
+        ).fetchone()[0]
+        message_sum = conn.execute(
+            "SELECT SUM(estimated_tokens) FROM fact_messages"
+        ).fetchone()[0]
+        assert message_sum == session_total
+        conn.close()
+
+    def test_message_tokens_include_thinking(self, granular_session_file, output_dir):
+        """Messages with thinking blocks should have higher token counts."""
+        db_path = output_dir / "test.duckdb"
+        conn = create_star_schema(db_path)
+        run_star_schema_etl(
+            conn, granular_session_file, "test-project", include_thinking=True
+        )
+
+        # Get a message that has thinking
+        thinking_msg = conn.execute(
+            "SELECT estimated_tokens, word_count FROM fact_messages WHERE has_thinking = TRUE"
+        ).fetchone()
+        if thinking_msg:
+            # estimated_tokens should exceed word-based text estimate
+            # because it includes thinking content
+            assert thinking_msg[0] > thinking_msg[1]
+        conn.close()
+
     def test_session_summary_has_token_breakdown_columns(self, output_dir):
         """Test that fact_session_summary has the new token breakdown columns."""
         db_path = output_dir / "test.duckdb"

@@ -482,6 +482,8 @@ def _extract_star_data(
         text_content = ""
         content_json = json.dumps(content)
         content_block_count = 0
+        msg_thinking_tokens = 0
+        msg_tool_io_tokens = 0
 
         if isinstance(content, str):
             text_content = content
@@ -505,6 +507,8 @@ def _extract_star_data(
 
         elif isinstance(content, list):
             texts = []
+            msg_thinking_tokens = 0
+            msg_tool_io_tokens = 0
             for idx, block in enumerate(content):
                 if not isinstance(block, dict):
                     continue
@@ -547,19 +551,35 @@ def _extract_star_data(
 
                 elif block_type == "tool_use":
                     has_tool_use = True
+                    # Track tool I/O tokens before handler (which updates session accumulator)
+                    tool_input_json = json.dumps(block.get("input", {}))
+                    msg_tool_io_tokens += estimate_tokens(tool_input_json)
                     prev_tool_call = _handle_tool_use_block(
                         result, block, ctx, tool_use_map, prev_tool_call
                     )
 
                 elif block_type == "tool_result":
                     has_tool_result = True
+                    # Track tool result tokens before handler
+                    result_content = block.get("content", "")
+                    if isinstance(result_content, list):
+                        result_text = " ".join(
+                            str(item.get("text", ""))
+                            for item in result_content
+                            if isinstance(item, dict)
+                        )
+                    else:
+                        result_text = str(result_content)
+                    msg_tool_io_tokens += estimate_tokens(result_text)
                     _handle_tool_result_block(result, block, ctx, tool_use_map)
 
                 elif block_type == "thinking":
                     has_thinking = True
                     result.thinking_count += 1
                     thinking_text = block.get("thinking", "")
-                    result.thinking_estimated_tokens += estimate_tokens(thinking_text)
+                    thinking_tokens = estimate_tokens(thinking_text)
+                    msg_thinking_tokens += thinking_tokens
+                    result.thinking_estimated_tokens += thinking_tokens
 
                     if should_track:
                         _add_content_block(
@@ -632,7 +652,8 @@ def _extract_star_data(
                 result.last_assistant_message = text_content
 
         word_cnt = count_words(text_content)
-        token_est = estimate_tokens(text_content)
+        text_token_est = estimate_tokens(text_content)
+        token_est = text_token_est + msg_thinking_tokens + msg_tool_io_tokens
 
         response_time = None
         if parent_id and parent_id in message_timestamps and timestamp:
@@ -1066,13 +1087,10 @@ def _load_facts(conn, session_key, project_key, result):
         first_date_key = int(result.first_timestamp.strftime("%Y%m%d"))
         first_time_key = int(result.first_timestamp.strftime("%H%M"))
 
-    text_estimated_tokens = sum(
+    # Message-level tokens now include text + thinking + tool I/O per message,
+    # so session total is just the sum across messages
+    total_estimated_tokens = sum(
         msg.get("estimated_tokens", 0) for msg in result.messages_data
-    )
-    total_estimated_tokens = (
-        text_estimated_tokens
-        + result.thinking_estimated_tokens
-        + result.tool_io_estimated_tokens
     )
 
     conn.execute(
