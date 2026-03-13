@@ -341,6 +341,7 @@ def finalize_star_schema(conn):
     - dim_session_chain (session chain grouping by slug)
     - fact_agent_delegations (agent-to-parent Task tool linking)
     - bridge_session_file (cross-session file operation aggregation)
+    - fact_session_summary._incl_agents rollup (bottom-up agent metric aggregation)
 
     Safe to call multiple times -- each step clears before repopulating.
     """
@@ -348,6 +349,7 @@ def finalize_star_schema(conn):
     _build_session_chains(conn)
     _link_agent_delegations(conn)
     _build_session_file_bridge(conn)
+    _rollup_agent_metrics(conn)
 
 
 def _calculate_session_depths(conn):
@@ -616,8 +618,10 @@ def _link_agent_delegations(conn):
         agent_tool_calls = None
         agent_errors = None
         agent_duration_seconds = None
+        agent_estimated_tokens = None
         agent_summary = conn.execute(
-            """SELECT total_tool_calls, total_errors, session_duration_seconds
+            """SELECT total_tool_calls, total_errors, session_duration_seconds,
+                      total_estimated_tokens
                FROM fact_session_summary WHERE session_key = ?""",
             [agent_session_key],
         ).fetchone()
@@ -625,6 +629,7 @@ def _link_agent_delegations(conn):
             agent_tool_calls = agent_summary[0]
             agent_errors = agent_summary[1]
             agent_duration_seconds = agent_summary[2]
+            agent_estimated_tokens = agent_summary[3]
 
         conn.execute(
             """INSERT INTO fact_agent_delegations
@@ -633,8 +638,9 @@ def _link_agent_delegations(conn):
                 task_description, task_prompt, subagent_type,
                 agent_output, completion_status,
                 delegation_timestamp, completion_timestamp, match_confidence,
-                agent_tool_calls, agent_errors, agent_duration_seconds)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                agent_tool_calls, agent_errors, agent_duration_seconds,
+                agent_estimated_tokens)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             [
                 delegation_key,
                 parent_session_key,
@@ -653,6 +659,7 @@ def _link_agent_delegations(conn):
                 agent_tool_calls,
                 agent_errors,
                 agent_duration_seconds,
+                agent_estimated_tokens,
             ],
         )
 
@@ -685,3 +692,66 @@ def _build_session_file_bridge(conn):
         GROUP BY ffo.session_key, ffo.file_key
         """
     )
+
+
+def _rollup_agent_metrics(conn):
+    """Roll up agent metrics into parent session summaries.
+
+    Walks the session hierarchy bottom-up (deepest agents first) and
+    accumulates descendant metrics into each parent's _incl_agents columns.
+    Uses dim_session.depth_level (set by _calculate_session_depths) to
+    process in correct order.
+
+    The _incl_agents columns are initialized to the session's own values
+    during ETL. This function adds descendant contributions on top.
+
+    Idempotent: resets _incl_agents to own values before re-accumulating.
+    """
+    # Reset all _incl_agents columns to own values
+    conn.execute(
+        """
+        UPDATE fact_session_summary
+        SET total_estimated_tokens_incl_agents = total_estimated_tokens,
+            total_tool_calls_incl_agents = total_tool_calls,
+            total_errors_incl_agents = total_errors,
+            total_duration_incl_agents = session_duration_seconds
+        """
+    )
+
+    # Find max depth to iterate bottom-up
+    max_depth_row = conn.execute(
+        "SELECT MAX(depth_level) FROM dim_session WHERE is_agent = TRUE"
+    ).fetchone()
+    max_depth = max_depth_row[0] if max_depth_row and max_depth_row[0] else 0
+
+    # Walk bottom-up: deepest agents first, rolling into their parents
+    for depth in range(max_depth, 0, -1):
+        conn.execute(
+            """
+            UPDATE fact_session_summary parent_fss
+            SET total_estimated_tokens_incl_agents =
+                    parent_fss.total_estimated_tokens_incl_agents + agent_totals.sum_tokens,
+                total_tool_calls_incl_agents =
+                    parent_fss.total_tool_calls_incl_agents + agent_totals.sum_tool_calls,
+                total_errors_incl_agents =
+                    parent_fss.total_errors_incl_agents + agent_totals.sum_errors,
+                total_duration_incl_agents =
+                    parent_fss.total_duration_incl_agents + agent_totals.sum_duration
+            FROM (
+                SELECT ds_agent.parent_session_key AS parent_sk,
+                       SUM(COALESCE(agent_fss.total_estimated_tokens_incl_agents, 0)) AS sum_tokens,
+                       SUM(COALESCE(agent_fss.total_tool_calls_incl_agents, 0)) AS sum_tool_calls,
+                       SUM(COALESCE(agent_fss.total_errors_incl_agents, 0)) AS sum_errors,
+                       SUM(COALESCE(agent_fss.total_duration_incl_agents, 0)) AS sum_duration
+                FROM dim_session ds_agent
+                JOIN fact_session_summary agent_fss
+                    ON ds_agent.session_key = agent_fss.session_key
+                WHERE ds_agent.is_agent = TRUE
+                  AND ds_agent.depth_level = ?
+                  AND ds_agent.parent_session_key IS NOT NULL
+                GROUP BY ds_agent.parent_session_key
+            ) agent_totals
+            WHERE parent_fss.session_key = agent_totals.parent_sk
+            """,
+            [depth],
+        )

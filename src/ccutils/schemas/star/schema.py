@@ -215,7 +215,11 @@ def create_star_schema(db_path):
             total_tool_io_tokens INTEGER,
             session_duration_seconds INTEGER,
             first_timestamp TIMESTAMP,
-            last_timestamp TIMESTAMP
+            last_timestamp TIMESTAMP,
+            total_estimated_tokens_incl_agents INTEGER,
+            total_tool_calls_incl_agents INTEGER,
+            total_errors_incl_agents INTEGER,
+            total_duration_incl_agents INTEGER
         )
     """
     )
@@ -380,7 +384,8 @@ def create_star_schema(db_path):
             match_confidence FLOAT,
             agent_tool_calls INTEGER,
             agent_errors INTEGER,
-            agent_duration_seconds INTEGER
+            agent_duration_seconds INTEGER,
+            agent_estimated_tokens INTEGER
         )
     """
     )
@@ -469,6 +474,10 @@ def create_star_schema(db_path):
             fss.unique_files_touched,
             fss.max_conversation_depth,
             fss.total_estimated_tokens,
+            fss.total_estimated_tokens_incl_agents,
+            fss.total_tool_calls_incl_agents,
+            fss.total_errors_incl_agents,
+            fss.total_duration_incl_agents,
             fss.session_duration_seconds,
             dd.full_date,
             dd.day_name,
@@ -622,6 +631,7 @@ def create_star_schema(db_path):
             fad.agent_tool_calls,
             fad.agent_errors,
             fad.agent_duration_seconds,
+            fad.agent_estimated_tokens,
             ps.session_id AS parent_session_id,
             ps.cwd AS parent_cwd,
             ags.session_id AS agent_session_id,
@@ -705,7 +715,10 @@ def create_star_schema(db_path):
             fss.total_tool_calls,
             fss.unique_tools_used,
             fss.total_errors,
-            fss.total_estimated_tokens
+            fss.total_estimated_tokens,
+            fss.total_estimated_tokens_incl_agents,
+            fss.total_tool_calls_incl_agents,
+            fss.total_errors_incl_agents
         FROM dim_session ds
         JOIN dim_project dp ON ds.project_key = dp.project_key
         LEFT JOIN fact_session_summary fss ON ds.session_key = fss.session_key

@@ -259,6 +259,12 @@ One row per session with pre-aggregated metrics.
 | session_duration_seconds | INTEGER | Session duration |
 | first_timestamp | TIMESTAMP | First message time |
 | last_timestamp | TIMESTAMP | Last message time |
+| total_estimated_tokens_incl_agents | INTEGER | Estimated tokens including all descendant agents |
+| total_tool_calls_incl_agents | INTEGER | Tool calls including all descendant agents |
+| total_errors_incl_agents | INTEGER | Errors including all descendant agents |
+| total_duration_incl_agents | INTEGER | Duration including all descendant agents |
+
+The `_incl_agents` columns are populated during `finalize_star_schema()` via bottom-up rollup from deepest agents to root. For sessions with no agents, these equal the base columns.
 
 #### fact_file_operations
 One row per file touch.
@@ -409,6 +415,7 @@ One row per agent delegation (Task tool invocation). Populated by `finalize_star
 | agent_tool_calls | INTEGER | Denormalized: tool calls in agent session |
 | agent_errors | INTEGER | Denormalized: errors in agent session |
 | agent_duration_seconds | INTEGER | Denormalized: agent session duration |
+| agent_estimated_tokens | INTEGER | Denormalized: estimated tokens in agent session |
 
 #### bridge_session_file
 One row per (session, file) pair for cross-session file tracking. Populated by `finalize_star_schema()`.

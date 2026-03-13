@@ -8,6 +8,8 @@ All notable changes to this project will be documented in this file.
 - **`convert` command**: Renamed from `json`, now supports all output formats via `--format` (html, duckdb, duckdb-star, json, json-star) and `--schema` (simple, star) -- single entry point for converting JSON/JSONL files or URLs
 - **Token estimation breakdown**: `total_thinking_tokens` and `total_tool_io_tokens` columns on `fact_session_summary` -- thinking blocks and tool I/O were previously uncounted
 - **`estimated_tokens` column** on simple schema `sessions` table
+- **Inclusive agent metric rollup**: `fact_session_summary` now carries `_incl_agents` columns (`total_estimated_tokens_incl_agents`, `total_tool_calls_incl_agents`, `total_errors_incl_agents`, `total_duration_incl_agents`) that aggregate metrics from all descendant subagent sessions. Bottom-up rollup runs during `finalize_star_schema()` using `dim_session.depth_level`. `fact_agent_delegations` also carries denormalized `agent_estimated_tokens`
+- **Semantic view updates**: `semantic_sessions` and `semantic_project_context` expose `_incl_agents` columns; `semantic_agent_delegations` exposes `agent_estimated_tokens`
 - **CLI test coverage**: New test files for 5 previously untested commands -- `test_convert_cmd.py`, `test_schema_cmd.py`, `test_import_cmd.py`, `test_web_cmd.py`, `test_explore_cmd.py`
 
 ### Fixed

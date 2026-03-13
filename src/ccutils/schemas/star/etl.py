@@ -1093,9 +1093,12 @@ def _load_facts(conn, session_key, project_key, result):
         msg.get("estimated_tokens", 0) for msg in result.messages_data
     )
 
+    total_tool_calls = len(result.tool_calls_data)
+    total_errors = len(result.errors_data)
+
     conn.execute(
         """INSERT INTO fact_session_summary VALUES
-           (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+           (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         [
             session_key,
             project_key,
@@ -1104,10 +1107,10 @@ def _load_facts(conn, session_key, project_key, result):
             result.user_count + result.assistant_count,
             result.user_count,
             result.assistant_count,
-            len(result.tool_calls_data),
+            total_tool_calls,
             result.thinking_count,
             result.total_content_blocks,
-            len(result.errors_data),
+            total_errors,
             len(result.tools_seen),
             len(result.files_seen),
             result.max_depth,
@@ -1117,6 +1120,12 @@ def _load_facts(conn, session_key, project_key, result):
             session_duration,
             result.first_timestamp,
             result.last_timestamp,
+            # _incl_agents columns: initialized to own values,
+            # rollup happens in finalize_star_schema()
+            total_estimated_tokens,
+            total_tool_calls,
+            total_errors,
+            session_duration,
         ],
     )
 

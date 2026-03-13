@@ -1522,6 +1522,125 @@ class TestAgentDelegations:
         conn.close()
 
 
+class TestAgentTokenRollup:
+    """Tests for inclusive token/metric rollup on fact_session_summary."""
+
+    def test_session_summary_has_inclusive_columns(self, output_dir):
+        """fact_session_summary should have _incl_agents columns."""
+        db_path = output_dir / "test.duckdb"
+        conn = create_star_schema(db_path)
+
+        columns = conn.execute("DESCRIBE fact_session_summary").fetchall()
+        column_names = [c[0] for c in columns]
+        assert "total_estimated_tokens_incl_agents" in column_names
+        assert "total_tool_calls_incl_agents" in column_names
+        assert "total_errors_incl_agents" in column_names
+        assert "total_duration_incl_agents" in column_names
+        conn.close()
+
+    def test_delegation_has_agent_estimated_tokens(self, output_dir):
+        """fact_agent_delegations should have agent_estimated_tokens."""
+        db_path = output_dir / "test.duckdb"
+        conn = create_star_schema(db_path)
+
+        columns = conn.execute("DESCRIBE fact_agent_delegations").fetchall()
+        column_names = [c[0] for c in columns]
+        assert "agent_estimated_tokens" in column_names
+        conn.close()
+
+    def test_parent_inclusive_tokens_include_agent(
+        self, parent_with_task_call, agent_for_task, output_dir
+    ):
+        """Parent's _incl_agents tokens should include its own + agent's tokens."""
+        db_path = output_dir / "test.duckdb"
+        conn = create_star_schema(db_path)
+        run_star_schema_etl(conn, parent_with_task_call, "test-project")
+        run_star_schema_etl(conn, agent_for_task, "test-project")
+
+        finalize_star_schema(conn)
+
+        # Get parent's own tokens and inclusive tokens
+        parent = conn.execute(
+            """SELECT fss.total_estimated_tokens,
+                      fss.total_estimated_tokens_incl_agents
+               FROM fact_session_summary fss
+               JOIN dim_session ds ON fss.session_key = ds.session_key
+               WHERE ds.is_agent = FALSE"""
+        ).fetchone()
+        assert parent is not None
+        own_tokens = parent[0]
+        incl_tokens = parent[1]
+
+        # Get agent's tokens
+        agent_tokens = conn.execute(
+            """SELECT fss.total_estimated_tokens
+               FROM fact_session_summary fss
+               JOIN dim_session ds ON fss.session_key = ds.session_key
+               WHERE ds.is_agent = TRUE"""
+        ).fetchone()[0]
+
+        # Inclusive must equal own + agent
+        assert incl_tokens == own_tokens + agent_tokens
+        assert incl_tokens > own_tokens
+        conn.close()
+
+    def test_session_without_agents_inclusive_equals_own(
+        self, sample_session_file, output_dir
+    ):
+        """Session with no agents: inclusive tokens == own tokens."""
+        db_path = output_dir / "test.duckdb"
+        conn = create_star_schema(db_path)
+        run_star_schema_etl(conn, sample_session_file, "test-project")
+
+        finalize_star_schema(conn)
+
+        result = conn.execute(
+            """SELECT total_estimated_tokens, total_estimated_tokens_incl_agents
+               FROM fact_session_summary"""
+        ).fetchone()
+        assert result[0] == result[1]
+        conn.close()
+
+    def test_inclusive_tool_calls_include_agent(
+        self, parent_with_task_call, agent_for_task, output_dir
+    ):
+        """Parent's inclusive tool calls should include agent's tool calls."""
+        db_path = output_dir / "test.duckdb"
+        conn = create_star_schema(db_path)
+        run_star_schema_etl(conn, parent_with_task_call, "test-project")
+        run_star_schema_etl(conn, agent_for_task, "test-project")
+
+        finalize_star_schema(conn)
+
+        parent = conn.execute(
+            """SELECT fss.total_tool_calls,
+                      fss.total_tool_calls_incl_agents
+               FROM fact_session_summary fss
+               JOIN dim_session ds ON fss.session_key = ds.session_key
+               WHERE ds.is_agent = FALSE"""
+        ).fetchone()
+        assert parent[1] >= parent[0]
+        conn.close()
+
+    def test_agent_delegation_has_estimated_tokens(
+        self, parent_with_task_call, agent_for_task, output_dir
+    ):
+        """fact_agent_delegations should carry agent_estimated_tokens."""
+        db_path = output_dir / "test.duckdb"
+        conn = create_star_schema(db_path)
+        run_star_schema_etl(conn, parent_with_task_call, "test-project")
+        run_star_schema_etl(conn, agent_for_task, "test-project")
+
+        finalize_star_schema(conn)
+
+        result = conn.execute(
+            "SELECT agent_estimated_tokens FROM fact_agent_delegations"
+        ).fetchone()
+        assert result is not None
+        assert result[0] > 0
+        conn.close()
+
+
 # =============================================================================
 # Phase 5: Embedding Pipeline Tests
 # =============================================================================
