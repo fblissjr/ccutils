@@ -225,6 +225,38 @@ class TestConvertCommandURL:
         assert result.exit_code == 0
         assert "Fetching" in result.output
 
+    def test_url_input_uses_url_name_as_project(self, output_dir, sample_session_file):
+        """URL input should use URL filename as project_name, not temp dir."""
+        import duckdb
+
+        session_content = sample_session_file.read_text()
+
+        mock_response = MagicMock()
+        mock_response.text = session_content
+        mock_response.raise_for_status = MagicMock()
+
+        db_path = output_dir / "url_test.duckdb"
+        with patch("ccutils.cli.utils.httpx.get", return_value=mock_response):
+            runner = CliRunner()
+            result = runner.invoke(
+                cli,
+                [
+                    "convert",
+                    "https://example.com/my-session.jsonl",
+                    "--format",
+                    "duckdb",
+                    "-o",
+                    str(db_path),
+                ],
+            )
+
+        assert result.exit_code == 0
+        conn = duckdb.connect(str(db_path))
+        project_name = conn.execute("SELECT project_name FROM sessions").fetchone()[0]
+        conn.close()
+        # Should be "my-session" (from URL), not a temp dir name
+        assert project_name == "my-session"
+
     def test_url_network_error(self, output_dir):
         """URL fetch network error gives friendly message."""
         import httpx

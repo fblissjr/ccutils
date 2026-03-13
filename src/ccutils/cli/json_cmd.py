@@ -123,7 +123,7 @@ def convert_cmd(
         )
 
     output = Path(output)
-    project_name = json_file_path.parent.name or "unknown"
+    project_name = url_name or json_file_path.parent.name or "unknown"
 
     if fmt == "html":
         generate_html(json_file_path, output, github_repo=repo, private=private)

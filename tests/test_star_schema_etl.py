@@ -1070,8 +1070,10 @@ class TestTokenEstimation:
         assert total_tokens >= tool_io_tokens
         conn.close()
 
-    def test_token_breakdown_sums_to_total(self, granular_session_file, output_dir):
-        """Test that thinking + tool_io + text tokens equal total."""
+    def test_token_breakdown_components_less_than_total(
+        self, granular_session_file, output_dir
+    ):
+        """Test that thinking and tool_io are each strictly less than total."""
         db_path = output_dir / "test.duckdb"
         conn = create_star_schema(db_path)
         run_star_schema_etl(
@@ -1084,10 +1086,11 @@ class TestTokenEstimation:
                FROM fact_session_summary"""
         ).fetchone()
         total, thinking, tool_io = result
-        # Text tokens = total - thinking - tool_io
-        text_tokens = total - thinking - tool_io
-        assert text_tokens >= 0
-        assert total == text_tokens + thinking + tool_io
+        # Each component must be less than total (session has text + thinking + tools)
+        assert thinking < total
+        assert tool_io < total
+        # Components can't exceed total
+        assert thinking + tool_io <= total
         conn.close()
 
     def test_session_summary_has_token_breakdown_columns(self, output_dir):
