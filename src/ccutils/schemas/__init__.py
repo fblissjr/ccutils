@@ -27,31 +27,18 @@ from .star import (
 )
 
 
-def resolve_schema_format(schema, output_format):
-    """Resolve schema and format from potentially compound format names.
+def resolve_schema_format(output_format):
+    """Infer schema type from compound format names.
 
-    Supports hybrid CLI: explicit --schema flag or compound format names like
-    'duckdb-star' or 'json-star'.
-
-    Args:
-        schema: Explicit schema ('simple' or 'star') or None
-        output_format: Format string ('html', 'duckdb', 'duckdb-star', 'json', 'json-star')
+    'duckdb-star' and 'json-star' -> star schema.
+    'duckdb', 'json', 'html' -> simple schema.
 
     Returns:
-        Tuple of (resolved_schema, resolved_format)
+        Tuple of (schema, base_format) e.g. ("star", "duckdb") or ("simple", "json")
     """
-    # Handle compound format names
     if output_format.endswith("-star"):
-        inferred_schema = "star"
-        actual_format = output_format.replace("-star", "")
-    else:
-        inferred_schema = "simple"
-        actual_format = output_format
-
-    # Explicit --schema overrides inference
-    final_schema = schema if schema else inferred_schema
-
-    return final_schema, actual_format
+        return "star", output_format.replace("-star", "")
+    return "simple", output_format
 
 
 __all__ = [

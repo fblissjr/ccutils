@@ -86,7 +86,7 @@ def convert_cmd(
         url_name = None
 
     # Resolve schema and format
-    schema, fmt = resolve_schema_format(None, output_format)
+    schema, fmt = resolve_schema_format(output_format)
 
     # Determine output path
     auto_open = output is None

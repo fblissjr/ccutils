@@ -21,51 +21,33 @@ class TestResolveSchemaFormat:
 
     def test_simple_duckdb_inferred(self):
         """Test that duckdb format infers simple schema."""
-        schema, fmt = resolve_schema_format(None, "duckdb")
+        schema, fmt = resolve_schema_format("duckdb")
         assert schema == "simple"
         assert fmt == "duckdb"
 
     def test_star_duckdb_inferred(self):
         """Test that duckdb-star format infers star schema."""
-        schema, fmt = resolve_schema_format(None, "duckdb-star")
+        schema, fmt = resolve_schema_format("duckdb-star")
         assert schema == "star"
         assert fmt == "duckdb"
 
     def test_simple_json_inferred(self):
         """Test that json format infers simple schema."""
-        schema, fmt = resolve_schema_format(None, "json")
+        schema, fmt = resolve_schema_format("json")
         assert schema == "simple"
         assert fmt == "json"
 
     def test_star_json_inferred(self):
         """Test that json-star format infers star schema."""
-        schema, fmt = resolve_schema_format(None, "json-star")
+        schema, fmt = resolve_schema_format("json-star")
         assert schema == "star"
         assert fmt == "json"
 
     def test_html_infers_simple(self):
         """Test that html format infers simple schema."""
-        schema, fmt = resolve_schema_format(None, "html")
+        schema, fmt = resolve_schema_format("html")
         assert schema == "simple"
         assert fmt == "html"
-
-    def test_explicit_schema_overrides_inference(self):
-        """Test that explicit --schema overrides format inference."""
-        schema, fmt = resolve_schema_format("star", "duckdb")
-        assert schema == "star"
-        assert fmt == "duckdb"
-
-    def test_explicit_simple_with_star_format(self):
-        """Test explicit simple with -star format prefers explicit."""
-        schema, fmt = resolve_schema_format("simple", "duckdb-star")
-        assert schema == "simple"
-        assert fmt == "duckdb"
-
-    def test_explicit_star_with_json(self):
-        """Test explicit star schema with json format."""
-        schema, fmt = resolve_schema_format("star", "json")
-        assert schema == "star"
-        assert fmt == "json"
 
 
 @pytest.fixture

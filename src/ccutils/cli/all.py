@@ -194,7 +194,7 @@ def all_cmd(
         click.echo(f"\nGenerating archive in {output}...")
 
     # Resolve schema type from format
-    resolved_schema, resolved_format = resolve_schema_format(None, output_format)
+    resolved_schema, resolved_format = resolve_schema_format(output_format)
 
     # Progress callback for non-quiet mode with enhanced stats
     def on_progress(project_name, session_name, current, total, stats=None):

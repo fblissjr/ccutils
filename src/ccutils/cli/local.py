@@ -183,7 +183,7 @@ def local_cmd(
     output = Path(output)
 
     # Resolve schema and format from potentially compound format names
-    schema, fmt = resolve_schema_format(None, output_format)
+    schema, fmt = resolve_schema_format(output_format)
 
     # Resolve embed model
     embed_model = None
@@ -191,6 +191,8 @@ def local_cmd(
         embed_model = embed
 
     # Execute based on format
+    # Note: github_repo is auto-detected by generate_html() from git push output
+    # in the JSONL session data, or from the current working directory's git remote.
     if fmt == "html":
         if len(selected) == 1 and not agent_map:
             # Single session, no agents - use existing simple path
