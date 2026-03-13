@@ -20,8 +20,7 @@ def create_semantic_model(conn):
         conn: DuckDB connection to a database with star schema tables
     """
     conn.execute("DROP TABLE IF EXISTS meta_semantic_model")
-    conn.execute(
-        """
+    conn.execute("""
         CREATE TABLE meta_semantic_model (
             table_name VARCHAR,
             table_type VARCHAR,
@@ -37,15 +36,12 @@ def create_semantic_model(conn):
             is_filterable BOOLEAN DEFAULT TRUE,
             sort_order INTEGER
         )
-    """
-    )
+    """)
 
-    tables = conn.execute(
-        """SELECT table_name
+    tables = conn.execute("""SELECT table_name
            FROM information_schema.tables
            WHERE table_schema = 'main'
-           ORDER BY table_name"""
-    ).fetchall()
+           ORDER BY table_name""").fetchall()
     table_names = [t[0] for t in tables]
 
     dim_tables = {t for t in table_names if t.startswith("dim_")}
@@ -58,12 +54,10 @@ def create_semantic_model(conn):
         table_type = _get_table_type(table_name)
         table_display_name = _generate_display_name(table_name)
 
-        columns = conn.execute(
-            f"""SELECT column_name, data_type
+        columns = conn.execute(f"""SELECT column_name, data_type
                FROM information_schema.columns
                WHERE table_name = '{table_name}'
-               ORDER BY ordinal_position"""
-        ).fetchall()
+               ORDER BY ordinal_position""").fetchall()
 
         for col_name, raw_data_type in columns:
             sort_order += 1

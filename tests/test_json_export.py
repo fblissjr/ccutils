@@ -512,3 +512,231 @@ class TestExportStarSchemaToJson:
         assert "from_column" in rel
         assert "to_table" in rel
         assert "to_column" in rel
+
+
+class TestSimpleJsonTokenEstimation:
+    """Tests for token estimation in simple JSON export."""
+
+    def test_simple_json_includes_estimated_tokens(
+        self, sample_session_file, output_dir
+    ):
+        """Test that simple JSON export includes estimated_tokens in session metadata."""
+        json_path = output_dir / "sessions.json"
+        export_sessions_to_json([sample_session_file], json_path)
+
+        with open(json_path) as f:
+            data = json.load(f)
+
+        sessions = data["tables"]["sessions"]
+        assert len(sessions) == 1
+        session = sessions[0]
+        assert "estimated_tokens" in session
+        assert session["estimated_tokens"] > 0
+
+    def test_simple_json_tokens_include_all_content_types(self, output_dir):
+        """Test that estimated_tokens includes text, thinking, and tool I/O."""
+        # Create session with thinking and tool use
+        session_file = output_dir / "test_session.jsonl"
+        session_file.write_text(
+            json.dumps(
+                {
+                    "type": "user",
+                    "uuid": "u1",
+                    "parentUuid": None,
+                    "sessionId": "s1",
+                    "timestamp": "2025-01-01T10:00:00.000Z",
+                    "cwd": "/tmp/test",
+                    "message": {"role": "user", "content": "Fix the bug please"},
+                }
+            )
+            + "\n"
+            + json.dumps(
+                {
+                    "type": "assistant",
+                    "uuid": "a1",
+                    "parentUuid": "u1",
+                    "sessionId": "s1",
+                    "timestamp": "2025-01-01T10:00:05.000Z",
+                    "message": {
+                        "role": "assistant",
+                        "model": "claude-sonnet-4-20250514",
+                        "content": [
+                            {
+                                "type": "thinking",
+                                "thinking": "Let me analyze this bug carefully and think about solutions",
+                            },
+                            {"type": "text", "text": "I found the issue."},
+                            {
+                                "type": "tool_use",
+                                "id": "t1",
+                                "name": "Edit",
+                                "input": {
+                                    "file_path": "/tmp/test/main.py",
+                                    "old_string": "x",
+                                    "new_string": "y",
+                                },
+                            },
+                        ],
+                    },
+                }
+            )
+            + "\n"
+            + json.dumps(
+                {
+                    "type": "user",
+                    "uuid": "u2",
+                    "parentUuid": "a1",
+                    "sessionId": "s1",
+                    "timestamp": "2025-01-01T10:00:10.000Z",
+                    "message": {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "tool_result",
+                                "tool_use_id": "t1",
+                                "content": "File edited successfully with the new changes applied",
+                            }
+                        ],
+                    },
+                }
+            )
+            + "\n"
+        )
+
+        json_path = output_dir / "sessions.json"
+        export_sessions_to_json([session_file], json_path)
+
+        with open(json_path) as f:
+            data = json.load(f)
+
+        session = data["tables"]["sessions"][0]
+        # Should have tokens from: user text, thinking, assistant text, tool input, tool result
+        assert session["estimated_tokens"] > 0
+
+        # Now test WITHOUT thinking/tool (plain text only)
+        text_only_file = output_dir / "text_only.jsonl"
+        text_only_file.write_text(
+            json.dumps(
+                {
+                    "type": "user",
+                    "uuid": "u1",
+                    "parentUuid": None,
+                    "sessionId": "s2",
+                    "timestamp": "2025-01-01T10:00:00.000Z",
+                    "cwd": "/tmp/test",
+                    "message": {"role": "user", "content": "Fix the bug please"},
+                }
+            )
+            + "\n"
+        )
+
+        json_path2 = output_dir / "text_only.json"
+        export_sessions_to_json([text_only_file], json_path2)
+
+        with open(json_path2) as f:
+            data2 = json.load(f)
+
+        text_only_tokens = data2["tables"]["sessions"][0]["estimated_tokens"]
+        # Session with thinking+tools should have more tokens than text-only
+        assert session["estimated_tokens"] > text_only_tokens
+
+
+class TestConvertCommandFormats:
+    """Tests for the convert command with different output formats."""
+
+    def test_convert_command_json_simple(self, output_dir):
+        """Test convert command with --format json produces valid simple JSON."""
+        from click.testing import CliRunner
+        from ccutils.cli import cli
+
+        jsonl_file = output_dir / "test.jsonl"
+        jsonl_file.write_text(
+            '{"type": "user", "uuid": "u1", "parentUuid": null, "sessionId": "s1", "timestamp": "2025-01-01T10:00:00.000Z", "cwd": "/tmp", "message": {"role": "user", "content": "Hello"}}\n'
+            '{"type": "assistant", "uuid": "a1", "parentUuid": "u1", "sessionId": "s1", "timestamp": "2025-01-01T10:00:05.000Z", "message": {"role": "assistant", "content": [{"type": "text", "text": "Hi there!"}]}}\n'
+        )
+
+        json_output = output_dir / "json_output"
+        runner = CliRunner()
+        result = runner.invoke(
+            cli,
+            [
+                "convert",
+                str(jsonl_file),
+                "--format",
+                "json",
+                "-o",
+                str(json_output),
+            ],
+        )
+
+        assert result.exit_code == 0
+        # Should create sessions.json inside the output dir
+        json_path = json_output / "sessions.json"
+        assert json_path.exists()
+
+        with open(json_path) as f:
+            data = json.load(f)
+        assert data["schema_type"] == "simple"
+        assert len(data["tables"]["sessions"]) == 1
+
+    def test_convert_command_json_star(self, output_dir):
+        """Test convert command with --format json-star produces star schema JSON."""
+        from click.testing import CliRunner
+        from ccutils.cli import cli
+
+        jsonl_file = output_dir / "test.jsonl"
+        jsonl_file.write_text(
+            '{"type": "user", "uuid": "u1", "parentUuid": null, "sessionId": "s1", "timestamp": "2025-01-01T10:00:00.000Z", "cwd": "/tmp", "message": {"role": "user", "content": "Hello"}}\n'
+            '{"type": "assistant", "uuid": "a1", "parentUuid": "u1", "sessionId": "s1", "timestamp": "2025-01-01T10:00:05.000Z", "message": {"role": "assistant", "content": [{"type": "text", "text": "Hi there!"}]}}\n'
+        )
+
+        star_output = output_dir / "star_output"
+        runner = CliRunner()
+        result = runner.invoke(
+            cli,
+            [
+                "convert",
+                str(jsonl_file),
+                "--format",
+                "json-star",
+                "-o",
+                str(star_output),
+            ],
+        )
+
+        assert result.exit_code == 0
+        assert (star_output / "meta.json").exists()
+        assert (star_output / "dimensions").is_dir()
+        assert (star_output / "facts").is_dir()
+
+        with open(star_output / "meta.json") as f:
+            meta = json.load(f)
+        assert meta["schema_type"] == "star"
+
+    def test_convert_command_duckdb(self, output_dir):
+        """Test convert command with --format duckdb produces a DuckDB file."""
+        from click.testing import CliRunner
+        from ccutils.cli import cli
+
+        jsonl_file = output_dir / "test.jsonl"
+        jsonl_file.write_text(
+            '{"type": "user", "uuid": "u1", "parentUuid": null, "sessionId": "s1", "timestamp": "2025-01-01T10:00:00.000Z", "cwd": "/tmp", "message": {"role": "user", "content": "Hello"}}\n'
+            '{"type": "assistant", "uuid": "a1", "parentUuid": "u1", "sessionId": "s1", "timestamp": "2025-01-01T10:00:05.000Z", "message": {"role": "assistant", "content": [{"type": "text", "text": "Hi there!"}]}}\n'
+        )
+
+        db_output = output_dir / "test.duckdb"
+        runner = CliRunner()
+        result = runner.invoke(
+            cli,
+            [
+                "convert",
+                str(jsonl_file),
+                "--format",
+                "duckdb",
+                "-o",
+                str(db_output),
+            ],
+        )
+
+        assert result.exit_code == 0
+        assert db_output.exists()

@@ -222,27 +222,26 @@ def _export_to_html(parsed, output, open_browser, private=False):
 
 def _create_multi_session_index(output_dir, sessions, metadata):
     """Create an index.html linking to all session directories."""
-    html_content = """<!DOCTYPE html>
+    conv_count = len(sessions)
+    html_content = f"""<!DOCTYPE html>
 <html>
 <head>
     <title>Claude.ai Export</title>
     <style>
-        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; max-width: 800px; margin: 40px auto; padding: 0 20px; }
-        h1 { color: #1a1a2e; }
-        .session { padding: 12px; margin: 8px 0; background: #f5f5f5; border-radius: 8px; }
-        .session a { color: #4a4a6a; text-decoration: none; font-weight: 500; }
-        .session a:hover { color: #1a1a2e; }
-        .meta { color: #666; font-size: 0.9em; margin-top: 4px; }
-        .stats { color: #888; font-size: 0.85em; margin-top: 20px; }
+        body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; max-width: 800px; margin: 40px auto; padding: 0 20px; }}
+        h1 {{ color: #1a1a2e; }}
+        .session {{ padding: 12px; margin: 8px 0; background: #f5f5f5; border-radius: 8px; }}
+        .session a {{ color: #4a4a6a; text-decoration: none; font-weight: 500; }}
+        .session a:hover {{ color: #1a1a2e; }}
+        .meta {{ color: #666; font-size: 0.9em; margin-top: 4px; }}
+        .stats {{ color: #888; font-size: 0.85em; margin-top: 20px; }}
     </style>
 </head>
 <body>
     <h1>Claude.ai Export</h1>
     <p class="stats">Source: Claude.ai account export | Conversations: {conv_count}</p>
     <div class="sessions">
-""".format(
-        conv_count=len(sessions)
-    )
+"""
 
     for session_id, loglines in sessions.items():
         session_name = html.escape(session_id[:8])

@@ -8,7 +8,6 @@ import json
 import pytest
 from pathlib import Path
 
-
 # Import will fail until we implement the parser
 from ccutils.parsers.claude_ai import (
     load_export_files,
@@ -17,7 +16,6 @@ from ccutils.parsers.claude_ai import (
     convert_content_block,
     parse_claude_ai_export,
 )
-
 
 # --- Test Fixtures ---
 

@@ -33,7 +33,7 @@ ccutils/
 │   │   ├── __init__.py       # CLI group and entry point
 │   │   ├── local.py          # local command
 │   │   ├── web.py            # web command
-│   │   ├── json_cmd.py       # json command
+│   │   ├── json_cmd.py       # convert command (single-file conversion)
 │   │   ├── all.py            # all command
 │   │   ├── explore.py        # explore command
 │   │   └── utils.py          # CLI utilities
@@ -86,7 +86,12 @@ ccutils/
 │   ├── test_star_schema_analytics.py # Analytics queries + semantic model
 │   ├── test_star_schema_advanced.py  # Entities, chains, agents, embeddings
 │   ├── test_json_export.py           # JSON export tests
-│   └── test_all.py                   # Batch conversion tests
+│   ├── test_all.py                   # Batch conversion tests
+│   ├── test_convert_cmd.py           # Convert command tests (all formats)
+│   ├── test_schema_cmd.py            # Schema inspection command tests
+│   ├── test_import_cmd.py            # Import command tests
+│   ├── test_web_cmd.py               # Web command tests
+│   └── test_explore_cmd.py           # Explore command tests
 ├── docs/
 │   ├── STAR_SCHEMA.md        # Star schema documentation
 │   └── DATA_EXPLORER.md      # Data explorer documentation
@@ -98,7 +103,7 @@ ccutils/
 ### 1. CLI Commands
 - `local` - Two-phase session picker: select project(s) then session(s) with rich metadata tables. `--flat` for legacy single-list mode. **default command**
 - `web` - Import from Claude API (auto-detects credentials from macOS keychain)
-- `json` - Convert specific JSON/JSONL files or URLs
+- `convert` - Convert a single JSON/JSONL file or URL (supports all output formats: html, duckdb, json)
 - `all` - Batch convert all sessions (supports parallel processing with `-j`)
 - `explore` - Launch Data Explorer web server
 - `import` - Import Claude.ai account exports (Settings > Privacy > Export)
@@ -138,7 +143,25 @@ Three output formats with two schema types:
 
 **Views (10):** semantic_sessions, semantic_messages, semantic_tool_calls, semantic_file_operations, semantic_session_chains, semantic_agent_delegations, semantic_file_evolution, semantic_tool_patterns, semantic_project_context, semantic_project_files
 
-### 4. Heuristic Classification
+### 4. Token Estimation
+
+Both schemas estimate tokens using a word-count heuristic (`estimate_tokens()` in `schemas/star/extractors.py`):
+- Text content: words x 1.3
+- Code content: words x 1.5 (detected by presence of `` ``` ``, `def `, `function `)
+
+Token counts cover text blocks, thinking blocks, tool input JSON, and tool result text.
+
+**Simple schema:** `sessions.estimated_tokens` (total across all sources)
+**Star schema:** `fact_session_summary` has `total_estimated_tokens`, `total_thinking_tokens`, `total_tool_io_tokens`
+
+### 5. Simple Schema ETL Architecture
+
+`schemas/simple/etl.py` uses a shared extraction core:
+- `_extract_session_core()` → returns `SimpleExtractionResult` dataclass with all parsed data
+- `export_session_to_duckdb()` → thin wrapper that INSERTs the result into DuckDB
+- `_extract_session_data()` → thin wrapper that converts the result to dicts for JSON export
+
+### 6. Heuristic Classification
 
 Runs during ETL with zero external dependencies:
 ```python

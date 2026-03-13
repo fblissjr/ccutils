@@ -5,7 +5,6 @@ from pathlib import Path
 
 from .utils import generate_dimension_key
 
-
 # Language detection patterns for code blocks
 LANGUAGE_EXTENSIONS = {
     "python": [".py", ".pyw", ".pyi"],
