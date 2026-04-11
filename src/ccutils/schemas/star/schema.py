@@ -1,6 +1,6 @@
 """Star schema DDL - creates the dimensional model tables.
 
-22 tables + 10 views. Tiny lookup dimensions (message_type, content_block_type,
+26 tables + 12 views. Tiny lookup dimensions (message_type, content_block_type,
 error_type, entity_type, programming_language) replaced by degenerate VARCHAR
 columns on fact tables. LLM enrichment tables removed entirely -- replaced by
 heuristic classification columns on dim_session.
@@ -17,9 +17,10 @@ def create_star_schema(db_path):
     - 6 core facts (messages, tool_calls, session_summary, file_operations, errors, tool_chain_steps)
     - 2 granular dimensions (file, session_chain)
     - 3 granular facts (content_blocks, code_blocks, entity_mentions)
+    - 4 new facts (token_usage, turn_durations, diagnostics, stop_events)
     - 3 agent/bridge/staging tables
     - 2 optional tables (embeddings, tool_input_params)
-    - 10 semantic views
+    - 12 semantic views
 
     No hard PK/FK constraints - relies on soft business rules.
 
@@ -101,7 +102,11 @@ def create_star_schema(db_path):
             outcome VARCHAR,
             domain VARCHAR,
             first_user_message VARCHAR,
-            last_assistant_message VARCHAR
+            last_assistant_message VARCHAR,
+            entrypoint VARCHAR,
+            custom_title VARCHAR,
+            permission_mode VARCHAR,
+            agent_type VARCHAR
         )
     """
     )
@@ -162,7 +167,10 @@ def create_star_schema(db_path):
             conversation_depth INTEGER,
             content_text TEXT,
             content_json JSON,
-            is_sidechain BOOLEAN DEFAULT FALSE
+            is_sidechain BOOLEAN DEFAULT FALSE,
+            actual_input_tokens INTEGER,
+            actual_output_tokens INTEGER,
+            cache_read_tokens INTEGER
         )
     """
     )
@@ -219,7 +227,17 @@ def create_star_schema(db_path):
             total_estimated_tokens_incl_agents INTEGER,
             total_tool_calls_incl_agents INTEGER,
             total_errors_incl_agents INTEGER,
-            total_duration_incl_agents INTEGER
+            total_duration_incl_agents INTEGER,
+            actual_input_tokens BIGINT,
+            actual_output_tokens BIGINT,
+            cache_creation_tokens BIGINT,
+            cache_read_tokens BIGINT,
+            total_turn_duration_ms BIGINT,
+            turn_count INTEGER,
+            total_diagnostics INTEGER,
+            total_hook_runs INTEGER,
+            stop_count INTEGER,
+            prevented_continuations INTEGER
         )
     """
     )
@@ -407,6 +425,84 @@ def create_star_schema(db_path):
             write_count INTEGER,
             edit_count INTEGER,
             total_chars_written INTEGER
+        )
+    """
+    )
+
+    # =========================================================================
+    # New Fact Tables (token usage, turn durations, diagnostics, stop events)
+    # =========================================================================
+
+    conn.execute(
+        """
+        CREATE OR REPLACE TABLE fact_token_usage (
+            usage_id VARCHAR,
+            session_key VARCHAR,
+            date_key INTEGER,
+            time_key INTEGER,
+            model_key VARCHAR,
+            input_tokens INTEGER,
+            output_tokens INTEGER,
+            cache_creation_input_tokens INTEGER,
+            cache_read_input_tokens INTEGER,
+            cache_ephemeral_1h_tokens INTEGER,
+            cache_ephemeral_5m_tokens INTEGER,
+            service_tier VARCHAR,
+            speed VARCHAR,
+            timestamp TIMESTAMP
+        )
+    """
+    )
+
+    conn.execute(
+        """
+        CREATE OR REPLACE TABLE fact_turn_durations (
+            turn_id VARCHAR,
+            session_key VARCHAR,
+            date_key INTEGER,
+            time_key INTEGER,
+            duration_ms INTEGER,
+            message_count INTEGER,
+            timestamp TIMESTAMP
+        )
+    """
+    )
+
+    conn.execute(
+        """
+        CREATE OR REPLACE TABLE fact_diagnostics (
+            diagnostic_id VARCHAR,
+            session_key VARCHAR,
+            file_key VARCHAR,
+            date_key INTEGER,
+            time_key INTEGER,
+            severity VARCHAR,
+            source VARCHAR,
+            code VARCHAR,
+            message TEXT,
+            range_start_line INTEGER,
+            range_start_col INTEGER,
+            range_end_line INTEGER,
+            range_end_col INTEGER,
+            timestamp TIMESTAMP
+        )
+    """
+    )
+
+    conn.execute(
+        """
+        CREATE OR REPLACE TABLE fact_stop_events (
+            stop_event_id VARCHAR,
+            session_key VARCHAR,
+            date_key INTEGER,
+            time_key INTEGER,
+            stop_reason VARCHAR,
+            hook_count INTEGER,
+            has_output BOOLEAN,
+            prevented_continuation BOOLEAN,
+            hook_total_duration_ms INTEGER,
+            hook_error_count INTEGER,
+            timestamp TIMESTAMP
         )
     """
     )
@@ -747,6 +843,71 @@ def create_star_schema(db_path):
         JOIN dim_project dp ON ds.project_key = dp.project_key
         GROUP BY dp.project_name, df.file_path, df.file_extension, df.language
         ORDER BY sessions_touching_file DESC
+    """
+    )
+
+    # =========================================================================
+    # New Semantic Views (token usage, cost analysis)
+    # =========================================================================
+
+    conn.execute(
+        """
+        CREATE OR REPLACE VIEW semantic_token_usage AS
+        SELECT
+            ftu.usage_id,
+            ftu.input_tokens,
+            ftu.output_tokens,
+            ftu.cache_creation_input_tokens,
+            ftu.cache_read_input_tokens,
+            ftu.service_tier,
+            ftu.speed,
+            ftu.timestamp,
+            dm.model_name,
+            dm.model_family,
+            ds.session_id,
+            ds.cwd,
+            dp.project_name,
+            dd.full_date,
+            dti.time_of_day
+        FROM fact_token_usage ftu
+        LEFT JOIN dim_model dm ON ftu.model_key = dm.model_key
+        JOIN dim_session ds ON ftu.session_key = ds.session_key
+        LEFT JOIN dim_project dp ON ds.project_key = dp.project_key
+        LEFT JOIN dim_date dd ON ftu.date_key = dd.date_key
+        LEFT JOIN dim_time dti ON ftu.time_key = dti.time_key
+    """
+    )
+
+    conn.execute(
+        """
+        CREATE OR REPLACE VIEW semantic_cost_analysis AS
+        SELECT
+            ds.session_id,
+            dp.project_name,
+            ds.entrypoint,
+            ds.custom_title,
+            ds.intent,
+            ds.complexity,
+            dd.full_date,
+            fss.session_duration_seconds,
+            fss.actual_input_tokens,
+            fss.actual_output_tokens,
+            fss.cache_creation_tokens,
+            fss.cache_read_tokens,
+            fss.total_turn_duration_ms,
+            fss.turn_count,
+            CASE WHEN fss.cache_read_tokens > 0
+                      AND (COALESCE(fss.actual_input_tokens, 0) + fss.cache_read_tokens) > 0
+                 THEN ROUND(100.0 * fss.cache_read_tokens
+                      / (COALESCE(fss.actual_input_tokens, 0) + fss.cache_read_tokens), 1)
+                 ELSE 0 END AS cache_hit_rate_pct,
+            fss.total_estimated_tokens,
+            fss.total_messages,
+            fss.total_tool_calls
+        FROM fact_session_summary fss
+        JOIN dim_session ds ON fss.session_key = ds.session_key
+        JOIN dim_project dp ON fss.project_key = dp.project_key
+        LEFT JOIN dim_date dd ON fss.date_key = dd.date_key
     """
     )
 

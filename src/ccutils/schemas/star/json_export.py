@@ -29,6 +29,10 @@ FACT_TABLES = [
     "fact_tool_input_params",
     "fact_agent_delegations",
     "fact_session_embeddings",
+    "fact_token_usage",
+    "fact_turn_durations",
+    "fact_diagnostics",
+    "fact_stop_events",
     "bridge_session_file",
     "stg_task_agent_map",
 ]
@@ -82,6 +86,42 @@ RELATIONSHIPS = [
         "from_column": "file_key",
         "to_table": "dim_file",
         "to_column": "file_key",
+    },
+    {
+        "from_table": "fact_token_usage",
+        "from_column": "session_key",
+        "to_table": "dim_session",
+        "to_column": "session_key",
+    },
+    {
+        "from_table": "fact_token_usage",
+        "from_column": "model_key",
+        "to_table": "dim_model",
+        "to_column": "model_key",
+    },
+    {
+        "from_table": "fact_turn_durations",
+        "from_column": "session_key",
+        "to_table": "dim_session",
+        "to_column": "session_key",
+    },
+    {
+        "from_table": "fact_diagnostics",
+        "from_column": "session_key",
+        "to_table": "dim_session",
+        "to_column": "session_key",
+    },
+    {
+        "from_table": "fact_diagnostics",
+        "from_column": "file_key",
+        "to_table": "dim_file",
+        "to_column": "file_key",
+    },
+    {
+        "from_table": "fact_stop_events",
+        "from_column": "session_key",
+        "to_table": "dim_session",
+        "to_column": "session_key",
     },
 ]
 

@@ -277,6 +277,258 @@ def output_dir():
 
 
 @pytest.fixture
+def new_format_session_file():
+    """Create a session file with new-format entries: usage data, system entries, attachments."""
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".jsonl", delete=False) as f:
+        # User message with entrypoint
+        f.write(
+            json.dumps(
+                {
+                    "type": "user",
+                    "uuid": "user-001",
+                    "parentUuid": None,
+                    "sessionId": "session-new",
+                    "timestamp": "2025-06-01T14:00:00.000Z",
+                    "cwd": "/dev/workspace/project",
+                    "gitBranch": "main",
+                    "version": "2.1.97",
+                    "entrypoint": "cli",
+                    "promptId": "prompt-001",
+                    "message": {
+                        "role": "user",
+                        "content": "Fix the authentication bug",
+                    },
+                }
+            )
+            + "\n"
+        )
+        # Assistant message with usage data
+        f.write(
+            json.dumps(
+                {
+                    "type": "assistant",
+                    "uuid": "asst-001",
+                    "parentUuid": "user-001",
+                    "sessionId": "session-new",
+                    "timestamp": "2025-06-01T14:00:05.000Z",
+                    "entrypoint": "cli",
+                    "requestId": "req_abc123",
+                    "message": {
+                        "role": "assistant",
+                        "model": "claude-opus-4-6",
+                        "content": [
+                            {"type": "text", "text": "I'll fix that bug for you."},
+                        ],
+                        "usage": {
+                            "input_tokens": 1500,
+                            "output_tokens": 200,
+                            "cache_creation_input_tokens": 3000,
+                            "cache_read_input_tokens": 500,
+                            "service_tier": "standard",
+                            "speed": "standard",
+                            "cache_creation": {
+                                "ephemeral_1h_input_tokens": 3000,
+                                "ephemeral_5m_input_tokens": 0,
+                            },
+                        },
+                    },
+                }
+            )
+            + "\n"
+        )
+        # Second assistant with usage
+        f.write(
+            json.dumps(
+                {
+                    "type": "assistant",
+                    "uuid": "asst-002",
+                    "parentUuid": "asst-001",
+                    "sessionId": "session-new",
+                    "timestamp": "2025-06-01T14:00:15.000Z",
+                    "entrypoint": "cli",
+                    "message": {
+                        "role": "assistant",
+                        "model": "claude-opus-4-6",
+                        "content": [
+                            {"type": "text", "text": "Done, the bug is fixed."},
+                        ],
+                        "usage": {
+                            "input_tokens": 2000,
+                            "output_tokens": 300,
+                            "cache_creation_input_tokens": 0,
+                            "cache_read_input_tokens": 1000,
+                            "service_tier": "standard",
+                            "speed": "standard",
+                            "cache_creation": {
+                                "ephemeral_1h_input_tokens": 0,
+                                "ephemeral_5m_input_tokens": 0,
+                            },
+                        },
+                    },
+                }
+            )
+            + "\n"
+        )
+        # System: turn_duration
+        f.write(
+            json.dumps(
+                {
+                    "type": "system",
+                    "subtype": "turn_duration",
+                    "durationMs": 45000,
+                    "messageCount": 12,
+                    "timestamp": "2025-06-01T14:00:50.000Z",
+                    "uuid": "sys-001",
+                    "isSidechain": False,
+                    "sessionId": "session-new",
+                    "cwd": "/dev/workspace/project",
+                    "entrypoint": "cli",
+                    "version": "2.1.97",
+                    "gitBranch": "main",
+                    "userType": "external",
+                    "parentUuid": "asst-002",
+                    "isMeta": True,
+                    "slug": "test-slug",
+                }
+            )
+            + "\n"
+        )
+        # System: stop_hook_summary
+        f.write(
+            json.dumps(
+                {
+                    "type": "system",
+                    "subtype": "stop_hook_summary",
+                    "stopReason": "end_turn",
+                    "hookCount": 2,
+                    "hasOutput": True,
+                    "preventedContinuation": False,
+                    "hookInfos": [
+                        {"command": "hooks/stop.py", "durationMs": 47},
+                        {"command": "hooks/log.py", "durationMs": 12},
+                    ],
+                    "hookErrors": [],
+                    "timestamp": "2025-06-01T14:00:51.000Z",
+                    "uuid": "sys-002",
+                    "isSidechain": False,
+                    "sessionId": "session-new",
+                    "cwd": "/dev/workspace/project",
+                    "entrypoint": "cli",
+                    "version": "2.1.97",
+                    "gitBranch": "main",
+                    "userType": "external",
+                    "parentUuid": "asst-002",
+                    "level": "info",
+                    "toolUseID": "stop-001",
+                    "slug": "test-slug",
+                }
+            )
+            + "\n"
+        )
+        # Attachment: diagnostics
+        f.write(
+            json.dumps(
+                {
+                    "type": "attachment",
+                    "attachment": {
+                        "type": "diagnostics",
+                        "files": [
+                            {
+                                "uri": "/dev/workspace/project/auth.py",
+                                "diagnostics": [
+                                    {
+                                        "message": "Undefined variable 'token'",
+                                        "severity": "Error",
+                                        "range": {
+                                            "start": {"line": 42, "character": 8},
+                                            "end": {"line": 42, "character": 13},
+                                        },
+                                        "source": "Pyright",
+                                        "code": "reportUndefinedVariable",
+                                    }
+                                ],
+                            }
+                        ],
+                        "isNew": True,
+                    },
+                    "timestamp": "2025-06-01T14:00:10.000Z",
+                    "uuid": "att-001",
+                    "isSidechain": False,
+                    "sessionId": "session-new",
+                    "entrypoint": "cli",
+                    "cwd": "/dev/workspace/project",
+                    "version": "2.1.97",
+                    "gitBranch": "main",
+                    "parentUuid": "asst-001",
+                    "userType": "external",
+                }
+            )
+            + "\n"
+        )
+        # Attachment: hook_success (just needs to be counted)
+        f.write(
+            json.dumps(
+                {
+                    "type": "attachment",
+                    "attachment": {
+                        "type": "hook_success",
+                        "hookName": "PreToolUse:Bash",
+                        "durationMs": 35,
+                        "exitCode": 0,
+                    },
+                    "timestamp": "2025-06-01T14:00:06.000Z",
+                    "uuid": "att-002",
+                    "isSidechain": False,
+                    "sessionId": "session-new",
+                }
+            )
+            + "\n"
+        )
+        f.write(
+            json.dumps(
+                {
+                    "type": "attachment",
+                    "attachment": {
+                        "type": "hook_success",
+                        "hookName": "PostToolUse:Bash",
+                        "durationMs": 20,
+                        "exitCode": 0,
+                    },
+                    "timestamp": "2025-06-01T14:00:07.000Z",
+                    "uuid": "att-003",
+                    "isSidechain": False,
+                    "sessionId": "session-new",
+                }
+            )
+            + "\n"
+        )
+        # custom-title
+        f.write(
+            json.dumps(
+                {
+                    "type": "custom-title",
+                    "customTitle": "fix-auth-bug",
+                    "sessionId": "session-new",
+                }
+            )
+            + "\n"
+        )
+        # permission-mode
+        f.write(
+            json.dumps(
+                {
+                    "type": "permission-mode",
+                    "permissionMode": "normal",
+                    "sessionId": "session-new",
+                }
+            )
+            + "\n"
+        )
+        f.flush()
+        yield Path(f.name)
+
+
+@pytest.fixture
 def mock_projects_dir(sample_session_file):
     """Create a mock projects directory structure."""
     with tempfile.TemporaryDirectory() as tmpdir:

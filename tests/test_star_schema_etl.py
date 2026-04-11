@@ -1049,3 +1049,291 @@ class TestTokenEstimation:
         assert "total_thinking_tokens" in column_names
         assert "total_tool_io_tokens" in column_names
         conn.close()
+
+
+class TestTokenUsageETL:
+    """Tests for actual API token usage extraction."""
+
+    def test_populates_fact_token_usage(self, new_format_session_file, output_dir):
+        db_path = output_dir / "test.duckdb"
+        conn = create_star_schema(db_path)
+        run_star_schema_etl(conn, new_format_session_file, "test-project")
+
+        rows = conn.execute("SELECT * FROM fact_token_usage").fetchall()
+        assert len(rows) == 2  # Two assistant messages with usage
+        conn.close()
+
+    def test_actual_tokens_on_fact_messages(self, new_format_session_file, output_dir):
+        db_path = output_dir / "test.duckdb"
+        conn = create_star_schema(db_path)
+        run_star_schema_etl(conn, new_format_session_file, "test-project")
+
+        rows = conn.execute(
+            """SELECT message_type, actual_input_tokens, actual_output_tokens, cache_read_tokens
+               FROM fact_messages
+               WHERE actual_input_tokens IS NOT NULL
+               ORDER BY timestamp"""
+        ).fetchall()
+        assert len(rows) == 2
+        # First assistant: 1500 input, 200 output, 500 cache read
+        assert rows[0][1] == 1500
+        assert rows[0][2] == 200
+        assert rows[0][3] == 500
+        # Second assistant: 2000 input, 300 output, 1000 cache read
+        assert rows[1][1] == 2000
+        assert rows[1][2] == 300
+        assert rows[1][3] == 1000
+        conn.close()
+
+    def test_session_summary_actual_token_totals(
+        self, new_format_session_file, output_dir
+    ):
+        db_path = output_dir / "test.duckdb"
+        conn = create_star_schema(db_path)
+        run_star_schema_etl(conn, new_format_session_file, "test-project")
+
+        result = conn.execute(
+            """SELECT actual_input_tokens, actual_output_tokens,
+                      cache_creation_tokens, cache_read_tokens
+               FROM fact_session_summary"""
+        ).fetchone()
+        assert result[0] == 3500  # 1500 + 2000
+        assert result[1] == 500   # 200 + 300
+        assert result[2] == 3000  # 3000 + 0
+        assert result[3] == 1500  # 500 + 1000
+        conn.close()
+
+    def test_token_usage_has_cache_breakdown(
+        self, new_format_session_file, output_dir
+    ):
+        db_path = output_dir / "test.duckdb"
+        conn = create_star_schema(db_path)
+        run_star_schema_etl(conn, new_format_session_file, "test-project")
+
+        row = conn.execute(
+            """SELECT cache_ephemeral_1h_tokens, cache_ephemeral_5m_tokens,
+                      service_tier, speed
+               FROM fact_token_usage
+               ORDER BY timestamp
+               LIMIT 1"""
+        ).fetchone()
+        assert row[0] == 3000  # ephemeral_1h
+        assert row[1] == 0     # ephemeral_5m
+        assert row[2] == "standard"
+        assert row[3] == "standard"
+        conn.close()
+
+
+class TestTurnDurationETL:
+    """Tests for turn duration extraction."""
+
+    def test_populates_fact_turn_durations(self, new_format_session_file, output_dir):
+        db_path = output_dir / "test.duckdb"
+        conn = create_star_schema(db_path)
+        run_star_schema_etl(conn, new_format_session_file, "test-project")
+
+        rows = conn.execute("SELECT * FROM fact_turn_durations").fetchall()
+        assert len(rows) == 1
+        conn.close()
+
+    def test_turn_duration_values(self, new_format_session_file, output_dir):
+        db_path = output_dir / "test.duckdb"
+        conn = create_star_schema(db_path)
+        run_star_schema_etl(conn, new_format_session_file, "test-project")
+
+        row = conn.execute(
+            "SELECT duration_ms, message_count FROM fact_turn_durations"
+        ).fetchone()
+        assert row[0] == 45000
+        assert row[1] == 12
+        conn.close()
+
+    def test_session_summary_turn_duration(self, new_format_session_file, output_dir):
+        db_path = output_dir / "test.duckdb"
+        conn = create_star_schema(db_path)
+        run_star_schema_etl(conn, new_format_session_file, "test-project")
+
+        result = conn.execute(
+            "SELECT total_turn_duration_ms, turn_count FROM fact_session_summary"
+        ).fetchone()
+        assert result[0] == 45000
+        assert result[1] == 1
+        conn.close()
+
+
+class TestDiagnosticsETL:
+    """Tests for LSP diagnostics extraction."""
+
+    def test_populates_fact_diagnostics(self, new_format_session_file, output_dir):
+        db_path = output_dir / "test.duckdb"
+        conn = create_star_schema(db_path)
+        run_star_schema_etl(conn, new_format_session_file, "test-project")
+
+        rows = conn.execute("SELECT * FROM fact_diagnostics").fetchall()
+        assert len(rows) == 1
+        conn.close()
+
+    def test_diagnostic_values(self, new_format_session_file, output_dir):
+        db_path = output_dir / "test.duckdb"
+        conn = create_star_schema(db_path)
+        run_star_schema_etl(conn, new_format_session_file, "test-project")
+
+        row = conn.execute(
+            """SELECT severity, source, code, message,
+                      range_start_line, range_start_col
+               FROM fact_diagnostics"""
+        ).fetchone()
+        assert row[0] == "Error"
+        assert row[1] == "Pyright"
+        assert row[2] == "reportUndefinedVariable"
+        assert "Undefined variable" in row[3]
+        assert row[4] == 42
+        assert row[5] == 8
+        conn.close()
+
+    def test_diagnostics_linked_to_dim_file(self, new_format_session_file, output_dir):
+        db_path = output_dir / "test.duckdb"
+        conn = create_star_schema(db_path)
+        run_star_schema_etl(conn, new_format_session_file, "test-project")
+
+        row = conn.execute(
+            """SELECT df.file_name
+               FROM fact_diagnostics fd
+               JOIN dim_file df ON fd.file_key = df.file_key"""
+        ).fetchone()
+        assert row is not None
+        assert row[0] == "auth.py"
+        conn.close()
+
+    def test_session_summary_counts_diagnostics(
+        self, new_format_session_file, output_dir
+    ):
+        db_path = output_dir / "test.duckdb"
+        conn = create_star_schema(db_path)
+        run_star_schema_etl(conn, new_format_session_file, "test-project")
+
+        result = conn.execute(
+            "SELECT total_diagnostics FROM fact_session_summary"
+        ).fetchone()
+        assert result[0] == 1
+        conn.close()
+
+
+class TestStopEventsETL:
+    """Tests for stop event extraction."""
+
+    def test_populates_fact_stop_events(self, new_format_session_file, output_dir):
+        db_path = output_dir / "test.duckdb"
+        conn = create_star_schema(db_path)
+        run_star_schema_etl(conn, new_format_session_file, "test-project")
+
+        rows = conn.execute("SELECT * FROM fact_stop_events").fetchall()
+        assert len(rows) == 1
+        conn.close()
+
+    def test_stop_event_values(self, new_format_session_file, output_dir):
+        db_path = output_dir / "test.duckdb"
+        conn = create_star_schema(db_path)
+        run_star_schema_etl(conn, new_format_session_file, "test-project")
+
+        row = conn.execute(
+            """SELECT stop_reason, hook_count, has_output,
+                      prevented_continuation, hook_total_duration_ms
+               FROM fact_stop_events"""
+        ).fetchone()
+        assert row[0] == "end_turn"
+        assert row[1] == 2
+        assert row[2] is True
+        assert row[3] is False
+        assert row[4] == 59  # 47 + 12
+        conn.close()
+
+    def test_session_summary_counts_stops(self, new_format_session_file, output_dir):
+        db_path = output_dir / "test.duckdb"
+        conn = create_star_schema(db_path)
+        run_star_schema_etl(conn, new_format_session_file, "test-project")
+
+        result = conn.execute(
+            "SELECT stop_count, prevented_continuations FROM fact_session_summary"
+        ).fetchone()
+        assert result[0] == 1
+        assert result[1] == 0  # preventedContinuation was False
+        conn.close()
+
+
+class TestSessionMetadataETL:
+    """Tests for new session-level metadata extraction."""
+
+    def test_entrypoint_on_dim_session(self, new_format_session_file, output_dir):
+        db_path = output_dir / "test.duckdb"
+        conn = create_star_schema(db_path)
+        run_star_schema_etl(conn, new_format_session_file, "test-project")
+
+        result = conn.execute("SELECT entrypoint FROM dim_session").fetchone()
+        assert result[0] == "cli"
+        conn.close()
+
+    def test_custom_title_on_dim_session(self, new_format_session_file, output_dir):
+        db_path = output_dir / "test.duckdb"
+        conn = create_star_schema(db_path)
+        run_star_schema_etl(conn, new_format_session_file, "test-project")
+
+        result = conn.execute("SELECT custom_title FROM dim_session").fetchone()
+        assert result[0] == "fix-auth-bug"
+        conn.close()
+
+    def test_permission_mode_on_dim_session(self, new_format_session_file, output_dir):
+        db_path = output_dir / "test.duckdb"
+        conn = create_star_schema(db_path)
+        run_star_schema_etl(conn, new_format_session_file, "test-project")
+
+        result = conn.execute("SELECT permission_mode FROM dim_session").fetchone()
+        assert result[0] == "normal"
+        conn.close()
+
+    def test_hook_runs_counted(self, new_format_session_file, output_dir):
+        db_path = output_dir / "test.duckdb"
+        conn = create_star_schema(db_path)
+        run_star_schema_etl(conn, new_format_session_file, "test-project")
+
+        result = conn.execute(
+            "SELECT total_hook_runs FROM fact_session_summary"
+        ).fetchone()
+        assert result[0] == 2  # Two hook_success attachments
+        conn.close()
+
+
+class TestBackwardCompatibility:
+    """Tests that old-format sessions still work with new schema."""
+
+    def test_old_format_still_works(self, sample_session_file, output_dir):
+        db_path = output_dir / "test.duckdb"
+        conn = create_star_schema(db_path)
+        run_star_schema_etl(conn, sample_session_file, "test-project")
+
+        # Should still create a session
+        result = conn.execute("SELECT COUNT(*) FROM dim_session").fetchone()
+        assert result[0] == 1
+        # Should still have messages
+        result = conn.execute("SELECT COUNT(*) FROM fact_messages").fetchone()
+        assert result[0] > 0
+        conn.close()
+
+    def test_new_columns_null_for_old_sessions(self, sample_session_file, output_dir):
+        db_path = output_dir / "test.duckdb"
+        conn = create_star_schema(db_path)
+        run_star_schema_etl(conn, sample_session_file, "test-project")
+
+        result = conn.execute(
+            """SELECT entrypoint, custom_title, permission_mode,
+                      actual_input_tokens, actual_output_tokens
+               FROM dim_session
+               CROSS JOIN fact_session_summary"""
+        ).fetchone()
+        # Old sessions don't have these fields
+        assert result[0] is None  # entrypoint
+        assert result[1] is None  # custom_title
+        assert result[2] is None  # permission_mode
+        assert result[3] is None  # actual_input_tokens
+        assert result[4] is None  # actual_output_tokens
+        conn.close()

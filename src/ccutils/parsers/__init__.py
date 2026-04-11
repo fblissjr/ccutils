@@ -45,8 +45,12 @@ from .claude_ai import (
 )
 
 from .jsonl_reader import (
+    SessionAttachment,
     SessionEntry,
+    SessionMetaEntry,
     SessionMetaHeader,
+    SessionSystemEntry,
+    iter_all_session_entries,
     iter_loglines,
     iter_session_entries,
     parse_session_header,
@@ -93,8 +97,12 @@ __all__ = [
     "load_export_files",
     "parse_claude_ai_export",
     # JSONL reader
+    "SessionAttachment",
     "SessionEntry",
+    "SessionMetaEntry",
     "SessionMetaHeader",
+    "SessionSystemEntry",
+    "iter_all_session_entries",
     "iter_loglines",
     "iter_session_entries",
     "parse_session_header",

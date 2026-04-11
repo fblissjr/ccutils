@@ -2,6 +2,30 @@
 
 All notable changes to this project will be documented in this file.
 
+## 0.13.0
+
+### Added
+- **Actual API token usage**: Star schema now captures real token counts from Claude API usage data instead of relying solely on word-count heuristics
+  - `fact_token_usage` table: per-response token breakdown (input, output, cache creation, cache read, ephemeral tiers, service_tier, speed)
+  - `actual_input_tokens`, `actual_output_tokens`, `cache_read_tokens` columns on `fact_messages` for per-message actual tokens
+  - `actual_input_tokens`, `actual_output_tokens`, `cache_creation_tokens`, `cache_read_tokens` aggregated on `fact_session_summary`
+  - `semantic_token_usage` view for token analysis with model/project context
+  - `semantic_cost_analysis` view with `cache_hit_rate_pct` calculation
+- **Turn durations**: `fact_turn_durations` table captures actual turn processing time (`durationMs`, `messageCount`) from system entries
+  - `total_turn_duration_ms` and `turn_count` on `fact_session_summary`
+- **LSP diagnostics**: `fact_diagnostics` table captures code diagnostics (severity, source, code, message, line range) linked to `dim_file`
+  - `total_diagnostics` on `fact_session_summary`
+- **Stop events**: `fact_stop_events` table captures session/turn stop reasons, hook counts, and prevented continuations
+  - `stop_count` and `prevented_continuations` on `fact_session_summary`
+- **Session metadata**: `dim_session` now stores `entrypoint` (cli/web), `custom_title`, `permission_mode`, `agent_type`
+- **Hook run counting**: `total_hook_runs` on `fact_session_summary`
+- **New parser types**: `SessionSystemEntry`, `SessionAttachment`, `SessionMetaEntry` dataclasses + `iter_all_session_entries()` function that yields all JSONL entry types (backward-compatible -- existing `iter_session_entries()` unchanged)
+- **`entrypoint` field**: `SessionMetaHeader` and `SessionEntry` now capture the `entrypoint` field from session entries
+
+### Changed
+- Star schema expanded from 22 tables + 10 views to 26 tables + 12 views
+- Estimated token counts and actual token counts coexist -- old sessions without usage data get NULL for actual columns
+
 ## 0.12.0
 
 ### Changed

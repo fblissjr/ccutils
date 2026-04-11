@@ -604,3 +604,210 @@ class TestProjectContextViews:
         ).fetchone()
         assert result is not None
         conn.close()
+
+
+class TestDimSessionNewColumns:
+    """Tests for new columns on dim_session (entrypoint, custom_title, etc.)."""
+
+    def test_dim_session_has_entrypoint(self, output_dir):
+        db_path = output_dir / "test.duckdb"
+        conn = create_star_schema(db_path)
+        columns = [c[0] for c in conn.execute("DESCRIBE dim_session").fetchall()]
+        assert "entrypoint" in columns
+        conn.close()
+
+    def test_dim_session_has_custom_title(self, output_dir):
+        db_path = output_dir / "test.duckdb"
+        conn = create_star_schema(db_path)
+        columns = [c[0] for c in conn.execute("DESCRIBE dim_session").fetchall()]
+        assert "custom_title" in columns
+        conn.close()
+
+    def test_dim_session_has_permission_mode(self, output_dir):
+        db_path = output_dir / "test.duckdb"
+        conn = create_star_schema(db_path)
+        columns = [c[0] for c in conn.execute("DESCRIBE dim_session").fetchall()]
+        assert "permission_mode" in columns
+        conn.close()
+
+    def test_dim_session_has_agent_type(self, output_dir):
+        db_path = output_dir / "test.duckdb"
+        conn = create_star_schema(db_path)
+        columns = [c[0] for c in conn.execute("DESCRIBE dim_session").fetchall()]
+        assert "agent_type" in columns
+        conn.close()
+
+
+class TestFactSessionSummaryNewColumns:
+    """Tests for new token/duration columns on fact_session_summary."""
+
+    def test_has_actual_input_tokens(self, output_dir):
+        db_path = output_dir / "test.duckdb"
+        conn = create_star_schema(db_path)
+        columns = [c[0] for c in conn.execute("DESCRIBE fact_session_summary").fetchall()]
+        assert "actual_input_tokens" in columns
+        conn.close()
+
+    def test_has_actual_output_tokens(self, output_dir):
+        db_path = output_dir / "test.duckdb"
+        conn = create_star_schema(db_path)
+        columns = [c[0] for c in conn.execute("DESCRIBE fact_session_summary").fetchall()]
+        assert "actual_output_tokens" in columns
+        conn.close()
+
+    def test_has_cache_creation_tokens(self, output_dir):
+        db_path = output_dir / "test.duckdb"
+        conn = create_star_schema(db_path)
+        columns = [c[0] for c in conn.execute("DESCRIBE fact_session_summary").fetchall()]
+        assert "cache_creation_tokens" in columns
+        conn.close()
+
+    def test_has_cache_read_tokens(self, output_dir):
+        db_path = output_dir / "test.duckdb"
+        conn = create_star_schema(db_path)
+        columns = [c[0] for c in conn.execute("DESCRIBE fact_session_summary").fetchall()]
+        assert "cache_read_tokens" in columns
+        conn.close()
+
+    def test_has_total_turn_duration_ms(self, output_dir):
+        db_path = output_dir / "test.duckdb"
+        conn = create_star_schema(db_path)
+        columns = [c[0] for c in conn.execute("DESCRIBE fact_session_summary").fetchall()]
+        assert "total_turn_duration_ms" in columns
+        conn.close()
+
+    def test_has_turn_count(self, output_dir):
+        db_path = output_dir / "test.duckdb"
+        conn = create_star_schema(db_path)
+        columns = [c[0] for c in conn.execute("DESCRIBE fact_session_summary").fetchall()]
+        assert "turn_count" in columns
+        conn.close()
+
+
+class TestFactMessagesNewColumns:
+    """Tests for actual token columns on fact_messages."""
+
+    def test_has_actual_input_tokens(self, output_dir):
+        db_path = output_dir / "test.duckdb"
+        conn = create_star_schema(db_path)
+        columns = [c[0] for c in conn.execute("DESCRIBE fact_messages").fetchall()]
+        assert "actual_input_tokens" in columns
+        conn.close()
+
+    def test_has_actual_output_tokens(self, output_dir):
+        db_path = output_dir / "test.duckdb"
+        conn = create_star_schema(db_path)
+        columns = [c[0] for c in conn.execute("DESCRIBE fact_messages").fetchall()]
+        assert "actual_output_tokens" in columns
+        conn.close()
+
+    def test_has_cache_read_tokens(self, output_dir):
+        db_path = output_dir / "test.duckdb"
+        conn = create_star_schema(db_path)
+        columns = [c[0] for c in conn.execute("DESCRIBE fact_messages").fetchall()]
+        assert "cache_read_tokens" in columns
+        conn.close()
+
+
+class TestNewFactTables:
+    """Tests for new fact tables (token_usage, turn_durations, diagnostics, stop_events)."""
+
+    def test_creates_fact_token_usage_table(self, output_dir):
+        db_path = output_dir / "test.duckdb"
+        conn = create_star_schema(db_path)
+        result = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='fact_token_usage'"
+        ).fetchone()
+        assert result is not None
+        conn.close()
+
+    def test_fact_token_usage_has_required_columns(self, output_dir):
+        db_path = output_dir / "test.duckdb"
+        conn = create_star_schema(db_path)
+        columns = [c[0] for c in conn.execute("DESCRIBE fact_token_usage").fetchall()]
+        for col in [
+            "usage_id", "session_key", "date_key", "time_key", "model_key",
+            "input_tokens", "output_tokens", "cache_creation_input_tokens",
+            "cache_read_input_tokens", "service_tier", "speed", "timestamp",
+        ]:
+            assert col in columns, f"Missing column: {col}"
+        conn.close()
+
+    def test_creates_fact_turn_durations_table(self, output_dir):
+        db_path = output_dir / "test.duckdb"
+        conn = create_star_schema(db_path)
+        result = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='fact_turn_durations'"
+        ).fetchone()
+        assert result is not None
+        conn.close()
+
+    def test_fact_turn_durations_has_required_columns(self, output_dir):
+        db_path = output_dir / "test.duckdb"
+        conn = create_star_schema(db_path)
+        columns = [c[0] for c in conn.execute("DESCRIBE fact_turn_durations").fetchall()]
+        for col in ["turn_id", "session_key", "date_key", "time_key", "duration_ms", "message_count", "timestamp"]:
+            assert col in columns, f"Missing column: {col}"
+        conn.close()
+
+    def test_creates_fact_diagnostics_table(self, output_dir):
+        db_path = output_dir / "test.duckdb"
+        conn = create_star_schema(db_path)
+        result = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='fact_diagnostics'"
+        ).fetchone()
+        assert result is not None
+        conn.close()
+
+    def test_fact_diagnostics_has_required_columns(self, output_dir):
+        db_path = output_dir / "test.duckdb"
+        conn = create_star_schema(db_path)
+        columns = [c[0] for c in conn.execute("DESCRIBE fact_diagnostics").fetchall()]
+        for col in [
+            "diagnostic_id", "session_key", "file_key", "severity", "source",
+            "code", "message", "range_start_line", "timestamp",
+        ]:
+            assert col in columns, f"Missing column: {col}"
+        conn.close()
+
+    def test_creates_fact_stop_events_table(self, output_dir):
+        db_path = output_dir / "test.duckdb"
+        conn = create_star_schema(db_path)
+        result = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='fact_stop_events'"
+        ).fetchone()
+        assert result is not None
+        conn.close()
+
+    def test_fact_stop_events_has_required_columns(self, output_dir):
+        db_path = output_dir / "test.duckdb"
+        conn = create_star_schema(db_path)
+        columns = [c[0] for c in conn.execute("DESCRIBE fact_stop_events").fetchall()]
+        for col in [
+            "stop_event_id", "session_key", "stop_reason", "hook_count",
+            "has_output", "prevented_continuation", "timestamp",
+        ]:
+            assert col in columns, f"Missing column: {col}"
+        conn.close()
+
+
+class TestNewSemanticViews:
+    """Tests for new semantic views."""
+
+    def test_creates_semantic_token_usage_view(self, output_dir):
+        db_path = output_dir / "test.duckdb"
+        conn = create_star_schema(db_path)
+        result = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='view' AND name='semantic_token_usage'"
+        ).fetchone()
+        assert result is not None
+        conn.close()
+
+    def test_creates_semantic_cost_analysis_view(self, output_dir):
+        db_path = output_dir / "test.duckdb"
+        conn = create_star_schema(db_path)
+        result = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='view' AND name='semantic_cost_analysis'"
+        ).fetchone()
+        assert result is not None
+        conn.close()

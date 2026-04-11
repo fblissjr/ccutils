@@ -2,7 +2,7 @@
 
 This module provides functions for creating DuckDB database archives
 from Claude Code session files. Supports both simple (4-table) and
-star (22 tables + 10 views) schemas.
+star (26 tables + 12 views) schemas.
 """
 
 import os
@@ -248,6 +248,10 @@ def _count_rows(conn, schema_type):
             "fact_tool_calls",
             "fact_content_blocks",
             "fact_session_summary",
+            "fact_token_usage",
+            "fact_turn_durations",
+            "fact_diagnostics",
+            "fact_stop_events",
         ]
     else:
         tables = ["messages", "tool_calls", "sessions"]

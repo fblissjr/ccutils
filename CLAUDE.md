@@ -44,7 +44,7 @@ ccutils/
 │   │   │   ├── __init__.py
 │   │   │   ├── schema.py     # DDL for simple schema
 │   │   │   └── etl.py        # Simple schema ETL
-│   │   └── star/             # Star schema (22 tables + 10 views)
+│   │   └── star/             # Star schema (26 tables + 12 views)
 │   │       ├── __init__.py   # Public API exports
 │   │       ├── schema.py     # DDL for star schema tables + semantic views
 │   │       ├── etl.py        # Main ETL pipeline
@@ -104,7 +104,7 @@ Three output formats with two schema types:
 - `--format duckdb` - DuckDB database file
 - `--format json` - Single JSON file with nested tables
 
-**Star schema** (22 tables + 10 views):
+**Star schema** (26 tables + 12 views):
 - `--format duckdb-star` - DuckDB database file
 - `--format json-star` - Directory with meta.json + dimensions/*.json + facts/*.json
 - Modular package at `schemas/star/` (schema, etl, semantic, extractors, heuristics, json_export, utils)
@@ -119,19 +119,21 @@ Three output formats with two schema types:
 
 **Defaults**: Thinking blocks and subagents/agents are included by default. Use `--no-thinking`, `--no-subagents` (local), or `--no-agents` (all) to exclude them.
 
-### 3. Star Schema Tables (22 tables + 10 views)
+### 3. Star Schema Tables (26 tables + 12 views)
 
-**Core Dimensions (6):** dim_session (with intent/complexity/outcome/domain heuristics + first_user_message/last_assistant_message), dim_project, dim_tool, dim_model, dim_date, dim_time
+**Core Dimensions (6):** dim_session (with intent/complexity/outcome/domain heuristics + first_user_message/last_assistant_message + entrypoint/custom_title/permission_mode/agent_type), dim_project, dim_tool, dim_model, dim_date, dim_time
 
-**Core Facts (6):** fact_messages, fact_tool_calls (with duration_seconds), fact_session_summary (with _incl_agents rollup, total_errors, unique_tools_used, etc.), fact_file_operations, fact_errors (with heuristic error_type), fact_tool_chain_steps (with next_tool_key, is_error)
+**Core Facts (6):** fact_messages (with actual_input/output/cache_read_tokens), fact_tool_calls (with duration_seconds), fact_session_summary (with _incl_agents rollup, actual token totals, turn duration, diagnostics, hook runs, stop counts), fact_file_operations, fact_errors (with heuristic error_type), fact_tool_chain_steps (with next_tool_key, is_error)
 
 **Granular (5):** dim_file (with language), dim_session_chain, fact_content_blocks, fact_code_blocks, fact_entity_mentions
+
+**New Facts (4):** fact_token_usage (per-API-response token breakdown), fact_turn_durations (actual turn timing), fact_diagnostics (LSP diagnostics), fact_stop_events (stop reasons and hooks)
 
 **Agent/Bridge/Staging (3):** fact_agent_delegations (with denormalized metrics), bridge_session_file, stg_task_agent_map
 
 **Optional (2):** fact_session_embeddings (pylate), fact_tool_input_params
 
-**Views (10):** semantic_sessions, semantic_messages, semantic_tool_calls, semantic_file_operations, semantic_session_chains, semantic_agent_delegations, semantic_file_evolution, semantic_tool_patterns, semantic_project_context, semantic_project_files
+**Views (12):** semantic_sessions, semantic_messages, semantic_tool_calls, semantic_file_operations, semantic_session_chains, semantic_agent_delegations, semantic_file_evolution, semantic_tool_patterns, semantic_project_context, semantic_project_files, semantic_token_usage, semantic_cost_analysis
 
 ### 4. Token Estimation
 

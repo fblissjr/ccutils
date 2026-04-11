@@ -5,7 +5,12 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
-from ...parsers.jsonl_reader import iter_session_entries
+from ...parsers.jsonl_reader import (
+    SessionAttachment,
+    SessionMetaEntry,
+    SessionSystemEntry,
+    iter_all_session_entries,
+)
 from ...sanitize import PathSanitizer
 from .extractors import (
     calculate_conversation_depth,
@@ -85,6 +90,30 @@ class StarExtractionResult:
     last_assistant_message: str | None = None
     file_extensions_seen: list = field(default_factory=list)
     max_depth: int = 0
+
+    # New data lists (token usage, turn durations, diagnostics, stop events)
+    token_usage_data: list = field(default_factory=list)
+    turn_duration_data: list = field(default_factory=list)
+    diagnostics_data: list = field(default_factory=list)
+    stop_events_data: list = field(default_factory=list)
+
+    # New session-level metadata
+    entrypoint: str | None = None
+    custom_title: str | None = None
+    permission_mode: str | None = None
+    agent_type: str | None = None
+
+    # Actual token counters (from API usage data)
+    actual_input_tokens_total: int = 0
+    actual_output_tokens_total: int = 0
+    cache_creation_tokens_total: int = 0
+    cache_read_tokens_total: int = 0
+    total_turn_duration_ms: int = 0
+    turn_count: int = 0
+    total_diagnostics: int = 0
+    total_hook_runs: int = 0
+    stop_count: int = 0
+    prevented_continuations: int = 0
 
 
 def run_star_schema_etl(
@@ -435,7 +464,118 @@ def _extract_star_data(
     is_first = True
     sanitizer = None
 
-    for entry in iter_session_entries(session_path):
+    for entry in iter_all_session_entries(session_path):
+        # Handle system entries (turn_duration, stop_hook_summary)
+        if isinstance(entry, SessionSystemEntry):
+            ts = entry.timestamp
+            date_key_sys = int(ts.strftime("%Y%m%d")) if ts else None
+            time_key_sys = int(ts.strftime("%H%M")) if ts else None
+            if date_key_sys:
+                result.dates_seen.add(date_key_sys)
+
+            if entry.subtype == "turn_duration":
+                dur_ms = entry.data.get("durationMs", 0)
+                msg_count = entry.data.get("messageCount", 0)
+                result.total_turn_duration_ms += dur_ms
+                result.turn_count += 1
+                result.turn_duration_data.append({
+                    "turn_id": generate_dimension_key(
+                        session_key, "turn", str(result.turn_count)
+                    ),
+                    "session_key": session_key,
+                    "date_key": date_key_sys,
+                    "time_key": time_key_sys,
+                    "duration_ms": dur_ms,
+                    "message_count": msg_count,
+                    "timestamp": ts,
+                })
+            elif entry.subtype == "stop_hook_summary":
+                result.stop_count += 1
+                prevented = entry.data.get("preventedContinuation", False)
+                if prevented:
+                    result.prevented_continuations += 1
+                hook_infos = entry.data.get("hookInfos", [])
+                hook_total_ms = sum(
+                    h.get("durationMs", 0) for h in hook_infos if isinstance(h, dict)
+                )
+                hook_errors = entry.data.get("hookErrors", [])
+                result.stop_events_data.append({
+                    "stop_event_id": generate_dimension_key(
+                        session_key, "stop", str(result.stop_count)
+                    ),
+                    "session_key": session_key,
+                    "date_key": date_key_sys,
+                    "time_key": time_key_sys,
+                    "stop_reason": entry.data.get("stopReason", ""),
+                    "hook_count": entry.data.get("hookCount", 0),
+                    "has_output": entry.data.get("hasOutput", False),
+                    "prevented_continuation": prevented,
+                    "hook_total_duration_ms": hook_total_ms,
+                    "hook_error_count": len(hook_errors),
+                    "timestamp": ts,
+                })
+            continue
+
+        # Handle attachment entries (diagnostics, hook_success, etc.)
+        if isinstance(entry, SessionAttachment):
+            ts = entry.timestamp
+            date_key_att = int(ts.strftime("%Y%m%d")) if ts else None
+            time_key_att = int(ts.strftime("%H%M")) if ts else None
+            if date_key_att:
+                result.dates_seen.add(date_key_att)
+
+            if entry.attachment_type == "hook_success":
+                result.total_hook_runs += 1
+            elif entry.attachment_type == "diagnostics":
+                files_list = entry.data.get("files", [])
+                for file_entry in files_list:
+                    if not isinstance(file_entry, dict):
+                        continue
+                    file_uri = file_entry.get("uri", "")
+                    diags = file_entry.get("diagnostics", [])
+                    for diag in diags:
+                        if not isinstance(diag, dict):
+                            continue
+                        result.total_diagnostics += 1
+                        range_info = diag.get("range", {})
+                        start = range_info.get("start", {})
+                        end = range_info.get("end", {})
+
+                        # Create dim_file entry for the diagnostic file
+                        file_info = extract_file_info(file_uri)
+                        if file_info and file_uri not in result.files_seen:
+                            result.files_seen[file_uri] = file_info
+
+                        result.diagnostics_data.append({
+                            "diagnostic_id": generate_dimension_key(
+                                session_key, "diag", str(result.total_diagnostics)
+                            ),
+                            "session_key": session_key,
+                            "file_key": file_info["file_key"] if file_info else None,
+                            "date_key": date_key_att,
+                            "time_key": time_key_att,
+                            "severity": diag.get("severity", ""),
+                            "source": diag.get("source", ""),
+                            "code": str(diag.get("code", "")),
+                            "message": diag.get("message", ""),
+                            "range_start_line": start.get("line"),
+                            "range_start_col": start.get("character"),
+                            "range_end_line": end.get("line"),
+                            "range_end_col": end.get("character"),
+                            "timestamp": ts,
+                        })
+            continue
+
+        # Handle meta entries (custom-title, agent-name, permission-mode)
+        if isinstance(entry, SessionMetaEntry):
+            if entry.meta_type == "custom-title":
+                result.custom_title = entry.value
+            elif entry.meta_type == "agent-name":
+                result.agent_type = entry.value
+            elif entry.meta_type == "permission-mode":
+                result.permission_mode = entry.value
+            continue
+
         # Capture progress records for deterministic agent delegation linking
         if entry.entry_type == "progress":
             if entry.progress_parent_tool_id and entry.progress_agent_id:
@@ -455,6 +595,7 @@ def _extract_star_data(
             result.is_agent = result.agent_id is not None
             if result.is_agent:
                 result.parent_session_id = entry.raw.get("sessionId")
+            result.entrypoint = entry.entrypoint
 
             if private:
                 sanitizer = PathSanitizer(result.cwd)
@@ -664,6 +805,53 @@ def _extract_star_data(
 
         model_key = generate_dimension_key(model) if model else None
 
+        # Extract actual token usage from assistant messages
+        msg_actual_input = None
+        msg_actual_output = None
+        msg_cache_read = None
+        if entry.entry_type == "assistant" and entry.usage:
+            usage = entry.usage
+            msg_actual_input = usage.get("input_tokens")
+            msg_actual_output = usage.get("output_tokens")
+            msg_cache_read = usage.get("cache_read_input_tokens")
+            cache_creation = usage.get("cache_creation_input_tokens", 0)
+
+            if msg_actual_input:
+                result.actual_input_tokens_total += msg_actual_input
+            if msg_actual_output:
+                result.actual_output_tokens_total += msg_actual_output
+            if msg_cache_read:
+                result.cache_read_tokens_total += msg_cache_read
+            if cache_creation:
+                result.cache_creation_tokens_total += cache_creation
+
+            # Populate fact_token_usage
+            cache_info = usage.get("cache_creation", {})
+            result.token_usage_data.append({
+                "usage_id": generate_dimension_key(
+                    session_key, "usage", message_id
+                ),
+                "session_key": session_key,
+                "date_key": date_key,
+                "time_key": time_key,
+                "model_key": model_key,
+                "input_tokens": msg_actual_input,
+                "output_tokens": msg_actual_output,
+                "cache_creation_input_tokens": cache_creation,
+                "cache_read_input_tokens": msg_cache_read,
+                "cache_ephemeral_1h_tokens": (
+                    cache_info.get("ephemeral_1h_input_tokens")
+                    if isinstance(cache_info, dict) else None
+                ),
+                "cache_ephemeral_5m_tokens": (
+                    cache_info.get("ephemeral_5m_input_tokens")
+                    if isinstance(cache_info, dict) else None
+                ),
+                "service_tier": usage.get("service_tier"),
+                "speed": usage.get("speed"),
+                "timestamp": timestamp,
+            })
+
         result.messages_data.append(
             {
                 "message_id": message_id,
@@ -689,6 +877,9 @@ def _extract_star_data(
                 ),
                 "content_json": content_json,
                 "is_sidechain": entry.is_sidechain,
+                "actual_input_tokens": msg_actual_input,
+                "actual_output_tokens": msg_actual_output,
+                "cache_read_tokens": msg_cache_read,
             }
         )
 
@@ -826,8 +1017,10 @@ def _load_dimensions(
                 slug, first_timestamp, last_timestamp, is_agent, agent_id,
                 parent_session_key, depth_level, chain_key,
                 intent, complexity, outcome, domain,
-                first_user_message, last_assistant_message)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                first_user_message, last_assistant_message,
+                entrypoint, custom_title, permission_mode, agent_type)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                       ?, ?, ?, ?)""",
             [
                 session_key,
                 session_id,
@@ -853,6 +1046,10 @@ def _load_dimensions(
                     if result.last_assistant_message
                     else None
                 ),
+                result.entrypoint,
+                result.custom_title,
+                result.permission_mode,
+                result.agent_type,
             ],
         )
 
@@ -992,8 +1189,10 @@ def _load_facts(conn, session_key, project_key, result):
                 date_key, time_key, parent_message_id, timestamp, content_length,
                 content_block_count, has_tool_use, has_tool_result, has_thinking,
                 word_count, estimated_tokens, response_time_seconds, conversation_depth,
-                content_text, content_json, is_sidechain)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                content_text, content_json, is_sidechain,
+                actual_input_tokens, actual_output_tokens, cache_read_tokens)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                       ?, ?, ?)""",
             [
                 msg["message_id"],
                 msg["session_key"],
@@ -1016,6 +1215,9 @@ def _load_facts(conn, session_key, project_key, result):
                 msg["content_text"],
                 msg["content_json"],
                 msg["is_sidechain"],
+                msg.get("actual_input_tokens"),
+                msg.get("actual_output_tokens"),
+                msg.get("cache_read_tokens"),
             ],
         )
 
@@ -1089,7 +1291,9 @@ def _load_facts(conn, session_key, project_key, result):
 
     conn.execute(
         """INSERT INTO fact_session_summary VALUES
-           (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+           (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+            ?, ?, ?, ?,
+            ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         [
             session_key,
             project_key,
@@ -1117,6 +1321,17 @@ def _load_facts(conn, session_key, project_key, result):
             total_tool_calls,
             total_errors,
             session_duration,
+            # New actual token/duration columns (None if no usage data at all)
+            result.actual_input_tokens_total if result.token_usage_data else None,
+            result.actual_output_tokens_total if result.token_usage_data else None,
+            result.cache_creation_tokens_total if result.token_usage_data else None,
+            result.cache_read_tokens_total if result.token_usage_data else None,
+            result.total_turn_duration_ms if result.turn_duration_data else None,
+            result.turn_count if result.turn_duration_data else None,
+            result.total_diagnostics if result.diagnostics_data else None,
+            result.total_hook_runs or None,
+            result.stop_count if result.stop_events_data else None,
+            result.prevented_continuations if result.stop_events_data else None,
         ],
     )
 
@@ -1220,6 +1435,87 @@ def _load_facts(conn, session_key, project_key, result):
                 param["param_value_text"],
                 param["param_value_number"],
                 param["param_value_bool"],
+            ],
+        )
+
+    # fact_token_usage
+    for tu in result.token_usage_data:
+        conn.execute(
+            """INSERT INTO fact_token_usage VALUES
+               (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            [
+                tu["usage_id"],
+                tu["session_key"],
+                tu["date_key"],
+                tu["time_key"],
+                tu["model_key"],
+                tu["input_tokens"],
+                tu["output_tokens"],
+                tu["cache_creation_input_tokens"],
+                tu["cache_read_input_tokens"],
+                tu["cache_ephemeral_1h_tokens"],
+                tu["cache_ephemeral_5m_tokens"],
+                tu["service_tier"],
+                tu["speed"],
+                tu["timestamp"],
+            ],
+        )
+
+    # fact_turn_durations
+    for td in result.turn_duration_data:
+        conn.execute(
+            """INSERT INTO fact_turn_durations VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            [
+                td["turn_id"],
+                td["session_key"],
+                td["date_key"],
+                td["time_key"],
+                td["duration_ms"],
+                td["message_count"],
+                td["timestamp"],
+            ],
+        )
+
+    # fact_diagnostics
+    for diag in result.diagnostics_data:
+        conn.execute(
+            """INSERT INTO fact_diagnostics VALUES
+               (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            [
+                diag["diagnostic_id"],
+                diag["session_key"],
+                diag["file_key"],
+                diag["date_key"],
+                diag["time_key"],
+                diag["severity"],
+                diag["source"],
+                diag["code"],
+                diag["message"],
+                diag["range_start_line"],
+                diag["range_start_col"],
+                diag["range_end_line"],
+                diag["range_end_col"],
+                diag["timestamp"],
+            ],
+        )
+
+    # fact_stop_events
+    for se in result.stop_events_data:
+        conn.execute(
+            """INSERT INTO fact_stop_events VALUES
+               (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            [
+                se["stop_event_id"],
+                se["session_key"],
+                se["date_key"],
+                se["time_key"],
+                se["stop_reason"],
+                se["hook_count"],
+                se["has_output"],
+                se["prevented_continuation"],
+                se["hook_total_duration_ms"],
+                se["hook_error_count"],
+                se["timestamp"],
             ],
         )
 
