@@ -104,8 +104,8 @@ Three output formats with two schema types:
 **Star schema** (27 tables + 13 views):
 - `--format duckdb-star` - DuckDB database file
 - `--format json-star` - Directory with meta.json + dimensions/*.json + facts/*.json
-- Modular package at `schemas/star/` (schema, etl, semantic, extractors, heuristics, json_export, utils)
-- See `create_star_schema()`, `run_star_schema_etl()`, `finalize_star_schema()`, `export_star_schema_to_json()` functions
+- Modular package at `schemas/star/` (schema, etl, extractors, heuristics, history_etl, json_export, utils)
+- See `create_star_schema()`, `run_star_schema_etl()`, `finalize_star_schema()`, `export_star_schema_to_json()` in `schemas/star/`
 - `finalize_star_schema(conn)` MUST be called after all ETL runs -- populates session chains, agent delegations, file bridge, depth levels, and `_incl_agents` metric rollup
 - Heuristic classification (intent, complexity, outcome, domain, error_type) runs during ETL -- no LLM required
 - `--embed [MODEL]` flag available on both `local` and `all` commands (requires pylate optional dependency)
@@ -189,6 +189,12 @@ Run with coverage:
 4. If post-ETL, call from `finalize_star_schema()` and make idempotent (DELETE before INSERT)
 5. Run tests green, then update docs/STAR_SCHEMA.md
 
+### Removing a feature
+1. Grep for all imports, call sites, `__all__` exports, CLI registrations, and test references
+2. Delete source files, remove from `cli/__init__.py`, `schemas/*/__init__.py`, `__init__.py`
+3. Remove tests, update CHANGELOG, CLAUDE.md project tree, README
+4. Check CLI help text and docstrings for stale table/view counts or feature references
+
 ### Star schema ETL pipeline order
 ```
 create_star_schema(conn)                    # DDL
@@ -201,6 +207,12 @@ Key details:
 - `run_star_schema_etl` reads `.meta.json` sidecar for agent_type/agent_description automatically
 - `finalize_star_schema` accepts optional `history_path` to load `~/.claude/history.jsonl` into `dim_prompt`
 - `load_history(conn, path)` can also be called directly from `schemas.star.history_etl`
+
+## Versioning
+
+- Version lives in `pyproject.toml` -- keep it in sync with CHANGELOG.md
+- Tag releases: `git tag v0.X.0 <commit> -m "v0.X.0: summary"`
+- Current: v0.14.0
 
 ## HTML Export Gotchas
 
