@@ -30,7 +30,6 @@ ccutils --format duckdb -o ./archive
 
 # Export with star schema (27 tables + 13 views)
 ccutils --format duckdb-star -o ./analytics
-
 ```
 
 ## Commands
@@ -83,6 +82,16 @@ ccutils import ./my-claude-export --open         # HTML, opens in browser
 ccutils import ./export --format duckdb -o data.duckdb  # DuckDB
 ccutils import ./export --interactive            # Pick conversations
 ccutils import ./export --list                   # List without converting
+```
+
+### web
+
+Import a session from the Claude API. Auto-detects credentials from macOS keychain.
+
+```bash
+ccutils web                                      # Interactive session picker
+ccutils web SESSION_ID -o ./transcript --open     # Convert specific session
+ccutils web --repo owner/name                    # Filter by GitHub repo
 ```
 
 ### explore
@@ -199,7 +208,7 @@ ccutils --format json-star -o ./star-export/
 ```bash
 # Output
 -o, --output PATH          Output directory or file
---format FORMAT            html, duckdb, duckdb-star, json, json-star
+--format FORMAT            html, duckdb, duckdb-star, json, json-star (+ both for all)
 --open                     Open result in browser
 
 # Content (included by default -- use flags to exclude)
@@ -208,17 +217,20 @@ ccutils --format json-star -o ./star-export/
 --no-agents                Exclude agent-* session files (all)
 --private                  Sanitize file paths for sharing
 
-# Selection (local command)
---flat                     Flat single-list mode (skip project grouping)
---expand-chains            Show individual sessions in resumed chains
--p, --project TEXT         Filter by project name
+# Selection
+--flat                     Flat single-list mode (local)
+--expand-chains            Show individual sessions in resumed chains (local)
+-p, --project TEXT         Filter by project name (local, all)
+--dry-run                  Preview without converting (all)
 
-# Embeddings (local and all commands, star schema only)
+# Embeddings (local and all, star schema only)
 --embed [MODEL]            Run ColBERT embeddings (optionally specify model)
 
 # Batch processing (all command)
+-s, --source PATH          Source directory (default: ~/.claude/projects)
 -j, --jobs N               Parallel workers (default: 1)
---batch-size N             Sessions per transaction (default: 10)
+--batch-size N             Sessions per batch (default: 10)
+-q, --quiet                Suppress output except errors
 --no-search-index          Skip search index generation
 ```
 
@@ -229,7 +241,7 @@ ccutils --format json-star -o ./star-export/
 ## Development
 
 ```bash
-uv run pytest              # Run tests (~811 passing)
+uv run pytest              # Run tests (~803 passing)
 uv run ccutils --help      # Run development version
 uv run pytest --cov=ccutils  # Coverage
 ```
