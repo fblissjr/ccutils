@@ -24,7 +24,6 @@ ccutils/
 │   │   ├── local.py          # local command (default) -- picker + single-file conversion
 │   │   ├── web.py            # web command
 │   │   ├── all.py            # all command
-│   │   ├── explore.py        # explore command
 │   │   ├── import_cmd.py     # import command (Claude.ai exports)
 │   │   ├── schema.py         # schema command (JSON structure inspector)
 │   │   └── utils.py          # CLI utilities
@@ -66,10 +65,6 @@ ccutils/
 │   │   ├── layout.py         # Table layout
 │   │   ├── components.py     # Reusable UI components
 │   │   └── selection.py      # Interactive selection
-│   ├── explorer/             # Data Explorer SPA
-│   │   ├── index.html
-│   │   ├── css/styles.css
-│   │   └── js/{app,state,duckdb,query-builder,ui}.js
 │   └── templates/            # Jinja2 templates for HTML export
 │       ├── base.html
 │       ├── macros.html       # Shared rendering macros (tools, messages, etc.)
@@ -81,10 +76,9 @@ ccutils/
 │       └── global_search.js  # Archive-wide search (Jinja2 template)
 ├── tests/
 │   ├── conftest.py                   # Shared fixtures (sample_session_file, interrupted_session_file, etc.)
-│   └── test_*.py                     # 24 test files (star schema split across ddl/etl/analytics/advanced)
+│   └── test_*.py                     # 23 test files (star schema split across ddl/etl/analytics/advanced)
 ├── docs/
-│   ├── STAR_SCHEMA.md        # Star schema documentation
-│   └── DATA_EXPLORER.md      # Data explorer documentation
+│   └── STAR_SCHEMA.md        # Star schema documentation
 └── README.md
 ```
 
@@ -94,7 +88,6 @@ ccutils/
 - `local` - **default command**: pass a file to convert it (`ccutils session.jsonl`), or no args for interactive two-phase picker. `--flat` for legacy single-list mode
 - `web` - Import from Claude API (auto-detects credentials from macOS keychain)
 - `all` - Batch convert all sessions (supports parallel processing with `-j`)
-- `explore` - Launch Data Explorer web server
 - `import` - Import Claude.ai account exports (Settings > Privacy > Export)
 - `schema` - Inspect JSON structure without exposing content (safe to share publicly)
 - `convert` - Hidden alias for `local` (backwards compatibility)
@@ -114,8 +107,7 @@ Three output formats with two schema types:
 - `finalize_star_schema(conn)` MUST be called after all ETL runs -- populates session chains, agent delegations, file bridge, depth levels, and `_incl_agents` metric rollup
 - Heuristic classification (intent, complexity, outcome, domain, error_type) runs during ETL -- no LLM required
 - `--embed [MODEL]` flag available on both `local` and `all` commands (requires pylate optional dependency)
-- Visual explorer at `explorer/`
-- Full documentation in docs/STAR_SCHEMA.md and docs/DATA_EXPLORER.md
+- Full documentation in docs/STAR_SCHEMA.md
 
 **Schema inference**: Schema type is auto-inferred from `--format` -- `duckdb-star` and `json-star` use star schema, plain `duckdb` and `json` use simple schema.
 
@@ -212,7 +204,15 @@ Key details:
 ## HTML Export Gotchas
 
 - CSS classes used in `templates/macros.html` MUST be defined in `static/transcript.css` -- Jinja2 won't warn
-- `--snapshot-update` needed after ANY change to `transcript.css` or `macros.html` (CSS is inlined in every page)
+- `--snapshot-update` needed after ANY change to `transcript.css`, `macros.html`, or `base.html` (CSS is inlined in every page)
 - `global_search.js` and `search.js` are Jinja2 templates (not static files) -- rendered via `_jinja_env.get_template()`
 - Template variables render empty (not error) if not passed -- always test rendered HTML for expected content
 - Never use real usernames/paths in docstrings or test fixtures -- use `/Users/dev/workspace/project`
+
+### HTML Security
+
+- `render_markdown_text()` sanitizes output via `nh3.clean()` to strip dangerous HTML (`<script>`, event handlers, `<iframe>`, etc.)
+- `nh3.clean(raw, attributes={"code": {"class"}})` preserves `class` on `<code>` elements for fenced code block syntax highlighting
+- Jinja2 environment uses `autoescape=True` -- the `|safe` filter in macros is safe because all content is either pre-sanitized (nh3) or pre-escaped (`html.escape()`)
+- `base.html` includes a Content-Security-Policy meta tag that blocks external scripts, iframes, and restricts fetch to same-origin
+- Do NOT remove the CSP or nh3 sanitization without understanding the XSS implications

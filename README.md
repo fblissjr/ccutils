@@ -1,8 +1,8 @@
 # ccutils
 
-Claude utilities for session transcripts, star schema analytics, data exploration, and probably more as it comes up as a use case in my day to day.
+Claude utilities for session transcripts, star schema analytics, and probably more as it comes up as a use case in my day to day.
 
-> **Origin:** This project began as a fork of Simon Willison's [claude-code-transcripts](https://github.com/simonw/claude-code-transcripts). It has since diverged significantly with star schema analytics, a visual data explorer, modular architecture, and as a broader Claude utility.
+> **Origin:** This project began as a fork of Simon Willison's [claude-code-transcripts](https://github.com/simonw/claude-code-transcripts). It has since diverged significantly with star schema analytics, modular architecture, and as a broader Claude utility.
 
 ## Installation
 
@@ -31,8 +31,6 @@ ccutils --format duckdb -o ./archive
 # Export with star schema (27 tables + 13 views)
 ccutils --format duckdb-star -o ./analytics
 
-# Launch visual data explorer
-ccutils explore ./analytics/archive.duckdb
 ```
 
 ## Commands
@@ -42,7 +40,6 @@ ccutils explore ./analytics/archive.duckdb
 | `local` | Interactive picker + single-file conversion -- **default** (no subcommand needed) |
 | `all` | Batch convert all sessions (HTML archive, DuckDB, or JSON) |
 | `web` | Import from Claude API (auto-detects credentials from macOS keychain) |
-| `explore` | Launch Data Explorer web UI for star schema databases |
 | `import` | Import Claude.ai account exports (Settings > Privacy > Export) |
 | `schema` | Inspect JSON structure without exposing content (safe to share publicly) |
 
@@ -85,14 +82,6 @@ ccutils import ./my-claude-export --open         # HTML, opens in browser
 ccutils import ./export --format duckdb -o data.duckdb  # DuckDB
 ccutils import ./export --interactive            # Pick conversations
 ccutils import ./export --list                   # List without converting
-```
-
-### explore
-
-Visual query builder for star schema DuckDB databases. Runs a local web server.
-
-```bash
-ccutils explore ./analytics/archive.duckdb
 ```
 
 ### schema
@@ -226,12 +215,11 @@ ccutils --format json-star -o ./star-export/
 ## Documentation
 
 - [Star Schema Reference](docs/STAR_SCHEMA.md) -- table definitions, ETL capabilities, heuristic classification, example queries
-- [Data Explorer Guide](docs/DATA_EXPLORER.md) -- visual query builder features and architecture
 
 ## Development
 
 ```bash
-uv run pytest              # Run tests (~812 passing)
+uv run pytest              # Run tests (~811 passing)
 uv run ccutils --help      # Run development version
 uv run pytest --cov=ccutils  # Coverage
 ```
