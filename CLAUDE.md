@@ -87,7 +87,7 @@ ccutils/
 
 ### 1. CLI Commands
 - `local` - **default command**: pass a file to convert it (`ccutils session.jsonl`), or no args for interactive two-phase picker. `--flat` for legacy single-list mode
-- `web` - Import from Claude API (auto-detects credentials from macOS keychain)
+- `web` - Import from Claude API (auto-detects credentials from macOS keychain). HTML-only (no `--format`)
 - `all` - Batch convert all sessions (supports parallel processing with `-j`)
 - `explore` - Open DuckDB database in harlequin (requires `ccutils[explore]`)
 - `import` - Import Claude.ai account exports (Settings > Privacy > Export)
@@ -212,7 +212,19 @@ Key details:
 
 - Version lives in `pyproject.toml` -- keep it in sync with CHANGELOG.md
 - Tag releases: `git tag v0.X.0 <commit> -m "v0.X.0: summary"`
+- Use `/release` skill to bump version, verify CHANGELOG, and tag in one step
 - Current: v0.14.0
+
+## Automations (.claude/)
+
+`.claude/` is gitignored -- agents, skills, hooks are local-only.
+
+**Agents:** `schema-reviewer` (star schema consistency), `doc-drift-checker` (stale counts in docs/CLI/docstrings)
+**Skills:** `new-dimension`, `new-fact`, `test-schema`, `release` (version bump + tag)
+**Hooks:** PreToolUse blocks Edit/Write to `tests/__snapshots__/` (use `--snapshot-update`)
+
+Run doc-drift-checker after any schema change or feature removal.
+Use `/release` to cut versions instead of manual pyproject.toml edits.
 
 ## HTML Export Gotchas
 
