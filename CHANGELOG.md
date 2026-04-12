@@ -17,13 +17,19 @@ All notable changes to this project will be documented in this file.
   - `total_diagnostics` on `fact_session_summary`
 - **Stop events**: `fact_stop_events` table captures session/turn stop reasons, hook counts, and prevented continuations
   - `stop_count` and `prevented_continuations` on `fact_session_summary`
-- **Session metadata**: `dim_session` now stores `entrypoint` (cli/web), `custom_title`, `permission_mode`, `agent_type`
+- **Session metadata**: `dim_session` now stores `entrypoint` (cli/web), `custom_title`, `permission_mode`, `agent_type`, `agent_description`
+- **Agent type from .meta.json**: Subagent sessions read `agentType` and `description` from `.meta.json` sidecar files (e.g., "Explore", "Plan", "code-reviewer")
+- **Prompt history**: `dim_prompt` table + `semantic_prompt_history` view ingests `~/.claude/history.jsonl` (5700+ prompts across 71 projects). Links to sessions via `sessionId`. Loaded via `load_history()` or `finalize_star_schema(history_path=...)`
 - **Hook run counting**: `total_hook_runs` on `fact_session_summary`
 - **New parser types**: `SessionSystemEntry`, `SessionAttachment`, `SessionMetaEntry` dataclasses + `iter_all_session_entries()` function that yields all JSONL entry types (backward-compatible -- existing `iter_session_entries()` unchanged)
+- **History parser**: `parsers/history.py` with `HistoryEntry` dataclass and `iter_history_entries()`
 - **`entrypoint` field**: `SessionMetaHeader` and `SessionEntry` now capture the `entrypoint` field from session entries
 
+### Fixed
+- **`agent_type` data mapping**: The `agent-name` JSONL entry contains the session title (same as `custom-title`), not the agent type. Now correctly maps to `custom_title` as fallback. `agent_type` is populated exclusively from `.meta.json` sidecar files
+
 ### Changed
-- Star schema expanded from 22 tables + 10 views to 26 tables + 12 views
+- Star schema expanded from 22 tables + 10 views to 28 tables + 14 views
 - Estimated token counts and actual token counts coexist -- old sessions without usage data get NULL for actual columns
 
 ## 0.12.0

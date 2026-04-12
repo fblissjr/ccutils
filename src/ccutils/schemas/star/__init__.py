@@ -10,6 +10,7 @@ This package provides:
 
 from .embeddings import EmbeddingPipeline
 from .etl import run_star_schema_etl
+from .history_etl import load_history
 from .heuristics import (
     classify_complexity,
     classify_domain,

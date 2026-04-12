@@ -1,6 +1,6 @@
 """Star schema DDL - creates the dimensional model tables.
 
-26 tables + 12 views. Tiny lookup dimensions (message_type, content_block_type,
+28 tables + 14 views. Tiny lookup dimensions (message_type, content_block_type,
 error_type, entity_type, programming_language) replaced by degenerate VARCHAR
 columns on fact tables. LLM enrichment tables removed entirely -- replaced by
 heuristic classification columns on dim_session.
@@ -20,7 +20,8 @@ def create_star_schema(db_path):
     - 4 new facts (token_usage, turn_durations, diagnostics, stop_events)
     - 3 agent/bridge/staging tables
     - 2 optional tables (embeddings, tool_input_params)
-    - 12 semantic views
+    - 1 prompt history table (dim_prompt from history.jsonl)
+    - 14 semantic views
 
     No hard PK/FK constraints - relies on soft business rules.
 
@@ -106,7 +107,8 @@ def create_star_schema(db_path):
             entrypoint VARCHAR,
             custom_title VARCHAR,
             permission_mode VARCHAR,
-            agent_type VARCHAR
+            agent_type VARCHAR,
+            agent_description VARCHAR
         )
     """
     )
@@ -503,6 +505,26 @@ def create_star_schema(db_path):
             hook_total_duration_ms INTEGER,
             hook_error_count INTEGER,
             timestamp TIMESTAMP
+        )
+    """
+    )
+
+    # =========================================================================
+    # Prompt History (from ~/.claude/history.jsonl)
+    # =========================================================================
+
+    conn.execute(
+        """
+        CREATE OR REPLACE TABLE dim_prompt (
+            prompt_key VARCHAR,
+            session_key VARCHAR,
+            project_path VARCHAR,
+            project_name VARCHAR,
+            display_text TEXT,
+            timestamp TIMESTAMP,
+            date_key INTEGER,
+            time_key INTEGER,
+            has_pasted_content BOOLEAN
         )
     """
     )
@@ -908,6 +930,32 @@ def create_star_schema(db_path):
         JOIN dim_session ds ON fss.session_key = ds.session_key
         JOIN dim_project dp ON fss.project_key = dp.project_key
         LEFT JOIN dim_date dd ON fss.date_key = dd.date_key
+    """
+    )
+
+    conn.execute(
+        """
+        CREATE OR REPLACE VIEW semantic_prompt_history AS
+        SELECT
+            dp.prompt_key,
+            dp.display_text,
+            dp.timestamp,
+            dp.project_name,
+            dp.project_path,
+            dp.has_pasted_content,
+            ds.session_id,
+            ds.intent,
+            ds.complexity,
+            ds.custom_title,
+            ds.entrypoint,
+            fss.total_messages,
+            fss.actual_input_tokens,
+            fss.actual_output_tokens,
+            dd.full_date
+        FROM dim_prompt dp
+        LEFT JOIN dim_session ds ON dp.session_key = ds.session_key
+        LEFT JOIN fact_session_summary fss ON ds.session_key = fss.session_key
+        LEFT JOIN dim_date dd ON dp.date_key = dd.date_key
     """
     )
 

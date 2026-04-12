@@ -337,7 +337,7 @@ def generate_star_json_archive(
     return stats
 
 
-def finalize_star_schema(conn):
+def finalize_star_schema(conn, history_path=None, private=False):
     """Run post-ETL processing for star schema.
 
     Must be called after all sessions have been loaded via run_star_schema_etl().
@@ -347,14 +347,25 @@ def finalize_star_schema(conn):
     - fact_agent_delegations (agent-to-parent Task tool linking)
     - bridge_session_file (cross-session file operation aggregation)
     - fact_session_summary._incl_agents rollup (bottom-up agent metric aggregation)
+    - dim_prompt (from history.jsonl, if path provided)
 
     Safe to call multiple times -- each step clears before repopulating.
+
+    Args:
+        conn: DuckDB connection
+        history_path: Optional path to ~/.claude/history.jsonl
+        private: If True, sanitize project paths in history data
     """
     _calculate_session_depths(conn)
     _build_session_chains(conn)
     _link_agent_delegations(conn)
     _build_session_file_bridge(conn)
     _rollup_agent_metrics(conn)
+
+    if history_path:
+        from ..schemas.star.history_etl import load_history
+
+        load_history(conn, history_path, private=private)
 
 
 def _calculate_session_depths(conn):

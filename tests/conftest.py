@@ -529,6 +529,71 @@ def new_format_session_file():
 
 
 @pytest.fixture
+def agent_session_with_meta(output_dir):
+    """Create an agent session JSONL with a .meta.json sidecar file."""
+    # Create session directory structure: parent/subagents/agent-xxx.jsonl + .meta.json
+    subagents_dir = output_dir / "session-parent" / "subagents"
+    subagents_dir.mkdir(parents=True)
+
+    # Write the .meta.json sidecar
+    meta_path = subagents_dir / "agent-a1234567890abcdef.meta.json"
+    meta_path.write_text(json.dumps({
+        "agentType": "Explore",
+        "description": "Explore the authentication module",
+    }))
+
+    # Write the agent JSONL
+    jsonl_path = subagents_dir / "agent-a1234567890abcdef.jsonl"
+    with open(jsonl_path, "w") as f:
+        f.write(
+            json.dumps({
+                "type": "user",
+                "uuid": "user-001",
+                "parentUuid": None,
+                "sessionId": "session-parent",
+                "agentId": "a1234567890abcdef",
+                "isSidechain": True,
+                "timestamp": "2025-06-01T14:00:00.000Z",
+                "cwd": "/dev/workspace/project",
+                "gitBranch": "main",
+                "version": "2.1.97",
+                "entrypoint": "cli",
+                "message": {
+                    "role": "user",
+                    "content": "Explore the authentication module and report back",
+                },
+            })
+            + "\n"
+        )
+        f.write(
+            json.dumps({
+                "type": "assistant",
+                "uuid": "asst-001",
+                "parentUuid": "user-001",
+                "sessionId": "session-parent",
+                "timestamp": "2025-06-01T14:00:10.000Z",
+                "entrypoint": "cli",
+                "message": {
+                    "role": "assistant",
+                    "model": "claude-sonnet-4-6",
+                    "content": [
+                        {"type": "text", "text": "I found the auth module."},
+                    ],
+                    "usage": {
+                        "input_tokens": 500,
+                        "output_tokens": 100,
+                        "cache_creation_input_tokens": 0,
+                        "cache_read_input_tokens": 200,
+                    },
+                },
+            })
+            + "\n"
+        )
+
+    return jsonl_path
+
+
+@pytest.fixture
 def mock_projects_dir(sample_session_file):
     """Create a mock projects directory structure."""
     with tempfile.TemporaryDirectory() as tmpdir:

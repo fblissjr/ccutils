@@ -56,6 +56,11 @@ from .jsonl_reader import (
     parse_session_header,
 )
 
+from .history import (
+    HistoryEntry,
+    iter_history_entries,
+)
+
 from .schema_inspector import (
     format_schema,
     infer_schema,
@@ -106,6 +111,9 @@ __all__ = [
     "iter_loglines",
     "iter_session_entries",
     "parse_session_header",
+    # History
+    "HistoryEntry",
+    "iter_history_entries",
     # Schema inspection
     "format_schema",
     "infer_schema",

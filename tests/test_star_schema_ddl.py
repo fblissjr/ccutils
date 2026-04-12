@@ -637,6 +637,13 @@ class TestDimSessionNewColumns:
         assert "agent_type" in columns
         conn.close()
 
+    def test_dim_session_has_agent_description(self, output_dir):
+        db_path = output_dir / "test.duckdb"
+        conn = create_star_schema(db_path)
+        columns = [c[0] for c in conn.execute("DESCRIBE dim_session").fetchall()]
+        assert "agent_description" in columns
+        conn.close()
+
 
 class TestFactSessionSummaryNewColumns:
     """Tests for new token/duration columns on fact_session_summary."""
@@ -788,6 +795,44 @@ class TestNewFactTables:
             "has_output", "prevented_continuation", "timestamp",
         ]:
             assert col in columns, f"Missing column: {col}"
+        conn.close()
+
+
+class TestDimPromptTable:
+    """Tests for dim_prompt table (history.jsonl data)."""
+
+    def test_creates_dim_prompt_table(self, output_dir):
+        db_path = output_dir / "test.duckdb"
+        conn = create_star_schema(db_path)
+        result = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='dim_prompt'"
+        ).fetchone()
+        assert result is not None
+        conn.close()
+
+    def test_dim_prompt_has_required_columns(self, output_dir):
+        db_path = output_dir / "test.duckdb"
+        conn = create_star_schema(db_path)
+        columns = [c[0] for c in conn.execute("DESCRIBE dim_prompt").fetchall()]
+        for col in [
+            "prompt_key", "session_key", "project_path", "project_name",
+            "display_text", "timestamp", "date_key", "time_key",
+            "has_pasted_content",
+        ]:
+            assert col in columns, f"Missing column: {col}"
+        conn.close()
+
+
+class TestSemanticPromptHistoryView:
+    """Tests for semantic_prompt_history view."""
+
+    def test_creates_view(self, output_dir):
+        db_path = output_dir / "test.duckdb"
+        conn = create_star_schema(db_path)
+        result = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='view' AND name='semantic_prompt_history'"
+        ).fetchone()
+        assert result is not None
         conn.close()
 
 

@@ -102,6 +102,7 @@ class StarExtractionResult:
     custom_title: str | None = None
     permission_mode: str | None = None
     agent_type: str | None = None
+    agent_description: str | None = None
 
     # Actual token counters (from API usage data)
     actual_input_tokens_total: int = 0
@@ -457,6 +458,17 @@ def _extract_star_data(
     """
     result = StarExtractionResult()
 
+    # Read .meta.json sidecar if it exists (agent sessions have these)
+    meta_json_path = session_path.with_suffix(".meta.json")
+    if meta_json_path.exists():
+        try:
+            with open(meta_json_path, "r", encoding="utf-8") as mf:
+                meta_data = json.loads(mf.read())
+            result.agent_type = meta_data.get("agentType")
+            result.agent_description = meta_data.get("description") or None
+        except (json.JSONDecodeError, OSError):
+            pass
+
     tool_use_map = {}
     message_timestamps = {}
     depth_map = {}
@@ -571,7 +583,9 @@ def _extract_star_data(
             if entry.meta_type == "custom-title":
                 result.custom_title = entry.value
             elif entry.meta_type == "agent-name":
-                result.agent_type = entry.value
+                # agent-name is the session title (same as custom-title), not the agent type
+                if not result.custom_title:
+                    result.custom_title = entry.value
             elif entry.meta_type == "permission-mode":
                 result.permission_mode = entry.value
             continue
@@ -1018,9 +1032,10 @@ def _load_dimensions(
                 parent_session_key, depth_level, chain_key,
                 intent, complexity, outcome, domain,
                 first_user_message, last_assistant_message,
-                entrypoint, custom_title, permission_mode, agent_type)
+                entrypoint, custom_title, permission_mode, agent_type,
+                agent_description)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                       ?, ?, ?, ?)""",
+                       ?, ?, ?, ?, ?)""",
             [
                 session_key,
                 session_id,
@@ -1050,6 +1065,7 @@ def _load_dimensions(
                 result.custom_title,
                 result.permission_mode,
                 result.agent_type,
+                result.agent_description,
             ],
         )
 

@@ -14,6 +14,7 @@ DIMENSION_TABLES = [
     "dim_date",
     "dim_time",
     "dim_file",
+    "dim_prompt",
 ]
 
 FACT_TABLES = [

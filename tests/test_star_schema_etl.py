@@ -1303,6 +1303,55 @@ class TestSessionMetadataETL:
         conn.close()
 
 
+class TestAgentTypeFromMeta:
+    """Tests for agent_type populated from .meta.json sidecar, not agent-name entry."""
+
+    def test_agent_type_from_meta_json(self, agent_session_with_meta, output_dir):
+        """Agent sessions should get agent_type from the .meta.json sidecar file."""
+        db_path = output_dir / "test.duckdb"
+        conn = create_star_schema(db_path)
+        run_star_schema_etl(conn, agent_session_with_meta, "test-project")
+
+        result = conn.execute("SELECT agent_type FROM dim_session").fetchone()
+        assert result[0] == "Explore"
+        conn.close()
+
+    def test_agent_description_from_meta_json(self, agent_session_with_meta, output_dir):
+        """Agent sessions should get agent_description from .meta.json."""
+        db_path = output_dir / "test.duckdb"
+        conn = create_star_schema(db_path)
+        run_star_schema_etl(conn, agent_session_with_meta, "test-project")
+
+        result = conn.execute("SELECT agent_description FROM dim_session").fetchone()
+        assert result[0] == "Explore the authentication module"
+        conn.close()
+
+    def test_agent_name_maps_to_custom_title(self, new_format_session_file, output_dir):
+        """The agent-name JSONL entry should map to custom_title, not agent_type."""
+        db_path = output_dir / "test.duckdb"
+        conn = create_star_schema(db_path)
+        run_star_schema_etl(conn, new_format_session_file, "test-project")
+
+        result = conn.execute(
+            "SELECT custom_title, agent_type FROM dim_session"
+        ).fetchone()
+        # custom_title set from custom-title entry (or agent-name entry as fallback)
+        assert result[0] == "fix-auth-bug"
+        # agent_type should be NULL for non-agent sessions (no .meta.json)
+        assert result[1] is None
+        conn.close()
+
+    def test_no_meta_json_leaves_agent_type_null(self, sample_session_file, output_dir):
+        """Sessions without .meta.json should have NULL agent_type."""
+        db_path = output_dir / "test.duckdb"
+        conn = create_star_schema(db_path)
+        run_star_schema_etl(conn, sample_session_file, "test-project")
+
+        result = conn.execute("SELECT agent_type FROM dim_session").fetchone()
+        assert result[0] is None
+        conn.close()
+
+
 class TestBackwardCompatibility:
     """Tests that old-format sessions still work with new schema."""
 

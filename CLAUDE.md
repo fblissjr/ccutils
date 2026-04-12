@@ -44,7 +44,7 @@ ccutils/
 │   │   │   ├── __init__.py
 │   │   │   ├── schema.py     # DDL for simple schema
 │   │   │   └── etl.py        # Simple schema ETL
-│   │   └── star/             # Star schema (26 tables + 12 views)
+│   │   └── star/             # Star schema (28 tables + 14 views)
 │   │       ├── __init__.py   # Public API exports
 │   │       ├── schema.py     # DDL for star schema tables + semantic views
 │   │       ├── etl.py        # Main ETL pipeline
@@ -104,7 +104,7 @@ Three output formats with two schema types:
 - `--format duckdb` - DuckDB database file
 - `--format json` - Single JSON file with nested tables
 
-**Star schema** (26 tables + 12 views):
+**Star schema** (28 tables + 14 views):
 - `--format duckdb-star` - DuckDB database file
 - `--format json-star` - Directory with meta.json + dimensions/*.json + facts/*.json
 - Modular package at `schemas/star/` (schema, etl, semantic, extractors, heuristics, json_export, utils)
@@ -119,7 +119,7 @@ Three output formats with two schema types:
 
 **Defaults**: Thinking blocks and subagents/agents are included by default. Use `--no-thinking`, `--no-subagents` (local), or `--no-agents` (all) to exclude them.
 
-### 3. Star Schema Tables (26 tables + 12 views)
+### 3. Star Schema Tables (28 tables + 14 views)
 
 **Core Dimensions (6):** dim_session (with intent/complexity/outcome/domain heuristics + first_user_message/last_assistant_message + entrypoint/custom_title/permission_mode/agent_type), dim_project, dim_tool, dim_model, dim_date, dim_time
 
@@ -133,7 +133,9 @@ Three output formats with two schema types:
 
 **Optional (2):** fact_session_embeddings (pylate), fact_tool_input_params
 
-**Views (12):** semantic_sessions, semantic_messages, semantic_tool_calls, semantic_file_operations, semantic_session_chains, semantic_agent_delegations, semantic_file_evolution, semantic_tool_patterns, semantic_project_context, semantic_project_files, semantic_token_usage, semantic_cost_analysis
+**Prompt History (1):** dim_prompt (from ~/.claude/history.jsonl, linked to sessions)
+
+**Views (14):** semantic_sessions, semantic_messages, semantic_tool_calls, semantic_file_operations, semantic_session_chains, semantic_agent_delegations, semantic_file_evolution, semantic_tool_patterns, semantic_project_context, semantic_project_files, semantic_token_usage, semantic_cost_analysis, semantic_prompt_history
 
 ### 4. Token Estimation
 
