@@ -19,7 +19,9 @@ def explore_cmd(database):
         ccutils explore ./analytics/archive.duckdb
     """
     try:
-        subprocess.run(["harlequin", database])
+        result = subprocess.run(["harlequin", database])
+        if result.returncode != 0:
+            raise SystemExit(result.returncode)
     except FileNotFoundError:
         raise click.ClickException(
             "harlequin is not installed. Install it with:\n\n"

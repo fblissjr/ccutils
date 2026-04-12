@@ -1,5 +1,6 @@
 """Tests for the explore CLI command (harlequin shim)."""
 
+import subprocess
 from unittest.mock import patch
 
 from click.testing import CliRunner
@@ -30,7 +31,9 @@ class TestExploreCommand:
         db_file.write_bytes(b"")
 
         with patch("ccutils.cli.explore.subprocess.run") as mock_run:
-            mock_run.return_value = None
+            mock_run.return_value = subprocess.CompletedProcess(
+                args=["harlequin", str(db_file)], returncode=0
+            )
             runner = CliRunner()
             result = runner.invoke(cli, ["explore", str(db_file)])
 

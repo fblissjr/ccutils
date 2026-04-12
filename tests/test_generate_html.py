@@ -165,10 +165,11 @@ class TestRenderFunctions:
         assert "<code>code</code>" in result
 
     def test_render_markdown_text_preserves_code_blocks(self):
-        """Test that fenced code blocks are preserved."""
+        """Test that fenced code blocks are preserved with language class."""
         result = render_markdown_text("```python\nprint('hello')\n```")
         assert "<code" in result
         assert "print" in result
+        assert 'class="language-python"' in result
 
     def test_format_json(self, snapshot_html):
         """Test JSON formatting."""
