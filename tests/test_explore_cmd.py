@@ -1,161 +1,56 @@
-"""Tests for the explore CLI command."""
+"""Tests for the explore CLI command (harlequin shim)."""
 
-from pathlib import Path
-from unittest.mock import MagicMock, patch, PropertyMock
+from unittest.mock import patch
 
 from click.testing import CliRunner
 
 from ccutils.cli import cli
 
 
-def _patch_server():
-    """Patch the ReusableTCPServer class inside the explore module.
-
-    The explore command defines ReusableTCPServer locally inside the function,
-    so we need to patch socketserver.TCPServer which it subclasses, and
-    also catch the actual instantiation.
-    """
-    return patch(
-        "ccutils.cli.explore.socketserver.TCPServer.__init__", return_value=None
-    )
-
-
 class TestExploreCommand:
     """Tests for the explore command."""
 
-    def test_starts_server(self, mock_webbrowser_open):
-        """Explore command starts HTTP server and shuts down on KeyboardInterrupt."""
-        with (
-            patch(
-                "ccutils.cli.explore.socketserver.TCPServer.__init__", return_value=None
-            ),
-            patch(
-                "ccutils.cli.explore.socketserver.TCPServer.serve_forever",
-                side_effect=KeyboardInterrupt(),
-            ),
-            patch("ccutils.cli.explore.socketserver.TCPServer.shutdown"),
-            patch("ccutils.cli.explore.socketserver.TCPServer.server_close"),
-        ):
+    def test_no_database_argument_shows_error(self):
+        """Explore command requires a database argument."""
+        runner = CliRunner()
+        result = runner.invoke(cli, ["explore"])
 
-            runner = CliRunner()
-            result = runner.invoke(cli, ["explore"])
+        assert result.exit_code != 0
 
-            assert result.exit_code == 0
-            assert "Data Explorer running at" in result.output
+    def test_missing_database_file_shows_error(self):
+        """Explore command errors if database file doesn't exist."""
+        runner = CliRunner()
+        result = runner.invoke(cli, ["explore", "/nonexistent/path.duckdb"])
 
-    def test_custom_port(self, mock_webbrowser_open):
-        """--port option changes the port."""
-        with (
-            patch(
-                "ccutils.cli.explore.socketserver.TCPServer.__init__", return_value=None
-            ),
-            patch(
-                "ccutils.cli.explore.socketserver.TCPServer.serve_forever",
-                side_effect=KeyboardInterrupt(),
-            ),
-            patch("ccutils.cli.explore.socketserver.TCPServer.shutdown"),
-            patch("ccutils.cli.explore.socketserver.TCPServer.server_close"),
-        ):
+        assert result.exit_code != 0
 
-            runner = CliRunner()
-            result = runner.invoke(cli, ["explore", "-p", "9999"])
-
-            assert result.exit_code == 0
-            assert "9999" in result.output
-
-    def test_no_open_flag(self, mock_webbrowser_open):
-        """--no-open prevents browser from opening."""
-        with (
-            patch(
-                "ccutils.cli.explore.socketserver.TCPServer.__init__", return_value=None
-            ),
-            patch(
-                "ccutils.cli.explore.socketserver.TCPServer.serve_forever",
-                side_effect=KeyboardInterrupt(),
-            ),
-            patch("ccutils.cli.explore.socketserver.TCPServer.shutdown"),
-            patch("ccutils.cli.explore.socketserver.TCPServer.server_close"),
-        ):
-
-            runner = CliRunner()
-            result = runner.invoke(cli, ["explore", "--no-open"])
-
-            assert result.exit_code == 0
-            assert len(mock_webbrowser_open) == 0
-
-    def test_browser_opens_by_default(self, mock_webbrowser_open):
-        """Browser opens by default without --no-open."""
-        with (
-            patch(
-                "ccutils.cli.explore.socketserver.TCPServer.__init__", return_value=None
-            ),
-            patch(
-                "ccutils.cli.explore.socketserver.TCPServer.serve_forever",
-                side_effect=KeyboardInterrupt(),
-            ),
-            patch("ccutils.cli.explore.socketserver.TCPServer.shutdown"),
-            patch("ccutils.cli.explore.socketserver.TCPServer.server_close"),
-        ):
-
-            runner = CliRunner()
-            result = runner.invoke(cli, ["explore"])
-
-            assert result.exit_code == 0
-            assert len(mock_webbrowser_open) == 1
-            assert "index.html" in mock_webbrowser_open[0]
-
-    def test_port_conflict_error(self):
-        """Port already in use gives specific error message."""
-        with patch(
-            "ccutils.cli.explore.socketserver.TCPServer.__init__",
-            side_effect=OSError(48, "Address already in use"),
-        ):
-
-            runner = CliRunner()
-            result = runner.invoke(cli, ["explore", "-p", "8765"])
-
-            assert result.exit_code != 0
-            assert "Port 8765 is already in use" in result.output
-
-    def test_database_argument(self, mock_webbrowser_open, tmp_path):
-        """Database argument shows load path."""
+    def test_runs_harlequin_when_installed(self, tmp_path):
+        """Explore command execs harlequin with the database path."""
         db_file = tmp_path / "test.duckdb"
-        db_file.write_text("")
+        db_file.write_bytes(b"")
 
-        with (
-            patch(
-                "ccutils.cli.explore.socketserver.TCPServer.__init__", return_value=None
-            ),
-            patch(
-                "ccutils.cli.explore.socketserver.TCPServer.serve_forever",
-                side_effect=KeyboardInterrupt(),
-            ),
-            patch("ccutils.cli.explore.socketserver.TCPServer.shutdown"),
-            patch("ccutils.cli.explore.socketserver.TCPServer.server_close"),
-        ):
-
+        with patch("ccutils.cli.explore.subprocess.run") as mock_run:
+            mock_run.return_value = None
             runner = CliRunner()
             result = runner.invoke(cli, ["explore", str(db_file)])
 
             assert result.exit_code == 0
-            assert "Load database:" in result.output
+            mock_run.assert_called_once()
+            args = mock_run.call_args[0][0]
+            assert args[0] == "harlequin"
+            assert str(db_file) in args
 
-    def test_graceful_shutdown_message(self, mock_webbrowser_open):
-        """KeyboardInterrupt triggers server stopped message."""
-        with (
-            patch(
-                "ccutils.cli.explore.socketserver.TCPServer.__init__", return_value=None
-            ),
-            patch(
-                "ccutils.cli.explore.socketserver.TCPServer.serve_forever",
-                side_effect=KeyboardInterrupt(),
-            ),
-            patch("ccutils.cli.explore.socketserver.TCPServer.shutdown"),
-            patch("ccutils.cli.explore.socketserver.TCPServer.server_close"),
+    def test_shows_install_hint_when_harlequin_missing(self, tmp_path):
+        """Explore command shows install instructions if harlequin not found."""
+        db_file = tmp_path / "test.duckdb"
+        db_file.write_bytes(b"")
+
+        with patch(
+            "ccutils.cli.explore.subprocess.run",
+            side_effect=FileNotFoundError("harlequin not found"),
         ):
-
             runner = CliRunner()
-            result = runner.invoke(cli, ["explore"])
+            result = runner.invoke(cli, ["explore", str(db_file)])
 
-            assert result.exit_code == 0
-            assert "Server stopped" in result.output
+            assert result.exit_code != 0
+            assert "uv pip install" in result.output or "ccutils[explore]" in result.output

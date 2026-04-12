@@ -4,11 +4,14 @@ All notable changes to this project will be documented in this file.
 
 ## 0.14.0
 
+### Added
+- **`ccutils explore` harlequin shim**: `ccutils explore archive.duckdb` launches harlequin for interactive SQL exploration. Requires `uv pip install ccutils[explore]`. Shows install instructions if harlequin is missing.
+
 ### Fixed
 - **XSS in HTML export**: `render_markdown_text()` now sanitizes output via `nh3` to strip `<script>`, event handlers (`onerror`), `<iframe>`, and other dangerous HTML that the Python `markdown` library passes through by default. Previously, malicious content in session JSONL files could execute JavaScript when exported HTML was opened in a browser.
 
 ### Removed
-- **Data Explorer SPA**: Removed the browser-based data explorer (`ccutils explore` command, `explorer/` directory, `docs/DATA_EXPLORER.md`). Star schema DuckDB files are better served by dedicated tools like harlequin, DBeaver, or the DuckDB CLI. The `meta_semantic_model` table remains in DuckDB output for self-describing schema metadata.
+- **Data Explorer SPA**: Removed the browser-based data explorer (1,700-line vanilla JS SPA, `explorer/` directory, `docs/DATA_EXPLORER.md`). Replaced by the harlequin shim above. The `meta_semantic_model` table remains in DuckDB output for self-describing schema metadata.
 
 ## 0.13.0
 
@@ -65,7 +68,7 @@ All notable changes to this project will be documented in this file.
 - **`estimated_tokens` column** on simple schema `sessions` table
 - **Inclusive agent metric rollup**: `fact_session_summary` now carries `_incl_agents` columns (`total_estimated_tokens_incl_agents`, `total_tool_calls_incl_agents`, `total_errors_incl_agents`, `total_duration_incl_agents`) that aggregate metrics from all descendant subagent sessions. Bottom-up rollup runs during `finalize_star_schema()` using `dim_session.depth_level`. `fact_agent_delegations` also carries denormalized `agent_estimated_tokens`
 - **Semantic view updates**: `semantic_sessions` and `semantic_project_context` expose `_incl_agents` columns; `semantic_agent_delegations` exposes `agent_estimated_tokens`
-- **CLI test coverage**: New test files for 5 previously untested commands -- `test_convert_cmd.py`, `test_schema_cmd.py`, `test_import_cmd.py`, `test_web_cmd.py`, `test_explore_cmd.py`
+- **CLI test coverage**: New test files for 4 previously untested commands -- `test_convert_cmd.py`, `test_schema_cmd.py`, `test_import_cmd.py`, `test_web_cmd.py`
 
 ### Fixed
 - **Orphan tool use preservation**: Tool calls interrupted before receiving a result (session killed mid-tool) are now stored in both simple and star schema DuckDB exports with NULL `output_text` and `result_message_id` -- previously silently dropped, creating asymmetry with JSON export which already included them

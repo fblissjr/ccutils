@@ -135,7 +135,7 @@ def render_markdown_text(text):
     if not text:
         return ""
     raw = markdown.markdown(text, extensions=["fenced_code", "tables"])
-    return nh3.clean(raw)
+    return nh3.clean(raw, attributes={"code": {"class"}})
 
 
 def is_json_like(text):

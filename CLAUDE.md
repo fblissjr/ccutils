@@ -24,6 +24,7 @@ ccutils/
 │   │   ├── local.py          # local command (default) -- picker + single-file conversion
 │   │   ├── web.py            # web command
 │   │   ├── all.py            # all command
+│   │   ├── explore.py        # explore command (harlequin shim)
 │   │   ├── import_cmd.py     # import command (Claude.ai exports)
 │   │   ├── schema.py         # schema command (JSON structure inspector)
 │   │   └── utils.py          # CLI utilities
@@ -76,7 +77,7 @@ ccutils/
 │       └── global_search.js  # Archive-wide search (Jinja2 template)
 ├── tests/
 │   ├── conftest.py                   # Shared fixtures (sample_session_file, interrupted_session_file, etc.)
-│   └── test_*.py                     # 23 test files (star schema split across ddl/etl/analytics/advanced)
+│   └── test_*.py                     # 24 test files (star schema split across ddl/etl/analytics/advanced)
 ├── docs/
 │   └── STAR_SCHEMA.md        # Star schema documentation
 └── README.md
@@ -88,6 +89,7 @@ ccutils/
 - `local` - **default command**: pass a file to convert it (`ccutils session.jsonl`), or no args for interactive two-phase picker. `--flat` for legacy single-list mode
 - `web` - Import from Claude API (auto-detects credentials from macOS keychain)
 - `all` - Batch convert all sessions (supports parallel processing with `-j`)
+- `explore` - Open DuckDB database in harlequin (requires `ccutils[explore]`)
 - `import` - Import Claude.ai account exports (Settings > Privacy > Export)
 - `schema` - Inspect JSON structure without exposing content (safe to share publicly)
 - `convert` - Hidden alias for `local` (backwards compatibility)

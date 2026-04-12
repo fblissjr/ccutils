@@ -40,6 +40,7 @@ ccutils --format duckdb-star -o ./analytics
 | `local` | Interactive picker + single-file conversion -- **default** (no subcommand needed) |
 | `all` | Batch convert all sessions (HTML archive, DuckDB, or JSON) |
 | `web` | Import from Claude API (auto-detects credentials from macOS keychain) |
+| `explore` | Open DuckDB database in harlequin (requires `ccutils[explore]`) |
 | `import` | Import Claude.ai account exports (Settings > Privacy > Export) |
 | `schema` | Inspect JSON structure without exposing content (safe to share publicly) |
 
@@ -82,6 +83,15 @@ ccutils import ./my-claude-export --open         # HTML, opens in browser
 ccutils import ./export --format duckdb -o data.duckdb  # DuckDB
 ccutils import ./export --interactive            # Pick conversations
 ccutils import ./export --list                   # List without converting
+```
+
+### explore
+
+Open a star schema DuckDB database in harlequin for interactive SQL exploration.
+
+```bash
+uv pip install ccutils[explore]    # one-time setup
+ccutils explore ./analytics/archive.duckdb
 ```
 
 ### schema
