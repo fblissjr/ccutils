@@ -49,11 +49,11 @@ ccutils/
 │   │       ├── __init__.py   # Public API exports
 │   │       ├── schema.py     # DDL for star schema tables + semantic views
 │   │       ├── etl.py        # Main ETL pipeline
-│   │       ├── semantic.py   # Semantic model generation
 │   │       ├── extractors.py # Code blocks, entities, file extraction
 │   │       ├── heuristics.py # Keyword/metric-based classification
 │   │       ├── history_etl.py# History.jsonl -> dim_prompt ETL
 │   │       ├── json_export.py# JSON export for star schema
+│   │       ├── embeddings.py # Optional ColBERT embedding pipeline
 │   │       └── utils.py      # Key generation, tool/model classification, dim_date helper
 │   ├── export/                # Export format handlers
 │   │   ├── __init__.py
@@ -194,7 +194,6 @@ Run with coverage:
 create_star_schema(conn)                    # DDL
 run_star_schema_etl(conn, ...)              # Per-session ETL (call once per session)
 finalize_star_schema(conn, history_path=..) # Post-ETL: chains, delegations, file bridge, depths, history
-create_semantic_model(conn)                 # Semantic views metadata
 # Optional: EmbeddingPipeline(conn).embed_sessions(conn)
 ```
 
