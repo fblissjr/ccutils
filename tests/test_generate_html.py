@@ -129,6 +129,34 @@ class TestRenderFunctions:
         assert render_markdown_text("") == ""
         assert render_markdown_text(None) == ""
 
+    def test_render_markdown_text_strips_script_tags(self):
+        """Test that script tags are stripped from markdown output."""
+        result = render_markdown_text("<script>alert('xss')</script>")
+        assert "<script>" not in result
+        assert "alert(" not in result
+
+    def test_render_markdown_text_strips_event_handlers(self):
+        """Test that event handler attributes are stripped from markdown output."""
+        result = render_markdown_text('<img src=x onerror="alert(1)">')
+        assert "onerror" not in result
+
+    def test_render_markdown_text_strips_iframe(self):
+        """Test that iframe tags are stripped from markdown output."""
+        result = render_markdown_text('<iframe src="https://evil.com"></iframe>')
+        assert "<iframe" not in result
+
+    def test_render_markdown_text_preserves_safe_html(self):
+        """Test that safe markdown-generated HTML is preserved."""
+        result = render_markdown_text("**bold** and `code`")
+        assert "<strong>bold</strong>" in result
+        assert "<code>code</code>" in result
+
+    def test_render_markdown_text_preserves_code_blocks(self):
+        """Test that fenced code blocks are preserved."""
+        result = render_markdown_text("```python\nprint('hello')\n```")
+        assert "<code" in result
+        assert "print" in result
+
     def test_format_json(self, snapshot_html):
         """Test JSON formatting."""
         result = format_json({"key": "value", "number": 42, "nested": {"a": 1}})

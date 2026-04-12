@@ -19,6 +19,7 @@ dependencies = [
     "httpx",
     "jinja2",
     "markdown",
+    "nh3>=0.3.4",
     "questionary",
     "rich>=14.3.2",
 ]

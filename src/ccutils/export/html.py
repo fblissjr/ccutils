@@ -12,6 +12,7 @@ from datetime import datetime
 from pathlib import Path
 
 import markdown
+import nh3
 from jinja2 import Environment, PackageLoader
 
 from ..parsers import (
@@ -130,10 +131,11 @@ def format_json(obj):
 
 
 def render_markdown_text(text):
-    """Render markdown text to HTML."""
+    """Render markdown text to HTML, with sanitization to prevent XSS."""
     if not text:
         return ""
-    return markdown.markdown(text, extensions=["fenced_code", "tables"])
+    raw = markdown.markdown(text, extensions=["fenced_code", "tables"])
+    return nh3.clean(raw)
 
 
 def is_json_like(text):

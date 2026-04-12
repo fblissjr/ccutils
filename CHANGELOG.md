@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## 0.14.0
+
+### Fixed
+- **XSS in HTML export**: `render_markdown_text()` now sanitizes output via `nh3` to strip `<script>`, event handlers (`onerror`), `<iframe>`, and other dangerous HTML that the Python `markdown` library passes through by default. Previously, malicious content in session JSONL files could execute JavaScript when exported HTML was opened in a browser.
+
+### Removed
+- **Data Explorer SPA**: Removed the browser-based data explorer (`ccutils explore` command, `explorer/` directory, `docs/DATA_EXPLORER.md`). Star schema DuckDB files are better served by dedicated tools like harlequin, DBeaver, or the DuckDB CLI. The `meta_semantic_model` table remains in DuckDB output for self-describing schema metadata.
+
 ## 0.13.0
 
 ### Added
