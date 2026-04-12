@@ -28,7 +28,7 @@ ccutils session.jsonl
 # Export to DuckDB for SQL analytics
 ccutils --format duckdb -o ./archive
 
-# Export with star schema (22 tables + 10 views)
+# Export with star schema (27 tables + 13 views)
 ccutils --format duckdb-star -o ./analytics
 
 # Launch visual data explorer
@@ -128,7 +128,7 @@ ccutils --format duckdb -o ./archive
 
 Tables: `sessions`, `messages`, `tool_calls`, `thinking`
 
-#### Star Schema (22 tables + 10 views)
+#### Star Schema (27 tables + 13 views)
 
 ```bash
 ccutils --format duckdb-star -o ./analytics
@@ -136,12 +136,13 @@ ccutils --format duckdb-star -o ./analytics
 
 Dimensional model designed for analytics:
 
-- **6 dimensions:** sessions (with heuristic classifications), projects, tools (with categories), models (with families), dates, times
-- **6 core facts:** messages, tool calls (with duration tracking), session summaries (with inclusive agent metric rollup), file operations, errors (with type classification), tool chain steps
+- **7 dimensions:** sessions (with heuristic classifications + entrypoint/title/agent_type), projects, tools (with categories), models (with families), dates, times, prompts (from ~/.claude/history.jsonl)
+- **6 core facts:** messages (with actual API token counts), tool calls (with duration tracking), session summaries (with inclusive agent metric rollup + actual tokens + turn durations), file operations, errors (with type classification), tool chain steps
+- **4 telemetry facts:** per-API-response token usage (with cache breakdown), turn durations, LSP diagnostics, stop events
 - **5 granular tables:** files (with language detection), session chains, content blocks, code blocks, entity mentions
 - **3 agent/bridge tables:** agent delegations (with denormalized metrics), cross-session file tracking, task-agent mapping
 - **2 optional:** ColBERT embeddings, tool input parameters
-- **10 semantic views:** pre-joined views for common queries (includes project context and file tracking)
+- **13 semantic views:** pre-joined views for common queries (includes project context, file tracking, token usage, cost analysis, prompt history)
 
 #### Heuristic Classification
 
@@ -230,7 +231,7 @@ ccutils --format json-star -o ./star-export/
 ## Development
 
 ```bash
-uv run pytest              # Run tests (~737 passing)
+uv run pytest              # Run tests (~812 passing)
 uv run ccutils --help      # Run development version
 uv run pytest --cov=ccutils  # Coverage
 ```

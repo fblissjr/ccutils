@@ -32,7 +32,8 @@ ccutils/
 │   │   └── __init__.py
 │   ├── parsers/              # Session file parsing utilities
 │   │   ├── __init__.py       # Public API exports
-│   │   ├── jsonl_reader.py   # Canonical JSONL parser (iter_session_entries, iter_loglines)
+│   │   ├── jsonl_reader.py   # Canonical JSONL parser (iter_session_entries, iter_all_session_entries)
+│   │   ├── history.py        # ~/.claude/history.jsonl parser (HistoryEntry, iter_history_entries)
 │   │   ├── session.py        # JSONL/JSON session parsing
 │   │   ├── discovery.py      # Session discovery + two-phase selection UI
 │   │   ├── metadata.py       # SessionMetadata dataclass + rich extraction
@@ -44,15 +45,16 @@ ccutils/
 │   │   │   ├── __init__.py
 │   │   │   ├── schema.py     # DDL for simple schema
 │   │   │   └── etl.py        # Simple schema ETL
-│   │   └── star/             # Star schema (28 tables + 14 views)
+│   │   └── star/             # Star schema (27 tables + 13 views)
 │   │       ├── __init__.py   # Public API exports
 │   │       ├── schema.py     # DDL for star schema tables + semantic views
 │   │       ├── etl.py        # Main ETL pipeline
 │   │       ├── semantic.py   # Semantic model generation
 │   │       ├── extractors.py # Code blocks, entities, file extraction
 │   │       ├── heuristics.py # Keyword/metric-based classification
+│   │       ├── history_etl.py# History.jsonl -> dim_prompt ETL
 │   │       ├── json_export.py# JSON export for star schema
-│   │       └── utils.py      # Key generation, tool/model classification
+│   │       └── utils.py      # Key generation, tool/model classification, dim_date helper
 │   ├── export/                # Export format handlers
 │   │   ├── __init__.py
 │   │   ├── html.py           # HTML generation
@@ -79,7 +81,7 @@ ccutils/
 │       └── global_search.js  # Archive-wide search (Jinja2 template)
 ├── tests/
 │   ├── conftest.py                   # Shared fixtures (sample_session_file, interrupted_session_file, etc.)
-│   └── test_*.py                     # 23 test files (star schema split across ddl/etl/analytics/advanced)
+│   └── test_*.py                     # 24 test files (star schema split across ddl/etl/analytics/advanced)
 ├── docs/
 │   ├── STAR_SCHEMA.md        # Star schema documentation
 │   └── DATA_EXPLORER.md      # Data explorer documentation
@@ -104,7 +106,7 @@ Three output formats with two schema types:
 - `--format duckdb` - DuckDB database file
 - `--format json` - Single JSON file with nested tables
 
-**Star schema** (28 tables + 14 views):
+**Star schema** (27 tables + 13 views):
 - `--format duckdb-star` - DuckDB database file
 - `--format json-star` - Directory with meta.json + dimensions/*.json + facts/*.json
 - Modular package at `schemas/star/` (schema, etl, semantic, extractors, heuristics, json_export, utils)
@@ -119,34 +121,36 @@ Three output formats with two schema types:
 
 **Defaults**: Thinking blocks and subagents/agents are included by default. Use `--no-thinking`, `--no-subagents` (local), or `--no-agents` (all) to exclude them.
 
-### 3. Star Schema Tables (28 tables + 14 views)
+### 3. Star Schema Tables (27 tables + 13 views)
 
-**Core Dimensions (6):** dim_session (with intent/complexity/outcome/domain heuristics + first_user_message/last_assistant_message + entrypoint/custom_title/permission_mode/agent_type), dim_project, dim_tool, dim_model, dim_date, dim_time
+**Core Dimensions (7):** dim_session (with heuristics, entrypoint/custom_title/permission_mode/agent_type/agent_description), dim_project, dim_tool, dim_model, dim_date, dim_time, dim_prompt (from ~/.claude/history.jsonl)
 
-**Core Facts (6):** fact_messages (with actual_input/output/cache_read_tokens), fact_tool_calls (with duration_seconds), fact_session_summary (with _incl_agents rollup, actual token totals, turn duration, diagnostics, hook runs, stop counts), fact_file_operations, fact_errors (with heuristic error_type), fact_tool_chain_steps (with next_tool_key, is_error)
+**Core Facts (6):** fact_messages (with actual_input/output/cache_read_tokens), fact_tool_calls (with duration_seconds), fact_session_summary (with _incl_agents rollup, actual token totals, turn duration, diagnostics, hook runs, stop counts), fact_file_operations, fact_errors (with heuristic error_type), fact_tool_chain_steps
 
 **Granular (5):** dim_file (with language), dim_session_chain, fact_content_blocks, fact_code_blocks, fact_entity_mentions
 
-**New Facts (4):** fact_token_usage (per-API-response token breakdown), fact_turn_durations (actual turn timing), fact_diagnostics (LSP diagnostics), fact_stop_events (stop reasons and hooks)
+**Telemetry Facts (4):** fact_token_usage (per-API-response token breakdown), fact_turn_durations (actual turn timing), fact_diagnostics (LSP diagnostics), fact_stop_events (stop reasons and hooks)
 
 **Agent/Bridge/Staging (3):** fact_agent_delegations (with denormalized metrics), bridge_session_file, stg_task_agent_map
 
 **Optional (2):** fact_session_embeddings (pylate), fact_tool_input_params
 
-**Prompt History (1):** dim_prompt (from ~/.claude/history.jsonl, linked to sessions)
+**Views (13):** semantic_sessions, semantic_messages, semantic_tool_calls, semantic_file_operations, semantic_session_chains, semantic_agent_delegations, semantic_file_evolution, semantic_tool_patterns, semantic_project_context, semantic_project_files, semantic_token_usage, semantic_cost_analysis, semantic_prompt_history
 
-**Views (14):** semantic_sessions, semantic_messages, semantic_tool_calls, semantic_file_operations, semantic_session_chains, semantic_agent_delegations, semantic_file_evolution, semantic_tool_patterns, semantic_project_context, semantic_project_files, semantic_token_usage, semantic_cost_analysis, semantic_prompt_history
+### 4. Token Tracking
 
-### 4. Token Estimation
+**Actual tokens** (from API usage data on assistant messages, since v0.13.0):
+- `fact_token_usage`: per-API-response breakdown (input, output, cache creation, cache read, ephemeral tiers, service_tier, speed)
+- `fact_messages`: `actual_input_tokens`, `actual_output_tokens`, `cache_read_tokens`
+- `fact_session_summary`: aggregated `actual_input_tokens`, `actual_output_tokens`, `cache_creation_tokens`, `cache_read_tokens`
+- `semantic_cost_analysis` view: includes `cache_hit_rate_pct`
 
-Both schemas estimate tokens using a word-count heuristic (`estimate_tokens()` in `schemas/star/extractors.py`):
-- Text content: words x 1.3
-- Code content: words x 1.5 (detected by presence of `` ``` ``, `def `, `function `)
+**Estimated tokens** (word-count heuristic, all versions):
+- `estimate_tokens()` in `schemas/star/extractors.py`: text x1.3, code x1.5
+- `fact_session_summary`: `total_estimated_tokens`, `total_thinking_tokens`, `total_tool_io_tokens`
+- `_incl_agents` rollup columns populated by `finalize_star_schema()`
 
-Token counts cover text blocks, thinking blocks, tool input JSON, and tool result text.
-
-**Simple schema:** `sessions.estimated_tokens` (total across all sources)
-**Star schema:** `fact_session_summary` has `total_estimated_tokens`, `total_thinking_tokens`, `total_tool_io_tokens`, plus `_incl_agents` rollup columns (`total_estimated_tokens_incl_agents`, `total_tool_calls_incl_agents`, `total_errors_incl_agents`, `total_duration_incl_agents`) populated by `finalize_star_schema()`
+Old sessions without usage data get NULL for actual columns; estimated tokens remain available for all sessions.
 
 ### 5. Simple Schema ETL Architecture
 
@@ -193,12 +197,17 @@ Run with coverage:
 
 ### Star schema ETL pipeline order
 ```
-create_star_schema(conn)       # DDL
-run_star_schema_etl(conn, ...) # Per-session ETL (call once per session)
-finalize_star_schema(conn)     # Post-ETL: chains, delegations, file bridge, depths
-create_semantic_model(conn)    # Semantic views metadata
+create_star_schema(conn)                    # DDL
+run_star_schema_etl(conn, ...)              # Per-session ETL (call once per session)
+finalize_star_schema(conn, history_path=..) # Post-ETL: chains, delegations, file bridge, depths, history
+create_semantic_model(conn)                 # Semantic views metadata
 # Optional: EmbeddingPipeline(conn).embed_sessions(conn)
 ```
+
+Key details:
+- `run_star_schema_etl` reads `.meta.json` sidecar for agent_type/agent_description automatically
+- `finalize_star_schema` accepts optional `history_path` to load `~/.claude/history.jsonl` into `dim_prompt`
+- `load_history(conn, path)` can also be called directly from `schemas.star.history_etl`
 
 ## HTML Export Gotchas
 

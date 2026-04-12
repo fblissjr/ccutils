@@ -2,7 +2,7 @@
 
 This module provides functions for creating DuckDB database archives
 from Claude Code session files. Supports both simple (4-table) and
-star (26 tables + 12 views) schemas.
+star (27 tables + 13 views) schemas.
 """
 
 import os

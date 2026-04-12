@@ -1,8 +1,8 @@
 # Star Schema DuckDB Implementation
 
-Last updated: 2026-03-01
+Last updated: 2026-04-11
 
-A dimensional data model for Claude Code transcript analytics with 22 tables and 10 views. Designed for questions the simple 4-table schema cannot answer: intent classification, tool duration analysis, cross-session file tracking, time-of-day patterns, tool sequence analysis, project context recovery, and semantic similarity clustering.
+A dimensional data model for Claude Code transcript analytics with 27 tables and 13 views. Designed for questions the simple 4-table schema cannot answer: intent classification, tool duration analysis, cross-session file tracking, time-of-day patterns, tool sequence analysis, project context recovery, token cost analysis, and semantic similarity clustering.
 
 ## Quick Start (CLI)
 
@@ -74,23 +74,28 @@ The star schema follows dimensional modeling best practices:
 
 | Category | Count | Tables |
 |----------|-------|--------|
-| Core dimensions | 6 | dim_session, dim_project, dim_tool, dim_model, dim_date, dim_time |
+| Core dimensions | 7 | dim_session, dim_project, dim_tool, dim_model, dim_date, dim_time, dim_prompt |
 | Core facts | 6 | fact_messages, fact_tool_calls, fact_session_summary, fact_file_operations, fact_errors, fact_tool_chain_steps |
+| Telemetry facts | 4 | fact_token_usage, fact_turn_durations, fact_diagnostics, fact_stop_events |
 | Granular dimensions | 2 | dim_file, dim_session_chain |
 | Granular facts | 3 | fact_content_blocks, fact_code_blocks, fact_entity_mentions |
 | Agent/bridge/staging | 3 | fact_agent_delegations, bridge_session_file, stg_task_agent_map |
 | Optional | 2 | fact_session_embeddings (requires pylate), fact_tool_input_params |
-| **Total** | **22 tables** | + 10 semantic views |
+| **Total** | **27 tables** | + 13 semantic views |
 
 ## ETL Pipeline Order
 
 ```
-create_star_schema(conn)       # DDL: create all 22 tables + 10 views
-run_star_schema_etl(conn, ...) # Per-session ETL (call once per session)
-finalize_star_schema(conn)     # Post-ETL: chains, delegations, file bridge, depths
-create_semantic_model(conn)    # Semantic views metadata for Data Explorer
+create_star_schema(conn)                    # DDL: create all 27 tables + 13 views
+run_star_schema_etl(conn, ...)              # Per-session ETL (call once per session)
+finalize_star_schema(conn, history_path=..) # Post-ETL: chains, delegations, file bridge, depths, history
+create_semantic_model(conn)                 # Semantic views metadata for Data Explorer
 # Optional: EmbeddingPipeline(conn).embed_sessions(conn)
 ```
+
+Key details:
+- `run_star_schema_etl` reads `.meta.json` sidecar for agent_type/agent_description automatically
+- `finalize_star_schema` accepts optional `history_path` to load `~/.claude/history.jsonl` into `dim_prompt`
 
 `finalize_star_schema()` must be called after all sessions are loaded. It populates cross-session tables: `dim_session_chain`, `fact_agent_delegations`, `bridge_session_file`, and `dim_session.depth_level`. Both `local` and `all` commands call it automatically.
 
@@ -442,6 +447,93 @@ Staging table for deterministic agent delegation linking from progress records.
 | agent_id | VARCHAR | Agent identifier |
 | session_key | VARCHAR | FK to dim_session (parent) |
 
+### Telemetry Facts
+
+#### fact_token_usage
+Per-API-response actual token counts from Claude's usage data. One row per assistant message with usage.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| usage_id | VARCHAR | PK |
+| session_key | VARCHAR | FK to dim_session |
+| date_key | INTEGER | FK to dim_date |
+| time_key | INTEGER | FK to dim_time |
+| model_key | VARCHAR | FK to dim_model |
+| input_tokens | INTEGER | API-reported input tokens |
+| output_tokens | INTEGER | API-reported output tokens |
+| cache_creation_input_tokens | INTEGER | Tokens written to prompt cache |
+| cache_read_input_tokens | INTEGER | Tokens read from prompt cache |
+| cache_ephemeral_1h_tokens | INTEGER | 1-hour ephemeral cache tokens |
+| cache_ephemeral_5m_tokens | INTEGER | 5-minute ephemeral cache tokens |
+| service_tier | VARCHAR | "standard", etc. |
+| speed | VARCHAR | "standard", etc. |
+| timestamp | TIMESTAMP | When the response was generated |
+
+#### fact_turn_durations
+Actual turn processing time from system.turn_duration entries.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| turn_id | VARCHAR | PK |
+| session_key | VARCHAR | FK to dim_session |
+| date_key | INTEGER | FK to dim_date |
+| time_key | INTEGER | FK to dim_time |
+| duration_ms | INTEGER | Turn duration in milliseconds |
+| message_count | INTEGER | Messages in the turn |
+| timestamp | TIMESTAMP | When the turn ended |
+
+#### fact_diagnostics
+LSP diagnostics (code errors/warnings) reported during sessions.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| diagnostic_id | VARCHAR | PK |
+| session_key | VARCHAR | FK to dim_session |
+| file_key | VARCHAR | FK to dim_file |
+| date_key | INTEGER | FK to dim_date |
+| time_key | INTEGER | FK to dim_time |
+| severity | VARCHAR | Error, Warning, Info, Hint |
+| source | VARCHAR | LSP source (Pyright, typescript, etc.) |
+| code | VARCHAR | Diagnostic code |
+| message | TEXT | Diagnostic message |
+| range_start_line | INTEGER | Start line |
+| range_start_col | INTEGER | Start column |
+| range_end_line | INTEGER | End line |
+| range_end_col | INTEGER | End column |
+| timestamp | TIMESTAMP | When diagnostic was reported |
+
+#### fact_stop_events
+Stop/turn-end events with hook execution details.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| stop_event_id | VARCHAR | PK |
+| session_key | VARCHAR | FK to dim_session |
+| date_key | INTEGER | FK to dim_date |
+| time_key | INTEGER | FK to dim_time |
+| stop_reason | VARCHAR | Why the turn stopped |
+| hook_count | INTEGER | Number of hooks executed |
+| has_output | BOOLEAN | Whether hooks produced output |
+| prevented_continuation | BOOLEAN | Whether hooks blocked continuation |
+| hook_total_duration_ms | INTEGER | Total hook execution time |
+| hook_error_count | INTEGER | Number of hook errors |
+| timestamp | TIMESTAMP | When the stop occurred |
+
+#### dim_prompt
+User prompts from `~/.claude/history.jsonl`. Links to sessions via sessionId.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| prompt_key | VARCHAR | PK |
+| session_key | VARCHAR | FK to dim_session (NULL if session not imported) |
+| project_path | VARCHAR | Project directory path |
+| project_name | VARCHAR | Project name |
+| display_text | TEXT | The user's prompt text |
+| timestamp | TIMESTAMP | When the prompt was submitted |
+| date_key | INTEGER | FK to dim_date |
+| time_key | INTEGER | FK to dim_time |
+| has_pasted_content | BOOLEAN | Whether prompt included pasted content |
+
 ### Optional
 
 #### fact_session_embeddings
@@ -643,6 +735,55 @@ ORDER BY sessions_touching_file DESC LIMIT 20;
 SELECT project_name, file_path, last_touched
 FROM semantic_project_files
 ORDER BY last_touched DESC LIMIT 20;
+```
+
+### semantic_token_usage
+
+Per-API-response token data joined with model, session, and project context.
+
+```sql
+-- Token usage by model
+SELECT model_name, SUM(input_tokens) as total_in, SUM(output_tokens) as total_out,
+       SUM(cache_read_input_tokens) as total_cache_read
+FROM semantic_token_usage
+GROUP BY model_name;
+```
+
+### semantic_cost_analysis
+
+Session-level cost aggregation with cache hit rate.
+
+```sql
+-- Sessions with highest token usage
+SELECT session_id, project_name, custom_title,
+       actual_input_tokens, actual_output_tokens,
+       cache_hit_rate_pct, total_turn_duration_ms
+FROM semantic_cost_analysis
+ORDER BY actual_output_tokens DESC LIMIT 10;
+
+-- Cache efficiency by project
+SELECT project_name, COUNT(*) as sessions,
+       AVG(cache_hit_rate_pct) as avg_cache_hit_pct
+FROM semantic_cost_analysis
+WHERE actual_input_tokens IS NOT NULL
+GROUP BY project_name ORDER BY avg_cache_hit_pct DESC;
+```
+
+### semantic_prompt_history
+
+User prompts from history.jsonl linked to session metadata.
+
+```sql
+-- Recent prompts with session outcomes
+SELECT display_text, project_name, intent, complexity, full_date
+FROM semantic_prompt_history
+ORDER BY timestamp DESC LIMIT 20;
+
+-- Most active projects by prompt count
+SELECT project_name, COUNT(*) as prompts
+FROM semantic_prompt_history
+WHERE project_name IS NOT NULL
+GROUP BY project_name ORDER BY prompts DESC;
 ```
 
 ---

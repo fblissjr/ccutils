@@ -1,6 +1,6 @@
 """Star schema DDL - creates the dimensional model tables.
 
-28 tables + 14 views. Tiny lookup dimensions (message_type, content_block_type,
+27 tables + 13 views. Tiny lookup dimensions (message_type, content_block_type,
 error_type, entity_type, programming_language) replaced by degenerate VARCHAR
 columns on fact tables. LLM enrichment tables removed entirely -- replaced by
 heuristic classification columns on dim_session.
@@ -21,7 +21,7 @@ def create_star_schema(db_path):
     - 3 agent/bridge/staging tables
     - 2 optional tables (embeddings, tool_input_params)
     - 1 prompt history table (dim_prompt from history.jsonl)
-    - 14 semantic views
+    - 13 semantic views
 
     No hard PK/FK constraints - relies on soft business rules.
 

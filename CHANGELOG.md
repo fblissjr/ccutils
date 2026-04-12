@@ -29,7 +29,7 @@ All notable changes to this project will be documented in this file.
 - **`agent_type` data mapping**: The `agent-name` JSONL entry contains the session title (same as `custom-title`), not the agent type. Now correctly maps to `custom_title` as fallback. `agent_type` is populated exclusively from `.meta.json` sidecar files
 
 ### Changed
-- Star schema expanded from 22 tables + 10 views to 28 tables + 14 views
+- Star schema expanded from 22 tables + 10 views to 27 tables + 13 views
 - Estimated token counts and actual token counts coexist -- old sessions without usage data get NULL for actual columns
 
 ## 0.12.0
