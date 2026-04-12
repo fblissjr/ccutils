@@ -31,10 +31,13 @@ from .heuristics import (
     classify_outcome,
 )
 from .utils import (
+    ensure_dim_date,
     generate_dimension_key,
     get_model_family,
     get_time_of_day,
     get_tool_category,
+    ts_to_date_key,
+    ts_to_time_key,
 )
 
 
@@ -480,8 +483,8 @@ def _extract_star_data(
         # Handle system entries (turn_duration, stop_hook_summary)
         if isinstance(entry, SessionSystemEntry):
             ts = entry.timestamp
-            date_key_sys = int(ts.strftime("%Y%m%d")) if ts else None
-            time_key_sys = int(ts.strftime("%H%M")) if ts else None
+            date_key_sys = ts_to_date_key(ts) if ts else None
+            time_key_sys = ts_to_time_key(ts) if ts else None
             if date_key_sys:
                 result.dates_seen.add(date_key_sys)
 
@@ -531,8 +534,8 @@ def _extract_star_data(
         # Handle attachment entries (diagnostics, hook_success, etc.)
         if isinstance(entry, SessionAttachment):
             ts = entry.timestamp
-            date_key_att = int(ts.strftime("%Y%m%d")) if ts else None
-            time_key_att = int(ts.strftime("%H%M")) if ts else None
+            date_key_att = ts_to_date_key(ts) if ts else None
+            time_key_att = ts_to_time_key(ts) if ts else None
             if date_key_att:
                 result.dates_seen.add(date_key_att)
 
@@ -627,8 +630,8 @@ def _extract_star_data(
             if result.first_timestamp is None:
                 result.first_timestamp = timestamp
             result.last_timestamp = timestamp
-            date_key = int(timestamp.strftime("%Y%m%d"))
-            time_key = int(timestamp.strftime("%H%M"))
+            date_key = ts_to_date_key(timestamp)
+            time_key = ts_to_time_key(timestamp)
             result.dates_seen.add(date_key)
 
         if model:
@@ -1093,63 +1096,9 @@ def _load_dimensions(
                 [model_key, model_name, family],
             )
 
-    # dim_date (with week_of_year)
-    day_names = [
-        "Monday",
-        "Tuesday",
-        "Wednesday",
-        "Thursday",
-        "Friday",
-        "Saturday",
-        "Sunday",
-    ]
-    month_names = [
-        "January",
-        "February",
-        "March",
-        "April",
-        "May",
-        "June",
-        "July",
-        "August",
-        "September",
-        "October",
-        "November",
-        "December",
-    ]
-
+    # dim_date
     for date_key in result.dates_seen:
-        if not conn.execute(
-            "SELECT 1 FROM dim_date WHERE date_key = ?", [date_key]
-        ).fetchone():
-            year = date_key // 10000
-            month = (date_key // 100) % 100
-            day = date_key % 100
-            try:
-                full_date = datetime(year, month, day)
-                day_of_week = full_date.weekday()
-                quarter = (month - 1) // 3 + 1
-                is_weekend = day_of_week >= 5
-                week_of_year = full_date.isocalendar()[1]
-
-                conn.execute(
-                    """INSERT INTO dim_date VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                    [
-                        date_key,
-                        full_date.date(),
-                        year,
-                        month,
-                        day,
-                        day_of_week,
-                        day_names[day_of_week],
-                        month_names[month - 1],
-                        quarter,
-                        is_weekend,
-                        week_of_year,
-                    ],
-                )
-            except ValueError:
-                pass
+        ensure_dim_date(conn, date_key)
 
     # dim_time
     times_seen = {msg["time_key"] for msg in result.messages_data if msg["time_key"]}
@@ -1293,8 +1242,8 @@ def _load_facts(conn, session_key, project_key, result):
     first_date_key = None
     first_time_key = None
     if result.first_timestamp:
-        first_date_key = int(result.first_timestamp.strftime("%Y%m%d"))
-        first_time_key = int(result.first_timestamp.strftime("%H%M"))
+        first_date_key = ts_to_date_key(result.first_timestamp)
+        first_time_key = ts_to_time_key(result.first_timestamp)
 
     # Message-level tokens now include text + thinking + tool I/O per message,
     # so session total is just the sum across messages
@@ -1454,85 +1403,48 @@ def _load_facts(conn, session_key, project_key, result):
             ],
         )
 
-    # fact_token_usage
-    for tu in result.token_usage_data:
-        conn.execute(
+    # fact_token_usage (bulk)
+    if result.token_usage_data:
+        _keys = ["usage_id", "session_key", "date_key", "time_key", "model_key",
+                 "input_tokens", "output_tokens", "cache_creation_input_tokens",
+                 "cache_read_input_tokens", "cache_ephemeral_1h_tokens",
+                 "cache_ephemeral_5m_tokens", "service_tier", "speed", "timestamp"]
+        conn.executemany(
             """INSERT INTO fact_token_usage VALUES
                (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            [
-                tu["usage_id"],
-                tu["session_key"],
-                tu["date_key"],
-                tu["time_key"],
-                tu["model_key"],
-                tu["input_tokens"],
-                tu["output_tokens"],
-                tu["cache_creation_input_tokens"],
-                tu["cache_read_input_tokens"],
-                tu["cache_ephemeral_1h_tokens"],
-                tu["cache_ephemeral_5m_tokens"],
-                tu["service_tier"],
-                tu["speed"],
-                tu["timestamp"],
-            ],
+            [[tu[k] for k in _keys] for tu in result.token_usage_data],
         )
 
-    # fact_turn_durations
-    for td in result.turn_duration_data:
-        conn.execute(
-            """INSERT INTO fact_turn_durations VALUES (?, ?, ?, ?, ?, ?, ?)""",
-            [
-                td["turn_id"],
-                td["session_key"],
-                td["date_key"],
-                td["time_key"],
-                td["duration_ms"],
-                td["message_count"],
-                td["timestamp"],
-            ],
+    # fact_turn_durations (bulk)
+    if result.turn_duration_data:
+        _keys = ["turn_id", "session_key", "date_key", "time_key",
+                 "duration_ms", "message_count", "timestamp"]
+        conn.executemany(
+            "INSERT INTO fact_turn_durations VALUES (?, ?, ?, ?, ?, ?, ?)",
+            [[td[k] for k in _keys] for td in result.turn_duration_data],
         )
 
-    # fact_diagnostics
-    for diag in result.diagnostics_data:
-        conn.execute(
+    # fact_diagnostics (bulk)
+    if result.diagnostics_data:
+        _keys = ["diagnostic_id", "session_key", "file_key", "date_key", "time_key",
+                 "severity", "source", "code", "message",
+                 "range_start_line", "range_start_col", "range_end_line",
+                 "range_end_col", "timestamp"]
+        conn.executemany(
             """INSERT INTO fact_diagnostics VALUES
                (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            [
-                diag["diagnostic_id"],
-                diag["session_key"],
-                diag["file_key"],
-                diag["date_key"],
-                diag["time_key"],
-                diag["severity"],
-                diag["source"],
-                diag["code"],
-                diag["message"],
-                diag["range_start_line"],
-                diag["range_start_col"],
-                diag["range_end_line"],
-                diag["range_end_col"],
-                diag["timestamp"],
-            ],
+            [[d[k] for k in _keys] for d in result.diagnostics_data],
         )
 
-    # fact_stop_events
-    for se in result.stop_events_data:
-        conn.execute(
+    # fact_stop_events (bulk)
+    if result.stop_events_data:
+        _keys = ["stop_event_id", "session_key", "date_key", "time_key",
+                 "stop_reason", "hook_count", "has_output", "prevented_continuation",
+                 "hook_total_duration_ms", "hook_error_count", "timestamp"]
+        conn.executemany(
             """INSERT INTO fact_stop_events VALUES
                (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            [
-                se["stop_event_id"],
-                se["session_key"],
-                se["date_key"],
-                se["time_key"],
-                se["stop_reason"],
-                se["hook_count"],
-                se["has_output"],
-                se["prevented_continuation"],
-                se["hook_total_duration_ms"],
-                se["hook_error_count"],
-                se["timestamp"],
-            ],
+            [[se[k] for k in _keys] for se in result.stop_events_data],
         )
 
     # stg_task_agent_map (progress record links: tool_use_id -> agent_id)

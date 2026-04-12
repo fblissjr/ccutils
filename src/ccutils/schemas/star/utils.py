@@ -1,6 +1,7 @@
 """Shared utilities for star schema operations."""
 
 import hashlib
+from datetime import datetime
 
 
 def generate_dimension_key(*natural_keys):
@@ -79,6 +80,58 @@ def get_model_family(model_name):
     elif "haiku" in model_lower:
         return "haiku"
     return "unknown"
+
+
+def ts_to_date_key(ts):
+    """Convert a datetime to an integer date key (YYYYMMDD)."""
+    return int(ts.strftime("%Y%m%d"))
+
+
+def ts_to_time_key(ts):
+    """Convert a datetime to an integer time key (HHMM)."""
+    return int(ts.strftime("%H%M"))
+
+
+_DAY_NAMES = [
+    "Monday", "Tuesday", "Wednesday", "Thursday",
+    "Friday", "Saturday", "Sunday",
+]
+_MONTH_NAMES = [
+    "January", "February", "March", "April", "May", "June",
+    "July", "August", "September", "October", "November", "December",
+]
+
+
+def ensure_dim_date(conn, date_key):
+    """Insert a dim_date row if it doesn't already exist.
+
+    Args:
+        conn: DuckDB connection
+        date_key: Integer date key (YYYYMMDD format)
+    """
+    if conn.execute(
+        "SELECT 1 FROM dim_date WHERE date_key = ?", [date_key]
+    ).fetchone():
+        return
+    year = date_key // 10000
+    month = (date_key // 100) % 100
+    day = date_key % 100
+    try:
+        full_date = datetime(year, month, day)
+        day_of_week = full_date.weekday()
+        quarter = (month - 1) // 3 + 1
+        is_weekend = day_of_week >= 5
+        week_of_year = full_date.isocalendar()[1]
+        conn.execute(
+            "INSERT INTO dim_date VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            [
+                date_key, full_date.date(), year, month, day,
+                day_of_week, _DAY_NAMES[day_of_week], _MONTH_NAMES[month - 1],
+                quarter, is_weekend, week_of_year,
+            ],
+        )
+    except ValueError:
+        pass
 
 
 def get_time_of_day(hour):

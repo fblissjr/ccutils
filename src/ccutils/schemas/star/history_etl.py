@@ -3,7 +3,7 @@
 from pathlib import Path
 
 from ...parsers.history import iter_history_entries
-from .utils import generate_dimension_key, get_time_of_day
+from .utils import ensure_dim_date, generate_dimension_key, ts_to_date_key, ts_to_time_key
 
 
 def load_history(conn, history_path, private=False):
@@ -33,7 +33,6 @@ def load_history(conn, history_path, private=False):
     except Exception:
         pass
 
-    # Collect date/time keys to insert into dim tables
     dates_seen = set()
 
     batch = []
@@ -41,21 +40,19 @@ def load_history(conn, history_path, private=False):
         session_key = None
         if entry.session_id:
             session_key = session_lookup.get(entry.session_id)
-            # If not in lookup, generate the key anyway -- it may link later
-            if session_key is None and entry.session_id:
+            if session_key is None:
                 session_key = generate_dimension_key(entry.session_id)
 
         date_key = None
         time_key = None
         if entry.timestamp:
-            date_key = int(entry.timestamp.strftime("%Y%m%d"))
-            time_key = int(entry.timestamp.strftime("%H%M"))
+            date_key = ts_to_date_key(entry.timestamp)
+            time_key = ts_to_time_key(entry.timestamp)
             dates_seen.add(date_key)
 
         project_path = entry.project_path
         project_name = entry.project_name
         if private and project_path:
-            # Just use project name, hide full path
             project_path = project_name
 
         prompt_key = generate_dimension_key(
@@ -76,7 +73,6 @@ def load_history(conn, history_path, private=False):
             entry.has_pasted_content,
         ))
 
-    # Bulk insert
     if batch:
         conn.executemany(
             """INSERT INTO dim_prompt
@@ -86,38 +82,5 @@ def load_history(conn, history_path, private=False):
             batch,
         )
 
-    # Ensure date/time dimensions exist for history entries
-    from datetime import datetime
-
-    day_names = [
-        "Monday", "Tuesday", "Wednesday", "Thursday",
-        "Friday", "Saturday", "Sunday",
-    ]
-    month_names = [
-        "January", "February", "March", "April", "May", "June",
-        "July", "August", "September", "October", "November", "December",
-    ]
-
     for date_key in dates_seen:
-        if not conn.execute(
-            "SELECT 1 FROM dim_date WHERE date_key = ?", [date_key]
-        ).fetchone():
-            year = date_key // 10000
-            month = (date_key // 100) % 100
-            day = date_key % 100
-            try:
-                full_date = datetime(year, month, day)
-                day_of_week = full_date.weekday()
-                quarter = (month - 1) // 3 + 1
-                is_weekend = day_of_week >= 5
-                week_of_year = full_date.isocalendar()[1]
-                conn.execute(
-                    "INSERT INTO dim_date VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                    [
-                        date_key, full_date.date(), year, month, day,
-                        day_of_week, day_names[day_of_week], month_names[month - 1],
-                        quarter, is_weekend, week_of_year,
-                    ],
-                )
-            except ValueError:
-                pass
+        ensure_dim_date(conn, date_key)
