@@ -67,6 +67,19 @@ class TestGenerateHtml:
         index_html = (output_dir / "index.html").read_text(encoding="utf-8")
         assert index_html == snapshot_html
 
+    def test_csp_header_in_generated_html(self, output_dir):
+        """Test that Content-Security-Policy meta tag is present in generated HTML."""
+        fixture_path = Path(__file__).parent / "sample_session.json"
+        generate_html(fixture_path, output_dir, github_repo="example/project")
+
+        for html_file in ["index.html", "page-001.html"]:
+            html_content = (output_dir / html_file).read_text(encoding="utf-8")
+            assert "Content-Security-Policy" in html_content, (
+                f"CSP meta tag missing from {html_file}"
+            )
+            assert "script-src" in html_content
+            assert "frame-src 'none'" in html_content
+
     def test_generates_page_001_html(self, output_dir, snapshot_html):
         """Test page-001.html generation."""
         fixture_path = Path(__file__).parent / "sample_session.json"
