@@ -2,7 +2,6 @@
 
 # Star schema imports (from modular package)
 from .schemas.star import (
-    create_semantic_model,
     create_star_schema,
     generate_dimension_key,
     get_model_family,

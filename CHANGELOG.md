@@ -11,7 +11,8 @@ All notable changes to this project will be documented in this file.
 - **XSS in HTML export**: `render_markdown_text()` now sanitizes output via `nh3` to strip `<script>`, event handlers (`onerror`), `<iframe>`, and other dangerous HTML that the Python `markdown` library passes through by default. Previously, malicious content in session JSONL files could execute JavaScript when exported HTML was opened in a browser.
 
 ### Removed
-- **Data Explorer SPA**: Removed the browser-based data explorer (1,700-line vanilla JS SPA, `explorer/` directory, `docs/DATA_EXPLORER.md`). Replaced by the harlequin shim above. The `meta_semantic_model` table remains in DuckDB output for self-describing schema metadata.
+- **Data Explorer SPA**: Removed the browser-based data explorer (1,700-line vanilla JS SPA, `explorer/` directory, `docs/DATA_EXPLORER.md`). Replaced by the harlequin shim above.
+- **`create_semantic_model()` and `meta_semantic_model` table**: Removed the schema metadata table and its generator (~200 lines in `semantic.py`, 12 tests). Only consumer was the deleted explorer SPA. Harlequin introspects DuckDB natively.
 
 ## 0.13.0
 

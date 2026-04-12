@@ -2,7 +2,6 @@
 
 This package provides:
 - DuckDB star schema creation for transcript analytics
-- Semantic model generation for data exploration
 - ETL pipeline for loading session data
 - Heuristic classification for session categorization
 - JSON export for star schema data
@@ -20,7 +19,6 @@ from .heuristics import (
 )
 from .json_export import export_star_schema_to_json
 from .schema import create_star_schema
-from .semantic import create_semantic_model
 from .utils import (
     TOOL_CATEGORIES,
     generate_dimension_key,
@@ -32,8 +30,6 @@ from .utils import (
 __all__ = [
     # Schema creation
     "create_star_schema",
-    # Semantic model
-    "create_semantic_model",
     # ETL
     "run_star_schema_etl",
     # JSON export

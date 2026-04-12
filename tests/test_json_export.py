@@ -11,7 +11,6 @@ from ccutils import (
     export_sessions_to_json,
     create_star_schema,
     run_star_schema_etl,
-    create_semantic_model,
     export_star_schema_to_json,
 )
 
@@ -353,7 +352,6 @@ class TestExportStarSchemaToJson:
 
         conn = create_star_schema(":memory:")
         run_star_schema_etl(conn, sample_session_file, "test-project")
-        create_semantic_model(conn)
         export_star_schema_to_json(conn, star_output)
         conn.close()
 
@@ -368,7 +366,6 @@ class TestExportStarSchemaToJson:
 
         conn = create_star_schema(":memory:")
         run_star_schema_etl(conn, sample_session_file, "test-project")
-        create_semantic_model(conn)
         export_star_schema_to_json(conn, star_output)
         conn.close()
 
@@ -387,7 +384,6 @@ class TestExportStarSchemaToJson:
 
         conn = create_star_schema(":memory:")
         run_star_schema_etl(conn, sample_session_file, "test-project")
-        create_semantic_model(conn)
         export_star_schema_to_json(conn, star_output)
         conn.close()
 
@@ -405,7 +401,6 @@ class TestExportStarSchemaToJson:
 
         conn = create_star_schema(":memory:")
         run_star_schema_etl(conn, sample_session_file, "test-project")
-        create_semantic_model(conn)
         export_star_schema_to_json(conn, star_output)
         conn.close()
 
@@ -419,7 +414,6 @@ class TestExportStarSchemaToJson:
 
         conn = create_star_schema(":memory:")
         run_star_schema_etl(conn, sample_session_file, "test-project")
-        create_semantic_model(conn)
         export_star_schema_to_json(conn, star_output)
         conn.close()
 
@@ -432,7 +426,6 @@ class TestExportStarSchemaToJson:
 
         conn = create_star_schema(":memory:")
         run_star_schema_etl(conn, sample_session_file, "test-project")
-        create_semantic_model(conn)
         export_star_schema_to_json(conn, star_output)
         conn.close()
 
@@ -447,7 +440,6 @@ class TestExportStarSchemaToJson:
 
         conn = create_star_schema(":memory:")
         run_star_schema_etl(conn, sample_session_file, "test-project")
-        create_semantic_model(conn)
         export_star_schema_to_json(conn, star_output)
         conn.close()
 
@@ -462,7 +454,6 @@ class TestExportStarSchemaToJson:
 
         conn = create_star_schema(":memory:")
         run_star_schema_etl(conn, sample_session_file, "test-project")
-        create_semantic_model(conn)
         export_star_schema_to_json(conn, star_output)
         conn.close()
 
@@ -478,7 +469,6 @@ class TestExportStarSchemaToJson:
 
         conn = create_star_schema(":memory:")
         run_star_schema_etl(conn, sample_session_file, "test-project")
-        create_semantic_model(conn)
         export_star_schema_to_json(conn, star_output)
         conn.close()
 

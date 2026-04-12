@@ -31,7 +31,6 @@ from ..schemas import (
     resolve_schema_format,
 )
 from ..schemas.star import (
-    create_semantic_model,
     create_star_schema,
     export_star_schema_to_json,
     run_star_schema_etl,
@@ -313,7 +312,6 @@ def _run_export_pipeline(
                     private=private,
                 )
             finalize_star_schema(conn)
-            create_semantic_model(conn)
 
             if embed:
                 run_embedding_pipeline(conn, embed_model)
@@ -356,7 +354,6 @@ def _run_export_pipeline(
                     private=private,
                 )
             finalize_star_schema(conn)
-            create_semantic_model(conn)
 
             if embed:
                 run_embedding_pipeline(conn, embed_model)

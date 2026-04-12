@@ -2,7 +2,7 @@
 
 This package provides two schemas:
 - simple: 4 tables (sessions, messages, tool_calls, thinking)
-- star: 22 tables + 10 views for dimensional analytics
+- star: 27 tables + 13 views for dimensional analytics
 
 Use resolve_schema_format() to handle CLI schema/format combinations.
 """
@@ -16,7 +16,6 @@ from .simple import (
 
 from .star import (
     create_star_schema,
-    create_semantic_model,
     run_star_schema_etl,
     export_star_schema_to_json,
     generate_dimension_key,
@@ -49,7 +48,6 @@ __all__ = [
     "_extract_session_data",
     # Star schema
     "create_star_schema",
-    "create_semantic_model",
     "run_star_schema_etl",
     "export_star_schema_to_json",
     "generate_dimension_key",
