@@ -56,6 +56,16 @@ def output_dir():
         yield Path(tmpdir)
 
 
+@pytest.fixture(autouse=True)
+def _reset_github_repo():
+    """Prevent _github_repo state from bleeding between tests in either direction."""
+    from ccutils import set_github_repo
+
+    set_github_repo(None)
+    yield
+    set_github_repo(None)
+
+
 class TestGenerateHtml:
     """Tests for the main generate_html function."""
 
@@ -103,17 +113,14 @@ class TestGenerateHtml:
         assert repo == "example/project"
 
     def test_github_repo_does_not_leak_between_calls(self, tmp_path):
-        """generate_html() must not leak _github_repo between back-to-back calls.
+        """generate_html() must restore _github_repo to its pre-call value.
 
-        Previously the module-level _github_repo was set but never reset,
-        so a second call without an explicit github_repo would inherit the
-        first call's value. Critical under generate_batch_html() with -j.
+        Previously the module-level _github_repo was set but never reset, so a
+        second call without an explicit github_repo would inherit the first
+        call's value. The _reset_github_repo autouse fixture guarantees the
+        starting state.
         """
-        from ccutils import set_github_repo, get_github_repo
-
-        # Start clean
-        set_github_repo(None)
-        assert get_github_repo() is None
+        from ccutils import get_github_repo
 
         jsonl_file = tmp_path / "session.jsonl"
         jsonl_file.write_text(
@@ -123,11 +130,8 @@ class TestGenerateHtml:
         out1 = tmp_path / "out1"
         out1.mkdir()
         generate_html(jsonl_file, out1, github_repo="owner/first")
-
-        # After return: global must be restored to its pre-call value (None)
         assert get_github_repo() is None, "github_repo leaked across generate_html calls"
 
-        # Second call without explicit repo (and no .git in tmpdir) -> None
         out2 = tmp_path / "out2"
         out2.mkdir()
         generate_html(jsonl_file, out2)

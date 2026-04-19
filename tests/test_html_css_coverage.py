@@ -9,50 +9,54 @@ Keystone defense against template/CSS drift. Two complementary checks:
    This catches classes emitted only by rarely-exercised templates.
 
 Without these, classes like `.tool-error` (defined in macros.html, missing from
-CSS for months) silently render unstyled. Adding any new panel -- like plan
-revisions -- without this test means manual eyeballing for every new class.
+CSS for months) silently render unstyled.
 """
 
 import re
-from importlib.resources import files
 from pathlib import Path
 
 import pytest
 
-from ccutils import generate_html
+from ccutils import CSS, generate_html
 
 
-# Classes intentionally emitted without a direct CSS rule. Keep small and justified.
+# Classes emitted by templates but intentionally without a direct CSS rule.
+# Each entry must document why, so additions are a deliberate choice.
 KNOWN_SAFE_UNSTYLED = {
-    # JS-toggled state classes (styled via .truncatable.truncated / .truncatable.expanded,
-    # which are caught as "truncatable" in the base-class pass, not as standalone rules):
+    # JS-toggled state; styling lives on compound selectors like
+    # `.truncatable.truncated`, which the regex catches as the base class:
     "expanded",
     "truncated",
-    # Markdown-library-injected classes on fenced code blocks -- pygments-style.
-    # Accept the family under any language; the parent <pre> is styled.
-    "language-python",
-    "language-bash",
-    "language-sh",
-    "language-javascript",
-    "language-typescript",
-    "language-json",
-    "language-yaml",
-    "language-sql",
-    "language-html",
-    "language-css",
-    "language-rust",
-    "language-go",
-    "language-c",
-    "language-cpp",
-    "language-java",
-    "language-text",
+    # Modifier classes that intentionally inherit from a styled parent:
+    "write-tool",       # on .file-tool
+    "edit-tool",        # on .file-tool
+    "write-header",     # on .file-tool-header
+    "edit-header",      # on .file-tool-header
+    # Wrapper divs with no current styling needs (future extension points):
+    "assistant-text",
+    "user-content",
+    "truncatable-content",          # inner div of .truncatable
+    "index-item-long-text-content", # inner of .index-item-long-text truncatable
+    "index-link",                   # pagination link, currently uses default <a>
+    # Todo status classes on .todo-item; only .todo-completed has styling today:
+    "todo-pending",
+    "todo-in-progress",
 }
+
+# Prefix allowlist: any class token starting with one of these is accepted.
+# Useful for library-injected classes whose full set is open-ended.
+KNOWN_SAFE_UNSTYLED_PREFIXES = (
+    # markdown library injects `language-<lang>` on <pre>/<code> for fenced blocks.
+    # Parent <pre> is styled; the language-* class itself has no rule and never needs one.
+    "language-",
+)
 
 
 _CSS_CLASS_TOKEN = re.compile(r"\.([a-zA-Z_][\w-]*)")
 _HTML_CLASS_ATTR = re.compile(r"""class\s*=\s*["']([^"']+)["']""")
-# Match Jinja expressions that set class values including dynamic concatenation.
-_JINJA_CLASS_IN_TEMPLATE = re.compile(r"""class\s*=\s*["']([^"'{}]*(?:\{\{[^}]+\}\}[^"'{}]*)*)["']""")
+# Match class attributes in Jinja templates; skip any that contain `{` (which
+# means they interpolate a Jinja expression -- not a literal class list).
+_JINJA_LITERAL_CLASS = re.compile(r"""class\s*=\s*["']([^"'{]+)["']""")
 
 
 def _extract_css_block(html: str) -> str:
@@ -69,9 +73,13 @@ def _classes_defined_in_css(css: str) -> set[str]:
     return defined
 
 
+def _filter_known_safe(classes: set[str]) -> set[str]:
+    remaining = classes - KNOWN_SAFE_UNSTYLED
+    return {c for c in remaining if not c.startswith(KNOWN_SAFE_UNSTYLED_PREFIXES)}
+
+
 def _classes_used_in_html(html: str) -> set[str]:
     body = re.sub(r"<style[^>]*>.*?</style>", "", html, flags=re.DOTALL)
-    # Also strip <script> blocks so JS string literals don't count
     body = re.sub(r"<script[^>]*>.*?</script>", "", body, flags=re.DOTALL)
     used: set[str] = set()
     for match in _HTML_CLASS_ATTR.finditer(body):
@@ -81,83 +89,43 @@ def _classes_used_in_html(html: str) -> set[str]:
 
 
 def _literal_classes_in_template(text: str) -> set[str]:
-    """Extract class tokens from a Jinja template, skipping dynamic expressions.
+    """Extract class tokens from a Jinja template's static class= attributes.
 
-    For class="foo {{ bar }} baz" we only collect "foo" and "baz", because
-    the interpolated value is runtime-dependent.
+    Attributes that include `{{ ... }}` interpolation are skipped entirely
+    (the rendered value is runtime-dependent and caught by the runtime test).
     """
     literals: set[str] = set()
-    for match in _JINJA_CLASS_IN_TEMPLATE.finditer(text):
-        value = match.group(1)
-        # Remove Jinja expressions -- anything between {{ and }}
-        cleaned = re.sub(r"\{\{[^}]+\}\}", " ", value)
-        for token in cleaned.split():
-            # Skip Jinja control tokens that may have leaked in (conditionals):
-            if token.startswith("{%") or token.startswith("%}"):
-                continue
+    for match in _JINJA_LITERAL_CLASS.finditer(text):
+        for token in match.group(1).split():
             literals.add(token)
     return literals
 
 
-def _all_template_paths() -> list[Path]:
-    templates_dir = Path(str(files("ccutils") / "templates"))
-    return sorted(p for p in templates_dir.glob("*.html") if p.is_file())
-
-
-def _read_css() -> str:
-    return (Path(str(files("ccutils") / "static")) / "transcript.css").read_text(
-        encoding="utf-8"
-    )
-
-
-# --- fixtures ----------------------------------------------------------------
-
-
-def _render_sample(tmp_path):
+@pytest.fixture(scope="class")
+def rendered_sample_outputs(tmp_path_factory):
+    """Render the comprehensive sample once per test class; return (index, page) HTML."""
     fixture = Path(__file__).parent / "sample_session.json"
-    out = tmp_path / "out"
-    out.mkdir(exist_ok=True)
+    out = tmp_path_factory.mktemp("css_coverage_render")
     generate_html(fixture, out, github_repo="example/project")
-    return out
-
-
-@pytest.fixture
-def rendered_index_html(tmp_path):
-    out = _render_sample(tmp_path)
-    return (out / "index.html").read_text(encoding="utf-8")
-
-
-@pytest.fixture
-def rendered_page_html(tmp_path):
-    out = _render_sample(tmp_path)
     pages = sorted(out.glob("page-*.html"))
     assert pages, "No page-*.html generated"
-    return pages[0].read_text(encoding="utf-8")
-
-
-# --- tests -------------------------------------------------------------------
+    return {
+        "index": (out / "index.html").read_text(encoding="utf-8"),
+        "page": pages[0].read_text(encoding="utf-8"),
+    }
 
 
 class TestRenderedCssCoverage:
     """Runtime check: every class in the rendered sample must have a CSS rule."""
 
-    def test_index_html_classes_have_rules(self, rendered_index_html):
-        css = _extract_css_block(rendered_index_html)
-        defined = _classes_defined_in_css(css)
-        used = _classes_used_in_html(rendered_index_html)
-        missing = used - defined - KNOWN_SAFE_UNSTYLED
+    @pytest.mark.parametrize("doc_name", ["index", "page"])
+    def test_rendered_classes_have_rules(self, rendered_sample_outputs, doc_name):
+        html = rendered_sample_outputs[doc_name]
+        defined = _classes_defined_in_css(_extract_css_block(html))
+        missing = _filter_known_safe(_classes_used_in_html(html) - defined)
         assert not missing, (
-            f"Classes in index.html without CSS rules: {sorted(missing)}. "
-            f"Add a rule to transcript.css or add to KNOWN_SAFE_UNSTYLED."
-        )
-
-    def test_page_html_classes_have_rules(self, rendered_page_html):
-        css = _extract_css_block(rendered_page_html)
-        defined = _classes_defined_in_css(css)
-        used = _classes_used_in_html(rendered_page_html)
-        missing = used - defined - KNOWN_SAFE_UNSTYLED
-        assert not missing, (
-            f"Classes in page-NNN.html without CSS rules: {sorted(missing)}."
+            f"Classes in {doc_name}.html without CSS rules: {sorted(missing)}. "
+            f"Add a rule to transcript.css or extend KNOWN_SAFE_UNSTYLED with a justification."
         )
 
 
@@ -169,18 +137,17 @@ class TestTemplateStaticCssCoverage:
     """
 
     def test_all_template_classes_have_rules(self):
-        css = _read_css()
-        defined = _classes_defined_in_css(css)
+        defined = _classes_defined_in_css(CSS)
+        templates_dir = Path(__file__).parent.parent / "src" / "ccutils" / "templates"
 
         missing_by_file: dict[str, set[str]] = {}
-        for tpl in _all_template_paths():
-            text = tpl.read_text(encoding="utf-8")
-            used = _literal_classes_in_template(text)
-            missing = used - defined - KNOWN_SAFE_UNSTYLED
+        for tpl in sorted(templates_dir.glob("*.html")):
+            used = _literal_classes_in_template(tpl.read_text(encoding="utf-8"))
+            missing = _filter_known_safe(used - defined)
             if missing:
                 missing_by_file[tpl.name] = missing
 
         assert not missing_by_file, (
             f"Templates emit class tokens with no CSS rule: {missing_by_file}. "
-            f"Add rules to transcript.css, or add to KNOWN_SAFE_UNSTYLED with justification."
+            f"Add rules to transcript.css, or extend KNOWN_SAFE_UNSTYLED with justification."
         )

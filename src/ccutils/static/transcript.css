@@ -65,8 +65,6 @@ time { color: var(--text-muted); font-size: 0.8rem; }
 .todo-item { display: flex; align-items: flex-start; gap: 8px; padding: 6px 0; border-bottom: 1px solid rgba(0,0,0,0.1); }
 .todo-item:last-child { border-bottom: none; }
 .todo-content { flex: 1; }
-.todo-pending {}
-.todo-in-progress {}
 .todo-completed { opacity: 0.7; }
 .commit-card { background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%); border: 1px solid #0f3460; border-radius: 8px; padding: 12px 16px; margin: 8px 0; display: flex; align-items: center; gap: 12px; }
 .index-list { list-style: none; padding: 0; margin: 0; }
@@ -150,17 +148,5 @@ time { color: var(--text-muted); font-size: 0.8rem; }
 .search-modal-content { padding: 20px; max-height: 80vh; overflow-y: auto; }
 .search-status { color: var(--text-muted); font-size: 0.9rem; margin-bottom: 12px; }
 .search-results { max-height: 50vh; overflow-y: auto; }
-/* Stub rules: classes emitted by templates that intentionally inherit from
-   their parent. These stubs exist so the class-coverage CI test passes
-   and so future styling has a clear extension point. */
-.write-tool {}
-.edit-tool {}
-.write-header {}
-.edit-header {}
-.assistant-text {}
-.user-content {}
-.truncatable-content {}
-.index-item-long-text-content {}
-.index-link {}
 .size { color: var(--text-muted); font-size: 0.8rem; }
 .agent-badge { display: inline-block; padding: 2px 6px; font-size: 0.75rem; background: var(--tool-bg); color: var(--tool-border); border-radius: 3px; margin-left: 8px; }
