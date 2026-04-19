@@ -34,6 +34,58 @@ def create_star_schema(db_path):
     conn = duckdb.connect(str(db_path))
 
     # =========================================================================
+    # Lineage + Meta Tables (Phase B of v0.15 rethink)
+    # =========================================================================
+    # dim_etl_version is the catalog of (ccutils_version, business_rules_version)
+    # tuples; every fact row references one created_by_version_key and one
+    # last_updated_by_version_key. fact_etl_runs records every batch.
+    # meta_schema_version tracks DDL-level migrations applied to this database.
+
+    conn.execute(
+        """
+        CREATE OR REPLACE TABLE dim_etl_version (
+            version_key VARCHAR,           -- MD5(ccutils_version || business_rules_version)
+            ccutils_version VARCHAR NOT NULL,
+            business_rules_version VARCHAR NOT NULL DEFAULT '1',
+            description VARCHAR,           -- e.g., "0.15.0 -- Pydantic parser, structured toolUseResult capture"
+            first_seen_at TIMESTAMP NOT NULL DEFAULT current_timestamp
+        )
+    """
+    )
+
+    conn.execute(
+        """
+        CREATE OR REPLACE TABLE fact_etl_runs (
+            etl_run_id VARCHAR NOT NULL,        -- UUID4 hex per run
+            version_key VARCHAR,                -- FK dim_etl_version
+            started_at TIMESTAMP NOT NULL DEFAULT current_timestamp,
+            completed_at TIMESTAMP,
+            status VARCHAR NOT NULL DEFAULT 'running',  -- running | success | failed
+            source_path VARCHAR,                -- archive root or single session path
+            sessions_seen INTEGER DEFAULT 0,
+            sessions_inserted INTEGER DEFAULT 0,
+            sessions_updated INTEGER DEFAULT 0,
+            sessions_unchanged INTEGER DEFAULT 0,
+            sessions_soft_deleted INTEGER DEFAULT 0,
+            facts_inserted INTEGER DEFAULT 0,
+            facts_updated INTEGER DEFAULT 0,
+            error_message VARCHAR
+        )
+    """
+    )
+
+    conn.execute(
+        """
+        CREATE OR REPLACE TABLE meta_schema_version (
+            migration_id VARCHAR NOT NULL,      -- e.g., '20260419_0001_initial'
+            applied_at TIMESTAMP NOT NULL DEFAULT current_timestamp,
+            description VARCHAR,
+            ccutils_version VARCHAR
+        )
+    """
+    )
+
+    # =========================================================================
     # Staging Tables
     # =========================================================================
 
