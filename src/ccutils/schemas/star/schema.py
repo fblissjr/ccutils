@@ -1,6 +1,6 @@
 """Star schema DDL - creates the dimensional model tables.
 
-27 tables + 13 views. Tiny lookup dimensions (message_type, content_block_type,
+28 tables + 14 views. Tiny lookup dimensions (message_type, content_block_type,
 error_type, entity_type, programming_language) replaced by degenerate VARCHAR
 columns on fact tables. LLM enrichment tables removed entirely -- replaced by
 heuristic classification columns on dim_session.
@@ -411,6 +411,37 @@ def create_star_schema(db_path):
     )
 
     # =========================================================================
+    # Plan Revision Tracking (ExitPlanMode chain)
+    # =========================================================================
+
+    conn.execute(
+        """
+        CREATE OR REPLACE TABLE fact_plan_revisions (
+            revision_key VARCHAR,
+            session_key VARCHAR,
+            project_key VARCHAR,
+            date_key INTEGER,
+            time_key INTEGER,
+            tool_call_id VARCHAR,
+            invoke_message_id VARCHAR,
+            result_message_id VARCHAR,
+            revision_number INTEGER,
+            parent_revision_key VARCHAR,
+            plan_text TEXT,
+            plan_char_count INTEGER,
+            plan_estimated_tokens INTEGER,
+            outcome VARCHAR,
+            outcome_signal VARCHAR,
+            user_feedback_message_id VARCHAR,
+            user_feedback_text TEXT,
+            plan_timestamp TIMESTAMP,
+            resolved_timestamp TIMESTAMP,
+            seconds_to_resolution DOUBLE
+        )
+    """
+    )
+
+    # =========================================================================
     # Cross-Session Bridge Table
     # =========================================================================
 
@@ -761,6 +792,37 @@ def create_star_schema(db_path):
         LEFT JOIN dim_project dp ON ps.project_key = dp.project_key
         LEFT JOIN dim_date dd ON fad.date_key = dd.date_key
         LEFT JOIN dim_time dti ON fad.time_key = dti.time_key
+    """
+    )
+
+    conn.execute(
+        """
+        CREATE OR REPLACE VIEW semantic_plan_revisions AS
+        SELECT
+            fpr.revision_key,
+            fpr.revision_number,
+            fpr.parent_revision_key,
+            fpr.plan_text,
+            fpr.plan_char_count,
+            fpr.plan_estimated_tokens,
+            fpr.outcome,
+            fpr.outcome_signal,
+            fpr.user_feedback_text,
+            fpr.plan_timestamp,
+            fpr.resolved_timestamp,
+            fpr.seconds_to_resolution,
+            dd.full_date AS plan_date,
+            dti.time_of_day,
+            ds.session_id,
+            ds.cwd,
+            ds.depth_level,
+            ds.agent_type,
+            dp.project_name
+        FROM fact_plan_revisions fpr
+        JOIN dim_session ds ON fpr.session_key = ds.session_key
+        LEFT JOIN dim_project dp ON fpr.project_key = dp.project_key
+        LEFT JOIN dim_date dd ON fpr.date_key = dd.date_key
+        LEFT JOIN dim_time dti ON fpr.time_key = dti.time_key
     """
     )
 

@@ -2,7 +2,7 @@
 
 This module provides functions for creating DuckDB database archives
 from Claude Code session files. Supports both simple (4-table) and
-star (27 tables + 13 views) schemas.
+star (28 tables + 14 views) schemas.
 """
 
 import os
@@ -36,7 +36,7 @@ def generate_duckdb_archive(
 ):
     """Generate DuckDB archive for all sessions.
 
-    Supports both simple (4-table) and star (27 tables + 13 views) schemas.
+    Supports both simple (4-table) and star (28 tables + 14 views) schemas.
     Uses a stage-and-load pattern for efficient batch processing:
     - Stage: Parse sessions (parallelizable with max_workers)
     - Load: Bulk insert in batches (batch_size sessions per transaction)
@@ -343,6 +343,7 @@ def finalize_star_schema(conn, history_path=None, private=False):
     - dim_session.depth_level (parent-child depth calculation)
     - dim_session_chain (session chain grouping by slug)
     - fact_agent_delegations (agent-to-parent Task tool linking)
+    - fact_plan_revisions (ExitPlanMode revision chain + outcomes)
     - bridge_session_file (cross-session file operation aggregation)
     - fact_session_summary._incl_agents rollup (bottom-up agent metric aggregation)
     - dim_prompt (from history.jsonl, if path provided)
@@ -357,6 +358,7 @@ def finalize_star_schema(conn, history_path=None, private=False):
     _calculate_session_depths(conn)
     _build_session_chains(conn)
     _link_agent_delegations(conn)
+    _link_plan_revisions(conn)
     _build_session_file_bridge(conn)
     _rollup_agent_metrics(conn)
 
@@ -668,6 +670,253 @@ def _link_agent_delegations(conn):
                 agent_duration_seconds,
                 agent_estimated_tokens,
             ],
+        )
+
+
+# Substring match signals approval in the ExitPlanMode tool_result body.
+# Claude Code emits "User has approved your plan. You can now start coding."
+# when the user accepts a plan. If Claude Code changes the signal in future
+# versions, update this constant.
+PLAN_APPROVAL_SIGNATURE = "approved your plan"
+
+
+def _link_plan_revisions(conn):
+    """Walk ExitPlanMode tool calls per session and build the plan revision chain.
+
+    For each session, links successive ExitPlanMode invocations parent->child,
+    classifies the outcome of each revision, and captures any user feedback
+    message that followed a rejection.
+
+    Outcome precedence (first match wins):
+      - 'superseded' : a later ExitPlanMode exists in the same session
+      - 'accepted'   : tool_result body contains the approval signature
+      - 'rejected'   : a user text message followed the tool_result
+      - 'pending'    : session ended with no follow-up signal
+
+    Always reads the full tool_result body from fact_content_blocks.content_json
+    (not fact_tool_calls.output_text, which is truncated to 2000 chars).
+
+    Idempotent: clears fact_plan_revisions before repopulating.
+    """
+    import json
+
+    from ..schemas.star.extractors import estimate_tokens
+
+    conn.execute("DELETE FROM fact_plan_revisions")
+
+    plan_rows = conn.execute(
+        """
+        SELECT ftc.session_key,
+               ftc.tool_call_id,
+               ftc.invoke_message_id,
+               ftc.result_message_id,
+               ftc.timestamp,
+               ftc.input_json,
+               ftc.date_key,
+               ftc.time_key,
+               ds.project_key
+        FROM fact_tool_calls ftc
+        JOIN dim_tool dt ON ftc.tool_key = dt.tool_key
+        JOIN dim_session ds ON ftc.session_key = ds.session_key
+        WHERE dt.tool_name = 'ExitPlanMode'
+        ORDER BY ftc.session_key, ftc.timestamp
+        """
+    ).fetchall()
+
+    if not plan_rows:
+        return
+
+    # Group by session (preserves timestamp order within each session)
+    sessions = {}
+    for row in plan_rows:
+        sessions.setdefault(row[0], []).append(row)
+
+    insert_rows = []
+    for session_key, revisions in sessions.items():
+        prev_revision_key = None
+        for idx, rev in enumerate(revisions):
+            (
+                _sess_key,
+                tool_call_id,
+                invoke_message_id,
+                result_message_id,
+                plan_timestamp,
+                input_json,
+                date_key,
+                time_key,
+                project_key,
+            ) = rev
+            del _sess_key
+
+            revision_number = idx + 1
+            revision_key = generate_dimension_key(session_key, tool_call_id)
+
+            # Extract plan text from input_json
+            plan_text = None
+            if input_json:
+                try:
+                    plan_text = json.loads(input_json).get("plan")
+                except (json.JSONDecodeError, TypeError):
+                    plan_text = None
+            plan_char_count = len(plan_text) if plan_text else 0
+            plan_estimated_tokens = estimate_tokens(plan_text) if plan_text else 0
+
+            is_last_in_session = idx == len(revisions) - 1
+
+            # Pull full tool_result body (untruncated) from content_json
+            result_content_text = None
+            resolved_timestamp = None
+            if result_message_id:
+                cb_row = conn.execute(
+                    """
+                    SELECT fcb.content_json, fm.timestamp
+                    FROM fact_content_blocks fcb
+                    JOIN fact_messages fm ON fcb.message_id = fm.message_id
+                    WHERE fcb.message_id = ?
+                      AND fcb.block_type = 'tool_result'
+                    """,
+                    [result_message_id],
+                ).fetchall()
+                # If multiple tool_results in the same message, pick the one
+                # whose tool_use_id matches our tool_call_id.
+                for content_json, msg_ts in cb_row:
+                    try:
+                        block = json.loads(content_json)
+                    except (json.JSONDecodeError, TypeError):
+                        continue
+                    if block.get("tool_use_id") == tool_call_id:
+                        content = block.get("content", "")
+                        if isinstance(content, list):
+                            result_content_text = " ".join(
+                                str(item.get("text", ""))
+                                for item in content
+                                if isinstance(item, dict)
+                            )
+                        else:
+                            result_content_text = str(content)
+                        resolved_timestamp = msg_ts
+                        break
+                # Fallback: no tool_use_id match, take the first tool_result
+                if result_content_text is None and cb_row:
+                    content_json, msg_ts = cb_row[0]
+                    try:
+                        block = json.loads(content_json)
+                        content = block.get("content", "")
+                        if isinstance(content, list):
+                            result_content_text = " ".join(
+                                str(item.get("text", ""))
+                                for item in content
+                                if isinstance(item, dict)
+                            )
+                        else:
+                            result_content_text = str(content)
+                        resolved_timestamp = msg_ts
+                    except (json.JSONDecodeError, TypeError):
+                        pass
+
+            # Classify outcome
+            if not is_last_in_session:
+                outcome = "superseded"
+                outcome_signal = "next_plan"
+            elif result_content_text and PLAN_APPROVAL_SIGNATURE in result_content_text:
+                outcome = "accepted"
+                outcome_signal = "tool_result_approve"
+            else:
+                outcome = None
+                outcome_signal = None
+
+            # If not yet classified, look for a following user message
+            user_feedback_message_id = None
+            user_feedback_text = None
+            if outcome is None:
+                ref_ts = resolved_timestamp or plan_timestamp
+                follow_up = conn.execute(
+                    """
+                    SELECT message_id, content_text
+                    FROM fact_messages
+                    WHERE session_key = ?
+                      AND message_type = 'user'
+                      AND timestamp > ?
+                    ORDER BY timestamp
+                    LIMIT 1
+                    """,
+                    [session_key, ref_ts],
+                ).fetchone()
+                if follow_up:
+                    user_feedback_message_id = follow_up[0]
+                    user_feedback_text = (follow_up[1] or "")[:2000]
+                    outcome = "rejected"
+                    outcome_signal = "next_user_msg"
+                else:
+                    outcome = "pending"
+                    outcome_signal = "session_end"
+
+            # For superseded, also capture the next user message as feedback if any
+            if outcome == "superseded":
+                ref_ts = resolved_timestamp or plan_timestamp
+                follow_up = conn.execute(
+                    """
+                    SELECT message_id, content_text
+                    FROM fact_messages
+                    WHERE session_key = ?
+                      AND message_type = 'user'
+                      AND timestamp > ?
+                    ORDER BY timestamp
+                    LIMIT 1
+                    """,
+                    [session_key, ref_ts],
+                ).fetchone()
+                if follow_up:
+                    user_feedback_message_id = follow_up[0]
+                    user_feedback_text = (follow_up[1] or "")[:2000]
+
+            seconds_to_resolution = None
+            if resolved_timestamp and plan_timestamp:
+                try:
+                    seconds_to_resolution = (
+                        resolved_timestamp - plan_timestamp
+                    ).total_seconds()
+                except (TypeError, AttributeError):
+                    seconds_to_resolution = None
+
+            insert_rows.append(
+                (
+                    revision_key,
+                    session_key,
+                    project_key,
+                    date_key,
+                    time_key,
+                    tool_call_id,
+                    invoke_message_id,
+                    result_message_id,
+                    revision_number,
+                    prev_revision_key,
+                    plan_text,
+                    plan_char_count,
+                    plan_estimated_tokens,
+                    outcome,
+                    outcome_signal,
+                    user_feedback_message_id,
+                    user_feedback_text,
+                    plan_timestamp,
+                    resolved_timestamp,
+                    seconds_to_resolution,
+                )
+            )
+            prev_revision_key = revision_key
+
+    if insert_rows:
+        conn.executemany(
+            """INSERT INTO fact_plan_revisions
+               (revision_key, session_key, project_key, date_key, time_key,
+                tool_call_id, invoke_message_id, result_message_id,
+                revision_number, parent_revision_key,
+                plan_text, plan_char_count, plan_estimated_tokens,
+                outcome, outcome_signal,
+                user_feedback_message_id, user_feedback_text,
+                plan_timestamp, resolved_timestamp, seconds_to_resolution)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            insert_rows,
         )
 
 

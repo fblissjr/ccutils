@@ -1845,3 +1845,170 @@ class TestFinalizeStarSchema:
         # Should not double-count
         assert count_after_second == count_after_first
         conn.close()
+
+
+class TestPlanRevisions:
+    """Tests for fact_plan_revisions and plan revision linking."""
+
+    def test_populates_two_revisions(self, plan_mode_session_file, output_dir):
+        db_path = output_dir / "test.duckdb"
+        conn = create_star_schema(db_path)
+        run_star_schema_etl(conn, plan_mode_session_file, "test-project")
+        finalize_star_schema(conn)
+
+        count = conn.execute(
+            "SELECT COUNT(*) FROM fact_plan_revisions"
+        ).fetchone()[0]
+        assert count == 2
+        conn.close()
+
+    def test_revision_numbers_in_order(self, plan_mode_session_file, output_dir):
+        db_path = output_dir / "test.duckdb"
+        conn = create_star_schema(db_path)
+        run_star_schema_etl(conn, plan_mode_session_file, "test-project")
+        finalize_star_schema(conn)
+
+        rows = conn.execute(
+            """SELECT revision_number, tool_call_id
+               FROM fact_plan_revisions
+               ORDER BY revision_number"""
+        ).fetchall()
+        assert [r[0] for r in rows] == [1, 2]
+        assert rows[0][1] == "plan-call-001"
+        assert rows[1][1] == "plan-call-002"
+        conn.close()
+
+    def test_parent_revision_linkage(self, plan_mode_session_file, output_dir):
+        db_path = output_dir / "test.duckdb"
+        conn = create_star_schema(db_path)
+        run_star_schema_etl(conn, plan_mode_session_file, "test-project")
+        finalize_star_schema(conn)
+
+        rows = conn.execute(
+            """SELECT revision_number, revision_key, parent_revision_key
+               FROM fact_plan_revisions
+               ORDER BY revision_number"""
+        ).fetchall()
+        # First revision has no parent
+        assert rows[0][2] is None
+        # Second revision's parent is first revision's key
+        assert rows[1][2] == rows[0][1]
+        conn.close()
+
+    def test_first_plan_superseded(self, plan_mode_session_file, output_dir):
+        db_path = output_dir / "test.duckdb"
+        conn = create_star_schema(db_path)
+        run_star_schema_etl(conn, plan_mode_session_file, "test-project")
+        finalize_star_schema(conn)
+
+        row = conn.execute(
+            """SELECT outcome, outcome_signal
+               FROM fact_plan_revisions
+               WHERE revision_number = 1"""
+        ).fetchone()
+        assert row[0] == "superseded"
+        assert row[1] == "next_plan"
+        conn.close()
+
+    def test_second_plan_accepted(self, plan_mode_session_file, output_dir):
+        db_path = output_dir / "test.duckdb"
+        conn = create_star_schema(db_path)
+        run_star_schema_etl(conn, plan_mode_session_file, "test-project")
+        finalize_star_schema(conn)
+
+        row = conn.execute(
+            """SELECT outcome, outcome_signal
+               FROM fact_plan_revisions
+               WHERE revision_number = 2"""
+        ).fetchone()
+        assert row[0] == "accepted"
+        assert row[1] == "tool_result_approve"
+        conn.close()
+
+    def test_plan_text_captured(self, plan_mode_session_file, output_dir):
+        db_path = output_dir / "test.duckdb"
+        conn = create_star_schema(db_path)
+        run_star_schema_etl(conn, plan_mode_session_file, "test-project")
+        finalize_star_schema(conn)
+
+        rows = conn.execute(
+            """SELECT revision_number, plan_text, plan_char_count,
+                      plan_estimated_tokens
+               FROM fact_plan_revisions
+               ORDER BY revision_number"""
+        ).fetchall()
+        assert "Read auth.py" in rows[0][1]
+        assert "Add integration tests" in rows[1][1]
+        assert rows[0][2] == len(rows[0][1])
+        assert rows[0][3] > 0
+        assert rows[1][3] > rows[0][3]
+        conn.close()
+
+    def test_resolution_timing_populated(self, plan_mode_session_file, output_dir):
+        db_path = output_dir / "test.duckdb"
+        conn = create_star_schema(db_path)
+        run_star_schema_etl(conn, plan_mode_session_file, "test-project")
+        finalize_star_schema(conn)
+
+        rows = conn.execute(
+            """SELECT plan_timestamp, resolved_timestamp, seconds_to_resolution
+               FROM fact_plan_revisions
+               ORDER BY revision_number"""
+        ).fetchall()
+        for plan_ts, resolved_ts, secs in rows:
+            assert plan_ts is not None
+            assert resolved_ts is not None
+            assert secs is not None
+            assert secs >= 0
+
+    def test_semantic_plan_revisions_view(self, plan_mode_session_file, output_dir):
+        db_path = output_dir / "test.duckdb"
+        conn = create_star_schema(db_path)
+        run_star_schema_etl(conn, plan_mode_session_file, "test-project")
+        finalize_star_schema(conn)
+
+        rows = conn.execute(
+            """SELECT revision_number, project_name, outcome
+               FROM semantic_plan_revisions
+               ORDER BY revision_number"""
+        ).fetchall()
+        assert len(rows) == 2
+        assert rows[0][1] == "test-project"
+        assert rows[0][2] == "superseded"
+        assert rows[1][2] == "accepted"
+        conn.close()
+
+    def test_no_revisions_without_exit_plan_mode(
+        self, sample_session_file, output_dir
+    ):
+        """Sessions without ExitPlanMode produce zero plan_revision rows."""
+        db_path = output_dir / "test.duckdb"
+        conn = create_star_schema(db_path)
+        run_star_schema_etl(conn, sample_session_file, "test-project")
+        finalize_star_schema(conn)
+
+        count = conn.execute(
+            "SELECT COUNT(*) FROM fact_plan_revisions"
+        ).fetchone()[0]
+        assert count == 0
+        conn.close()
+
+    def test_idempotent_on_double_finalize(
+        self, plan_mode_session_file, output_dir
+    ):
+        db_path = output_dir / "test.duckdb"
+        conn = create_star_schema(db_path)
+        run_star_schema_etl(conn, plan_mode_session_file, "test-project")
+
+        finalize_star_schema(conn)
+        count_first = conn.execute(
+            "SELECT COUNT(*) FROM fact_plan_revisions"
+        ).fetchone()[0]
+
+        finalize_star_schema(conn)
+        count_second = conn.execute(
+            "SELECT COUNT(*) FROM fact_plan_revisions"
+        ).fetchone()[0]
+
+        assert count_first == count_second == 2
+        conn.close()

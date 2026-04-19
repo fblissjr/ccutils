@@ -45,7 +45,7 @@ ccutils/
 │   │   │   ├── __init__.py
 │   │   │   ├── schema.py     # DDL for simple schema
 │   │   │   └── etl.py        # Simple schema ETL
-│   │   └── star/             # Star schema (27 tables + 13 views)
+│   │   └── star/             # Star schema (28 tables + 14 views)
 │   │       ├── __init__.py   # Public API exports
 │   │       ├── schema.py     # DDL for star schema tables + semantic views
 │   │       ├── etl.py        # Main ETL pipeline
@@ -101,12 +101,12 @@ Three output formats with two schema types:
 - `--format duckdb` - DuckDB database file
 - `--format json` - Single JSON file with nested tables
 
-**Star schema** (27 tables + 13 views):
+**Star schema** (28 tables + 14 views):
 - `--format duckdb-star` - DuckDB database file
 - `--format json-star` - Directory with meta.json + dimensions/*.json + facts/*.json
 - Modular package at `schemas/star/` (schema, etl, extractors, heuristics, history_etl, json_export, utils)
 - See `create_star_schema()`, `run_star_schema_etl()`, `finalize_star_schema()`, `export_star_schema_to_json()` in `schemas/star/`
-- `finalize_star_schema(conn)` MUST be called after all ETL runs -- populates session chains, agent delegations, file bridge, depth levels, and `_incl_agents` metric rollup
+- `finalize_star_schema(conn)` MUST be called after all ETL runs -- populates session chains, agent delegations, plan revisions, file bridge, depth levels, and `_incl_agents` metric rollup
 - Heuristic classification (intent, complexity, outcome, domain, error_type) runs during ETL -- no LLM required
 - `--embed [MODEL]` flag available on both `local` and `all` commands (requires pylate optional dependency)
 - Full documentation in docs/STAR_SCHEMA.md
@@ -115,7 +115,7 @@ Three output formats with two schema types:
 
 **Defaults**: Thinking blocks and subagents/agents are included by default. Use `--no-thinking`, `--no-subagents` (local), or `--no-agents` (all) to exclude them.
 
-### 3. Star Schema Tables (27 tables + 13 views)
+### 3. Star Schema Tables (28 tables + 14 views)
 
 **Core Dimensions (7):** dim_session (with heuristics, entrypoint/custom_title/permission_mode/agent_type/agent_description), dim_project, dim_tool, dim_model, dim_date, dim_time, dim_prompt (from ~/.claude/history.jsonl)
 
@@ -127,9 +127,11 @@ Three output formats with two schema types:
 
 **Agent/Bridge/Staging (3):** fact_agent_delegations (with denormalized metrics), bridge_session_file, stg_task_agent_map
 
+**Plan Revisions (1):** fact_plan_revisions (ExitPlanMode chain with outcome classification)
+
 **Optional (2):** fact_session_embeddings (pylate), fact_tool_input_params
 
-**Views (13):** semantic_sessions, semantic_messages, semantic_tool_calls, semantic_file_operations, semantic_session_chains, semantic_agent_delegations, semantic_file_evolution, semantic_tool_patterns, semantic_project_context, semantic_project_files, semantic_token_usage, semantic_cost_analysis, semantic_prompt_history
+**Views (14):** semantic_sessions, semantic_messages, semantic_tool_calls, semantic_file_operations, semantic_session_chains, semantic_agent_delegations, semantic_plan_revisions, semantic_file_evolution, semantic_tool_patterns, semantic_project_context, semantic_project_files, semantic_token_usage, semantic_cost_analysis, semantic_prompt_history
 
 ### 4. Token Tracking
 
@@ -199,7 +201,7 @@ Run with coverage:
 ```
 create_star_schema(conn)                    # DDL
 run_star_schema_etl(conn, ...)              # Per-session ETL (call once per session)
-finalize_star_schema(conn, history_path=..) # Post-ETL: chains, delegations, file bridge, depths, history
+finalize_star_schema(conn, history_path=..) # Post-ETL: chains, delegations, plan revisions, file bridge, depths, history
 # Optional: EmbeddingPipeline(conn).embed_sessions(conn)
 ```
 

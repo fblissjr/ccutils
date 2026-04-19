@@ -28,7 +28,7 @@ ccutils session.jsonl
 # Export to DuckDB for SQL analytics
 ccutils --format duckdb -o ./archive
 
-# Export with star schema (27 tables + 13 views)
+# Export with star schema (28 tables + 14 views)
 ccutils --format duckdb-star -o ./analytics
 ```
 
@@ -136,7 +136,7 @@ ccutils --format duckdb -o ./archive
 
 Tables: `sessions`, `messages`, `tool_calls`, `thinking`
 
-#### Star Schema (27 tables + 13 views)
+#### Star Schema (28 tables + 14 views)
 
 ```bash
 ccutils --format duckdb-star -o ./analytics

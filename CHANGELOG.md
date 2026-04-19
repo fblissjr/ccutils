@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## Unreleased
+
+### Added
+- **Plan revision tracking**: New `fact_plan_revisions` table + `semantic_plan_revisions` view model every `ExitPlanMode` invocation as a first-class decision point. Each revision is linked into a per-session chain (`parent_revision_key`), carries the full plan text, and is classified with an `outcome` (`accepted`, `rejected`, `superseded`, `pending`). User feedback between revisions is captured as `user_feedback_text`. Populated by `finalize_star_schema()` from existing fact tables -- no per-session ETL changes, no new dependencies. Star schema now totals 28 tables and 14 views.
+
 ## 0.14.0
 
 ### Added

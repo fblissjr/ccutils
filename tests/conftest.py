@@ -594,6 +594,162 @@ def agent_session_with_meta(output_dir):
 
 
 @pytest.fixture
+def plan_mode_session_file():
+    """Session with two ExitPlanMode calls: first rejected, second approved.
+
+    Flow:
+      1. User asks for a plan.
+      2. Assistant invokes ExitPlanMode (plan v1).
+      3. tool_result carries user feedback rejecting the plan.
+      4. User text message with more feedback.
+      5. Assistant invokes ExitPlanMode (plan v2).
+      6. tool_result carries Claude Code's approval signature.
+    """
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".jsonl", delete=False) as f:
+        # User asks for a plan
+        f.write(
+            json.dumps(
+                {
+                    "type": "user",
+                    "uuid": "pm-user-001",
+                    "parentUuid": None,
+                    "sessionId": "plan-session-1",
+                    "timestamp": "2025-03-10T10:00:00.000Z",
+                    "cwd": "/home/user/project",
+                    "gitBranch": "main",
+                    "version": "2.1.0",
+                    "message": {
+                        "role": "user",
+                        "content": "Plan how to refactor the auth module",
+                    },
+                }
+            )
+            + "\n"
+        )
+        # Assistant proposes plan v1
+        f.write(
+            json.dumps(
+                {
+                    "type": "assistant",
+                    "uuid": "pm-asst-001",
+                    "parentUuid": "pm-user-001",
+                    "sessionId": "plan-session-1",
+                    "timestamp": "2025-03-10T10:00:05.000Z",
+                    "message": {
+                        "role": "assistant",
+                        "model": "claude-opus-4-5-20251101",
+                        "content": [
+                            {"type": "text", "text": "Here's my plan."},
+                            {
+                                "type": "tool_use",
+                                "id": "plan-call-001",
+                                "name": "ExitPlanMode",
+                                "input": {
+                                    "plan": "1. Read auth.py\n2. Rewrite login flow",
+                                },
+                            },
+                        ],
+                    },
+                }
+            )
+            + "\n"
+        )
+        # tool_result for plan 1 -- rejection signal
+        f.write(
+            json.dumps(
+                {
+                    "type": "user",
+                    "uuid": "pm-user-002",
+                    "parentUuid": "pm-asst-001",
+                    "sessionId": "plan-session-1",
+                    "timestamp": "2025-03-10T10:00:10.000Z",
+                    "message": {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "tool_result",
+                                "tool_use_id": "plan-call-001",
+                                "content": "The user has requested changes to the plan.",
+                            }
+                        ],
+                    },
+                }
+            )
+            + "\n"
+        )
+        # User text feedback between plans
+        f.write(
+            json.dumps(
+                {
+                    "type": "user",
+                    "uuid": "pm-user-003",
+                    "parentUuid": "pm-user-002",
+                    "sessionId": "plan-session-1",
+                    "timestamp": "2025-03-10T10:00:11.000Z",
+                    "message": {
+                        "role": "user",
+                        "content": "Also add tests for the new flow.",
+                    },
+                }
+            )
+            + "\n"
+        )
+        # Assistant proposes plan v2
+        f.write(
+            json.dumps(
+                {
+                    "type": "assistant",
+                    "uuid": "pm-asst-002",
+                    "parentUuid": "pm-user-003",
+                    "sessionId": "plan-session-1",
+                    "timestamp": "2025-03-10T10:00:20.000Z",
+                    "message": {
+                        "role": "assistant",
+                        "model": "claude-opus-4-5-20251101",
+                        "content": [
+                            {"type": "text", "text": "Updated plan with tests."},
+                            {
+                                "type": "tool_use",
+                                "id": "plan-call-002",
+                                "name": "ExitPlanMode",
+                                "input": {
+                                    "plan": "1. Read auth.py\n2. Rewrite login flow\n3. Add integration tests",
+                                },
+                            },
+                        ],
+                    },
+                }
+            )
+            + "\n"
+        )
+        # tool_result for plan 2 -- approval signature
+        f.write(
+            json.dumps(
+                {
+                    "type": "user",
+                    "uuid": "pm-user-004",
+                    "parentUuid": "pm-asst-002",
+                    "sessionId": "plan-session-1",
+                    "timestamp": "2025-03-10T10:00:25.000Z",
+                    "message": {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "tool_result",
+                                "tool_use_id": "plan-call-002",
+                                "content": "User has approved your plan. You can now start coding.",
+                            }
+                        ],
+                    },
+                }
+            )
+            + "\n"
+        )
+        f.flush()
+        yield Path(f.name)
+
+
+@pytest.fixture
 def mock_projects_dir(sample_session_file):
     """Create a mock projects directory structure."""
     with tempfile.TemporaryDirectory() as tmpdir:

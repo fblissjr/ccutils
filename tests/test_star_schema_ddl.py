@@ -856,3 +856,54 @@ class TestNewSemanticViews:
         ).fetchone()
         assert result is not None
         conn.close()
+
+
+class TestFactPlanRevisions:
+    """Tests for fact_plan_revisions table (ExitPlanMode revision chain)."""
+
+    def test_creates_fact_plan_revisions_table(self, output_dir):
+        db_path = output_dir / "test.duckdb"
+        conn = create_star_schema(db_path)
+        result = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='fact_plan_revisions'"
+        ).fetchone()
+        assert result is not None
+        conn.close()
+
+    def test_fact_plan_revisions_has_required_columns(self, output_dir):
+        db_path = output_dir / "test.duckdb"
+        conn = create_star_schema(db_path)
+        columns = [c[0] for c in conn.execute("DESCRIBE fact_plan_revisions").fetchall()]
+        for col in [
+            "revision_key",
+            "session_key",
+            "project_key",
+            "date_key",
+            "time_key",
+            "tool_call_id",
+            "invoke_message_id",
+            "result_message_id",
+            "revision_number",
+            "parent_revision_key",
+            "plan_text",
+            "plan_char_count",
+            "plan_estimated_tokens",
+            "outcome",
+            "outcome_signal",
+            "user_feedback_message_id",
+            "user_feedback_text",
+            "plan_timestamp",
+            "resolved_timestamp",
+            "seconds_to_resolution",
+        ]:
+            assert col in columns, f"Missing column: {col}"
+        conn.close()
+
+    def test_creates_semantic_plan_revisions_view(self, output_dir):
+        db_path = output_dir / "test.duckdb"
+        conn = create_star_schema(db_path)
+        result = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='view' AND name='semantic_plan_revisions'"
+        ).fetchone()
+        assert result is not None
+        conn.close()

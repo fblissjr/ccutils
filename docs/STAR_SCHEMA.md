@@ -2,7 +2,7 @@
 
 Last updated: 2026-04-11
 
-A dimensional data model for Claude Code transcript analytics with 27 tables and 13 views. Designed for questions the simple 4-table schema cannot answer: intent classification, tool duration analysis, cross-session file tracking, time-of-day patterns, tool sequence analysis, project context recovery, token cost analysis, and semantic similarity clustering.
+A dimensional data model for Claude Code transcript analytics with 28 tables and 14 views. Designed for questions the simple 4-table schema cannot answer: intent classification, tool duration analysis, cross-session file tracking, time-of-day patterns, tool sequence analysis, project context recovery, token cost analysis, and semantic similarity clustering.
 
 ## Quick Start (CLI)
 
@@ -80,13 +80,14 @@ The star schema follows dimensional modeling best practices:
 | Granular dimensions | 2 | dim_file, dim_session_chain |
 | Granular facts | 3 | fact_content_blocks, fact_code_blocks, fact_entity_mentions |
 | Agent/bridge/staging | 3 | fact_agent_delegations, bridge_session_file, stg_task_agent_map |
+| Plan revisions | 1 | fact_plan_revisions |
 | Optional | 2 | fact_session_embeddings (requires pylate), fact_tool_input_params |
-| **Total** | **27 tables** | + 13 semantic views |
+| **Total** | **28 tables** | + 14 semantic views |
 
 ## ETL Pipeline Order
 
 ```
-create_star_schema(conn)                    # DDL: create all 27 tables + 13 views
+create_star_schema(conn)                    # DDL: create all 28 tables + 14 views
 run_star_schema_etl(conn, ...)              # Per-session ETL (call once per session)
 finalize_star_schema(conn, history_path=..) # Post-ETL: chains, delegations, file bridge, depths, history
 create_semantic_model(conn)                 # Semantic views metadata for Data Explorer
@@ -97,7 +98,7 @@ Key details:
 - `run_star_schema_etl` reads `.meta.json` sidecar for agent_type/agent_description automatically
 - `finalize_star_schema` accepts optional `history_path` to load `~/.claude/history.jsonl` into `dim_prompt`
 
-`finalize_star_schema()` must be called after all sessions are loaded. It populates cross-session tables: `dim_session_chain`, `fact_agent_delegations`, `bridge_session_file`, and `dim_session.depth_level`. Both `local` and `all` commands call it automatically.
+`finalize_star_schema()` must be called after all sessions are loaded. It populates cross-session tables: `dim_session_chain`, `fact_agent_delegations`, `fact_plan_revisions`, `bridge_session_file`, and `dim_session.depth_level`. Both `local` and `all` commands call it automatically.
 
 ---
 
@@ -447,6 +448,40 @@ Staging table for deterministic agent delegation linking from progress records.
 | agent_id | VARCHAR | Agent identifier |
 | session_key | VARCHAR | FK to dim_session (parent) |
 
+### Plan Revisions
+
+#### fact_plan_revisions
+One row per `ExitPlanMode` tool invocation, linked into a per-session revision chain. Populated by `finalize_star_schema()` from existing `fact_tool_calls` and `fact_content_blocks` rows -- no per-session ETL changes required.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| revision_key | VARCHAR | PK (MD5 of session_key + tool_call_id) |
+| session_key | VARCHAR | FK to dim_session |
+| project_key | VARCHAR | FK to dim_project (denormalized) |
+| date_key | INTEGER | FK to dim_date |
+| time_key | INTEGER | FK to dim_time |
+| tool_call_id | VARCHAR | FK to fact_tool_calls |
+| invoke_message_id | VARCHAR | Assistant message containing the ExitPlanMode tool_use |
+| result_message_id | VARCHAR | User message containing the tool_result |
+| revision_number | INTEGER | 1 = first plan in session, 2 = second, ... |
+| parent_revision_key | VARCHAR | FK self; NULL for first plan in session |
+| plan_text | TEXT | Full plan text extracted from `input_json.plan` |
+| plan_char_count | INTEGER | Character count of plan_text |
+| plan_estimated_tokens | INTEGER | Token estimate for plan_text |
+| outcome | VARCHAR | 'accepted', 'rejected', 'superseded', or 'pending' |
+| outcome_signal | VARCHAR | How the outcome was detected: 'next_plan', 'tool_result_approve', 'next_user_msg', 'session_end' |
+| user_feedback_message_id | VARCHAR | FK to fact_messages; populated when rejected/superseded |
+| user_feedback_text | TEXT | Truncated (2000 chars) user feedback for rejected/superseded plans |
+| plan_timestamp | TIMESTAMP | When ExitPlanMode was invoked |
+| resolved_timestamp | TIMESTAMP | tool_result timestamp; NULL if pending |
+| seconds_to_resolution | DOUBLE | resolved_timestamp - plan_timestamp |
+
+Outcome classification precedence (first match wins):
+1. `superseded` -- a later `ExitPlanMode` exists in the same session.
+2. `accepted` -- the full tool_result body (read untruncated from `fact_content_blocks.content_json`) contains the string `"approved your plan"`.
+3. `rejected` -- a user text message follows the tool_result; its text is captured as feedback.
+4. `pending` -- session ended with no follow-up.
+
 ### Telemetry Facts
 
 #### fact_token_usage
@@ -663,6 +698,24 @@ SELECT parent_session_id, agent_session_id, subagent_type,
 FROM semantic_agent_delegations
 WHERE agent_errors > 0
 ORDER BY agent_errors DESC;
+```
+
+### semantic_plan_revisions
+ExitPlanMode plan revision chain with outcomes, feedback, and resolution timing.
+
+```sql
+-- Sessions where the user rejected the first plan and iterated
+SELECT session_id, project_name, revision_number, outcome,
+       seconds_to_resolution, SUBSTR(plan_text, 1, 80) AS plan_preview
+FROM semantic_plan_revisions
+WHERE revision_number > 1
+ORDER BY plan_date DESC, revision_number;
+
+-- How often plans get rejected vs. accepted on the first try
+SELECT outcome, COUNT(*) AS count
+FROM semantic_plan_revisions
+WHERE revision_number = 1
+GROUP BY outcome;
 ```
 
 ### semantic_file_evolution

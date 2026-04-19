@@ -128,7 +128,7 @@ def all_cmd(
     \b
     - html: Browsable HTML archive with master index and per-project pages
     - duckdb: DuckDB database with simple schema (4 tables)
-    - duckdb-star: DuckDB database with star schema (27 tables + 13 views)
+    - duckdb-star: DuckDB database with star schema (28 tables + 14 views)
     - json: JSON files with simple schema
     - json-star: JSON directory with star schema (dimensions/ + facts/)
     - both: Generate both HTML archive and simple DuckDB database
