@@ -102,6 +102,37 @@ class TestGenerateHtml:
         repo = detect_github_repo(loglines)
         assert repo == "example/project"
 
+    def test_github_repo_does_not_leak_between_calls(self, tmp_path):
+        """generate_html() must not leak _github_repo between back-to-back calls.
+
+        Previously the module-level _github_repo was set but never reset,
+        so a second call without an explicit github_repo would inherit the
+        first call's value. Critical under generate_batch_html() with -j.
+        """
+        from ccutils import set_github_repo, get_github_repo
+
+        # Start clean
+        set_github_repo(None)
+        assert get_github_repo() is None
+
+        jsonl_file = tmp_path / "session.jsonl"
+        jsonl_file.write_text(
+            '{"type":"user","message":{"role":"user","content":"hi"}}\n'
+        )
+
+        out1 = tmp_path / "out1"
+        out1.mkdir()
+        generate_html(jsonl_file, out1, github_repo="owner/first")
+
+        # After return: global must be restored to its pre-call value (None)
+        assert get_github_repo() is None, "github_repo leaked across generate_html calls"
+
+        # Second call without explicit repo (and no .git in tmpdir) -> None
+        out2 = tmp_path / "out2"
+        out2.mkdir()
+        generate_html(jsonl_file, out2)
+        assert get_github_repo() is None
+
     def test_handles_array_content_format(self, tmp_path):
         """Test that user messages with array content format are recognized.
 

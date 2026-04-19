@@ -780,9 +780,18 @@ def generate_html(
             # Fallback: detect from current working directory's git remote
             github_repo = detect_github_repo_from_cwd()
 
-    # Set module-level variable for render functions
+    # Save previous global so back-to-back generate_html() calls (e.g. from
+    # generate_batch_html) don't leak state between sessions.
+    _saved_github_repo = get_github_repo()
     set_github_repo(github_repo)
+    try:
+        return _generate_html_body(loglines, output_dir)
+    finally:
+        set_github_repo(_saved_github_repo)
 
+
+def _generate_html_body(loglines, output_dir):
+    """Render-side body of generate_html. Reads _github_repo via get_github_repo()."""
     # Group messages into conversations (each starting with a user prompt)
     conversations = []
     current_conv = None
@@ -846,7 +855,7 @@ def generate_html(
                 if msg_html:
                     # Wrap continuation summaries in collapsed details
                     if is_first and conv.get("is_continuation"):
-                        msg_html = f'<details class="continuation"><summary>Session continuation summary</summary>{msg_html}</details>'
+                        msg_html = _macros.continuation(msg_html)
                     messages_html.append(msg_html)
                 is_first = False
 
