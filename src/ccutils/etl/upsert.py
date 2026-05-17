@@ -59,6 +59,7 @@ def lineage_upsert(
     payload_cols: list[str],
     hash_cols: list[str],
     derive_session_keys: bool = True,
+    timestamp_col: str = "timestamp",
     record_source: str = "claude_code_jsonl",
 ) -> None:
     """Generic UPDATE/INSERT/soft-delete pattern shared by every populator.
@@ -70,7 +71,8 @@ def lineage_upsert(
         inbound_table: name of the populated temp table. MUST already contain
             entry_id (or whatever natural_key is set to), session_id, and all
             payload_cols. If derive_session_keys is True, ALSO must contain
-            `timestamp` -- session_key/date_key/time_key/hash_diff are added.
+            the `timestamp_col` -- session_key/date_key/time_key/hash_diff
+            are derived from it.
         natural_key: column name used to match rows (e.g. 'entry_id' for
             most entry-type facts; 'tool_use_id' for fact_tool_uses/results).
         payload_cols: columns copied from inbound -> target on INSERT/UPDATE.
@@ -81,11 +83,16 @@ def lineage_upsert(
         derive_session_keys: when True (default), adds session_key, date_key,
             time_key, hash_diff to the inbound table. Set False when the
             caller has already done that work.
+        timestamp_col: column on the inbound table from which to derive
+            date_key and time_key. Defaults to "timestamp"; aggregate
+            populators (fact_session_summary uses "first_timestamp")
+            override.
         record_source: provenance label stamped on inserted rows.
     """
     _validate_ident(table)
     _validate_ident(inbound_table)
     _validate_ident(natural_key)
+    _validate_ident(timestamp_col)
     for c in payload_cols:
         _validate_ident(c)
     for c in hash_cols:
@@ -102,9 +109,9 @@ def lineage_upsert(
         conn.execute(f"UPDATE {inbound_table} SET session_key = md5(session_id)")
         conn.execute(
             f"UPDATE {inbound_table} "
-            f"SET date_key = CAST(strftime(timestamp, '%Y%m%d') AS INTEGER), "
-            f"    time_key = CAST(strftime(timestamp, '%H%M') AS INTEGER) "
-            f"WHERE timestamp IS NOT NULL"
+            f"SET date_key = CAST(strftime({timestamp_col}, '%Y%m%d') AS INTEGER), "
+            f"    time_key = CAST(strftime({timestamp_col}, '%H%M') AS INTEGER) "
+            f"WHERE {timestamp_col} IS NOT NULL"
         )
         conn.execute(
             f"UPDATE {inbound_table} SET hash_diff = {hash_diff_sql(hash_cols)}"

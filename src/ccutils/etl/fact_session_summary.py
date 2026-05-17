@@ -180,8 +180,6 @@ SELECT
     se.last_timestamp,
     EXTRACT(EPOCH FROM (se.last_timestamp - se.first_timestamp))::DOUBLE
         AS session_duration_seconds,
-    -- timestamp surrogate for date_key/time_key derivation in lineage_upsert
-    se.first_timestamp AS timestamp,
 
     COALESCE(mr.total_messages, 0) AS total_messages,
     COALESCE(mr.user_messages, 0) AS user_messages,
@@ -263,4 +261,5 @@ def populate_fact_session_summary(conn, *, run: EtlRun) -> None:
         natural_key="session_id",
         payload_cols=_PAYLOAD_COLS,
         hash_cols=_HASH_COLS,
+        timestamp_col="first_timestamp",
     )
