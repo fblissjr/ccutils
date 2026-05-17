@@ -907,23 +907,47 @@ def create_star_schema(db_path):
     # New Fact Tables (token usage, turn durations, diagnostics, stop events)
     # =========================================================================
 
+    # Grain: one row per assistant API response that carried `usage` data.
+    # R11 cache-arithmetic fix: cache_creation split into _5m and _1h tiers
+    # (1.25x and 2x pricing respectively); total_uncached_equivalent_tokens
+    # is the "what would this have cost with no caching" derivation.
     conn.execute(
         """
         CREATE OR REPLACE TABLE fact_token_usage (
-            usage_id VARCHAR,
+            created_at TIMESTAMP NOT NULL DEFAULT current_timestamp,
+            created_by_version_key VARCHAR NOT NULL,
+            last_updated_at TIMESTAMP NOT NULL DEFAULT current_timestamp,
+            last_updated_by_version_key VARCHAR NOT NULL,
+            etl_run_id VARCHAR NOT NULL,
+            record_source VARCHAR NOT NULL,
+            hash_diff VARCHAR NOT NULL,
+            is_deleted BOOLEAN NOT NULL DEFAULT FALSE,
+            deleted_at TIMESTAMP,
+
+            entry_id VARCHAR NOT NULL,
+            session_id VARCHAR NOT NULL,
             session_key VARCHAR,
+            project_key VARCHAR,
+            model_key VARCHAR,
             date_key INTEGER,
             time_key INTEGER,
-            model_key VARCHAR,
+            timestamp TIMESTAMP,
+
+            -- Anthropic Messages API `usage` shape (R11/R18 corrections applied)
             input_tokens INTEGER,
             output_tokens INTEGER,
-            cache_creation_input_tokens INTEGER,
-            cache_read_input_tokens INTEGER,
-            cache_ephemeral_1h_tokens INTEGER,
-            cache_ephemeral_5m_tokens INTEGER,
+            cache_creation_5m_tokens INTEGER,
+            cache_creation_1h_tokens INTEGER,
+            cache_creation_total_tokens INTEGER,
+            cache_read_tokens INTEGER,
+            total_uncached_equivalent_tokens INTEGER,
+
+            -- Pricing/tier metadata
             service_tier VARCHAR,
             speed VARCHAR,
-            timestamp TIMESTAMP
+            inference_geo VARCHAR,
+            server_tool_use_web_search_requests INTEGER,
+            server_tool_use_web_fetch_requests INTEGER
         )
     """
     )
@@ -1387,31 +1411,41 @@ def create_star_schema(db_path):
     # New Semantic Views (token usage, cost analysis)
     # =========================================================================
 
+    # Updated for the v0.15 fact_token_usage shape: cache_creation split
+    # per TTL tier; total_uncached_equivalent_tokens derived; service_tier
+    # / speed / inference_geo + server-tool counts surfaced.
     conn.execute(
         """
         CREATE OR REPLACE VIEW semantic_token_usage AS
         SELECT
-            ftu.usage_id,
+            ftu.entry_id,
             ftu.input_tokens,
             ftu.output_tokens,
-            ftu.cache_creation_input_tokens,
-            ftu.cache_read_input_tokens,
+            ftu.cache_creation_5m_tokens,
+            ftu.cache_creation_1h_tokens,
+            ftu.cache_creation_total_tokens,
+            ftu.cache_read_tokens,
+            ftu.total_uncached_equivalent_tokens,
             ftu.service_tier,
             ftu.speed,
+            ftu.inference_geo,
+            ftu.server_tool_use_web_search_requests,
+            ftu.server_tool_use_web_fetch_requests,
             ftu.timestamp,
             dm.model_name,
             dm.model_family,
-            ds.session_id,
+            ftu.session_id,
             ds.cwd,
             dp.project_name,
             dd.full_date,
             dti.time_of_day
         FROM fact_token_usage ftu
         LEFT JOIN dim_model dm ON ftu.model_key = dm.model_key
-        JOIN dim_session ds ON ftu.session_key = ds.session_key
+        LEFT JOIN dim_session ds ON ftu.session_key = ds.session_key
         LEFT JOIN dim_project dp ON ds.project_key = dp.project_key
         LEFT JOIN dim_date dd ON ftu.date_key = dd.date_key
         LEFT JOIN dim_time dti ON ftu.time_key = dti.time_key
+        WHERE ftu.is_deleted = FALSE
     """
     )
 
