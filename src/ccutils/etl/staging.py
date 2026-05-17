@@ -54,6 +54,18 @@ def load_session_to_staging(
         f"INSERT INTO stg_log_entries SELECT * FROM read_parquet('{parquet_path_str}')"
     )
 
+    # Backfill session_id for entry types that don't carry it at the JSONL
+    # top level (file-history-snapshot, queue-operation, summary, ai-title,
+    # ...). For per-session JSONL files the session_id is the filename stem;
+    # using regexp_extract keeps this SQL-only.
+    conn.execute(
+        """
+        UPDATE stg_log_entries
+        SET session_id = regexp_extract(source_path, '([^/]+)\\.jsonl$', 1)
+        WHERE session_id IS NULL
+        """
+    )
+
     return conn.execute(
         "SELECT COUNT(*) FROM stg_log_entries WHERE source_path = ANY (?)",
         [source_paths],

@@ -16,10 +16,30 @@ from ..schemas import (
     create_duckdb_schema,
     export_session_to_duckdb,
     create_star_schema,
-    run_star_schema_etl,
     export_star_schema_to_json,
 )
 from ..schemas.star.utils import generate_dimension_key
+from ..etl.orchestrator import run_v15_etl
+
+
+def _run_v15_etl_archive_signature(
+    conn, session_path, project_name,
+    include_thinking=False, truncate_output=2000, private=False,
+    *,
+    parquet_lake_root=None,
+):
+    """Adapter matching the legacy etl_func(conn, session_path, project_name, ...)
+    positional signature used by generate_duckdb_archive's loop. The v0.15
+    orchestrator takes the same first two args but keyword-only after that;
+    flags include_thinking/truncate_output/private are accepted but unused
+    (v0.15 always captures everything; sanitization will be re-added per
+    fact in a follow-up if needed)."""
+    run_v15_etl(
+        conn,
+        session_path,
+        project_name=project_name,
+        parquet_lake_root=parquet_lake_root,
+    )
 
 
 def generate_duckdb_archive(
@@ -63,10 +83,21 @@ def generate_duckdb_archive(
 
     db_path = output_dir / "archive.duckdb"
 
-    # Create appropriate schema
+    parquet_lake = output_dir / "parquet_lake"
+
+    # Create appropriate schema. etl_func is invoked by the loops below as
+    # etl_func(conn, session_path, project_name, include_thinking=..., ...).
+    # Star uses the v0.15 orchestrator (parquet_lake_root closed over);
+    # simple uses the legacy per-session writer unchanged.
     if schema_type == "star":
         conn = create_star_schema(db_path)
-        etl_func = run_star_schema_etl
+        etl_func = (
+            lambda conn, session_path, project_name, **kwargs:
+            _run_v15_etl_archive_signature(
+                conn, session_path, project_name,
+                parquet_lake_root=parquet_lake, **kwargs,
+            )
+        )
     else:
         conn = create_duckdb_schema(db_path)
         etl_func = export_session_to_duckdb
@@ -146,9 +177,12 @@ def generate_duckdb_archive(
                     stats,
                 )
 
-    # Post-ETL batch processing for star schema
+    # v0.15: per-session aggregates (fact_session_summary) are populated by
+    # run_v15_etl per session. Legacy cross-session work (depth chains,
+    # agent delegations, plan revisions, file bridge, history.jsonl) is
+    # not yet ported to v0.15 -- skipped here pending Phase D.
     if schema_type == "star":
-        finalize_star_schema(conn)
+        pass
 
     # Get final row counts
     final_row_count = _count_rows(conn, schema_type)

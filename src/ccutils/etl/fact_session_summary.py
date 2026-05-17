@@ -63,6 +63,7 @@ WITH session_envelope AS (
         MIN(TRY_CAST(sle.timestamp AS TIMESTAMP)) AS first_timestamp,
         MAX(TRY_CAST(sle.timestamp AS TIMESTAMP)) AS last_timestamp
     FROM stg_log_entries sle
+    WHERE sle.session_id IS NOT NULL
     GROUP BY sle.session_id
 ),
 msg_rollup AS (

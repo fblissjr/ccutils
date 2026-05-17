@@ -33,10 +33,9 @@ from ..schemas import (
 from ..schemas.star import (
     create_star_schema,
     export_star_schema_to_json,
-    run_star_schema_etl,
 )
+from ..etl.orchestrator import run_v15_etl
 from ..export import (
-    finalize_star_schema,
     generate_html,
     generate_multi_session_index,
 )
@@ -300,22 +299,19 @@ def _run_export_pipeline(
                     private=private,
                 )
             conn.close()
-        else:  # star schema
+        else:  # star schema -- v0.15 four-tier pipeline
             conn = create_star_schema(db_path)
+            parquet_lake = output.parent / "parquet_lake"
             for idx, session_file in enumerate(session_files, 1):
                 click.echo(f"[{idx}/{len(session_files)}] {session_file.name}")
-                run_star_schema_etl(
+                run_v15_etl(
                     conn,
                     session_file,
-                    project_name or session_file.parent.name,
-                    include_thinking=include_thinking,
-                    private=private,
+                    project_name=project_name or session_file.parent.name,
+                    parquet_lake_root=parquet_lake,
                 )
-            finalize_star_schema(conn)
-
             if embed:
                 run_embedding_pipeline(conn, embed_model)
-
             conn.close()
 
         click.echo(f"Exported to {db_path}")
@@ -344,17 +340,15 @@ def _run_export_pipeline(
             click.echo(f"Exporting {len(session_files)} session(s) to star schema JSON...")
 
             conn = create_star_schema(":memory:")
+            parquet_lake = output_dir / "parquet_lake"
             for idx, session_file in enumerate(session_files, 1):
                 click.echo(f"[{idx}/{len(session_files)}] {session_file.name}")
-                run_star_schema_etl(
+                run_v15_etl(
                     conn,
                     session_file,
-                    project_name or session_file.parent.name,
-                    include_thinking=include_thinking,
-                    private=private,
+                    project_name=project_name or session_file.parent.name,
+                    parquet_lake_root=parquet_lake,
                 )
-            finalize_star_schema(conn)
-
             if embed:
                 run_embedding_pipeline(conn, embed_model)
 

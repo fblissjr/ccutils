@@ -201,16 +201,20 @@ class SummaryEntry(BaseModel):
     leaf_uuid: str | None = None
 
 
-class UnknownEntry(BaseModel):
+class UnknownEntry(_Envelope):
     """Fallback for entry types we don't yet recognize.
 
-    Forward-compat: when Claude Code adds a new entry type, the parser
-    routes it here instead of raising. The full raw dict is preserved in
-    `model_extra` (via Pydantic's extra="allow"). `type` defaults to
-    "unknown" so even malformed entries without a `type` field land here.
+    Forward-compat: when Claude Code adds a new entry type (e.g. `ai-title`
+    in newer Claude Code versions), the parser routes it here instead of
+    raising. Inherits from _Envelope so the envelope fields still extract
+    (session_id, uuid, timestamp, etc.) -- otherwise downstream ETL would
+    drop these rows from session aggregations.
+
+    The full raw dict is preserved in `model_extra` (via extra="allow").
+    `type` defaults to "unknown" so even malformed entries without a
+    `type` field land here.
     """
 
-    model_config = ConfigDict(extra="allow")
     type: str = "unknown"
 
 
