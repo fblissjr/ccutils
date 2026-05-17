@@ -11,16 +11,39 @@ entry-level `toolUseResult` field on user entries. Linked by tool_use_id.
 from __future__ import annotations
 
 from ccutils.etl.lineage import EtlRun
+from ccutils.etl.upsert import lineage_upsert
 
 
-# Columns hashed for change detection on fact_tool_uses. IDs, FKs, lineage
-# excluded (not "content").
+# Columns copied into fact_tool_uses by the lineage upsert. EXCLUDES
+# natural key (tool_use_id), session_id, and the derived keys
+# (session_key, date_key, time_key) which the helper handles.
+_USES_PAYLOAD_COLS = [
+    "entry_id", "message_id",
+    "project_key", "tool_key",
+    "tool_name", "invoke_sequence_num", "caller_type",
+    "input_json", "input_summary", "timestamp",
+]
 _USES_HASH_COLS = [
     "tool_name", "invoke_sequence_num", "caller_type", "input_json",
     "input_summary", "timestamp",
 ]
 
-# Columns hashed for change detection on fact_tool_results.
+# Columns copied into fact_tool_results by the lineage upsert.
+_RESULTS_PAYLOAD_COLS = [
+    "entry_id", "message_id",
+    "project_key", "tool_key",
+    "tool_name", "timestamp",
+    "is_error", "result_content_text", "result_payload_json",
+    "bash_exit_code", "bash_interrupted", "bash_stdout_bytes", "bash_duration_ms",
+    "edit_user_modified", "edit_replace_all", "edit_structured_patch_json",
+    "read_num_lines", "read_total_lines", "read_file_path",
+    "write_type",
+    "glob_num_files", "glob_truncated",
+    "grep_mode", "grep_num_files",
+    "webfetch_http_code", "webfetch_bytes",
+    "agent_status", "agent_total_duration_ms", "agent_total_tokens",
+    "agent_total_tool_use_count", "agent_was_interrupted", "agent_subagent_type",
+]
 _RESULTS_HASH_COLS = [
     "tool_name", "timestamp", "is_error",
     "result_content_text", "result_payload_json",
@@ -34,12 +57,6 @@ _RESULTS_HASH_COLS = [
     "agent_status", "agent_total_duration_ms", "agent_total_tokens",
     "agent_total_tool_use_count", "agent_was_interrupted", "agent_subagent_type",
 ]
-
-
-def _hash_expr(cols: list[str]) -> str:
-    return "md5(" + " || '|' || ".join(
-        f"COALESCE(CAST({c} AS VARCHAR), '')" for c in cols
-    ) + ")"
 
 
 # fact_tool_uses: explode every assistant message's content[*] for tool_use blocks.
@@ -116,8 +133,8 @@ exploded AS (
 ),
 tool_name_map AS (
     -- Resolve tool_name by joining tool_use_id back to the assistant's
-    -- tool_use blocks in staging. Decoupled from fact_tool_uses so this
-    -- populator can run before, after, or independently.
+    -- tool_use blocks in staging. Scoped to sessions present in the
+    -- current inbound batch so the scan stays O(batch), not O(archive).
     SELECT
         json_extract_string(b.block, '$.id') AS tool_use_id,
         json_extract_string(b.block, '$.name') AS tool_name
@@ -128,6 +145,7 @@ tool_name_map AS (
     WHERE sle.type = 'assistant'
       AND json_type(sle.message_json, '$.content') = 'ARRAY'
       AND json_extract_string(b.block, '$.type') = 'tool_use'
+      AND sle.session_id IN (SELECT DISTINCT session_id FROM user_entries)
 ),
 with_tool_name AS (
     SELECT
@@ -268,222 +286,54 @@ def populate_fact_tool_uses(conn, *, run: EtlRun) -> None:
     conn.execute("DROP TABLE IF EXISTS _inbound_tool_uses")
     conn.execute(f"CREATE TEMP TABLE _inbound_tool_uses AS {_PROJECT_USES_SQL}")
 
-    # Derive input_summary (first 200 chars), session_key, project_key,
-    # tool_key, date_key, time_key.
-    for ddl in (
-        "ALTER TABLE _inbound_tool_uses ADD COLUMN input_summary VARCHAR",
-        "ALTER TABLE _inbound_tool_uses ADD COLUMN session_key VARCHAR",
-        "ALTER TABLE _inbound_tool_uses ADD COLUMN project_key VARCHAR",
-        "ALTER TABLE _inbound_tool_uses ADD COLUMN tool_key VARCHAR",
-        "ALTER TABLE _inbound_tool_uses ADD COLUMN date_key INTEGER",
-        "ALTER TABLE _inbound_tool_uses ADD COLUMN time_key INTEGER",
-        "ALTER TABLE _inbound_tool_uses ADD COLUMN hash_diff VARCHAR",
-    ):
-        conn.execute(ddl)
-
+    # Derive input_summary, project_key, tool_key on the temp table.
+    # (session_key/date_key/time_key/hash_diff are added by lineage_upsert.)
+    conn.execute("ALTER TABLE _inbound_tool_uses ADD COLUMN input_summary VARCHAR")
+    conn.execute("ALTER TABLE _inbound_tool_uses ADD COLUMN project_key VARCHAR")
+    conn.execute("ALTER TABLE _inbound_tool_uses ADD COLUMN tool_key VARCHAR")
     conn.execute("UPDATE _inbound_tool_uses SET input_summary = substring(input_json, 1, 200)")
-    conn.execute("UPDATE _inbound_tool_uses SET session_key = md5(session_id)")
     conn.execute("UPDATE _inbound_tool_uses SET tool_key = md5(tool_name)")
-    conn.execute(
-        "UPDATE _inbound_tool_uses "
-        "SET date_key = CAST(strftime(timestamp, '%Y%m%d') AS INTEGER), "
-        "    time_key = CAST(strftime(timestamp, '%H%M') AS INTEGER) "
-        "WHERE timestamp IS NOT NULL"
-    )
     conn.execute(
         "UPDATE _inbound_tool_uses "
         "SET project_key = md5(regexp_replace(source_path, '/[^/]+$', ''))"
     )
-    conn.execute(f"UPDATE _inbound_tool_uses SET hash_diff = {_hash_expr(_USES_HASH_COLS)}")
 
-    # UPDATE existing rows whose hash_diff changed
-    conn.execute(
-        f"""
-        UPDATE fact_tool_uses ftu
-        SET
-            last_updated_at = current_timestamp,
-            last_updated_by_version_key = '{run.version_key}',
-            etl_run_id = '{run.etl_run_id}',
-            hash_diff = im.hash_diff,
-            entry_id = im.entry_id,
-            message_id = im.message_id,
-            session_key = im.session_key,
-            project_key = im.project_key,
-            tool_key = im.tool_key,
-            date_key = im.date_key,
-            time_key = im.time_key,
-            tool_name = im.tool_name,
-            invoke_sequence_num = im.invoke_sequence_num,
-            caller_type = im.caller_type,
-            input_json = im.input_json,
-            input_summary = im.input_summary,
-            timestamp = im.timestamp,
-            is_deleted = FALSE,
-            deleted_at = NULL
-        FROM _inbound_tool_uses im
-        WHERE ftu.tool_use_id = im.tool_use_id
-          AND ftu.hash_diff IS DISTINCT FROM im.hash_diff
-        """
+    lineage_upsert(
+        conn,
+        run=run,
+        table="fact_tool_uses",
+        inbound_table="_inbound_tool_uses",
+        natural_key="tool_use_id",
+        payload_cols=_USES_PAYLOAD_COLS,
+        hash_cols=_USES_HASH_COLS,
     )
-
-    # INSERT new
-    conn.execute(
-        f"""
-        INSERT INTO fact_tool_uses (
-            created_by_version_key, last_updated_by_version_key,
-            etl_run_id, record_source, hash_diff,
-            entry_id, message_id, session_id, tool_use_id,
-            session_key, project_key, tool_key, date_key, time_key,
-            tool_name, invoke_sequence_num, caller_type,
-            input_json, input_summary, timestamp
-        )
-        SELECT
-            '{run.version_key}', '{run.version_key}',
-            '{run.etl_run_id}', 'claude_code_jsonl', im.hash_diff,
-            im.entry_id, im.message_id, im.session_id, im.tool_use_id,
-            im.session_key, im.project_key, im.tool_key, im.date_key, im.time_key,
-            im.tool_name, im.invoke_sequence_num, im.caller_type,
-            im.input_json, im.input_summary, im.timestamp
-        FROM _inbound_tool_uses im
-        WHERE NOT EXISTS (
-            SELECT 1 FROM fact_tool_uses ftu WHERE ftu.tool_use_id = im.tool_use_id
-        )
-        """
-    )
-
-    # Soft-delete missing
-    conn.execute(
-        f"""
-        UPDATE fact_tool_uses ftu
-        SET is_deleted = TRUE,
-            deleted_at = current_timestamp,
-            last_updated_at = current_timestamp,
-            last_updated_by_version_key = '{run.version_key}',
-            etl_run_id = '{run.etl_run_id}'
-        WHERE ftu.is_deleted = FALSE
-          AND ftu.session_id IN (SELECT DISTINCT session_id FROM _inbound_tool_uses)
-          AND ftu.tool_use_id NOT IN (SELECT tool_use_id FROM _inbound_tool_uses)
-        """
-    )
-
-    conn.execute("DROP TABLE _inbound_tool_uses")
 
 
 def populate_fact_tool_results(conn, *, run: EtlRun) -> None:
     """Project staging tool_result blocks (joined with toolUseResult payload)
-    into fact_tool_results. Requires fact_tool_uses to be populated first
-    (uses it to resolve tool_name from tool_use_id).
+    into fact_tool_results. tool_name resolved from staging within the
+    populator -- decoupled from fact_tool_uses ordering.
     """
     conn.execute("DROP TABLE IF EXISTS _inbound_tool_results")
     conn.execute(f"CREATE TEMP TABLE _inbound_tool_results AS {_PROJECT_RESULTS_SQL}")
 
-    for ddl in (
-        "ALTER TABLE _inbound_tool_results ADD COLUMN session_key VARCHAR",
-        "ALTER TABLE _inbound_tool_results ADD COLUMN project_key VARCHAR",
-        "ALTER TABLE _inbound_tool_results ADD COLUMN tool_key VARCHAR",
-        "ALTER TABLE _inbound_tool_results ADD COLUMN date_key INTEGER",
-        "ALTER TABLE _inbound_tool_results ADD COLUMN time_key INTEGER",
-        "ALTER TABLE _inbound_tool_results ADD COLUMN hash_diff VARCHAR",
-    ):
-        conn.execute(ddl)
-
-    conn.execute("UPDATE _inbound_tool_results SET session_key = md5(session_id)")
-    conn.execute("UPDATE _inbound_tool_results SET tool_key = md5(tool_name) WHERE tool_name IS NOT NULL")
+    conn.execute("ALTER TABLE _inbound_tool_results ADD COLUMN project_key VARCHAR")
+    conn.execute("ALTER TABLE _inbound_tool_results ADD COLUMN tool_key VARCHAR")
     conn.execute(
         "UPDATE _inbound_tool_results "
-        "SET date_key = CAST(strftime(timestamp, '%Y%m%d') AS INTEGER), "
-        "    time_key = CAST(strftime(timestamp, '%H%M') AS INTEGER) "
-        "WHERE timestamp IS NOT NULL"
+        "SET tool_key = md5(tool_name) WHERE tool_name IS NOT NULL"
     )
     conn.execute(
         "UPDATE _inbound_tool_results "
         "SET project_key = md5(regexp_replace(source_path, '/[^/]+$', ''))"
     )
-    conn.execute(f"UPDATE _inbound_tool_results SET hash_diff = {_hash_expr(_RESULTS_HASH_COLS)}")
 
-    # UPDATE
-    update_cols = [
-        "tool_name", "session_key", "project_key", "tool_key",
-        "date_key", "time_key", "timestamp",
-        "is_error", "result_content_text", "result_payload_json",
-        "bash_exit_code", "bash_interrupted", "bash_stdout_bytes", "bash_duration_ms",
-        "edit_user_modified", "edit_replace_all", "edit_structured_patch_json",
-        "read_num_lines", "read_total_lines", "read_file_path",
-        "write_type",
-        "glob_num_files", "glob_truncated",
-        "grep_mode", "grep_num_files",
-        "webfetch_http_code", "webfetch_bytes",
-        "agent_status", "agent_total_duration_ms", "agent_total_tokens",
-        "agent_total_tool_use_count", "agent_was_interrupted", "agent_subagent_type",
-        "entry_id", "message_id",
-    ]
-    set_clause = ",\n            ".join(f"{c} = im.{c}" for c in update_cols)
-    conn.execute(
-        f"""
-        UPDATE fact_tool_results ftr
-        SET
-            last_updated_at = current_timestamp,
-            last_updated_by_version_key = '{run.version_key}',
-            etl_run_id = '{run.etl_run_id}',
-            hash_diff = im.hash_diff,
-            {set_clause},
-            is_deleted = FALSE,
-            deleted_at = NULL
-        FROM _inbound_tool_results im
-        WHERE ftr.tool_use_id = im.tool_use_id
-          AND ftr.hash_diff IS DISTINCT FROM im.hash_diff
-        """
+    lineage_upsert(
+        conn,
+        run=run,
+        table="fact_tool_results",
+        inbound_table="_inbound_tool_results",
+        natural_key="tool_use_id",
+        payload_cols=_RESULTS_PAYLOAD_COLS,
+        hash_cols=_RESULTS_HASH_COLS,
     )
-
-    # INSERT new
-    insert_cols = [
-        "entry_id", "message_id", "session_id", "tool_use_id",
-        "session_key", "project_key", "tool_key", "date_key", "time_key",
-        "tool_name", "timestamp",
-        "is_error", "result_content_text", "result_payload_json",
-        "bash_exit_code", "bash_interrupted", "bash_stdout_bytes", "bash_duration_ms",
-        "edit_user_modified", "edit_replace_all", "edit_structured_patch_json",
-        "read_num_lines", "read_total_lines", "read_file_path",
-        "write_type",
-        "glob_num_files", "glob_truncated",
-        "grep_mode", "grep_num_files",
-        "webfetch_http_code", "webfetch_bytes",
-        "agent_status", "agent_total_duration_ms", "agent_total_tokens",
-        "agent_total_tool_use_count", "agent_was_interrupted", "agent_subagent_type",
-    ]
-    insert_col_list = ", ".join(insert_cols)
-    select_col_list = ", ".join(f"im.{c}" for c in insert_cols)
-    conn.execute(
-        f"""
-        INSERT INTO fact_tool_results (
-            created_by_version_key, last_updated_by_version_key,
-            etl_run_id, record_source, hash_diff,
-            {insert_col_list}
-        )
-        SELECT
-            '{run.version_key}', '{run.version_key}',
-            '{run.etl_run_id}', 'claude_code_jsonl', im.hash_diff,
-            {select_col_list}
-        FROM _inbound_tool_results im
-        WHERE NOT EXISTS (
-            SELECT 1 FROM fact_tool_results ftr WHERE ftr.tool_use_id = im.tool_use_id
-        )
-        """
-    )
-
-    # Soft-delete missing
-    conn.execute(
-        f"""
-        UPDATE fact_tool_results ftr
-        SET is_deleted = TRUE,
-            deleted_at = current_timestamp,
-            last_updated_at = current_timestamp,
-            last_updated_by_version_key = '{run.version_key}',
-            etl_run_id = '{run.etl_run_id}'
-        WHERE ftr.is_deleted = FALSE
-          AND ftr.session_id IN (SELECT DISTINCT session_id FROM _inbound_tool_results)
-          AND ftr.tool_use_id NOT IN (SELECT tool_use_id FROM _inbound_tool_results)
-        """
-    )
-
-    conn.execute("DROP TABLE _inbound_tool_results")

@@ -14,7 +14,6 @@ from pathlib import Path
 
 import pyarrow as pa
 
-from ccutils.etl.lineage import EtlRun
 from ccutils.parsers.parquet_writer import _LOG_ENTRY_SCHEMA
 
 
@@ -26,18 +25,12 @@ STG_LOG_ENTRIES_SCHEMA: pa.Schema = _LOG_ENTRY_SCHEMA
 def load_session_to_staging(
     conn,
     log_entries_parquet: str | Path,
-    *,
-    run: EtlRun | None = None,
 ) -> int:
     """Load one session's log_entries.parquet into stg_log_entries.
 
     Returns the row count loaded. Idempotent by source_path: existing rows
     for the same source are DELETEd before INSERT, so re-running the same
     session against staging never doubles up.
-
-    `run` is unused today -- the etl_run_id stamped on rows comes from the
-    Parquet file (written by parquet_writer). Accepted for symmetry with
-    other loaders that may need to associate row-level work to a run.
     """
     log_entries_parquet = Path(log_entries_parquet)
     parquet_path_str = str(log_entries_parquet)
@@ -70,8 +63,6 @@ def load_session_to_staging(
 def load_archive_to_staging(
     conn,
     lake_root: str | Path,
-    *,
-    run: EtlRun | None = None,
 ) -> int:
     """Load every per-session log_entries.parquet under a Parquet-lake root.
 
@@ -80,5 +71,5 @@ def load_archive_to_staging(
     lake_root = Path(lake_root)
     paths = sorted(lake_root.rglob("log_entries.parquet"))
     for p in paths:
-        load_session_to_staging(conn, p, run=run)
+        load_session_to_staging(conn, p)
     return len(paths)

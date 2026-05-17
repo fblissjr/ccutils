@@ -86,7 +86,7 @@ class TestLoadSessionToStaging:
             etl_run_id=run.etl_run_id, project_slug="stg-project",
         )
         # Then Parquet -> DuckDB staging
-        rows_loaded = load_session_to_staging(conn, log_path, run=run)
+        rows_loaded = load_session_to_staging(conn, log_path)
         assert rows_loaded == 8  # all 8 lines (including summary)
 
         # Every staged row carries the etl_run_id from this run
@@ -102,7 +102,7 @@ class TestLoadSessionToStaging:
             sample_jsonl, tmp_path / "lake", etl_run_id=run.etl_run_id,
             project_slug="stg-project",
         )
-        load_session_to_staging(conn, log_path, run=run)
+        load_session_to_staging(conn, log_path)
         u1 = conn.execute(
             "SELECT type, session_id, cwd, git_branch FROM stg_log_entries "
             "WHERE uuid = 'u1'"
@@ -115,7 +115,7 @@ class TestLoadSessionToStaging:
             sample_jsonl, tmp_path / "lake", etl_run_id=run.etl_run_id,
             project_slug="stg-project",
         )
-        load_session_to_staging(conn, log_path, run=run)
+        load_session_to_staging(conn, log_path)
         # User u2 has toolUseResult; assert it's available in staging
         result_json = conn.execute(
             "SELECT tool_use_result_json FROM stg_log_entries WHERE uuid = 'u2'"
@@ -131,7 +131,7 @@ class TestLoadSessionToStaging:
             sample_jsonl, tmp_path / "lake", etl_run_id=run1.etl_run_id,
             project_slug="stg-project",
         )
-        load_session_to_staging(conn, log_path, run=run1)
+        load_session_to_staging(conn, log_path)
         n1 = conn.execute("SELECT COUNT(*) FROM stg_log_entries").fetchone()[0]
 
         # Re-run on the same source -- staging should NOT double up.
@@ -140,7 +140,7 @@ class TestLoadSessionToStaging:
             sample_jsonl, tmp_path / "lake2", etl_run_id=run2.etl_run_id,
             project_slug="stg-project",
         )
-        load_session_to_staging(conn, log_path2, run=run2)
+        load_session_to_staging(conn, log_path2)
         n2 = conn.execute("SELECT COUNT(*) FROM stg_log_entries").fetchone()[0]
         assert n2 == n1, "Re-loading the same session must replace its rows, not append"
 
@@ -169,7 +169,7 @@ class TestLoadArchiveToStaging:
             sample2, lake, etl_run_id=run.etl_run_id, project_slug="proj-b",
         )
 
-        sessions_loaded = load_archive_to_staging(conn, lake, run=run)
+        sessions_loaded = load_archive_to_staging(conn, lake)
         assert sessions_loaded == 2
         n = conn.execute("SELECT COUNT(*) FROM stg_log_entries").fetchone()[0]
         assert n == 8 + 1  # first fixture's 8 lines + second fixture's 1 line

@@ -35,7 +35,7 @@ def _stage_session(conn, jsonl_path, tmp_path, run):
         jsonl_path, tmp_path / "lake",
         etl_run_id=run.etl_run_id, project_slug="test-project",
     )
-    load_session_to_staging(conn, log_path, run=run)
+    load_session_to_staging(conn, log_path)
 
 
 @pytest.fixture
