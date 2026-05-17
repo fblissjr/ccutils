@@ -29,7 +29,7 @@ ccutils session.jsonl
 # Export to DuckDB for SQL analytics
 ccutils --format duckdb -o ./archive
 
-# Export with star schema (28 tables + 14 views)
+# Export with star schema (v0.15 four-tier ETL + Parquet lake)
 ccutils --format duckdb-star -o ./analytics
 ```
 
@@ -137,61 +137,79 @@ ccutils --format duckdb -o ./archive
 
 Tables: `sessions`, `messages`, `tool_calls`, `thinking`
 
-#### Star Schema (28 tables + 14 views)
+#### Star Schema (v0.15, on the `etl-rethink` branch)
 
 ```bash
 ccutils --format duckdb-star -o ./analytics
 ```
 
-Dimensional model designed for analytics:
+v0.15 rebuilds the ETL as a four-tier pipeline:
 
-- **7 dimensions:** sessions (with heuristic classifications + entrypoint/title/agent_type), projects, tools (with categories), models (with families), dates, times, prompts (from ~/.claude/history.jsonl)
-- **6 core facts:** messages (with actual API token counts), tool calls (with duration tracking), session summaries (with inclusive agent metric rollup + actual tokens + turn durations), file operations, errors (with type classification), tool chain steps
-- **4 telemetry facts:** per-API-response token usage (with cache breakdown), turn durations, LSP diagnostics, stop events
-- **5 granular tables:** files (with language detection), session chains, content blocks, code blocks, entity mentions
-- **3 agent/bridge tables:** agent delegations (with denormalized metrics), cross-session file tracking, task-agent mapping
-- **2 optional:** ColBERT embeddings, tool input parameters
-- **13 semantic views:** pre-joined views for common queries (includes project context, file tracking, token usage, cost analysis, prompt history)
+1. **Tier 0** -- raw JSONL on disk (Claude Code writes).
+2. **Tier 1** -- Parquet lake under `<output>/parquet_lake/projects/<project>/<session>/`. Typed-columnar cache of every parsed JSONL entry. Persistent and re-derivable; the DuckDB warehouse can be torn down and rebuilt from Parquet without re-parsing JSONL.
+3. **Tier 2** -- DuckDB staging tables (`stg_log_entries`, `stg_task_agent_map`) loaded from Parquet via `read_parquet()`.
+4. **Tier 3** -- DuckDB warehouse: dimensions, facts, and semantic views consumers query.
 
-#### Heuristic Classification
+Every fact carries the v0.15 lineage convention: `created_at`, `last_updated_at`, `created_by_version_key`, `last_updated_by_version_key`, `etl_run_id`, `record_source`, `hash_diff`, plus soft-delete (`is_deleted`, `deleted_at`). Re-running ETL on unchanged source is a no-op (the `hash_diff` gate prevents spurious UPDATEs). Mutations are tracked via `dim_etl_version` + `fact_etl_runs`; DDL migrations are tracked via `meta_schema_version`.
 
-The star schema ETL runs heuristic classification during ingestion with zero external dependencies -- no LLM, no API key needed. Results are stored on `dim_session`:
+**Tables wired by the v0.15 orchestrator (`run_v15_etl`):**
 
-| Classifier | Method | Values |
-|------------|--------|--------|
-| **Intent** | Score-based keyword matching on first user message | bug_fix, feature, refactor, debug, test, docs, review, explore |
-| **Complexity** | Points-based scoring from session metrics | trivial, simple, moderate, complex |
-| **Outcome** | Inferred from last assistant message + error rate | success, failure, unknown |
-| **Domain** | Inferred from file extensions touched | web, backend, data, devops, docs, mixed, unknown |
-| **Error type** | Classified from error message text (on `fact_errors`) | permission_denied, file_not_found, syntax_error, timeout, import_error, tool_error |
+- **Dimensions:** `dim_etl_version`, `dim_session`, `dim_project`, `dim_tool`, `dim_model` (minimal envelope -- heuristic enrichment is Phase D; `dim_date` / `dim_time` DDL exists but is not wired yet)
+- **Core facts:** `fact_messages`, `fact_tool_uses`, `fact_tool_results` (with structured per-tool `toolUseResult` payloads -- Edit `structuredPatch`, Bash `exit_code`/`interrupted`, Read `numLines`, Agent rollups), `fact_token_usage` (R11 cache split: `cache_creation_5m_tokens` + `cache_creation_1h_tokens`), `fact_session_summary`
+- **Entry-type facts:** `fact_attachments`, `fact_progress_events`, `fact_system_events`, `fact_meta_events` (permission-mode time series), `fact_file_history_snapshots`, `fact_queue_operations`, `fact_pr_links`
+- **Lineage:** `fact_etl_runs`, `meta_schema_version`
+
+**Pending Phase D (DDL only -- not yet populated by `run_v15_etl`):** legacy heuristic classifications on `dim_session`, `fact_file_operations`, `fact_errors`, `fact_tool_chain_steps`, `fact_agent_delegations`, `fact_plan_revisions`, `fact_turn_durations`, `fact_diagnostics`, `fact_stop_events`, `bridge_session_file`, `dim_file`, `dim_session_chain`, `dim_prompt`, the granular content/code/entity tables, and the 14 `semantic_*` views. The DDL stays in place to keep harlequin happy and to give Phase D a target; the populators land as the DAG-fact work progresses.
 
 ```sql
--- What kinds of sessions do I have?
-SELECT intent, complexity, COUNT(*) as sessions
-FROM dim_session GROUP BY intent, complexity ORDER BY sessions DESC;
+-- Sessions ranked by uncached-equivalent token cost
+SELECT
+  ds.session_id,
+  fss.total_input_tokens,
+  fss.total_output_tokens,
+  fss.total_cache_creation_5m_tokens,
+  fss.total_cache_creation_1h_tokens,
+  fss.total_cache_read_tokens,
+  fss.total_uncached_equivalent_tokens
+FROM fact_session_summary fss
+JOIN dim_session ds USING (session_key)
+ORDER BY total_uncached_equivalent_tokens DESC
+LIMIT 20;
 
 -- Tool usage by category
-SELECT dt.tool_category, COUNT(*) as uses
-FROM fact_tool_calls ftc
-JOIN dim_tool dt ON ftc.tool_key = dt.tool_key
-GROUP BY dt.tool_category ORDER BY uses DESC;
+SELECT dt.tool_category, COUNT(*) AS uses
+FROM fact_tool_uses ftu
+JOIN dim_tool dt USING (tool_key)
+GROUP BY dt.tool_category
+ORDER BY uses DESC;
 
--- Am I more productive mornings or evenings?
-SELECT dti.time_of_day, COUNT(*) as sessions, AVG(fss.total_messages) as avg_msgs
-FROM fact_session_summary fss
-JOIN dim_time dti ON fss.time_key = dti.time_key
-GROUP BY dti.time_of_day;
+-- Bash invocations that exited non-zero or were interrupted (R1 toolUseResult capture)
+SELECT
+  ftu.session_id,
+  json_extract_string(ftu.input_json, '$.command') AS command,
+  ftr.bash_exit_code,
+  ftr.bash_interrupted,
+  ftr.timestamp
+FROM fact_tool_uses ftu
+JOIN fact_tool_results ftr USING (tool_use_id)
+WHERE ftu.tool_name = 'Bash'
+  AND (ftr.bash_exit_code <> 0 OR ftr.bash_interrupted = TRUE)
+ORDER BY ftr.timestamp DESC
+LIMIT 20;
 
--- Most-touched files across all sessions
-SELECT df.file_path, SUM(bsf.write_count + bsf.edit_count) as modifications
-FROM bridge_session_file bsf
-JOIN dim_file df ON bsf.file_key = df.file_key
-GROUP BY df.file_path ORDER BY modifications DESC LIMIT 20;
-
--- Catch up on a project (what was worked on recently)
-SELECT first_user_message, last_assistant_message, intent, created_at
-FROM semantic_project_context
-WHERE project_name = 'my-project' LIMIT 5;
+-- ETL lineage: when did each batch run, what version produced it, what was touched
+SELECT
+  fer.etl_run_id,
+  fer.started_at,
+  dev.ccutils_version,
+  fer.sessions_seen,
+  fer.facts_inserted,
+  fer.facts_updated,
+  fer.status
+FROM fact_etl_runs fer
+LEFT JOIN dim_etl_version dev USING (version_key)
+ORDER BY fer.started_at DESC
+LIMIT 10;
 ```
 
 ### JSON Export
@@ -242,10 +260,12 @@ ccutils --format json-star -o ./star-export/
 ## Development
 
 ```bash
-uv run pytest              # Run tests (~803 passing)
+uv run pytest              # Run tests
 uv run ccutils --help      # Run development version
 uv run pytest --cov=ccutils  # Coverage
 ```
+
+> On the `etl-rethink` branch the v0.15 pipeline (133 tests) passes; legacy tests that target dropped fact columns will be ported / replaced as Phase D lands.
 
 ## License
 
