@@ -239,33 +239,69 @@ def create_star_schema(db_path):
     # Core Fact Tables (6)
     # =========================================================================
 
+    # Grain: one row per user or assistant entry in a session.
+    # See docs/STAR_SCHEMA.md for the lineage column convention shared by
+    # every fact table in v0.15+.
     conn.execute(
         """
         CREATE OR REPLACE TABLE fact_messages (
-            message_id VARCHAR,
+            -- Lineage (every fact in v0.15+ carries this block)
+            created_at TIMESTAMP NOT NULL DEFAULT current_timestamp,
+            created_by_version_key VARCHAR NOT NULL,
+            last_updated_at TIMESTAMP NOT NULL DEFAULT current_timestamp,
+            last_updated_by_version_key VARCHAR NOT NULL,
+            etl_run_id VARCHAR NOT NULL,
+            record_source VARCHAR NOT NULL,
+            hash_diff VARCHAR NOT NULL,
+            is_deleted BOOLEAN NOT NULL DEFAULT FALSE,
+            deleted_at TIMESTAMP,
+
+            -- Degenerate dimensions on every row
+            entry_id VARCHAR NOT NULL,
+            message_id VARCHAR NOT NULL,
+            session_id VARCHAR NOT NULL,
+
+            -- Dimension FKs
             session_key VARCHAR,
             project_key VARCHAR,
-            message_type VARCHAR,
             model_key VARCHAR,
             date_key INTEGER,
             time_key INTEGER,
+
+            -- Native columns
+            message_type VARCHAR NOT NULL,
             parent_message_id VARCHAR,
             timestamp TIMESTAMP,
+            sequence_num INTEGER,
+            is_sidechain BOOLEAN DEFAULT FALSE,
+            is_meta BOOLEAN DEFAULT FALSE,
+            is_compact_summary BOOLEAN DEFAULT FALSE,
+            is_api_error_message BOOLEAN DEFAULT FALSE,
+            stop_reason VARCHAR,
+            permission_mode_at_send VARCHAR,
+            prompt_id VARCHAR,
+            request_id VARCHAR,
+            api_error_text VARCHAR,
+
+            -- Tokens (R11 cache-arithmetic fix: cache_creation split per TTL)
+            input_tokens INTEGER,
+            output_tokens INTEGER,
+            cache_creation_5m_tokens INTEGER,
+            cache_creation_1h_tokens INTEGER,
+            cache_read_tokens INTEGER,
+            total_uncached_equivalent_tokens INTEGER,
+
+            -- Counters / derived
             content_length INTEGER,
             content_block_count INTEGER,
-            has_tool_use BOOLEAN,
-            has_tool_result BOOLEAN,
-            has_thinking BOOLEAN,
+            has_tool_use BOOLEAN DEFAULT FALSE,
+            has_tool_result BOOLEAN DEFAULT FALSE,
+            has_thinking BOOLEAN DEFAULT FALSE,
             word_count INTEGER,
             estimated_tokens INTEGER,
             response_time_seconds FLOAT,
             conversation_depth INTEGER,
-            content_text TEXT,
-            content_json JSON,
-            is_sidechain BOOLEAN DEFAULT FALSE,
-            actual_input_tokens INTEGER,
-            actual_output_tokens INTEGER,
-            cache_read_tokens INTEGER
+            content_text VARCHAR
         )
     """
     )
