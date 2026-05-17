@@ -1,3 +1,4 @@
+# path-privacy: skip-file -- references universal Claude Code data paths (not personal)
 """DuckDB archive generation.
 
 This module provides functions for creating DuckDB database archives

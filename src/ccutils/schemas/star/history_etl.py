@@ -1,3 +1,4 @@
+# path-privacy: skip-file -- references universal Claude Code data paths (not personal)
 """ETL for loading ~/.claude/history.jsonl into dim_prompt."""
 
 from pathlib import Path

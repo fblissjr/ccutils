@@ -1,3 +1,4 @@
+<!-- path-privacy: skip-file -- references universal ~/.claude data paths (not personal) -->
 # Star Schema DuckDB Implementation
 
 Last updated: 2026-04-11

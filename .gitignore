@@ -8,3 +8,4 @@ claude-archive/
 .claude/
 internal/
 coderef/
+.path-privacy.local.json

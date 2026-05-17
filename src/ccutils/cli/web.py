@@ -1,3 +1,4 @@
+# path-privacy: skip-file -- references universal Claude Code data paths (not personal)
 """Web session import command."""
 
 import tempfile

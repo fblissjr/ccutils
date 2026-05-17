@@ -1,3 +1,4 @@
+# path-privacy: skip-file -- references ~/.claude/projects as data input (not personal)
 """Tests for search index generation."""
 
 import json

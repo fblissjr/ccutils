@@ -1,3 +1,4 @@
+# path-privacy: skip-file -- references universal Claude Code data paths (not personal)
 """Star schema DDL - creates the dimensional model tables.
 
 28 tables + 14 views. Tiny lookup dimensions (message_type, content_block_type,

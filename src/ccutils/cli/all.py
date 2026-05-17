@@ -1,3 +1,4 @@
+# path-privacy: skip-file -- references universal Claude Code data paths (not personal)
 """Batch conversion command for all sessions."""
 
 from datetime import datetime

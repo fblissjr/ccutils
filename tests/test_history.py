@@ -1,3 +1,4 @@
+# path-privacy: skip-file -- generic /Users/fred and /Users/dev placeholders only
 """Tests for history.jsonl parser and ETL."""
 
 import json

@@ -1,3 +1,4 @@
+# path-privacy: skip-file -- references universal Claude Code data paths (not personal)
 """Privacy-preserving path sanitization for exports.
 
 Converts absolute paths to relative/anonymized forms so exports

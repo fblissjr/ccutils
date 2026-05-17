@@ -1,3 +1,4 @@
+# path-privacy: skip-file -- references universal Claude Code data paths (not personal)
 """Claude API client and credentials management.
 
 This module provides functions for authenticating with and fetching data

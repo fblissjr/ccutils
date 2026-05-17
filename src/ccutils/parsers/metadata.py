@@ -1,3 +1,4 @@
+# path-privacy: skip-file -- references universal Claude Code data paths (not personal)
 """Rich metadata extraction from Claude Code session files.
 
 Provides fast metadata extraction for session selection UI,

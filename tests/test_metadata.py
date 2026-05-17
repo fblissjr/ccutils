@@ -1,3 +1,4 @@
+# path-privacy: skip-file -- generic /Users/fred and /Users/dev placeholders only
 """Tests for session metadata extraction."""
 
 import json

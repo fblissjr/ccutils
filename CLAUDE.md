@@ -1,3 +1,4 @@
+<!-- path-privacy: skip-file -- references universal ~/.claude data paths (not personal) -->
 # Start Here
 
 Uses uv. Run tests like this:

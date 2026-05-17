@@ -1,3 +1,4 @@
+<!-- path-privacy: skip-file -- references universal ~/.claude data paths (not personal) -->
 # ccutils
 
 Claude utilities for session transcripts, star schema analytics, and probably more as it comes up as a use case in my day to day.

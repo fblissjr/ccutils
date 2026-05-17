@@ -1,3 +1,4 @@
+<!-- path-privacy: skip-file -- references universal ~/.claude data paths (not personal) -->
 # Changelog
 
 All notable changes to this project will be documented in this file.
