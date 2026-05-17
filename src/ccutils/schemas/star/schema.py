@@ -306,28 +306,115 @@ def create_star_schema(db_path):
     """
     )
 
+    # Grain: one row per tool_use content block emitted by the assistant.
     conn.execute(
         """
-        CREATE OR REPLACE TABLE fact_tool_calls (
-            tool_call_id VARCHAR,
+        CREATE OR REPLACE TABLE fact_tool_uses (
+            -- Lineage
+            created_at TIMESTAMP NOT NULL DEFAULT current_timestamp,
+            created_by_version_key VARCHAR NOT NULL,
+            last_updated_at TIMESTAMP NOT NULL DEFAULT current_timestamp,
+            last_updated_by_version_key VARCHAR NOT NULL,
+            etl_run_id VARCHAR NOT NULL,
+            record_source VARCHAR NOT NULL,
+            hash_diff VARCHAR NOT NULL,
+            is_deleted BOOLEAN NOT NULL DEFAULT FALSE,
+            deleted_at TIMESTAMP,
+
+            -- Degenerate dims
+            entry_id VARCHAR NOT NULL,
+            message_id VARCHAR NOT NULL,
+            session_id VARCHAR NOT NULL,
+            tool_use_id VARCHAR NOT NULL,
+
+            -- Dimension FKs
             session_key VARCHAR,
+            project_key VARCHAR,
             tool_key VARCHAR,
             date_key INTEGER,
             time_key INTEGER,
-            invoke_message_id VARCHAR,
-            result_message_id VARCHAR,
+
+            -- Native
+            tool_name VARCHAR NOT NULL,
+            invoke_sequence_num INTEGER,
+            caller_type VARCHAR,
+            input_json VARCHAR,
+            input_summary VARCHAR,
+            timestamp TIMESTAMP
+        )
+    """
+    )
+
+    # Grain: one row per tool_result event -- combines the tool_result content
+    # block (truncated text) with the entry-level toolUseResult structured
+    # payload (typed per-tool columns + JSON catch-all).
+    conn.execute(
+        """
+        CREATE OR REPLACE TABLE fact_tool_results (
+            -- Lineage
+            created_at TIMESTAMP NOT NULL DEFAULT current_timestamp,
+            created_by_version_key VARCHAR NOT NULL,
+            last_updated_at TIMESTAMP NOT NULL DEFAULT current_timestamp,
+            last_updated_by_version_key VARCHAR NOT NULL,
+            etl_run_id VARCHAR NOT NULL,
+            record_source VARCHAR NOT NULL,
+            hash_diff VARCHAR NOT NULL,
+            is_deleted BOOLEAN NOT NULL DEFAULT FALSE,
+            deleted_at TIMESTAMP,
+
+            -- Degenerate dims
+            entry_id VARCHAR NOT NULL,
+            message_id VARCHAR NOT NULL,
+            session_id VARCHAR NOT NULL,
+            tool_use_id VARCHAR NOT NULL,
+
+            -- Dimension FKs
+            session_key VARCHAR,
+            project_key VARCHAR,
+            tool_key VARCHAR,
+            date_key INTEGER,
+            time_key INTEGER,
+
+            -- Native
+            tool_name VARCHAR,
             timestamp TIMESTAMP,
-            input_char_count INTEGER,
-            output_char_count INTEGER,
+            -- R16: tri-state nullable BOOLEAN
             is_error BOOLEAN,
-            duration_seconds FLOAT,
-            input_json JSON,
-            input_summary TEXT,
-            output_text TEXT,
-            file_path VARCHAR,
-            command VARCHAR,
-            pattern VARCHAR,
-            query_text VARCHAR
+            result_content_text VARCHAR,
+            result_payload_json VARCHAR,
+
+            -- Per-tool typed projections (NULL for tools without these fields)
+            -- Bash / BashOutput
+            bash_exit_code INTEGER,
+            bash_interrupted BOOLEAN,
+            bash_stdout_bytes INTEGER,
+            bash_duration_ms FLOAT,
+            -- Edit / MultiEdit
+            edit_user_modified BOOLEAN,
+            edit_replace_all BOOLEAN,
+            edit_structured_patch_json VARCHAR,
+            -- Read
+            read_num_lines INTEGER,
+            read_total_lines INTEGER,
+            read_file_path VARCHAR,
+            -- Write
+            write_type VARCHAR,
+            -- Glob
+            glob_num_files INTEGER,
+            glob_truncated BOOLEAN,
+            -- Grep
+            grep_mode VARCHAR,
+            grep_num_files INTEGER,
+            -- WebFetch
+            webfetch_http_code INTEGER,
+            webfetch_bytes INTEGER,
+            -- Agent / Task (subagent rollup)
+            agent_status VARCHAR,
+            agent_total_duration_ms FLOAT,
+            agent_total_tokens INTEGER,
+            agent_total_tool_use_count INTEGER,
+            agent_was_interrupted BOOLEAN,
+            agent_subagent_type VARCHAR
         )
     """
     )
@@ -805,36 +892,48 @@ def create_star_schema(db_path):
     """
     )
 
+    # Backwards-compat view over the v0.15 fact_tool_uses + fact_tool_results
+    # split. Old queries that select tool_use_id, tool_name, is_error etc.
+    # keep working. New analytics should query the two facts directly.
     conn.execute(
         """
         CREATE OR REPLACE VIEW semantic_tool_calls AS
         SELECT
-            ftc.tool_call_id,
-            ftc.timestamp,
-            ftc.input_char_count,
-            ftc.output_char_count,
-            ftc.is_error,
-            ftc.duration_seconds,
-            ftc.input_summary,
-            ftc.output_text,
-            ftc.file_path,
-            ftc.command,
-            ftc.pattern,
-            ftc.query_text,
-            dt.tool_name,
+            ftu.tool_use_id,
+            ftu.tool_name,
             dt.tool_category,
+            ftu.input_summary,
+            ftu.input_json,
+            ftu.caller_type,
+            ftu.timestamp AS invoke_timestamp,
+            ftr.timestamp AS result_timestamp,
+            ftr.is_error,
+            ftr.result_content_text,
+            ftr.result_payload_json,
+            ftr.bash_exit_code,
+            ftr.bash_interrupted,
+            ftr.bash_duration_ms,
+            ftr.edit_user_modified,
+            ftr.read_num_lines,
+            ftr.read_total_lines,
+            ftr.read_file_path,
+            ftr.webfetch_http_code,
+            ftr.agent_status,
+            ftr.agent_total_duration_ms,
             ds.session_id,
             ds.cwd,
             dp.project_name,
             dd.full_date,
             dti.hour,
             dti.time_of_day
-        FROM fact_tool_calls ftc
-        JOIN dim_tool dt ON ftc.tool_key = dt.tool_key
-        JOIN dim_session ds ON ftc.session_key = ds.session_key
+        FROM fact_tool_uses ftu
+        LEFT JOIN fact_tool_results ftr ON ftr.tool_use_id = ftu.tool_use_id
+        LEFT JOIN dim_tool dt ON ftu.tool_key = dt.tool_key
+        LEFT JOIN dim_session ds ON ftu.session_key = ds.session_key
         LEFT JOIN dim_project dp ON ds.project_key = dp.project_key
-        LEFT JOIN dim_date dd ON ftc.date_key = dd.date_key
-        LEFT JOIN dim_time dti ON ftc.time_key = dti.time_key
+        LEFT JOIN dim_date dd ON ftu.date_key = dd.date_key
+        LEFT JOIN dim_time dti ON ftu.time_key = dti.time_key
+        WHERE ftu.is_deleted = FALSE
     """
     )
 
