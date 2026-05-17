@@ -110,10 +110,12 @@ def lineage_upsert(
             f"UPDATE {inbound_table} SET hash_diff = {hash_diff_sql(hash_cols)}"
         )
 
+    # When natural_key IS session_id, don't list it twice.
+    extra_keys = ["session_key", "date_key", "time_key"]
+    if natural_key != "session_id":
+        extra_keys.append("session_id")
     set_clause = ",\n            ".join(
-        f"{c} = im.{c}" for c in (
-            *payload_cols, "session_key", "date_key", "time_key", "session_id"
-        )
+        f"{c} = im.{c}" for c in (*payload_cols, *extra_keys)
     )
     conn.execute(
         f"""
@@ -133,7 +135,10 @@ def lineage_upsert(
         [run.version_key, run.etl_run_id],
     )
 
-    all_cols = [natural_key, "session_id", "session_key", "date_key", "time_key", *payload_cols]
+    all_cols = [natural_key]
+    if natural_key != "session_id":
+        all_cols.append("session_id")
+    all_cols.extend(["session_key", "date_key", "time_key", *payload_cols])
     insert_col_list = ", ".join(all_cols)
     select_col_list = ", ".join(f"im.{c}" for c in all_cols)
     conn.execute(

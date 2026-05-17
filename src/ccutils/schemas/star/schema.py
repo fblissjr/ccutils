@@ -644,43 +644,77 @@ def create_star_schema(db_path):
     """
     )
 
+    # Grain: one row per session. Pre-aggregated rollups over the v0.15
+    # entry-type facts. Note on Kimball "facts don't join to facts": the
+    # aggregation joins happen IN the populator (ETL time); query consumers
+    # see one self-contained row per session and never join facts to facts.
     conn.execute(
         """
         CREATE OR REPLACE TABLE fact_session_summary (
+            created_at TIMESTAMP NOT NULL DEFAULT current_timestamp,
+            created_by_version_key VARCHAR NOT NULL,
+            last_updated_at TIMESTAMP NOT NULL DEFAULT current_timestamp,
+            last_updated_by_version_key VARCHAR NOT NULL,
+            etl_run_id VARCHAR NOT NULL,
+            record_source VARCHAR NOT NULL,
+            hash_diff VARCHAR NOT NULL,
+            is_deleted BOOLEAN NOT NULL DEFAULT FALSE,
+            deleted_at TIMESTAMP,
+
+            session_id VARCHAR NOT NULL,
             session_key VARCHAR,
             project_key VARCHAR,
             date_key INTEGER,
             time_key INTEGER,
+            first_timestamp TIMESTAMP,
+            last_timestamp TIMESTAMP,
+            session_duration_seconds DOUBLE,
+
+            -- From fact_messages
             total_messages INTEGER,
             user_messages INTEGER,
             assistant_messages INTEGER,
-            total_tool_calls INTEGER,
             total_thinking_blocks INTEGER,
-            total_content_blocks INTEGER,
-            total_errors INTEGER,
+
+            -- From fact_token_usage (R11 split by pricing tier)
+            total_input_tokens BIGINT,
+            total_output_tokens BIGINT,
+            total_cache_creation_5m_tokens BIGINT,
+            total_cache_creation_1h_tokens BIGINT,
+            total_cache_creation_total_tokens BIGINT,
+            total_cache_read_tokens BIGINT,
+            total_uncached_equivalent_tokens BIGINT,
+            api_response_count INTEGER,
+
+            -- From fact_tool_uses / fact_tool_results
+            total_tool_uses INTEGER,
             unique_tools_used INTEGER,
-            unique_files_touched INTEGER,
-            max_conversation_depth INTEGER,
-            total_estimated_tokens INTEGER,
-            total_thinking_tokens INTEGER,
-            total_tool_io_tokens INTEGER,
-            session_duration_seconds INTEGER,
-            first_timestamp TIMESTAMP,
-            last_timestamp TIMESTAMP,
-            total_estimated_tokens_incl_agents INTEGER,
-            total_tool_calls_incl_agents INTEGER,
-            total_errors_incl_agents INTEGER,
-            total_duration_incl_agents INTEGER,
-            actual_input_tokens BIGINT,
-            actual_output_tokens BIGINT,
-            cache_creation_tokens BIGINT,
-            cache_read_tokens BIGINT,
-            total_turn_duration_ms BIGINT,
+            total_tool_results INTEGER,
+            total_tool_errors INTEGER,
+            total_bash_interrupted INTEGER,
+
+            -- From fact_system_events
+            total_api_errors INTEGER,
+            total_compactions INTEGER,
+            total_turn_durations_ms BIGINT,
             turn_count INTEGER,
+            total_stop_events INTEGER,
+            total_prevented_continuations INTEGER,
+
+            -- From fact_progress_events / fact_attachments
+            total_progress_events INTEGER,
+            total_hook_progress_events INTEGER,
+            total_bash_progress_events INTEGER,
+            total_attachments INTEGER,
             total_diagnostics INTEGER,
-            total_hook_runs INTEGER,
-            stop_count INTEGER,
-            prevented_continuations INTEGER
+            total_hook_successes INTEGER,
+
+            -- From fact_meta_events
+            permission_mode_transition_count INTEGER,
+            current_permission_mode VARCHAR,
+
+            -- From fact_file_history_snapshots
+            total_file_history_snapshots INTEGER
         )
     """
     )
@@ -1062,16 +1096,17 @@ def create_star_schema(db_path):
     # Semantic Views (10)
     # =========================================================================
 
+    # Updated for v0.15 fact_session_summary shape.
     conn.execute(
         """
         CREATE OR REPLACE VIEW semantic_sessions AS
         SELECT
-            ds.session_id,
+            fss.session_id,
             ds.cwd,
             ds.git_branch,
             ds.version,
-            ds.first_timestamp AS session_datetime,
-            ds.last_timestamp,
+            fss.first_timestamp AS session_datetime,
+            fss.last_timestamp,
             ds.intent,
             ds.complexity,
             ds.outcome,
@@ -1081,17 +1116,23 @@ def create_star_schema(db_path):
             fss.total_messages,
             fss.user_messages,
             fss.assistant_messages,
-            fss.total_tool_calls,
+            fss.total_tool_uses,
+            fss.total_tool_results,
             fss.total_thinking_blocks,
-            fss.total_errors,
+            fss.total_tool_errors,
             fss.unique_tools_used,
-            fss.unique_files_touched,
-            fss.max_conversation_depth,
-            fss.total_estimated_tokens,
-            fss.total_estimated_tokens_incl_agents,
-            fss.total_tool_calls_incl_agents,
-            fss.total_errors_incl_agents,
-            fss.total_duration_incl_agents,
+            fss.total_input_tokens,
+            fss.total_output_tokens,
+            fss.total_cache_creation_total_tokens,
+            fss.total_cache_read_tokens,
+            fss.total_uncached_equivalent_tokens,
+            fss.api_response_count,
+            fss.total_api_errors,
+            fss.total_compactions,
+            fss.total_turn_durations_ms,
+            fss.turn_count,
+            fss.permission_mode_transition_count,
+            fss.current_permission_mode,
             fss.session_duration_seconds,
             dd.full_date,
             dd.day_name,
@@ -1101,10 +1142,11 @@ def create_star_schema(db_path):
             dti.hour,
             dti.time_of_day
         FROM fact_session_summary fss
-        JOIN dim_session ds ON fss.session_key = ds.session_key
-        JOIN dim_project dp ON fss.project_key = dp.project_key
+        LEFT JOIN dim_session ds ON fss.session_key = ds.session_key
+        LEFT JOIN dim_project dp ON fss.project_key = dp.project_key
         LEFT JOIN dim_date dd ON fss.date_key = dd.date_key
         LEFT JOIN dim_time dti ON fss.time_key = dti.time_key
+        WHERE fss.is_deleted = FALSE
     """
     )
 
@@ -1231,7 +1273,7 @@ def create_star_schema(db_path):
             ds.depth_level,
             dp.project_name,
             fss.total_messages,
-            fss.total_tool_calls,
+            fss.total_tool_uses,
             fss.session_duration_seconds
         FROM dim_session_chain dsc
         JOIN dim_session ds ON ds.chain_key = dsc.chain_key
@@ -1369,13 +1411,13 @@ def create_star_schema(db_path):
             fss.total_messages,
             fss.user_messages,
             fss.assistant_messages,
-            fss.total_tool_calls,
+            fss.total_tool_uses,
             fss.unique_tools_used,
-            fss.total_errors,
-            fss.total_estimated_tokens,
-            fss.total_estimated_tokens_incl_agents,
-            fss.total_tool_calls_incl_agents,
-            fss.total_errors_incl_agents
+            fss.total_tool_errors,
+            fss.total_input_tokens,
+            fss.total_output_tokens,
+            fss.total_cache_read_tokens,
+            fss.total_uncached_equivalent_tokens
         FROM dim_session ds
         JOIN dim_project dp ON ds.project_key = dp.project_key
         LEFT JOIN fact_session_summary fss ON ds.session_key = fss.session_key
@@ -1449,11 +1491,13 @@ def create_star_schema(db_path):
     """
     )
 
+    # R11: cache_hit_rate_pct denominator now includes cache_creation_total
+    # (legacy view used input + read only, over-stating the hit rate).
     conn.execute(
         """
         CREATE OR REPLACE VIEW semantic_cost_analysis AS
         SELECT
-            ds.session_id,
+            fss.session_id,
             dp.project_name,
             ds.entrypoint,
             ds.custom_title,
@@ -1461,24 +1505,29 @@ def create_star_schema(db_path):
             ds.complexity,
             dd.full_date,
             fss.session_duration_seconds,
-            fss.actual_input_tokens,
-            fss.actual_output_tokens,
-            fss.cache_creation_tokens,
-            fss.cache_read_tokens,
-            fss.total_turn_duration_ms,
+            fss.total_input_tokens,
+            fss.total_output_tokens,
+            fss.total_cache_creation_5m_tokens,
+            fss.total_cache_creation_1h_tokens,
+            fss.total_cache_creation_total_tokens,
+            fss.total_cache_read_tokens,
+            fss.total_uncached_equivalent_tokens,
+            fss.total_turn_durations_ms,
             fss.turn_count,
-            CASE WHEN fss.cache_read_tokens > 0
-                      AND (COALESCE(fss.actual_input_tokens, 0) + fss.cache_read_tokens) > 0
-                 THEN ROUND(100.0 * fss.cache_read_tokens
-                      / (COALESCE(fss.actual_input_tokens, 0) + fss.cache_read_tokens), 1)
+            CASE WHEN fss.total_uncached_equivalent_tokens > 0
+                 THEN ROUND(100.0 * fss.total_cache_read_tokens
+                      / fss.total_uncached_equivalent_tokens, 1)
                  ELSE 0 END AS cache_hit_rate_pct,
-            fss.total_estimated_tokens,
             fss.total_messages,
-            fss.total_tool_calls
+            fss.total_tool_uses,
+            fss.api_response_count,
+            fss.total_api_errors,
+            fss.total_compactions
         FROM fact_session_summary fss
-        JOIN dim_session ds ON fss.session_key = ds.session_key
-        JOIN dim_project dp ON fss.project_key = dp.project_key
+        LEFT JOIN dim_session ds ON fss.session_key = ds.session_key
+        LEFT JOIN dim_project dp ON fss.project_key = dp.project_key
         LEFT JOIN dim_date dd ON fss.date_key = dd.date_key
+        WHERE fss.is_deleted = FALSE
     """
     )
 
@@ -1498,8 +1547,8 @@ def create_star_schema(db_path):
             ds.custom_title,
             ds.entrypoint,
             fss.total_messages,
-            fss.actual_input_tokens,
-            fss.actual_output_tokens,
+            fss.total_input_tokens,
+            fss.total_output_tokens,
             dd.full_date
         FROM dim_prompt dp
         LEFT JOIN dim_session ds ON dp.session_key = ds.session_key
