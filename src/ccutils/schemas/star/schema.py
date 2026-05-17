@@ -88,6 +88,47 @@ def create_star_schema(db_path):
     # =========================================================================
     # Staging Tables
     # =========================================================================
+    # stg_log_entries: bridge from Tier 1 (Parquet lake) to Tier 3 (warehouse
+    # facts). One row per JSONL line. Fact-table populators select from here
+    # to project into their grain. Trunc-and-reload friendly: reloading a
+    # session replaces its rows by source_path.
+
+    conn.execute(
+        """
+        CREATE OR REPLACE TABLE stg_log_entries (
+            etl_run_id VARCHAR NOT NULL,
+            parsed_at TIMESTAMP NOT NULL,
+            parser_version VARCHAR NOT NULL,
+            record_source VARCHAR NOT NULL,
+            entry_id VARCHAR NOT NULL,
+            source_path VARCHAR NOT NULL,
+            sequence_num INTEGER NOT NULL,
+            type VARCHAR NOT NULL,
+            uuid VARCHAR,
+            parent_uuid VARCHAR,
+            session_id VARCHAR,
+            timestamp VARCHAR,
+            cwd VARCHAR,
+            git_branch VARCHAR,
+            slug VARCHAR,
+            version VARCHAR,
+            user_type VARCHAR,
+            entrypoint VARCHAR,
+            is_sidechain BOOLEAN,
+            is_meta BOOLEAN,
+            agent_id VARCHAR,
+            message_json VARCHAR,
+            tool_use_result_json VARCHAR,
+            attachment_json VARCHAR,
+            progress_data_json VARCHAR,
+            system_subtype VARCHAR,
+            system_payload_json VARCHAR,
+            meta_payload_json VARCHAR,
+            extras_json VARCHAR,
+            raw_json VARCHAR
+        )
+        """
+    )
 
     conn.execute(
         """
