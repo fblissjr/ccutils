@@ -345,6 +345,231 @@ def create_star_schema(db_path):
     """
     )
 
+    # =========================================================================
+    # New entry-type facts (Phase C4)
+    # =========================================================================
+    # Each captures one Claude Code top-level entry type that the legacy ETL
+    # either dropped entirely or sampled sparsely. All follow the v0.15
+    # lineage + degenerate-dim convention.
+
+    # Grain: one row per attachment entry attached to a user message.
+    conn.execute(
+        """
+        CREATE OR REPLACE TABLE fact_attachments (
+            created_at TIMESTAMP NOT NULL DEFAULT current_timestamp,
+            created_by_version_key VARCHAR NOT NULL,
+            last_updated_at TIMESTAMP NOT NULL DEFAULT current_timestamp,
+            last_updated_by_version_key VARCHAR NOT NULL,
+            etl_run_id VARCHAR NOT NULL,
+            record_source VARCHAR NOT NULL,
+            hash_diff VARCHAR NOT NULL,
+            is_deleted BOOLEAN NOT NULL DEFAULT FALSE,
+            deleted_at TIMESTAMP,
+
+            entry_id VARCHAR NOT NULL,
+            session_id VARCHAR NOT NULL,
+            session_key VARCHAR,
+            date_key INTEGER,
+            time_key INTEGER,
+            timestamp TIMESTAMP,
+            attachment_type VARCHAR NOT NULL,
+            attachment_json VARCHAR
+        )
+        """
+    )
+
+    # Grain: one row per progress entry emitted during tool/hook execution.
+    conn.execute(
+        """
+        CREATE OR REPLACE TABLE fact_progress_events (
+            created_at TIMESTAMP NOT NULL DEFAULT current_timestamp,
+            created_by_version_key VARCHAR NOT NULL,
+            last_updated_at TIMESTAMP NOT NULL DEFAULT current_timestamp,
+            last_updated_by_version_key VARCHAR NOT NULL,
+            etl_run_id VARCHAR NOT NULL,
+            record_source VARCHAR NOT NULL,
+            hash_diff VARCHAR NOT NULL,
+            is_deleted BOOLEAN NOT NULL DEFAULT FALSE,
+            deleted_at TIMESTAMP,
+
+            entry_id VARCHAR NOT NULL,
+            session_id VARCHAR NOT NULL,
+            session_key VARCHAR,
+            date_key INTEGER,
+            time_key INTEGER,
+            timestamp TIMESTAMP,
+            data_type VARCHAR NOT NULL,
+            tool_use_id VARCHAR,
+            parent_tool_use_id VARCHAR,
+            hook_name VARCHAR,
+            hook_event VARCHAR,
+            agent_id VARCHAR,
+            data_json VARCHAR
+        )
+        """
+    )
+
+    # Grain: one row per system entry. Discriminated by `subtype`. Typed
+    # columns for the 7 documented subtypes plus a JSON catch-all.
+    conn.execute(
+        """
+        CREATE OR REPLACE TABLE fact_system_events (
+            created_at TIMESTAMP NOT NULL DEFAULT current_timestamp,
+            created_by_version_key VARCHAR NOT NULL,
+            last_updated_at TIMESTAMP NOT NULL DEFAULT current_timestamp,
+            last_updated_by_version_key VARCHAR NOT NULL,
+            etl_run_id VARCHAR NOT NULL,
+            record_source VARCHAR NOT NULL,
+            hash_diff VARCHAR NOT NULL,
+            is_deleted BOOLEAN NOT NULL DEFAULT FALSE,
+            deleted_at TIMESTAMP,
+
+            entry_id VARCHAR NOT NULL,
+            session_id VARCHAR NOT NULL,
+            session_key VARCHAR,
+            date_key INTEGER,
+            time_key INTEGER,
+            timestamp TIMESTAMP,
+            subtype VARCHAR NOT NULL,
+            level VARCHAR,
+
+            -- turn_duration
+            duration_ms INTEGER,
+            message_count INTEGER,
+            -- stop_hook_summary
+            hook_count INTEGER,
+            prevented_continuation BOOLEAN,
+            stop_reason VARCHAR,
+            has_output BOOLEAN,
+            -- api_error
+            error_status INTEGER,
+            error_type VARCHAR,
+            retry_in_ms FLOAT,
+            retry_attempt INTEGER,
+            max_retries INTEGER,
+            -- compact_boundary
+            compact_trigger VARCHAR,
+            compact_pre_tokens INTEGER,
+            logical_parent_uuid VARCHAR,
+            -- local_command / away_summary / bridge_status (text content)
+            content VARCHAR,
+            -- bridge_status
+            bridge_url VARCHAR,
+
+            payload_json VARCHAR
+        )
+        """
+    )
+
+    # Grain: one row per meta entry (custom-title, agent-name, permission-mode,
+    # last-prompt) AT THE MOMENT IT OCCURRED. Time-series, NOT last-value-only.
+    conn.execute(
+        """
+        CREATE OR REPLACE TABLE fact_meta_events (
+            created_at TIMESTAMP NOT NULL DEFAULT current_timestamp,
+            created_by_version_key VARCHAR NOT NULL,
+            last_updated_at TIMESTAMP NOT NULL DEFAULT current_timestamp,
+            last_updated_by_version_key VARCHAR NOT NULL,
+            etl_run_id VARCHAR NOT NULL,
+            record_source VARCHAR NOT NULL,
+            hash_diff VARCHAR NOT NULL,
+            is_deleted BOOLEAN NOT NULL DEFAULT FALSE,
+            deleted_at TIMESTAMP,
+
+            entry_id VARCHAR NOT NULL,
+            session_id VARCHAR NOT NULL,
+            session_key VARCHAR,
+            date_key INTEGER,
+            time_key INTEGER,
+            timestamp TIMESTAMP,
+            meta_type VARCHAR NOT NULL,
+            meta_value VARCHAR
+        )
+        """
+    )
+
+    # Grain: one row per file-history-snapshot entry; carries trackedFileBackups
+    # JSON for restore-point analysis.
+    conn.execute(
+        """
+        CREATE OR REPLACE TABLE fact_file_history_snapshots (
+            created_at TIMESTAMP NOT NULL DEFAULT current_timestamp,
+            created_by_version_key VARCHAR NOT NULL,
+            last_updated_at TIMESTAMP NOT NULL DEFAULT current_timestamp,
+            last_updated_by_version_key VARCHAR NOT NULL,
+            etl_run_id VARCHAR NOT NULL,
+            record_source VARCHAR NOT NULL,
+            hash_diff VARCHAR NOT NULL,
+            is_deleted BOOLEAN NOT NULL DEFAULT FALSE,
+            deleted_at TIMESTAMP,
+
+            entry_id VARCHAR NOT NULL,
+            session_id VARCHAR NOT NULL,
+            session_key VARCHAR,
+            date_key INTEGER,
+            time_key INTEGER,
+            timestamp TIMESTAMP,
+            message_id_link VARCHAR,
+            is_snapshot_update BOOLEAN,
+            snapshot_json VARCHAR
+        )
+        """
+    )
+
+    # Grain: one row per queue-operation entry (user prompt enqueue/dequeue
+    # mid-turn).
+    conn.execute(
+        """
+        CREATE OR REPLACE TABLE fact_queue_operations (
+            created_at TIMESTAMP NOT NULL DEFAULT current_timestamp,
+            created_by_version_key VARCHAR NOT NULL,
+            last_updated_at TIMESTAMP NOT NULL DEFAULT current_timestamp,
+            last_updated_by_version_key VARCHAR NOT NULL,
+            etl_run_id VARCHAR NOT NULL,
+            record_source VARCHAR NOT NULL,
+            hash_diff VARCHAR NOT NULL,
+            is_deleted BOOLEAN NOT NULL DEFAULT FALSE,
+            deleted_at TIMESTAMP,
+
+            entry_id VARCHAR NOT NULL,
+            session_id VARCHAR NOT NULL,
+            session_key VARCHAR,
+            date_key INTEGER,
+            time_key INTEGER,
+            timestamp TIMESTAMP,
+            operation VARCHAR,
+            content VARCHAR
+        )
+        """
+    )
+
+    # Grain: one row per pr-link entry binding a session to a GitHub PR.
+    conn.execute(
+        """
+        CREATE OR REPLACE TABLE fact_pr_links (
+            created_at TIMESTAMP NOT NULL DEFAULT current_timestamp,
+            created_by_version_key VARCHAR NOT NULL,
+            last_updated_at TIMESTAMP NOT NULL DEFAULT current_timestamp,
+            last_updated_by_version_key VARCHAR NOT NULL,
+            etl_run_id VARCHAR NOT NULL,
+            record_source VARCHAR NOT NULL,
+            hash_diff VARCHAR NOT NULL,
+            is_deleted BOOLEAN NOT NULL DEFAULT FALSE,
+            deleted_at TIMESTAMP,
+
+            entry_id VARCHAR NOT NULL,
+            session_id VARCHAR NOT NULL,
+            session_key VARCHAR,
+            date_key INTEGER,
+            time_key INTEGER,
+            timestamp TIMESTAMP,
+            pr_number INTEGER,
+            pr_url VARCHAR,
+            pr_repository VARCHAR
+        )
+        """
+    )
+
     # Grain: one row per tool_result event -- combines the tool_result content
     # block (truncated text) with the entry-level toolUseResult structured
     # payload (typed per-tool columns + JSON catch-all).
