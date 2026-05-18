@@ -11,7 +11,6 @@ import pytest
 from ccutils.sanitize import PathSanitizer
 from ccutils.schemas.simple import create_duckdb_schema, export_session_to_duckdb
 from ccutils.schemas.simple.etl import _extract_session_data
-from ccutils.schemas.star import create_star_schema, run_star_schema_etl
 
 
 class TestPathSanitizer:
@@ -399,83 +398,3 @@ class TestExtractSessionDataPrivate:
                 assert "/home/fred" not in tc["output_text"]
 
 
-class TestStarEtlPrivate:
-    """Integration: private=True sanitizes paths in star schema DuckDB export."""
-
-    def test_cwd_sanitized_in_dim_session(self, private_session_file):
-        conn = create_star_schema(":memory:")
-        run_star_schema_etl(conn, private_session_file, "myproject", private=True)
-        row = conn.execute("SELECT cwd FROM dim_session").fetchone()
-        assert row[0] == "."
-        conn.close()
-
-    def test_project_path_sanitized_in_dim_project(self, private_session_file):
-        conn = create_star_schema(":memory:")
-        run_star_schema_etl(conn, private_session_file, "myproject", private=True)
-        row = conn.execute("SELECT project_path FROM dim_project").fetchone()
-        assert "/home/fred" not in row[0]
-        conn.close()
-
-    def test_tool_calls_file_path_sanitized(self, private_session_file):
-        conn = create_star_schema(":memory:")
-        run_star_schema_etl(conn, private_session_file, "myproject", private=True)
-        rows = conn.execute(
-            "SELECT file_path FROM fact_tool_calls WHERE file_path IS NOT NULL"
-        ).fetchall()
-        for row in rows:
-            assert "/home/fred" not in row[0]
-            assert "src/main.py" in row[0]
-        conn.close()
-
-    def test_tool_calls_command_sanitized(self, private_session_file):
-        conn = create_star_schema(":memory:")
-        run_star_schema_etl(conn, private_session_file, "myproject", private=True)
-        rows = conn.execute(
-            "SELECT command FROM fact_tool_calls WHERE command IS NOT NULL"
-        ).fetchall()
-        for row in rows:
-            assert "/home/fred" not in row[0]
-        conn.close()
-
-    def test_tool_calls_input_json_sanitized(self, private_session_file):
-        conn = create_star_schema(":memory:")
-        run_star_schema_etl(conn, private_session_file, "myproject", private=True)
-        rows = conn.execute("SELECT input_json FROM fact_tool_calls").fetchall()
-        for row in rows:
-            assert "/home/fred" not in row[0]
-        conn.close()
-
-    def test_tool_calls_output_text_sanitized(self, private_session_file):
-        conn = create_star_schema(":memory:")
-        run_star_schema_etl(conn, private_session_file, "myproject", private=True)
-        rows = conn.execute("SELECT output_text FROM fact_tool_calls").fetchall()
-        for row in rows:
-            if row[0]:
-                assert "/home/fred" not in row[0]
-        conn.close()
-
-    def test_dim_file_paths_sanitized(self, private_session_file):
-        conn = create_star_schema(":memory:")
-        run_star_schema_etl(conn, private_session_file, "myproject", private=True)
-        rows = conn.execute("SELECT file_path, directory_path FROM dim_file").fetchall()
-        for row in rows:
-            assert "/home/fred" not in row[0]
-            assert "/home/fred" not in row[1]
-        conn.close()
-
-    def test_tool_input_params_sanitized(self, private_session_file):
-        conn = create_star_schema(":memory:")
-        run_star_schema_etl(conn, private_session_file, "myproject", private=True)
-        rows = conn.execute(
-            "SELECT param_value_text FROM fact_tool_input_params WHERE param_value_text IS NOT NULL"
-        ).fetchall()
-        for row in rows:
-            assert "/home/fred" not in row[0]
-        conn.close()
-
-    def test_private_false_keeps_paths(self, private_session_file):
-        conn = create_star_schema(":memory:")
-        run_star_schema_etl(conn, private_session_file, "myproject", private=False)
-        row = conn.execute("SELECT cwd FROM dim_session").fetchone()
-        assert row[0] == "/home/fred/workspace/myproject"
-        conn.close()

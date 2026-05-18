@@ -2,7 +2,8 @@
 
 This package provides two schemas:
 - simple: 4 tables (sessions, messages, tool_calls, thinking)
-- star: 28 tables + 14 views for dimensional analytics
+- star: v0.15 dimensional schema; per-session ETL lives in
+  ``ccutils.etl.orchestrator.run_v15_etl``
 
 Use resolve_schema_format() to handle CLI schema/format combinations.
 """
@@ -16,7 +17,6 @@ from .simple import (
 
 from .star import (
     create_star_schema,
-    run_star_schema_etl,
     export_star_schema_to_json,
     generate_dimension_key,
     get_tool_category,
@@ -48,7 +48,6 @@ __all__ = [
     "_extract_session_data",
     # Star schema
     "create_star_schema",
-    "run_star_schema_etl",
     "export_star_schema_to_json",
     "generate_dimension_key",
     "get_tool_category",

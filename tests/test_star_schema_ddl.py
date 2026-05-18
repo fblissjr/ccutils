@@ -133,15 +133,17 @@ class TestCreateStarSchema:
         assert result is not None
         conn.close()
 
-    def test_creates_fact_tool_calls_table(self, output_dir):
-        """Test that fact_tool_calls table is created."""
+    def test_creates_fact_tool_uses_and_results_tables(self, output_dir):
+        """v0.15 replaces legacy fact_tool_calls with fact_tool_uses + fact_tool_results."""
         db_path = output_dir / "test.duckdb"
         conn = create_star_schema(db_path)
 
-        result = conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='table' AND name='fact_tool_calls'"
-        ).fetchone()
-        assert result is not None
+        for tbl in ("fact_tool_uses", "fact_tool_results"):
+            result = conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name=?",
+                [tbl],
+            ).fetchone()
+            assert result is not None, f"missing {tbl}"
         conn.close()
 
     def test_creates_fact_session_summary_table(self, output_dir):
@@ -323,32 +325,28 @@ class TestFactMessagesTable:
         conn.close()
 
 
-class TestFactToolCallsTable:
-    """Tests for fact_tool_calls table."""
+class TestFactToolUsesAndResultsTables:
+    """v0.15 split fact_tool_calls into fact_tool_uses + fact_tool_results."""
 
-    def test_fact_tool_calls_has_dimension_keys(self, output_dir):
-        """Test that fact_tool_calls has foreign keys to dimensions."""
+    def test_fact_tool_uses_has_dimension_keys(self, output_dir):
         db_path = output_dir / "test.duckdb"
         conn = create_star_schema(db_path)
 
-        columns = conn.execute("DESCRIBE fact_tool_calls").fetchall()
-        column_names = [c[0] for c in columns]
-        assert "session_key" in column_names
-        assert "tool_key" in column_names
-        assert "date_key" in column_names
-        assert "time_key" in column_names
+        columns = [c[0] for c in conn.execute("DESCRIBE fact_tool_uses").fetchall()]
+        for col in ("session_key", "tool_key", "date_key", "time_key"):
+            assert col in columns
         conn.close()
 
-    def test_fact_tool_calls_has_measures(self, output_dir):
-        """Test that fact_tool_calls has measure columns."""
+    def test_fact_tool_results_has_is_error_tri_state(self, output_dir):
+        """R16: is_error is nullable BOOLEAN so we can preserve missing-vs-false."""
         db_path = output_dir / "test.duckdb"
         conn = create_star_schema(db_path)
 
-        columns = conn.execute("DESCRIBE fact_tool_calls").fetchall()
-        column_names = [c[0] for c in columns]
-        assert "input_char_count" in column_names
-        assert "output_char_count" in column_names
-        assert "is_error" in column_names
+        info = conn.execute("DESCRIBE fact_tool_results").fetchall()
+        is_error_row = [r for r in info if r[0] == "is_error"]
+        assert is_error_row, "fact_tool_results missing is_error"
+        # DuckDB DESCRIBE row: (column_name, column_type, null, key, default, extra)
+        assert is_error_row[0][2] == "YES", "is_error must be nullable for tri-state"
         conn.close()
 
 
@@ -378,14 +376,18 @@ class TestNoHardConstraints:
         db_path = output_dir / "test.duckdb"
         conn = create_star_schema(db_path)
 
-        # Should be able to insert with non-existent dimension key
+        # Should be able to insert with non-existent dimension keys
         conn.execute(
             """INSERT INTO fact_messages
-               (message_id, session_key, project_key, message_type, model_key,
-                date_key, time_key, timestamp, content_length, content_block_count,
-                has_tool_use, has_tool_result, has_thinking)
-               VALUES ('test-001', 'nonexistent', 'nonexistent', 'user', 'nonexistent',
-                       99999999, 9999, '2025-01-01', 100, 1, false, false, false)"""
+               (created_by_version_key, last_updated_by_version_key, etl_run_id,
+                record_source, hash_diff,
+                entry_id, message_id, session_id,
+                session_key, project_key, model_key, message_type, timestamp)
+               VALUES ('v', 'v', 'run',
+                       'claude_code_jsonl', 'h',
+                       'e-001', 'test-001', 'sess-001',
+                       'nonexistent', 'nonexistent', 'nonexistent', 'user',
+                       '2025-01-01 00:00:00')"""
         )
         result = conn.execute(
             "SELECT COUNT(*) FROM fact_messages WHERE message_id = 'test-001'"
@@ -645,77 +647,6 @@ class TestDimSessionNewColumns:
         conn.close()
 
 
-class TestFactSessionSummaryNewColumns:
-    """Tests for new token/duration columns on fact_session_summary."""
-
-    def test_has_actual_input_tokens(self, output_dir):
-        db_path = output_dir / "test.duckdb"
-        conn = create_star_schema(db_path)
-        columns = [c[0] for c in conn.execute("DESCRIBE fact_session_summary").fetchall()]
-        assert "actual_input_tokens" in columns
-        conn.close()
-
-    def test_has_actual_output_tokens(self, output_dir):
-        db_path = output_dir / "test.duckdb"
-        conn = create_star_schema(db_path)
-        columns = [c[0] for c in conn.execute("DESCRIBE fact_session_summary").fetchall()]
-        assert "actual_output_tokens" in columns
-        conn.close()
-
-    def test_has_cache_creation_tokens(self, output_dir):
-        db_path = output_dir / "test.duckdb"
-        conn = create_star_schema(db_path)
-        columns = [c[0] for c in conn.execute("DESCRIBE fact_session_summary").fetchall()]
-        assert "cache_creation_tokens" in columns
-        conn.close()
-
-    def test_has_cache_read_tokens(self, output_dir):
-        db_path = output_dir / "test.duckdb"
-        conn = create_star_schema(db_path)
-        columns = [c[0] for c in conn.execute("DESCRIBE fact_session_summary").fetchall()]
-        assert "cache_read_tokens" in columns
-        conn.close()
-
-    def test_has_total_turn_duration_ms(self, output_dir):
-        db_path = output_dir / "test.duckdb"
-        conn = create_star_schema(db_path)
-        columns = [c[0] for c in conn.execute("DESCRIBE fact_session_summary").fetchall()]
-        assert "total_turn_duration_ms" in columns
-        conn.close()
-
-    def test_has_turn_count(self, output_dir):
-        db_path = output_dir / "test.duckdb"
-        conn = create_star_schema(db_path)
-        columns = [c[0] for c in conn.execute("DESCRIBE fact_session_summary").fetchall()]
-        assert "turn_count" in columns
-        conn.close()
-
-
-class TestFactMessagesNewColumns:
-    """Tests for actual token columns on fact_messages."""
-
-    def test_has_actual_input_tokens(self, output_dir):
-        db_path = output_dir / "test.duckdb"
-        conn = create_star_schema(db_path)
-        columns = [c[0] for c in conn.execute("DESCRIBE fact_messages").fetchall()]
-        assert "actual_input_tokens" in columns
-        conn.close()
-
-    def test_has_actual_output_tokens(self, output_dir):
-        db_path = output_dir / "test.duckdb"
-        conn = create_star_schema(db_path)
-        columns = [c[0] for c in conn.execute("DESCRIBE fact_messages").fetchall()]
-        assert "actual_output_tokens" in columns
-        conn.close()
-
-    def test_has_cache_read_tokens(self, output_dir):
-        db_path = output_dir / "test.duckdb"
-        conn = create_star_schema(db_path)
-        columns = [c[0] for c in conn.execute("DESCRIBE fact_messages").fetchall()]
-        assert "cache_read_tokens" in columns
-        conn.close()
-
-
 class TestNewFactTables:
     """Tests for new fact tables (token_usage, turn_durations, diagnostics, stop_events)."""
 
@@ -732,10 +663,13 @@ class TestNewFactTables:
         db_path = output_dir / "test.duckdb"
         conn = create_star_schema(db_path)
         columns = [c[0] for c in conn.execute("DESCRIBE fact_token_usage").fetchall()]
+        # v0.15 R11: cache_creation split into 5m / 1h pricing tiers.
         for col in [
-            "usage_id", "session_key", "date_key", "time_key", "model_key",
-            "input_tokens", "output_tokens", "cache_creation_input_tokens",
-            "cache_read_input_tokens", "service_tier", "speed", "timestamp",
+            "session_key", "session_id", "date_key", "time_key", "model_key",
+            "input_tokens", "output_tokens",
+            "cache_creation_5m_tokens", "cache_creation_1h_tokens",
+            "cache_read_tokens", "total_uncached_equivalent_tokens",
+            "service_tier", "timestamp",
         ]:
             assert col in columns, f"Missing column: {col}"
         conn.close()

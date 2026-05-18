@@ -11,8 +11,22 @@ from pathlib import Path
 
 from ...parsers.jsonl_reader import iter_loglines, iter_session_entries
 from ...sanitize import PathSanitizer
-from ..star.extractors import estimate_tokens
 from .schema import create_duckdb_schema
+
+
+def estimate_tokens(text: str | None) -> int:
+    """Word-count token estimate (1.3x for prose, 1.5x for code-bearing text).
+
+    Used by the simple schema for token columns on sessions that predate
+    Anthropic API-side `usage` data. The v0.15 star schema uses actual
+    token counts from `fact_token_usage` and does not call this.
+    """
+    if not text:
+        return 0
+    words = len(text.split())
+    has_code = "```" in text or "def " in text or "function " in text
+    multiplier = 1.5 if has_code else 1.3
+    return int(words * multiplier)
 
 
 @dataclass

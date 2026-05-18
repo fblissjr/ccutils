@@ -7,16 +7,13 @@ from .schemas.star import (
     get_model_family,
     get_time_of_day,
     get_tool_category,
-    classify_intent,
-    classify_complexity,
-    classify_outcome,
-    classify_domain,
-    classify_error_type,
-    run_star_schema_etl,
     export_star_schema_to_json,
     EmbeddingPipeline,
     TOOL_CATEGORIES,
 )
+
+# v0.15 ETL orchestrator (replaces the legacy run_star_schema_etl)
+from .etl.orchestrator import run_v15_etl
 
 # Session parsing imports (from modular package)
 from .parsers import (
