@@ -45,6 +45,7 @@ from ccutils.etl.entry_type_facts import (
     populate_fact_system_events,
 )
 from ccutils.etl.bridge_session_file import populate_bridge_session_file
+from ccutils.etl.dim_session_chain import populate_dim_session_chain
 from ccutils.etl.dim_session_heuristics import populate_dim_session_heuristics
 from ccutils.etl.fact_agent_delegations import populate_fact_agent_delegations
 from ccutils.etl.fact_diagnostics import populate_fact_diagnostics
@@ -279,6 +280,9 @@ def run_v15_etl(
         # dim_session enrichment runs after all facts so the classifiers
         # see complete metrics + file-extension data
         populate_dim_session_heuristics(conn, run=run)
+        # dim_session_chain groups sessions sharing a slug; rebuilt fresh
+        # each run since adding a new session can re-aggregate the chain
+        populate_dim_session_chain(conn, run=run)
         populate_fact_session_summary(conn, run=run)
 
         run.complete(sessions_inserted=1)

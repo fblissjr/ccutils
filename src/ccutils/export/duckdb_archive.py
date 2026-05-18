@@ -159,7 +159,19 @@ def generate_duckdb_archive(
 
     # Note: v0.15 populates per-session aggregates (fact_session_summary)
     # inside run_v15_etl. Cross-session work (depth chains, agent
-    # delegations, file bridge, history.jsonl) is not yet ported -- Phase D.
+    # delegations, file bridge) lives in run_v15_etl too now.
+    # history.jsonl is a global file (not per-session) so we ingest it
+    # once after the per-session loop, best-effort.
+    if schema_type == "star":
+        try:
+            from ..etl.dim_prompt import import_history
+
+            history_path = Path.home() / ".claude" / "history.jsonl"
+            import_history(conn, history_path)
+        except Exception:
+            # history ingestion is optional -- never fail the archive
+            # build because of it.
+            pass
 
     # Get final row counts
     final_row_count = _count_rows(conn, schema_type)
