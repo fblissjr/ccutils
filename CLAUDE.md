@@ -13,18 +13,39 @@ Always practice TDD: write a failing test, watch it fail, then make it pass.
 
 Commit early and often. Commits should bundle the test, implementation, and documentation changes together.
 
-## v0.15 ETL pipeline (on etl-rethink branch)
+## v0.15 ETL pipeline
 
-- **Entry point for new code:** `run_v15_etl(conn, session_path, *, project_name, parquet_lake_root)` in `src/ccutils/etl/orchestrator.py`. The legacy `run_star_schema_etl` + `finalize_star_schema` pair is dead code on this branch.
+- **Entry point for new code:** `run_v15_etl(conn, session_path, *, project_name, parquet_lake_root)` in `src/ccutils/etl/orchestrator.py`. The legacy `run_star_schema_etl` + `finalize_star_schema` pair was deleted in the cull.
 - **Four tiers:** JSONL (Claude Code writes) → Parquet lake (Tier 1, `src/ccutils/parsers/parquet_writer.py`) → `stg_log_entries` staging (Tier 2) → fact tables (Tier 3).
 - **Every v0.15 fact** follows the lineage convention via `lineage_upsert(conn, *, run, table, inbound_table, natural_key, payload_cols, hash_cols)` in `src/ccutils/etl/upsert.py`. Lineage block on every row: `created_at`, `last_updated_at`, `created_by_version_key`, `last_updated_by_version_key`, `etl_run_id`, `record_source`, `hash_diff`, `is_deleted`, `deleted_at`.
-- **160 legacy test failures are intentional** — they target dropped/renamed columns from the old `fact_messages`/`fact_tool_calls` schema. Not regressions. Will clear when Phase D ports remaining legacy facts.
+
+## lineage_upsert pitfalls
+
+- `payload_cols` MUST NOT include `session_key` — it's added by `extra_keys`; duplicates cause "Multiple assignments to same column".
+- Target fact table MUST have `date_key` + `time_key` columns; lineage_upsert always references them on UPDATE.
+- Aggregate facts without a plain `timestamp` column: pass `timestamp_col="first_operation_timestamp"` (or similar) so date/time keys derive from the right field.
+
+## Populator scoping
+
+- Populators that read from STAGING (`stg_log_entries`) are bounded naturally — only the current session is loaded.
+- Populators that read from PERMANENT FACTS (`fact_tool_uses`, `fact_attachments`, etc.) MUST add `AND session_id IN (SELECT DISTINCT session_id FROM stg_log_entries WHERE session_id IS NOT NULL)` to their inbound CTE — otherwise they rescan the whole warehouse on every per-session ETL call.
+
+## DDL widening checklist
+
+- After changing fact column names: grep `semantic_` views in `schemas/star/schema.py` for the old name and update.
+- After renaming `tool_call_id` → `tool_use_id` (or similar): grep the column-list assertions in `tests/test_star_schema_ddl.py` too.
+
+## Subagent JSONL layout
+
+- Subagent sessions live at `.../projects/<project>/<parent-session-uuid>/subagents/agent-<id>.jsonl` with optional sibling `agent-<id>.meta.json` carrying `agentType` + `description`.
+- `dim_session.agent_id` is the `<id>` suffix; `parent_session_key = md5(parent-session-uuid)`; cross-session linkage on `fact_agent_delegations.agent_session_key` resolves via `dim_session.agent_id` when both sessions are ETL'd.
 
 ## DuckDB JSON extraction idioms
 
 - `json_extract(j, '$.path[*].field')::JSON[]` returns a list — clean for `list_contains` / `list_transform` checks.
 - `LATERAL (SELECT unnest(json_extract(j, '$.path')::JSON[]) AS block)` for when you need the full block AND its index via `generate_subscripts`.
 - `json_type(j, '$.path')` returns `'VARCHAR'`/`'ARRAY'`/`'NULL'` — use it to gate when `$.content` can be either a string or a list.
+- `json_extract_string` unwraps strings cleanly but stringifies arrays/objects into bracket-text — use `CAST(json_extract(j, '$.path') AS VARCHAR)` to get raw JSON for Python `json.loads()`.
 
 ## Pydantic alias gotcha
 
