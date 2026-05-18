@@ -29,12 +29,23 @@ All notable changes to this project will be documented in this file.
 - **Cross-session finalize step.** `finalize_star_schema(conn, history_path=None, ...)` and its six helpers (`_calculate_session_depths`, `_build_session_chains`, `_link_agent_delegations`, `_link_plan_revisions`, `_build_session_file_bridge`, `_rollup_agent_metrics`) are gone. The cross-session work they did (depth chains, agent delegations, file bridge, plan revisions, history.jsonl loading) is pending Phase D port on top of the v0.15 facts.
 - **Legacy tests.** Deleted `test_star_schema_etl.py`, `test_star_schema_advanced.py`, `test_star_schema_analytics.py`, `test_history.py`, `test_heuristics.py`. Surgical edits to `test_sanitize.py`, `test_json_export.py`, `test_star_schema_ddl.py` to remove dependence on the dropped modules. Test suite: 816 pass, 0 fail (was 892 / 160).
 
-#### Not yet (Phase D)
-- Heuristic classifications (intent, complexity, outcome, domain, error_type) on `dim_session` / `fact_errors`.
+#### Phase D ports (landed)
+- **`dim_file` + `fact_file_operations`**: per-tool-call file operations with operation_type classification. Derived from `fact_tool_uses` + `fact_tool_results`. Lineage block on the fact; `dim_file` stays catalog-shaped.
+- **`bridge_session_file`**: M:N aggregate of `fact_file_operations` per (session, file). Read / write / edit counts + timestamp window.
+- **`fact_diagnostics`**: flattens `fact_attachments.attachment_type='diagnostics'`, one row per individual LSP diagnostic.
+- **`fact_plan_revisions`**: ExitPlanMode outcome classification via the structural `fact_tool_results.is_error` signal (R16 tri-state), with full-content approval-signature fallback when `is_error` is NULL. This was the original v0.15 driver.
+- **`fact_agent_delegations`**: Task tool spawns + agent rollup metrics from the R1 structured `toolUseResult` capture. `parent_session_key` set to the delegating session; `agent_session_key` resolves via `dim_session.agent_id` when the subagent is also ETL'd.
+- **`fact_errors`**: one row per `fact_tool_results.is_error=TRUE`, with `error_type` classified via DuckDB regex CASE mirroring `heuristics.classify_error_type`.
+- **`fact_tool_chain_steps`**: per (session, tool_use, step_position) with prev/next tool keys for adjacency-pattern queries. Chain = single assistant message_id.
+- **`dim_session_chain`**: slug-grouped chain aggregate.
+- **`dim_prompt`**: imports Claude Code's prompt history JSONL. Idempotent natural key on (display_text || iso_timestamp).
+- **`dim_session` heuristic enrichment**: intent / complexity / outcome / domain + first_user_message / last_assistant_message. Reads inputs from the v0.15 facts; runs zero-dep classifiers in Python.
+- **`dim_session` subagent linkage**: detects subagent JSONL files by source-path shape, sets `is_agent` / `agent_id` / `parent_session_key`, reads optional `.meta.json` sidecar for `agent_type` / `agent_description`, then walks the chain to set `depth_level`.
+
+#### Not yet
 - DAG-invariant fact tables (`fact_task_decomposition`, `fact_routing_decision`, `fact_execution_step`, `fact_pruning_event`, `fact_synthesis_result`, `fact_verification`).
-- Cross-session: `fact_agent_delegations`, `fact_plan_revisions`, `dim_session_chain`, `bridge_session_file`.
-- Granular extracts: `dim_file`, `fact_content_blocks`, `fact_code_blocks`, `fact_entity_mentions`, `fact_tool_chain_steps`, `fact_diagnostics`.
-- Prompt history: `dim_prompt` from Claude Code's prompt history JSONL.
+- Granular content extracts: `fact_content_blocks`, `fact_code_blocks`, `fact_entity_mentions`.
+- Optional: `fact_session_embeddings`, `fact_tool_input_params`.
 
 ## 0.14.0
 

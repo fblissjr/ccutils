@@ -159,7 +159,9 @@ Every fact carries the v0.15 lineage convention: `created_at`, `last_updated_at`
 - **Entry-type facts:** `fact_attachments`, `fact_progress_events`, `fact_system_events`, `fact_meta_events` (permission-mode time series), `fact_file_history_snapshots`, `fact_queue_operations`, `fact_pr_links`
 - **Lineage:** `fact_etl_runs`, `meta_schema_version`
 
-**Pending Phase D (DDL only -- not yet populated by `run_v15_etl`):** legacy heuristic classifications on `dim_session`, `fact_file_operations`, `fact_errors`, `fact_tool_chain_steps`, `fact_agent_delegations`, `fact_plan_revisions`, `fact_turn_durations`, `fact_diagnostics`, `fact_stop_events`, `bridge_session_file`, `dim_file`, `dim_session_chain`, `dim_prompt`, the granular content/code/entity tables, and the 14 `semantic_*` views. The DDL stays in place to keep harlequin happy and to give Phase D a target; the populators land as the DAG-fact work progresses.
+**Also populated by Phase D ports:** `dim_file`, `bridge_session_file`, `fact_file_operations`, `fact_diagnostics`, `fact_plan_revisions` (with structural outcome classification from `fact_tool_results.is_error`), `fact_agent_delegations` (with cross-session subagent linkage via `dim_session.agent_id`), `fact_errors`, `fact_tool_chain_steps`, `dim_session_chain`, `dim_prompt` (from prompt history JSONL), plus heuristic enrichment on `dim_session` (intent, complexity, outcome, domain, first_user_message, last_assistant_message, is_agent, agent_id, parent_session_key, agent_type, agent_description, depth_level).
+
+**Pending:** the granular content/code/entity extracts (`fact_content_blocks`, `fact_code_blocks`, `fact_entity_mentions`), the legacy stop/turn telemetry that the v0.15 `fact_system_events` already overlaps (`fact_stop_events`, `fact_turn_durations`), and `fact_session_embeddings` / `fact_tool_input_params`. The semantic views are now rebuilt against the v0.15 facts and return rows.
 
 ```sql
 -- Sessions ranked by uncached-equivalent token cost

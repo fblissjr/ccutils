@@ -1,12 +1,12 @@
 <!-- path-privacy: skip-file -- references universal ~/.claude data paths (not personal) -->
 # Star Schema DuckDB Implementation
 
-Last updated: 2026-05-17
+Last updated: 2026-05-18
 
 A dimensional data model for Claude Code transcript analytics. This document has two layers:
 
 1. **[v0.15 (current, on the `etl-rethink` branch)](#v015-current-rebuild)** -- the four-tier ETL, the lineage convention, the fact tables wired by `run_v15_etl`, and the populator order.
-2. **[v0.14 reference (`main`)](#v014-reference-main-branch)** -- the original 28-table/14-view design. The DDL still exists in the v0.15 schema (the `CREATE OR REPLACE TABLE` statements run unconditionally) but most of these tables are NOT populated by the v0.15 orchestrator yet -- Phase D ports them.
+2. **[v0.14 reference (`main`)](#v014-reference-main-branch)** -- the original 28-table/14-view design. Most of these tables are now populated by Phase D ports on top of the v0.15 facts; see the "Phase D ports landed" section below for the current state.
 
 ---
 
@@ -73,7 +73,7 @@ The orchestrator at `src/ccutils/etl/orchestrator.py` runs per session:
 
 1. Write Tier 1 Parquet from the typed parser.
 2. Load Tier 2 staging from Parquet (`load_session_to_staging`).
-3. Upsert minimal dimensions (`dim_session`, `dim_project`, `dim_tool`, `dim_model`). `dim_session` carries `session_key`, `session_id`, `project_key` (FK), `cwd`, `git_branch`, `version`, `slug`, `entrypoint`, `first_timestamp`, `last_timestamp` -- the minimum needed for `semantic_sessions` / `semantic_project_context` / `semantic_cost_analysis` to join correctly. `dim_date` and `dim_time` DDL exists but no v0.15 fact populates them yet; heuristic enrichment (intent / complexity / outcome / domain / agent_type) on `dim_session` is also Phase D.
+3. Upsert minimal dimensions (`dim_session`, `dim_project`, `dim_tool`, `dim_model`). `dim_session` carries `session_key`, `session_id`, `project_key` (FK), `cwd`, `git_branch`, `version`, `slug`, `entrypoint`, `first_timestamp`, `last_timestamp`. Subagent enrichment runs immediately after to set `is_agent` / `agent_id` / `parent_session_key` / `agent_type` / `agent_description` / `depth_level`. Heuristic columns (intent / complexity / outcome / domain) are filled by a post-fact pass at the end of the per-session ETL. `dim_date` and `dim_time` DDL exists but no v0.15 fact populates them yet.
 4. Run 11 fact populators, each via the shared `lineage_upsert` helper in `src/ccutils/etl/upsert.py`:
    - `fact_messages`
    - `fact_tool_uses`
@@ -170,24 +170,33 @@ ORDER BY fer.started_at DESC
 LIMIT 10;
 ```
 
-### What's NOT in v0.15 yet (Phase D and beyond)
+### Phase D ports landed
 
-The DDL for these tables still runs unconditionally in `create_star_schema(conn)` so harlequin sees them and so Phase D has a target, but `run_v15_etl` does NOT populate them yet:
+All of the legacy facts below have been ported on top of the v0.15 facts and are populated by `run_v15_etl`:
 
-- **Heuristic classifications** (intent, complexity, outcome, domain, error_type) on `dim_session` and `fact_errors`.
-- **Granular extracts**: `dim_file` / `bridge_session_file`, `fact_content_blocks`, `fact_code_blocks`, `fact_entity_mentions`.
-- **Legacy telemetry**: `fact_turn_durations`, `fact_diagnostics`, `fact_stop_events` (the v0.15 `fact_system_events` overlaps the latter two).
-- **Cross-session**: `fact_agent_delegations`, `fact_plan_revisions`, `dim_session_chain`.
-- **Prompt history**: `dim_prompt`.
-- **All 14 `semantic_*` views** (most reference dropped legacy columns and currently break on the v0.15 schema).
+- **`dim_file` + `fact_file_operations`**: per-tool-call file operations with operation_type classification. Derived from `fact_tool_uses` + `fact_tool_results`.
+- **`bridge_session_file`**: M:N aggregate per (session, file) with read/write/edit counts.
+- **`fact_diagnostics`**: flattens `fact_attachments` where `attachment_type='diagnostics'`, one row per individual LSP diagnostic.
+- **`fact_plan_revisions`**: ExitPlanMode outcome classification using the structural `fact_tool_results.is_error` signal (R16 tri-state), with full-content approval-signature fallback when `is_error` is NULL. The original v0.15 driver.
+- **`fact_agent_delegations`**: Task tool spawns + agent rollup metrics from the R1 structured `toolUseResult` capture. Cross-session linkage via `dim_session.agent_id`.
+- **`fact_errors`**: one row per `fact_tool_results.is_error=TRUE`, with `error_type` classified via DuckDB regex CASE.
+- **`fact_tool_chain_steps`**: per (session, tool_use, step_position) with prev/next tool keys for adjacency-pattern queries.
+- **`dim_session_chain`**: slug-grouped chain aggregate.
+- **`dim_prompt`**: Claude Code's prompt history JSONL (best-effort load).
+- **`dim_session` enrichment**: intent / complexity / outcome / domain / first_user_message / last_assistant_message via zero-dep classifiers; is_agent / agent_id / parent_session_key / agent_type / agent_description / depth_level via subagent-path detection + .meta.json sidecar reading.
 
-Phase D is the DAG-invariant fact-table work described in `internal/plans/etl_rethink_proposal.md`: six new fact tables (`fact_task_decomposition`, `fact_routing_decision`, `fact_execution_step`, `fact_pruning_event`, `fact_synthesis_result`, `fact_verification`) plus the rebuild of the heuristic/granular/cross-session pieces above on top of the v0.15 facts.
+### What's NOT in v0.15 yet
+
+- **DAG-invariant fact tables** (six new tables described in `internal/plans/etl_rethink_proposal.md`): `fact_task_decomposition`, `fact_routing_decision`, `fact_execution_step`, `fact_pruning_event`, `fact_synthesis_result`, `fact_verification`.
+- **Granular content extracts**: `fact_content_blocks`, `fact_code_blocks`, `fact_entity_mentions`.
+- **Legacy telemetry overlapped by `fact_system_events`**: `fact_turn_durations`, `fact_stop_events`. The v0.15 `fact_system_events` already captures both via its `subtype` discriminator -- the legacy DDL stays for backwards compat but is not populated.
+- **Optional**: `fact_session_embeddings`, `fact_tool_input_params`.
 
 ---
 
 ## v0.14 reference (`main` branch)
 
-The remainder of this document describes the v0.14 schema (28 tables + 14 views) as it ships on `main`. It is preserved as reference and to keep the column-by-column descriptions discoverable. On the `etl-rethink` branch most of these tables exist in the DDL but are not populated -- see the "What's NOT in v0.15 yet" list above.
+The remainder of this document describes the v0.14 schema (28 tables + 14 views) as it ships on `main`. It is preserved as reference and to keep the column-by-column descriptions discoverable. On the `etl-rethink` branch the same tables are populated by the Phase D ports listed above on top of the v0.15 facts; column shapes for `fact_plan_revisions`, `fact_agent_delegations`, `fact_errors`, `fact_tool_chain_steps`, and `fact_file_operations` differ from this reference (lineage block added, `tool_call_id` renamed to `tool_use_id`, etc.).
 
 ## Quick Start (CLI)
 
