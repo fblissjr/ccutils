@@ -65,18 +65,32 @@ def _upsert_minimal_dimensions(conn) -> None:
     surrogate + natural key + minimal envelope is enough. Full enrichment
     is a follow-up.
     """
-    # dim_session: surrogate from staging.session_id
+    # dim_session: surrogate from staging.session_id.
+    #
+    # We derive project_key from source_path's parent dir here so the FK
+    # is set on insert -- semantic_project_context / semantic_sessions
+    # join dim_session -> dim_project, and they go empty without it.
+    # first_timestamp / last_timestamp come straight from the staging
+    # min/max so date-range filtering on dim_session works immediately
+    # (without waiting on Phase D enrichment).
     conn.execute(
         """
-        INSERT INTO dim_session (session_key, session_id, cwd, git_branch, version, slug, entrypoint)
+        INSERT INTO dim_session (
+            session_key, session_id, project_key,
+            cwd, git_branch, version, slug, entrypoint,
+            first_timestamp, last_timestamp
+        )
         SELECT
             md5(sle.session_id) AS session_key,
             sle.session_id,
+            md5(regexp_replace(ANY_VALUE(sle.source_path), '/[^/]+$', '')) AS project_key,
             ANY_VALUE(sle.cwd) AS cwd,
             ANY_VALUE(sle.git_branch) AS git_branch,
             ANY_VALUE(sle.version) AS version,
             ANY_VALUE(sle.slug) AS slug,
-            ANY_VALUE(sle.entrypoint) AS entrypoint
+            ANY_VALUE(sle.entrypoint) AS entrypoint,
+            MIN(TRY_CAST(sle.timestamp AS TIMESTAMP)) AS first_timestamp,
+            MAX(TRY_CAST(sle.timestamp AS TIMESTAMP)) AS last_timestamp
         FROM stg_log_entries sle
         WHERE sle.session_id IS NOT NULL
           AND NOT EXISTS (
@@ -84,6 +98,31 @@ def _upsert_minimal_dimensions(conn) -> None:
               WHERE ds.session_key = md5(sle.session_id)
           )
         GROUP BY sle.session_id
+        """
+    )
+
+    # Idempotent backfill: if a session already exists from a prior ETL run
+    # but lacks project_key / timestamps (legacy minimal-dim path), set them.
+    conn.execute(
+        """
+        UPDATE dim_session ds
+        SET project_key = COALESCE(ds.project_key, sub.project_key),
+            first_timestamp = COALESCE(ds.first_timestamp, sub.first_timestamp),
+            last_timestamp = COALESCE(ds.last_timestamp, sub.last_timestamp)
+        FROM (
+            SELECT
+                md5(sle.session_id) AS session_key,
+                md5(regexp_replace(ANY_VALUE(sle.source_path), '/[^/]+$', '')) AS project_key,
+                MIN(TRY_CAST(sle.timestamp AS TIMESTAMP)) AS first_timestamp,
+                MAX(TRY_CAST(sle.timestamp AS TIMESTAMP)) AS last_timestamp
+            FROM stg_log_entries sle
+            WHERE sle.session_id IS NOT NULL
+            GROUP BY sle.session_id
+        ) sub
+        WHERE ds.session_key = sub.session_key
+          AND (ds.project_key IS NULL
+               OR ds.first_timestamp IS NULL
+               OR ds.last_timestamp IS NULL)
         """
     )
 

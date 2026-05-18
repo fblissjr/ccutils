@@ -149,3 +149,57 @@ class TestRunV15Etl:
             "SELECT status FROM fact_etl_runs ORDER BY started_at DESC LIMIT 1"
         ).fetchone()
         assert row[0] == "failed"
+
+
+class TestDimSessionEnrichment:
+    """dim_session must carry enough context for the semantic_* views to join.
+
+    Phase D will widen this with heuristic columns; this just covers the
+    minimum so semantic_sessions / semantic_project_context / semantic_cost_analysis
+    return rows immediately.
+    """
+
+    def test_dim_session_project_key_wired_to_dim_project(
+        self, conn, basic_session, tmp_path
+    ):
+        run_v15_etl(
+            conn, basic_session, project_name="test-project",
+            parquet_lake_root=tmp_path / "lake",
+        )
+        row = conn.execute(
+            """
+            SELECT ds.session_id, dp.project_name
+            FROM dim_session ds
+            JOIN dim_project dp ON ds.project_key = dp.project_key
+            """
+        ).fetchone()
+        assert row is not None, "dim_session.project_key must FK into dim_project"
+        assert row[0] == "basic-s"
+
+    def test_dim_session_carries_first_and_last_timestamp(
+        self, conn, basic_session, tmp_path
+    ):
+        run_v15_etl(
+            conn, basic_session, project_name="test-project",
+            parquet_lake_root=tmp_path / "lake",
+        )
+        row = conn.execute(
+            "SELECT first_timestamp, last_timestamp FROM dim_session"
+        ).fetchone()
+        assert row[0] is not None, "first_timestamp must be populated"
+        assert row[1] is not None, "last_timestamp must be populated"
+        assert row[0] <= row[1]
+
+    def test_semantic_project_context_returns_rows(
+        self, conn, basic_session, tmp_path
+    ):
+        run_v15_etl(
+            conn, basic_session, project_name="test-project",
+            parquet_lake_root=tmp_path / "lake",
+        )
+        rows = conn.execute(
+            "SELECT session_id, project_name FROM semantic_project_context"
+        ).fetchall()
+        assert len(rows) == 1
+        assert rows[0][0] == "basic-s"
+        assert rows[0][1] is not None

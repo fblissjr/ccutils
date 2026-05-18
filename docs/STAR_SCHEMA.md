@@ -73,7 +73,7 @@ The orchestrator at `src/ccutils/etl/orchestrator.py` runs per session:
 
 1. Write Tier 1 Parquet from the typed parser.
 2. Load Tier 2 staging from Parquet (`load_session_to_staging`).
-3. Upsert minimal dimensions (`dim_session`, `dim_project`, `dim_tool`, `dim_model`). `dim_date` and `dim_time` DDL exists but no v0.15 fact populates them yet; heuristic enrichment (intent / complexity / outcome / domain / agent_type) on `dim_session` is also Phase D.
+3. Upsert minimal dimensions (`dim_session`, `dim_project`, `dim_tool`, `dim_model`). `dim_session` carries `session_key`, `session_id`, `project_key` (FK), `cwd`, `git_branch`, `version`, `slug`, `entrypoint`, `first_timestamp`, `last_timestamp` -- the minimum needed for `semantic_sessions` / `semantic_project_context` / `semantic_cost_analysis` to join correctly. `dim_date` and `dim_time` DDL exists but no v0.15 fact populates them yet; heuristic enrichment (intent / complexity / outcome / domain / agent_type) on `dim_session` is also Phase D.
 4. Run 11 fact populators, each via the shared `lineage_upsert` helper in `src/ccutils/etl/upsert.py`:
    - `fact_messages`
    - `fact_tool_uses`
