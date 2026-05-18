@@ -56,6 +56,7 @@ from ccutils.etl.fact_file_operations import (
 )
 from ccutils.etl.fact_plan_revisions import populate_fact_plan_revisions
 from ccutils.etl.fact_tool_chain_steps import populate_fact_tool_chain_steps
+from ccutils.etl.subagent_enrichment import populate_subagent_dim_session
 from ccutils.etl.fact_messages import populate_fact_messages
 from ccutils.etl.fact_session_summary import populate_fact_session_summary
 from ccutils.etl.fact_token_usage import populate_fact_token_usage
@@ -246,6 +247,10 @@ def run_v15_etl(
 
         # Stub dimensions so fact FKs resolve
         _upsert_minimal_dimensions(conn)
+        # Subagent enrichment looks at the JSONL source_path + sidecar
+        # .meta.json to set is_agent / agent_id / parent_session_key /
+        # agent_type / agent_description on dim_session.
+        populate_subagent_dim_session(conn, run=run)
 
         # Populate every v0.15 fact in order. fact_session_summary MUST be
         # last -- it aggregates over the others.

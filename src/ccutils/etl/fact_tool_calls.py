@@ -43,6 +43,7 @@ _RESULTS_PAYLOAD_COLS = [
     "webfetch_http_code", "webfetch_bytes",
     "agent_status", "agent_total_duration_ms", "agent_total_tokens",
     "agent_total_tool_use_count", "agent_was_interrupted", "agent_subagent_type",
+    "agent_id",
 ]
 _RESULTS_HASH_COLS = [
     "tool_name", "timestamp", "is_error",
@@ -56,6 +57,7 @@ _RESULTS_HASH_COLS = [
     "webfetch_http_code", "webfetch_bytes",
     "agent_status", "agent_total_duration_ms", "agent_total_tokens",
     "agent_total_tool_use_count", "agent_was_interrupted", "agent_subagent_type",
+    "agent_id",
 ]
 
 
@@ -276,7 +278,12 @@ SELECT
         AS agent_was_interrupted,
     CASE WHEN tool_name IN ('Agent', 'Task', 'TaskCreate')
          THEN json_extract_string(tool_use_result_json, '$.agentType') END
-        AS agent_subagent_type
+        AS agent_subagent_type,
+    -- agent_id from the toolUseResult is the link to dim_session.agent_id
+    -- for the subagent that ran this delegation.
+    CASE WHEN tool_name IN ('Agent', 'Task', 'TaskCreate')
+         THEN json_extract_string(tool_use_result_json, '$.agentId') END
+        AS agent_id
 FROM with_tool_name
 """
 

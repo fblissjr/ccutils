@@ -640,7 +640,8 @@ def create_star_schema(db_path):
             agent_total_tokens INTEGER,
             agent_total_tool_use_count INTEGER,
             agent_was_interrupted BOOLEAN,
-            agent_subagent_type VARCHAR
+            agent_subagent_type VARCHAR,
+            agent_id VARCHAR
         )
     """
     )

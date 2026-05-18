@@ -55,9 +55,16 @@ def populate_fact_agent_delegations(conn, *, run: EtlRun) -> None:
             md5(ftu.session_id || '|' || ftu.tool_use_id) AS delegation_key,
             ftu.tool_use_id,
             ftu.session_id,
-            -- Cross-session linkage deferred to a follow-up port.
-            CAST(NULL AS VARCHAR) AS parent_session_key,
-            CAST(NULL AS VARCHAR) AS agent_session_key,
+            -- The PARENT is the session that's doing the delegating;
+            -- session_key on this fact already points there. We surface
+            -- it under the parent_session_key column as well for query
+            -- ergonomics on subagent rollup analysis.
+            md5(ftu.session_id) AS parent_session_key,
+            -- agent_session_key resolves via dim_session.agent_id (which
+            -- gets set during subagent_dim_session enrichment).
+            (SELECT ds.session_key FROM dim_session ds
+             WHERE ds.is_agent = TRUE AND ds.agent_id = ftr.agent_id
+             LIMIT 1) AS agent_session_key,
             ftu.timestamp,
             ftu.timestamp AS delegation_timestamp,
             ftr.timestamp AS completion_timestamp,

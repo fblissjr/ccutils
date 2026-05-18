@@ -194,21 +194,36 @@ class TestFactAgentDelegations:
         # Delegation at 10:00:01, completion at 10:01:00 -> 59s
         assert row[0] == 59.0
 
-    def test_agent_session_key_null_for_now(
+    def test_parent_session_key_set_to_delegating_session(
         self, conn, agent_session, tmp_path
     ):
-        """Cross-session subagent linkage is a separate Phase D follow-up;
-        for now both agent_session_key and parent_session_key are NULL."""
+        """parent_session_key points at the session that did the
+        delegating -- same as session_key on this fact."""
         _populate(conn, agent_session, tmp_path)
         rows = conn.execute(
             """
-            SELECT agent_session_key, parent_session_key
+            SELECT parent_session_key, session_key
             FROM fact_agent_delegations
             """
         ).fetchall()
-        for row in rows:
-            assert row[0] is None
-            assert row[1] is None
+        assert rows  # smoke
+        for parent_sk, session_sk in rows:
+            assert parent_sk == session_sk
+            assert parent_sk is not None
+
+    def test_agent_session_key_null_when_no_subagent_loaded(
+        self, conn, agent_session, tmp_path
+    ):
+        """In this fixture only the parent session is loaded -- no
+        corresponding subagent JSONL has been ingested -- so the
+        dim_session lookup by agent_id finds nothing and
+        agent_session_key stays NULL."""
+        _populate(conn, agent_session, tmp_path)
+        rows = conn.execute(
+            "SELECT agent_session_key FROM fact_agent_delegations"
+        ).fetchall()
+        for (agent_sk,) in rows:
+            assert agent_sk is None
 
     def test_lineage_block_populated(self, conn, agent_session, tmp_path):
         _populate(conn, agent_session, tmp_path)
@@ -236,6 +251,78 @@ class TestFactAgentDelegations:
             "SELECT last_updated_at FROM fact_agent_delegations ORDER BY tool_use_id"
         ).fetchall()
         assert first == second
+
+    def test_agent_session_key_resolves_when_subagent_also_loaded(
+        self, conn, tmp_path
+    ):
+        """When both the parent session (with the Task tool_use) AND the
+        subagent JSONL (which gets is_agent=TRUE + agent_id set) are
+        loaded, agent_session_key on fact_agent_delegations resolves
+        via dim_session.agent_id."""
+        from ccutils.etl.orchestrator import run_v15_etl
+
+        # Parent session with one Task whose toolUseResult carries agentId
+        parent_jsonl = tmp_path / "parent.jsonl"
+        parent_lines = [
+            {"type": "user", "uuid": "u1", "sessionId": "parent-s",
+             "timestamp": "2026-04-19T10:00:00Z", "cwd": "/p",
+             "gitBranch": "main", "version": "2.1.114",
+             "message": {"role": "user", "content": "delegate"}},
+            {"type": "assistant", "uuid": "a1", "parentUuid": "u1",
+             "sessionId": "parent-s", "timestamp": "2026-04-19T10:00:01Z",
+             "requestId": "r1",
+             "message": {"role": "assistant", "model": "claude-opus-4-7",
+                         "content": [{"type": "tool_use", "id": "tu_link",
+                                      "name": "Task",
+                                      "input": {"description": "go",
+                                                "subagent_type": "Explore",
+                                                "prompt": "explore"}}]}},
+            {"type": "user", "uuid": "u2", "parentUuid": "a1",
+             "sessionId": "parent-s", "timestamp": "2026-04-19T10:00:30Z",
+             "message": {"role": "user", "content": [
+                 {"type": "tool_result", "tool_use_id": "tu_link",
+                  "content": [{"type": "text", "text": "done"}]},
+             ]},
+             "toolUseResult": {
+                 "agentId": "subagent-xyz", "agentType": "Explore",
+                 "status": "completed",
+                 "totalDurationMs": 1000, "totalTokens": 100,
+                 "totalToolUseCount": 1,
+             }},
+        ]
+        parent_jsonl.write_text("\n".join(json.dumps(d) for d in parent_lines))
+
+        # Subagent JSONL on disk at the canonical layout
+        sub_dir = (
+            tmp_path / "projects" / "-Users-dev-myrepo"
+            / "parent-s" / "subagents"
+        )
+        sub_dir.mkdir(parents=True, exist_ok=True)
+        sub_jsonl = sub_dir / "agent-subagent-xyz.jsonl"
+        sub_lines = [
+            {"type": "user", "uuid": "us1",
+             "sessionId": "agent-subagent-xyz",
+             "timestamp": "2026-04-19T10:00:05Z",
+             "cwd": "/p", "gitBranch": "main", "version": "2.1.114",
+             "message": {"role": "user", "content": "explore"}},
+        ]
+        sub_jsonl.write_text("\n".join(json.dumps(d) for d in sub_lines))
+
+        run_v15_etl(conn, sub_jsonl, project_name="test",
+                    parquet_lake_root=tmp_path / "lake")
+        run_v15_etl(conn, parent_jsonl, project_name="test",
+                    parquet_lake_root=tmp_path / "lake")
+
+        row = conn.execute(
+            """
+            SELECT fad.agent_session_key, ds.session_id AS agent_session_id
+            FROM fact_agent_delegations fad
+            JOIN dim_session ds ON fad.agent_session_key = ds.session_key
+            WHERE fad.tool_use_id = 'tu_link'
+            """
+        ).fetchone()
+        assert row is not None, "agent_session_key did not resolve"
+        assert row[1] == "agent-subagent-xyz"
 
     def test_non_task_tool_uses_ignored(self, conn, tmp_path):
         """Only Task / Agent tool uses become delegations."""
