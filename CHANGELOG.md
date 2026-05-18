@@ -3,13 +3,13 @@
 
 All notable changes to this project will be documented in this file.
 
-## Unreleased -- in progress on the `etl-rethink` branch
+## 0.15.0
 
-### 0.15.0 highlights so far
+A reshape of the ETL and most of the star schema, driven by a structural-signal bug in v0.14's plan-revision outcome classification. v0.15 widens what gets captured from Claude Code JSONL (all 12 entry types, 23 attachment subtypes, 6 progress variants, 7 system subtypes), corrects cache-token arithmetic for the 5m/1h pricing tiers, splits `fact_tool_calls` into `fact_tool_uses` + `fact_tool_results` with structured per-tool `toolUseResult` payloads, and adds a lineage block to every fact so re-ETL on unchanged source is a verifiable no-op.
 
 **Re-ETL recommended.** v0.15 reshapes most of the star schema and renames several columns. Existing v0.14 databases will not read cleanly against the new code -- delete `archive.duckdb` and re-run `ccutils all --format duckdb-star` to rebuild on the new pipeline.
 
-#### Added
+### Added
 - **Four-tier ETL pipeline.** New `run_v15_etl(conn, session_path, *, project_name, parquet_lake_root)` in `src/ccutils/etl/orchestrator.py` is the single per-session entry point. Tiers: raw JSONL -> Parquet lake (Tier 1, `parquet_lake/projects/<project>/<session>/log_entries.parquet`) -> DuckDB staging (`stg_log_entries`) -> fact / dim tables.
 - **Pydantic discriminated-union parser.** `src/ccutils/parsers/models.py` covers all 12 Claude Code 2.x entry types. `extra="allow"` on every model so undocumented fields land in Parquet immediately.
 - **Lineage convention on every fact.** `created_at`, `last_updated_at`, `created_by_version_key`, `last_updated_by_version_key`, `etl_run_id`, `record_source`, `hash_diff`, `is_deleted`, `deleted_at`. New `dim_etl_version` and `fact_etl_runs` track every batch; `meta_schema_version` tracks DDL migrations.
@@ -23,13 +23,6 @@ All notable changes to this project will be documented in this file.
 - **fact_tool_uses + fact_tool_results.** Replaces legacy `fact_tool_calls`. Both tables carry `entry_id` / `message_id` / `session_id` / `tool_use_id` degenerate dims.
 - **HTML rendering of non-message JSONL entries.** Phase 1: parser preserves the 9 non-message entry types (`system`, `attachment`, `permission-mode`, `custom-title`, `agent-name`, `last-prompt`, `file-history-snapshot`, `queue-operation`, `pr-link`, `summary`), renderer dispatches with styled banners for the high-signal ones (permission-mode, queued prompts, turn duration, stop-hook summary, hook duration, diagnostics) and a collapsed `<details>` fallback for everything else so nothing captured is silently invisible. Adds `redacted_thinking`, `server_tool_use`, `web_search_tool_result`, `mcp_tool_use`, `mcp_tool_result`, `code_execution_tool_result` content blocks. Progress entries still skipped inline (too high-volume; captured in `fact_progress_events`).
 - **`dim_session` minimal enrichment on insert.** `project_key` FK, `first_timestamp`, `last_timestamp` are now populated by the orchestrator so `semantic_sessions` / `semantic_project_context` / `semantic_cost_analysis` return rows immediately instead of being empty.
-
-#### Removed
-- **Legacy per-session ETL.** Deleted `schemas/star/etl.py` (1456 lines), `schemas/star/heuristics.py` (163), `schemas/star/extractors.py` (274), `schemas/star/history_etl.py` (87). The public API no longer exports `run_star_schema_etl` or `finalize_star_schema`; both were superseded by the v0.15 orchestrator.
-- **Cross-session finalize step.** `finalize_star_schema(conn, history_path=None, ...)` and its six helpers (`_calculate_session_depths`, `_build_session_chains`, `_link_agent_delegations`, `_link_plan_revisions`, `_build_session_file_bridge`, `_rollup_agent_metrics`) are gone. The cross-session work they did (depth chains, agent delegations, file bridge, plan revisions, history.jsonl loading) is pending Phase D port on top of the v0.15 facts.
-- **Legacy tests.** Deleted `test_star_schema_etl.py`, `test_star_schema_advanced.py`, `test_star_schema_analytics.py`, `test_history.py`, `test_heuristics.py`. Surgical edits to `test_sanitize.py`, `test_json_export.py`, `test_star_schema_ddl.py` to remove dependence on the dropped modules. Test suite: 816 pass, 0 fail (was 892 / 160).
-
-#### Phase D ports (landed)
 - **`dim_file` + `fact_file_operations`**: per-tool-call file operations with operation_type classification. Derived from `fact_tool_uses` + `fact_tool_results`. Lineage block on the fact; `dim_file` stays catalog-shaped.
 - **`bridge_session_file`**: M:N aggregate of `fact_file_operations` per (session, file). Read / write / edit counts + timestamp window.
 - **`fact_diagnostics`**: flattens `fact_attachments.attachment_type='diagnostics'`, one row per individual LSP diagnostic.
@@ -40,9 +33,14 @@ All notable changes to this project will be documented in this file.
 - **`dim_session_chain`**: slug-grouped chain aggregate.
 - **`dim_prompt`**: imports Claude Code's prompt history JSONL. Idempotent natural key on (display_text || iso_timestamp).
 - **`dim_session` heuristic enrichment**: intent / complexity / outcome / domain + first_user_message / last_assistant_message. Reads inputs from the v0.15 facts; runs zero-dep classifiers in Python.
-- **`dim_session` subagent linkage**: detects subagent JSONL files by source-path shape, sets `is_agent` / `agent_id` / `parent_session_key`, reads optional `.meta.json` sidecar for `agent_type` / `agent_description`, then walks the chain to set `depth_level`.
+- **`dim_session` subagent linkage**: detects subagent JSONL files by source-path shape, sets `is_agent` / `agent_id` / `parent_session_key`, reads optional `.meta.json` sidecar for `agent_type` / `agent_description`, then walks the parent chain to set `depth_level`.
 
-#### Not yet
+### Removed
+- **Legacy per-session ETL.** Deleted `schemas/star/etl.py` (1456 lines), `schemas/star/heuristics.py` (163), `schemas/star/extractors.py` (274), `schemas/star/history_etl.py` (87). The public API no longer exports `run_star_schema_etl` or `finalize_star_schema`; both were superseded by the v0.15 orchestrator.
+- **Cross-session finalize step.** `finalize_star_schema(conn, history_path=None, ...)` and its six helpers (`_calculate_session_depths`, `_build_session_chains`, `_link_agent_delegations`, `_link_plan_revisions`, `_build_session_file_bridge`, `_rollup_agent_metrics`) are gone. The cross-session work they did is now done inline by the v0.15 orchestrator and the Phase D populators it dispatches.
+- **Legacy tests.** Deleted `test_star_schema_etl.py`, `test_star_schema_advanced.py`, `test_star_schema_analytics.py`, `test_history.py`, `test_heuristics.py`. Surgical edits to `test_sanitize.py`, `test_json_export.py`, `test_star_schema_ddl.py` to remove dependence on the dropped modules.
+
+### Not yet (deferred to 0.16)
 - DAG-invariant fact tables (`fact_task_decomposition`, `fact_routing_decision`, `fact_execution_step`, `fact_pruning_event`, `fact_synthesis_result`, `fact_verification`).
 - Granular content extracts: `fact_content_blocks`, `fact_code_blocks`, `fact_entity_mentions`.
 - Optional: `fact_session_embeddings`, `fact_tool_input_params`.
