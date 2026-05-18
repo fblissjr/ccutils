@@ -45,6 +45,7 @@ from ccutils.etl.entry_type_facts import (
     populate_fact_system_events,
 )
 from ccutils.etl.bridge_session_file import populate_bridge_session_file
+from ccutils.etl.fact_agent_delegations import populate_fact_agent_delegations
 from ccutils.etl.fact_diagnostics import populate_fact_diagnostics
 from ccutils.etl.fact_file_operations import (
     populate_dim_file,
@@ -265,6 +266,8 @@ def run_v15_etl(
         # fact_plan_revisions classifies ExitPlanMode outcomes from
         # fact_tool_results.is_error (R16 tri-state)
         populate_fact_plan_revisions(conn, run=run)
+        # fact_agent_delegations captures Task tool spawns + agent rollup
+        populate_fact_agent_delegations(conn, run=run)
         populate_fact_session_summary(conn, run=run)
 
         run.complete(sessions_inserted=1)

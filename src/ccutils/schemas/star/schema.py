@@ -883,25 +883,57 @@ def create_star_schema(db_path):
 
     conn.execute(
         """
+        -- Grain: one row per Task tool_use (parent-side agent spawn).
+        -- Joins fact_tool_uses(Task) to fact_tool_results to get the
+        -- agent rollup metrics from the v0.15 toolUseResult capture (R1).
+        --
+        -- agent_session_key / parent_session_key are NULL for now -- the
+        -- cross-session subagent linkage (reading .meta.json sidecars
+        -- to mark dim_session.is_agent / parent_session_key) is a
+        -- separate Phase D follow-up. session_id on this fact = parent
+        -- session that did the delegating.
         CREATE OR REPLACE TABLE fact_agent_delegations (
-            delegation_key VARCHAR,
+            -- Lineage (every v0.15 fact carries this block)
+            created_at TIMESTAMP NOT NULL DEFAULT current_timestamp,
+            created_by_version_key VARCHAR NOT NULL,
+            last_updated_at TIMESTAMP NOT NULL DEFAULT current_timestamp,
+            last_updated_by_version_key VARCHAR NOT NULL,
+            etl_run_id VARCHAR NOT NULL,
+            record_source VARCHAR NOT NULL,
+            hash_diff VARCHAR NOT NULL,
+            is_deleted BOOLEAN NOT NULL DEFAULT FALSE,
+            deleted_at TIMESTAMP,
+
+            -- Degenerate
+            delegation_key VARCHAR NOT NULL,
+            tool_use_id VARCHAR NOT NULL,
+            session_id VARCHAR NOT NULL,
+
+            -- Dimension FKs (session_key = parent session)
+            session_key VARCHAR,
             parent_session_key VARCHAR,
             agent_session_key VARCHAR,
-            task_tool_call_id VARCHAR,
             date_key INTEGER,
             time_key INTEGER,
+
+            -- Task input (from fact_tool_uses.input_json)
             task_description TEXT,
             task_prompt TEXT,
             subagent_type VARCHAR,
-            agent_output TEXT,
-            completion_status VARCHAR,
+
+            -- Agent rollup (from fact_tool_results.agent_* columns)
+            agent_status VARCHAR,
+            agent_total_duration_ms FLOAT,
+            agent_total_tokens INTEGER,
+            agent_total_tool_use_count INTEGER,
+            agent_was_interrupted BOOLEAN,
+            agent_output_text TEXT,
+
+            -- Timing
+            timestamp TIMESTAMP,
             delegation_timestamp TIMESTAMP,
             completion_timestamp TIMESTAMP,
-            match_confidence FLOAT,
-            agent_tool_calls INTEGER,
-            agent_errors INTEGER,
-            agent_duration_seconds INTEGER,
-            agent_estimated_tokens INTEGER
+            seconds_to_completion DOUBLE
         )
     """
     )
@@ -1387,27 +1419,29 @@ def create_star_schema(db_path):
         CREATE OR REPLACE VIEW semantic_agent_delegations AS
         SELECT
             fad.delegation_key,
+            fad.tool_use_id,
             fad.task_description,
             fad.task_prompt,
             fad.subagent_type,
-            fad.completion_status,
-            fad.match_confidence,
+            fad.agent_status,
             dd.full_date AS delegation_date,
             fad.delegation_timestamp,
             fad.completion_timestamp,
+            fad.seconds_to_completion,
             dti.time_of_day,
-            fad.agent_tool_calls,
-            fad.agent_errors,
-            fad.agent_duration_seconds,
-            fad.agent_estimated_tokens,
+            fad.agent_total_tool_use_count,
+            fad.agent_was_interrupted,
+            fad.agent_total_duration_ms,
+            fad.agent_total_tokens,
+            fad.agent_output_text,
             ps.session_id AS parent_session_id,
             ps.cwd AS parent_cwd,
             ags.session_id AS agent_session_id,
             ags.depth_level AS agent_depth_level,
             dp.project_name
         FROM fact_agent_delegations fad
-        JOIN dim_session ps ON fad.parent_session_key = ps.session_key
-        JOIN dim_session ags ON fad.agent_session_key = ags.session_key
+        JOIN dim_session ps ON fad.session_key = ps.session_key
+        LEFT JOIN dim_session ags ON fad.agent_session_key = ags.session_key
         LEFT JOIN dim_project dp ON ps.project_key = dp.project_key
         LEFT JOIN dim_date dd ON fad.date_key = dd.date_key
         LEFT JOIN dim_time dti ON fad.time_key = dti.time_key
