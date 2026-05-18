@@ -44,6 +44,13 @@ from ccutils.etl.entry_type_facts import (
     populate_fact_queue_operations,
     populate_fact_system_events,
 )
+from ccutils.etl.bridge_session_file import populate_bridge_session_file
+from ccutils.etl.fact_diagnostics import populate_fact_diagnostics
+from ccutils.etl.fact_file_operations import (
+    populate_dim_file,
+    populate_fact_file_operations,
+)
+from ccutils.etl.fact_plan_revisions import populate_fact_plan_revisions
 from ccutils.etl.fact_messages import populate_fact_messages
 from ccutils.etl.fact_session_summary import populate_fact_session_summary
 from ccutils.etl.fact_token_usage import populate_fact_token_usage
@@ -248,6 +255,16 @@ def run_v15_etl(
         populate_fact_file_history_snapshots(conn, run=run)
         populate_fact_queue_operations(conn, run=run)
         populate_fact_pr_links(conn, run=run)
+        # dim_file + fact_file_operations depend on fact_tool_uses + fact_tool_results
+        populate_dim_file(conn, run=run)
+        populate_fact_file_operations(conn, run=run)
+        # bridge_session_file aggregates fact_file_operations
+        populate_bridge_session_file(conn, run=run)
+        # fact_diagnostics flattens fact_attachments where type='diagnostics'
+        populate_fact_diagnostics(conn, run=run)
+        # fact_plan_revisions classifies ExitPlanMode outcomes from
+        # fact_tool_results.is_error (R16 tri-state)
+        populate_fact_plan_revisions(conn, run=run)
         populate_fact_session_summary(conn, run=run)
 
         run.complete(sessions_inserted=1)

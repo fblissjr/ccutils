@@ -808,20 +808,23 @@ class TestFactPlanRevisions:
         db_path = output_dir / "test.duckdb"
         conn = create_star_schema(db_path)
         columns = [c[0] for c in conn.execute("DESCRIBE fact_plan_revisions").fetchall()]
+        # v0.15: tool_call_id -> tool_use_id (matching the rename across
+        # fact_tool_uses / fact_tool_results); invoke_message_id and
+        # result_message_id dropped (derivable via tool_use_id join);
+        # plan_estimated_tokens dropped (plan_char_count is enough --
+        # the v0.15 schema treats word-count token estimates as a
+        # presentation concern, not a fact column).
         for col in [
             "revision_key",
+            "tool_use_id",
             "session_key",
             "project_key",
             "date_key",
             "time_key",
-            "tool_call_id",
-            "invoke_message_id",
-            "result_message_id",
             "revision_number",
             "parent_revision_key",
             "plan_text",
             "plan_char_count",
-            "plan_estimated_tokens",
             "outcome",
             "outcome_signal",
             "user_feedback_message_id",

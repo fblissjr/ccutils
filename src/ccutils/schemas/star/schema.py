@@ -722,15 +722,35 @@ def create_star_schema(db_path):
 
     conn.execute(
         """
+        -- Grain: one row per file-touching tool call (Read/Write/Edit/MultiEdit
+        -- /Glob/Grep/NotebookEdit/etc.). Derived from fact_tool_uses joined
+        -- to fact_tool_results on tool_use_id.
         CREATE OR REPLACE TABLE fact_file_operations (
-            file_operation_id VARCHAR,
-            tool_call_id VARCHAR,
+            -- Lineage (every v0.15 fact carries this block)
+            created_at TIMESTAMP NOT NULL DEFAULT current_timestamp,
+            created_by_version_key VARCHAR NOT NULL,
+            last_updated_at TIMESTAMP NOT NULL DEFAULT current_timestamp,
+            last_updated_by_version_key VARCHAR NOT NULL,
+            etl_run_id VARCHAR NOT NULL,
+            record_source VARCHAR NOT NULL,
+            hash_diff VARCHAR NOT NULL,
+            is_deleted BOOLEAN NOT NULL DEFAULT FALSE,
+            deleted_at TIMESTAMP,
+
+            -- Degenerate dims
+            tool_use_id VARCHAR NOT NULL,
+            session_id VARCHAR NOT NULL,
+
+            -- Dimension FKs
             session_key VARCHAR,
             file_key VARCHAR,
             tool_key VARCHAR,
             date_key INTEGER,
             time_key INTEGER,
+
+            -- Native
             operation_type VARCHAR,
+            file_path VARCHAR,
             file_size_chars INTEGER,
             timestamp TIMESTAMP
         )
@@ -892,27 +912,61 @@ def create_star_schema(db_path):
 
     conn.execute(
         """
+        -- Grain: one row per ExitPlanMode tool_use. Outcome is classified
+        -- from the v0.15 structural signal (fact_tool_results.is_error,
+        -- tri-state nullable BOOLEAN) instead of string-matching against
+        -- truncated tool_result content -- the original rethink driver.
+        --
+        -- outcome:
+        --   'superseded' -- a later ExitPlanMode exists in the same session
+        --   'accepted'   -- tool_result.is_error = FALSE
+        --   'rejected'   -- tool_result.is_error = TRUE
+        --   'pending'    -- no tool_result yet (session in flight)
+        --   'unknown'    -- tool_result present but is_error is NULL
+        --
+        -- parent_revision_key chains revisions within a session by timestamp.
         CREATE OR REPLACE TABLE fact_plan_revisions (
-            revision_key VARCHAR,
+            -- Lineage (every v0.15 fact carries this block)
+            created_at TIMESTAMP NOT NULL DEFAULT current_timestamp,
+            created_by_version_key VARCHAR NOT NULL,
+            last_updated_at TIMESTAMP NOT NULL DEFAULT current_timestamp,
+            last_updated_by_version_key VARCHAR NOT NULL,
+            etl_run_id VARCHAR NOT NULL,
+            record_source VARCHAR NOT NULL,
+            hash_diff VARCHAR NOT NULL,
+            is_deleted BOOLEAN NOT NULL DEFAULT FALSE,
+            deleted_at TIMESTAMP,
+
+            -- Degenerate
+            revision_key VARCHAR NOT NULL,
+            tool_use_id VARCHAR NOT NULL,
+            session_id VARCHAR NOT NULL,
+
+            -- Dimension FKs
             session_key VARCHAR,
             project_key VARCHAR,
             date_key INTEGER,
             time_key INTEGER,
-            tool_call_id VARCHAR,
-            invoke_message_id VARCHAR,
-            result_message_id VARCHAR,
+
+            -- Chain
             revision_number INTEGER,
             parent_revision_key VARCHAR,
+
+            -- Plan content + timing
             plan_text TEXT,
             plan_char_count INTEGER,
-            plan_estimated_tokens INTEGER,
-            outcome VARCHAR,
-            outcome_signal VARCHAR,
-            user_feedback_message_id VARCHAR,
-            user_feedback_text TEXT,
             plan_timestamp TIMESTAMP,
             resolved_timestamp TIMESTAMP,
-            seconds_to_resolution DOUBLE
+            seconds_to_resolution DOUBLE,
+
+            -- Outcome (structural classification from fact_tool_results.is_error)
+            outcome VARCHAR,
+            outcome_signal VARCHAR,
+            -- Feedback message that followed a rejection (next user text)
+            user_feedback_message_id VARCHAR,
+            user_feedback_text TEXT,
+            -- Mirror for query convenience
+            timestamp TIMESTAMP
         )
     """
     )
@@ -923,10 +977,32 @@ def create_star_schema(db_path):
 
     conn.execute(
         """
+        -- Grain: one row per (session, file) touched together. Aggregate
+        -- over fact_file_operations. Idempotent re-builds drop-and-reload.
         CREATE OR REPLACE TABLE bridge_session_file (
-            session_file_key VARCHAR,
+            -- Lineage (every v0.15 fact carries this block)
+            created_at TIMESTAMP NOT NULL DEFAULT current_timestamp,
+            created_by_version_key VARCHAR NOT NULL,
+            last_updated_at TIMESTAMP NOT NULL DEFAULT current_timestamp,
+            last_updated_by_version_key VARCHAR NOT NULL,
+            etl_run_id VARCHAR NOT NULL,
+            record_source VARCHAR NOT NULL,
+            hash_diff VARCHAR NOT NULL,
+            is_deleted BOOLEAN NOT NULL DEFAULT FALSE,
+            deleted_at TIMESTAMP,
+
+            -- Degenerate
+            session_id VARCHAR NOT NULL,
+
+            -- Routing keys
+            session_file_key VARCHAR NOT NULL,
             session_key VARCHAR,
             file_key VARCHAR,
+            -- Derived from first_operation_timestamp for date/time-of-day filtering
+            date_key INTEGER,
+            time_key INTEGER,
+
+            -- Aggregate measures
             first_operation_timestamp TIMESTAMP,
             last_operation_timestamp TIMESTAMP,
             operation_count INTEGER,
@@ -1003,12 +1079,35 @@ def create_star_schema(db_path):
 
     conn.execute(
         """
+        -- Grain: one row per LSP diagnostic emitted during a session.
+        -- Derived from fact_attachments.attachment_type='diagnostics'; the
+        -- attachment_json carries a list of diagnostic objects that get
+        -- flattened here. natural_key is diagnostic_id = md5(entry_id || index).
         CREATE OR REPLACE TABLE fact_diagnostics (
-            diagnostic_id VARCHAR,
+            -- Lineage (every v0.15 fact carries this block)
+            created_at TIMESTAMP NOT NULL DEFAULT current_timestamp,
+            created_by_version_key VARCHAR NOT NULL,
+            last_updated_at TIMESTAMP NOT NULL DEFAULT current_timestamp,
+            last_updated_by_version_key VARCHAR NOT NULL,
+            etl_run_id VARCHAR NOT NULL,
+            record_source VARCHAR NOT NULL,
+            hash_diff VARCHAR NOT NULL,
+            is_deleted BOOLEAN NOT NULL DEFAULT FALSE,
+            deleted_at TIMESTAMP,
+
+            -- Degenerate
+            diagnostic_id VARCHAR NOT NULL,
+            entry_id VARCHAR NOT NULL,
+            session_id VARCHAR NOT NULL,
+
+            -- Dimension FKs
             session_key VARCHAR,
             file_key VARCHAR,
             date_key INTEGER,
             time_key INTEGER,
+
+            -- Native
+            file_path VARCHAR,
             severity VARCHAR,
             source VARCHAR,
             code VARCHAR,
@@ -1324,7 +1423,6 @@ def create_star_schema(db_path):
             fpr.parent_revision_key,
             fpr.plan_text,
             fpr.plan_char_count,
-            fpr.plan_estimated_tokens,
             fpr.outcome,
             fpr.outcome_signal,
             fpr.user_feedback_text,
