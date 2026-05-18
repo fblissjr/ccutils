@@ -45,13 +45,16 @@ from ccutils.etl.entry_type_facts import (
     populate_fact_system_events,
 )
 from ccutils.etl.bridge_session_file import populate_bridge_session_file
+from ccutils.etl.dim_session_heuristics import populate_dim_session_heuristics
 from ccutils.etl.fact_agent_delegations import populate_fact_agent_delegations
 from ccutils.etl.fact_diagnostics import populate_fact_diagnostics
+from ccutils.etl.fact_errors import populate_fact_errors
 from ccutils.etl.fact_file_operations import (
     populate_dim_file,
     populate_fact_file_operations,
 )
 from ccutils.etl.fact_plan_revisions import populate_fact_plan_revisions
+from ccutils.etl.fact_tool_chain_steps import populate_fact_tool_chain_steps
 from ccutils.etl.fact_messages import populate_fact_messages
 from ccutils.etl.fact_session_summary import populate_fact_session_summary
 from ccutils.etl.fact_token_usage import populate_fact_token_usage
@@ -268,6 +271,14 @@ def run_v15_etl(
         populate_fact_plan_revisions(conn, run=run)
         # fact_agent_delegations captures Task tool spawns + agent rollup
         populate_fact_agent_delegations(conn, run=run)
+        # fact_errors flattens fact_tool_results where is_error=TRUE; must
+        # run before dim_session_heuristics so error_count is accurate.
+        populate_fact_errors(conn, run=run)
+        # fact_tool_chain_steps captures tool sequences per assistant turn
+        populate_fact_tool_chain_steps(conn, run=run)
+        # dim_session enrichment runs after all facts so the classifiers
+        # see complete metrics + file-extension data
+        populate_dim_session_heuristics(conn, run=run)
         populate_fact_session_summary(conn, run=run)
 
         run.complete(sessions_inserted=1)

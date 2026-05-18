@@ -759,14 +759,35 @@ def create_star_schema(db_path):
 
     conn.execute(
         """
+        -- Grain: one row per failed tool call. Derived from
+        -- fact_tool_results where is_error = TRUE. error_type is
+        -- classified by zero-dep regex rules in
+        -- ccutils.etl.heuristics.classify_error_type.
         CREATE OR REPLACE TABLE fact_errors (
-            error_id VARCHAR,
-            tool_call_id VARCHAR,
+            -- Lineage (every v0.15 fact carries this block)
+            created_at TIMESTAMP NOT NULL DEFAULT current_timestamp,
+            created_by_version_key VARCHAR NOT NULL,
+            last_updated_at TIMESTAMP NOT NULL DEFAULT current_timestamp,
+            last_updated_by_version_key VARCHAR NOT NULL,
+            etl_run_id VARCHAR NOT NULL,
+            record_source VARCHAR NOT NULL,
+            hash_diff VARCHAR NOT NULL,
+            is_deleted BOOLEAN NOT NULL DEFAULT FALSE,
+            deleted_at TIMESTAMP,
+
+            -- Degenerate
+            error_id VARCHAR NOT NULL,
+            tool_use_id VARCHAR NOT NULL,
+            session_id VARCHAR NOT NULL,
+
+            -- Dimension FKs
             session_key VARCHAR,
             tool_key VARCHAR,
-            error_type VARCHAR,
             date_key INTEGER,
             time_key INTEGER,
+
+            -- Native
+            error_type VARCHAR,
             error_message TEXT,
             timestamp TIMESTAMP
         )
@@ -775,17 +796,45 @@ def create_star_schema(db_path):
 
     conn.execute(
         """
+        -- Grain: one row per (session, tool_use, step_position) tuple
+        -- recording tool-sequence patterns. A "chain" is the contiguous
+        -- block of tool_uses emitted by a single assistant turn (one
+        -- message_id). prev_tool_key / next_tool_key let queries like
+        -- "after I Read, do I usually Edit?" work without window functions
+        -- on every query.
         CREATE OR REPLACE TABLE fact_tool_chain_steps (
-            chain_step_id VARCHAR,
+            -- Lineage (every v0.15 fact carries this block)
+            created_at TIMESTAMP NOT NULL DEFAULT current_timestamp,
+            created_by_version_key VARCHAR NOT NULL,
+            last_updated_at TIMESTAMP NOT NULL DEFAULT current_timestamp,
+            last_updated_by_version_key VARCHAR NOT NULL,
+            etl_run_id VARCHAR NOT NULL,
+            record_source VARCHAR NOT NULL,
+            hash_diff VARCHAR NOT NULL,
+            is_deleted BOOLEAN NOT NULL DEFAULT FALSE,
+            deleted_at TIMESTAMP,
+
+            -- Degenerate
+            chain_step_id VARCHAR NOT NULL,
+            tool_use_id VARCHAR NOT NULL,
+            session_id VARCHAR NOT NULL,
+
+            -- Dimension FKs
             session_key VARCHAR,
-            chain_id VARCHAR,
-            tool_call_id VARCHAR,
             tool_key VARCHAR,
+            date_key INTEGER,
+            time_key INTEGER,
+
+            -- Chain context
+            chain_id VARCHAR,
             step_position INTEGER,
             prev_tool_key VARCHAR,
             next_tool_key VARCHAR,
+
+            -- Outcome of this tool
             is_error BOOLEAN,
-            time_since_prev_seconds FLOAT
+            time_since_prev_seconds FLOAT,
+            timestamp TIMESTAMP
         )
     """
     )
