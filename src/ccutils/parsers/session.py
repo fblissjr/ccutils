@@ -24,8 +24,37 @@ def parse_session_file(filepath):
             return json.load(f)
 
 
+# Single source of truth for the JSONL entry types HTML rendering preserves.
+# Parser keeps them, renderer dispatches on them, role labels are keyed by them.
+# Order matches the dispatch order in `ccutils.export.html.render_message`.
+RENDERED_NON_MESSAGE_TYPES = (
+    "system",
+    "attachment",
+    "meta",
+    "file-history-snapshot",
+    "queue-operation",
+    "pr-link",
+    "summary",
+    "last-prompt",
+    "permission-mode",
+    "custom-title",
+    "agent-name",
+)
+_RENDERED_NON_MESSAGE_TYPES = frozenset(RENDERED_NON_MESSAGE_TYPES)
+
+
 def _parse_jsonl_file(filepath):
-    """Parse JSONL file and convert to standard format."""
+    """Parse JSONL file and convert to standard format.
+
+    Preserves user/assistant message entries plus the contextual entry
+    types Claude Code 2.x emits around them (system, attachment, meta,
+    file-history-snapshot, queue-operation, pr-link, summary,
+    last-prompt). Progress entries are skipped here -- a real session
+    can carry tens of thousands of them and they're not useful inline.
+    Renderers downstream dispatch on `type` and fall back to a collapsed
+    <details> for types they don't have a styled renderer for yet, so
+    no captured entry is silently invisible.
+    """
     loglines = []
 
     with open(filepath, "r", encoding="utf-8") as f:
@@ -35,26 +64,34 @@ def _parse_jsonl_file(filepath):
                 continue
             try:
                 obj = json.loads(line)
-                entry_type = obj.get("type")
-
-                # Skip non-message entries
-                if entry_type not in ("user", "assistant"):
-                    continue
-
-                # Convert to standard format
-                entry = {
-                    "type": entry_type,
-                    "timestamp": obj.get("timestamp", ""),
-                    "message": obj.get("message", {}),
-                }
-
-                # Preserve isCompactSummary if present
-                if obj.get("isCompactSummary"):
-                    entry["isCompactSummary"] = True
-
-                loglines.append(entry)
             except json.JSONDecodeError:
                 continue
+
+            entry_type = obj.get("type")
+            timestamp = obj.get("timestamp", "")
+
+            if entry_type in ("user", "assistant"):
+                entry = {
+                    "type": entry_type,
+                    "timestamp": timestamp,
+                    "message": obj.get("message", {}),
+                }
+                if obj.get("isCompactSummary"):
+                    entry["isCompactSummary"] = True
+                loglines.append(entry)
+            elif entry_type in _RENDERED_NON_MESSAGE_TYPES:
+                # Carry the raw entry through under `_raw` so the
+                # renderer can introspect subtype + payload without
+                # re-parsing the JSONL line.
+                loglines.append(
+                    {
+                        "type": entry_type,
+                        "timestamp": timestamp,
+                        "message": {},
+                        "_raw": obj,
+                    }
+                )
+            # `progress` and any future unknown types fall through
 
     return {"loglines": loglines}
 

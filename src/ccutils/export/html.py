@@ -23,6 +23,27 @@ from ..parsers import (
     parse_session_file,
     PROMPTS_PER_PAGE,
 )
+from ..parsers.session import RENDERED_NON_MESSAGE_TYPES
+
+# Display labels for the non-message entry types. Keys must match
+# RENDERED_NON_MESSAGE_TYPES (validated below); the renderer falls back
+# to a title-cased version of the entry type if a label is missing.
+_ENTRY_ROLE_LABELS = {
+    "system": "System",
+    "attachment": "Attachment",
+    "meta": "Meta",
+    "file-history-snapshot": "File history snapshot",
+    "queue-operation": "Queue",
+    "pr-link": "PR",
+    "summary": "Summary",
+    "last-prompt": "Last prompt",
+    "permission-mode": "Permission mode",
+    "custom-title": "Custom title",
+    "agent-name": "Agent",
+}
+assert set(_ENTRY_ROLE_LABELS) == set(RENDERED_NON_MESSAGE_TYPES), (
+    "RENDERED_NON_MESSAGE_TYPES drifted from _ENTRY_ROLE_LABELS"
+)
 
 # Set up Jinja2 environment
 _jinja_env = Environment(
@@ -179,6 +200,19 @@ def render_bash_tool(tool_input, tool_id):
     return _macros.bash_tool(command, description, tool_id)
 
 
+def _render_generic_tool_use(tool_name, tool_input, tool_id):
+    """Generic tool_use renderer for any tool without dedicated styling.
+
+    Shared by client-side `tool_use`, server-side `server_tool_use`, and
+    `mcp_tool_use`. Pulls `description` out of input for the macro header
+    and renders the rest as pretty JSON.
+    """
+    description = tool_input.get("description", "")
+    display_input = {k: v for k, v in tool_input.items() if k != "description"}
+    input_json = json.dumps(display_input, indent=2, ensure_ascii=False)
+    return _macros.tool_use(tool_name, description, input_json, tool_id)
+
+
 def render_content_block(block):
     """Render a single content block to HTML."""
     if not isinstance(block, dict):
@@ -192,6 +226,14 @@ def render_content_block(block):
     elif block_type == "thinking":
         content_html = render_markdown_text(block.get("thinking", ""))
         return _macros.thinking(content_html)
+    elif block_type == "redacted_thinking":
+        # Anthropic-side safety redaction on Opus thinking. We render a
+        # small banner so the user can see redaction happened.
+        return _macros.entry_banner(
+            "Redacted thinking",
+            "Thinking content was redacted by the API safety layer.",
+            "thinking",
+        )
     elif block_type == "text":
         content_html = render_markdown_text(block.get("text", ""))
         return _macros.assistant_text(content_html)
@@ -207,10 +249,28 @@ def render_content_block(block):
             return render_edit_tool(tool_input, tool_id)
         if tool_name == "Bash":
             return render_bash_tool(tool_input, tool_id)
-        description = tool_input.get("description", "")
-        display_input = {k: v for k, v in tool_input.items() if k != "description"}
-        input_json = json.dumps(display_input, indent=2, ensure_ascii=False)
-        return _macros.tool_use(tool_name, description, input_json, tool_id)
+        return _render_generic_tool_use(tool_name, tool_input, tool_id)
+    elif block_type in ("server_tool_use", "mcp_tool_use"):
+        # Server-side (Anthropic-hosted) and MCP tool calls. Same shape
+        # as a regular tool_use, no client-side dispatch (no Bash/Edit/etc).
+        return _render_generic_tool_use(
+            block.get("name", block_type),
+            block.get("input", {}),
+            block.get("id", ""),
+        )
+    elif block_type in (
+        "web_search_tool_result",
+        "code_execution_tool_result",
+        "mcp_tool_result",
+    ):
+        content = block.get("content", "")
+        if not isinstance(content, str):
+            content = json.dumps(content, indent=2, ensure_ascii=False)
+        return _macros.entry_banner(
+            block_type.replace("_", " ").title(),
+            content,
+            "tool",
+        )
     elif block_type == "tool_result":
         content = block.get("content", "")
         is_error = block.get("is_error", False)
@@ -404,12 +464,134 @@ def render_message(log_type, message_json, timestamp):
     elif log_type == "assistant":
         content_html = render_assistant_message(message_data)
         role_class, role_label = "assistant", "Assistant"
+    elif log_type in RENDERED_NON_MESSAGE_TYPES:
+        # `message_data` is actually the raw JSONL entry for non-message
+        # types (parser stores the raw obj under `_raw`, the body loop
+        # passes it through this slot to keep render_message's signature
+        # the same).
+        content_html = render_non_message_entry(log_type, message_data)
+        role_class = f"entry-{log_type}"
+        role_label = _ENTRY_ROLE_LABELS[log_type]
     else:
         return ""
     if not content_html.strip():
         return ""
     msg_id = make_msg_id(timestamp)
     return _macros.message(role_class, role_label, msg_id, timestamp, content_html)
+
+
+def render_non_message_entry(log_type, raw_obj):
+    """Render a non-message JSONL entry (system, attachment, meta, etc.).
+
+    Phase 1: styled banners for a few high-signal top-level types and
+    subtypes; collapsed <details> fallback for everything else. Phase 2
+    will add styled renderers for diagnostics, plan-mode, hook progress,
+    and more attachment subtypes.
+    """
+    # Top-level types that carry a single high-signal field.
+    if log_type == "permission-mode":
+        return _macros.entry_banner(
+            "Permission mode", str(raw_obj.get("permissionMode", "")), "system"
+        )
+    if log_type == "custom-title":
+        return _macros.entry_banner(
+            "Custom title", str(raw_obj.get("customTitle", "")), "user"
+        )
+    if log_type == "agent-name":
+        return _macros.entry_banner(
+            "Agent", str(raw_obj.get("agentName", "")), "user"
+        )
+    if log_type == "last-prompt":
+        return _macros.entry_banner(
+            "Queued prompt", str(raw_obj.get("lastPrompt", "")), "user"
+        )
+    if log_type == "pr-link":
+        url = raw_obj.get("url") or raw_obj.get("prUrl") or ""
+        return _macros.entry_banner("Linked PR", url, "user")
+    if log_type == "summary":
+        return _macros.entry_banner(
+            "Summary", raw_obj.get("summary", ""), "system"
+        )
+    if log_type == "queue-operation":
+        op = raw_obj.get("operation", "")
+        content = raw_obj.get("content", "") or ""
+        # Queue payloads can be huge (entire subagent reports). Truncate.
+        if len(content) > 400:
+            content = content[:400] + " ... (truncated)"
+        label = f"Queue: {op}" if op else "Queue"
+        return _macros.entry_banner(label, content, "system")
+    if log_type == "file-history-snapshot":
+        snap = raw_obj.get("snapshot") or {}
+        backups = snap.get("trackedFileBackups") or {}
+        is_update = raw_obj.get("isSnapshotUpdate", False)
+        label = "Snapshot update" if is_update else "Snapshot"
+        if not backups:
+            detail = "No tracked file backups."
+        else:
+            detail = f"{len(backups)} tracked file(s): " + ", ".join(
+                list(backups.keys())[:5]
+            )
+            if len(backups) > 5:
+                detail += f" (+{len(backups) - 5} more)"
+        return _macros.entry_banner(label, detail, "system")
+
+    if log_type == "system":
+        subtype = raw_obj.get("subtype") or ""
+        if subtype == "turn_duration":
+            duration_ms = raw_obj.get("durationMs")
+            message_count = raw_obj.get("messageCount")
+            if duration_ms is not None:
+                detail = f"{duration_ms} ms"
+                if message_count is not None:
+                    detail += f" / {message_count} messages"
+                return _macros.entry_banner("Turn duration", detail, "system")
+        if subtype == "stop_hook_summary":
+            hook_count = raw_obj.get("hookCount", 0)
+            prevented = raw_obj.get("preventedContinuation", False)
+            stop_reason = raw_obj.get("stopReason", "") or ""
+            detail_parts = [f"{hook_count} hook(s)"]
+            if stop_reason:
+                detail_parts.append(f"reason: {stop_reason}")
+            if prevented:
+                detail_parts.append("continuation prevented")
+            return _macros.entry_banner(
+                "Stop hook", "; ".join(detail_parts), "system"
+            )
+        if subtype == "api_error":
+            err = raw_obj.get("error") or raw_obj.get("message") or "API error"
+            return _macros.entry_banner("API error", str(err), "thinking")
+        if subtype == "compact_boundary":
+            return _macros.entry_banner(
+                "Compact boundary",
+                "Conversation context was compacted at this point.",
+                "system",
+            )
+
+    if log_type == "attachment":
+        att = raw_obj.get("attachment") or {}
+        sub = att.get("type") or ""
+        if sub == "diagnostics":
+            diagnostics = att.get("diagnostics") or []
+            return _macros.entry_banner(
+                "Diagnostics",
+                f"{len(diagnostics)} diagnostic(s) reported by LSP.",
+                "thinking",
+            )
+        if sub == "hook_success":
+            hook_name = att.get("hookName", "")
+            duration = att.get("durationMs")
+            detail = hook_name
+            if duration is not None:
+                detail += f" ({duration} ms)"
+            return _macros.entry_banner("Hook", detail, "system")
+
+    # Fallback: render the raw JSON inside a collapsed <details>.
+    # Truncate to keep page sizes sane on attachment-heavy sessions.
+    label = log_type.replace("-", " ").title()
+    raw_str = json.dumps(raw_obj, indent=2, ensure_ascii=False)
+    if len(raw_str) > 2000:
+        raw_str = raw_str[:2000] + "\n... (truncated)"
+    return _macros.entry_fallback(label, raw_str)
 
 
 def generate_pagination_html(current_page, total_pages):
@@ -801,6 +983,18 @@ def _generate_html_body(loglines, output_dir):
         timestamp = entry.get("timestamp", "")
         is_compact_summary = entry.get("isCompactSummary", False)
         message_data = entry.get("message", {})
+
+        is_message = log_type in ("user", "assistant")
+
+        # Non-message entries (system / attachment / meta / file-history-snapshot /
+        # queue-operation / pr-link / summary / last-prompt) ride along with the
+        # current conversation so the renderer can dispatch on type. Skip if no
+        # conversation has started yet -- they have nowhere to attach.
+        if not is_message:
+            if current_conv is not None:
+                raw_json = json.dumps(entry.get("_raw", {}))
+                current_conv["messages"].append((log_type, raw_json, timestamp))
+            continue
 
         if not message_data:
             continue

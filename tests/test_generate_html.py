@@ -785,14 +785,29 @@ class TestParseSessionFile:
                 assert "timestamp" in entry
                 assert "message" in entry
 
-    def test_jsonl_skips_non_message_entries(self):
-        """Test that summary and file-history-snapshot entries are skipped."""
+    def test_jsonl_preserves_contextual_entries(self):
+        """v0.15: non-message entries (system, attachment, meta, summary,
+        file-history-snapshot, queue-operation, pr-link, last-prompt) are
+        preserved so the HTML renderer can dispatch on them. Progress
+        entries are still skipped (too high-volume to render inline)."""
         fixture_path = Path(__file__).parent / "sample_session.jsonl"
         result = parse_session_file(fixture_path)
 
-        # None of the loglines should be summary or file-history-snapshot
-        for entry in result["loglines"]:
-            assert entry["type"] in ("user", "assistant")
+        valid_types = {
+            "user",
+            "assistant",
+            "system",
+            "attachment",
+            "meta",
+            "file-history-snapshot",
+            "queue-operation",
+            "pr-link",
+            "summary",
+            "last-prompt",
+        }
+        types_seen = {entry["type"] for entry in result["loglines"]}
+        assert types_seen.issubset(valid_types)
+        assert "progress" not in types_seen
 
     def test_jsonl_preserves_message_content(self):
         """Test that message content is preserved correctly."""
@@ -811,6 +826,125 @@ class TestParseSessionFile:
         index_html = (output_dir / "index.html").read_text(encoding="utf-8")
         assert "hello world" in index_html.lower()
         assert index_html == snapshot_html
+
+
+class TestNonMessageEntryRendering:
+    """v0.15 Phase 1: the renderer must dispatch on non-user/assistant
+    entry types so contextual signals (permission mode transitions, hook
+    durations, queued prompts, etc.) are visible in the HTML transcript
+    instead of silently dropped."""
+
+    def _render(self, tmp_path, entries):
+        """Write JSONL entries to a temp file and return rendered page-001 HTML."""
+        # Always anchor with one user message so a conversation exists for
+        # contextual entries to attach to.
+        all_entries = [
+            {
+                "type": "user",
+                "timestamp": "2026-04-19T10:00:00Z",
+                "message": {"role": "user", "content": "kick off"},
+            }
+        ] + entries
+        jsonl = tmp_path / "test.jsonl"
+        jsonl.write_text("\n".join(json.dumps(e) for e in all_entries))
+        out_dir = tmp_path / "out"
+        generate_html(jsonl, out_dir)
+        return (out_dir / "page-001.html").read_text(encoding="utf-8")
+
+    def test_permission_mode_renders_styled_banner(self, tmp_path):
+        html_out = self._render(
+            tmp_path,
+            [
+                {
+                    "type": "permission-mode",
+                    "permissionMode": "plan",
+                    "timestamp": "2026-04-19T10:00:01Z",
+                }
+            ],
+        )
+        assert '<span class="entry-banner-label">Permission mode</span>' in html_out
+        assert ">plan</pre>" in html_out
+
+    def test_last_prompt_renders_styled_banner(self, tmp_path):
+        html_out = self._render(
+            tmp_path,
+            [
+                {
+                    "type": "last-prompt",
+                    "lastPrompt": "queue this up",
+                    "timestamp": "2026-04-19T10:00:02Z",
+                }
+            ],
+        )
+        assert '<span class="entry-banner-label">Queued prompt</span>' in html_out
+        assert "queue this up" in html_out
+
+    def test_system_turn_duration_renders(self, tmp_path):
+        html_out = self._render(
+            tmp_path,
+            [
+                {
+                    "type": "system",
+                    "subtype": "turn_duration",
+                    "durationMs": 1234,
+                    "messageCount": 5,
+                    "timestamp": "2026-04-19T10:00:03Z",
+                }
+            ],
+        )
+        assert '<span class="entry-banner-label">Turn duration</span>' in html_out
+        assert "1234 ms / 5 messages" in html_out
+
+    def test_attachment_hook_success_renders(self, tmp_path):
+        html_out = self._render(
+            tmp_path,
+            [
+                {
+                    "type": "attachment",
+                    "attachment": {
+                        "type": "hook_success",
+                        "hookName": "PreToolUse:Bash",
+                        "durationMs": 42,
+                    },
+                    "timestamp": "2026-04-19T10:00:04Z",
+                }
+            ],
+        )
+        assert '<span class="entry-banner-label">Hook</span>' in html_out
+        assert "PreToolUse:Bash (42 ms)" in html_out
+
+    def test_unknown_subtype_falls_back_to_details(self, tmp_path):
+        """Entry types we don't have a styled renderer for should still
+        appear -- via a collapsed <details> -- never silently dropped."""
+        html_out = self._render(
+            tmp_path,
+            [
+                {
+                    "type": "system",
+                    "subtype": "bridge_status",  # not in our styled set
+                    "someField": "some-value",
+                    "timestamp": "2026-04-19T10:00:05Z",
+                }
+            ],
+        )
+        assert '<details class="entry-fallback">' in html_out
+        assert "bridge_status" in html_out
+
+    def test_progress_entries_are_skipped(self, tmp_path):
+        """Progress entries are intentionally dropped -- too high-volume
+        for inline rendering. v0.15 captures them in fact_progress_events."""
+        html_out = self._render(
+            tmp_path,
+            [
+                {
+                    "type": "progress",
+                    "data": {"type": "hook_progress", "hookName": "PreToolUse:Bash"},
+                    "timestamp": "2026-04-19T10:00:06Z",
+                }
+            ],
+        )
+        assert "hook_progress" not in html_out
+        assert "PreToolUse:Bash" not in html_out
 
 
 class TestGetSessionSummary:

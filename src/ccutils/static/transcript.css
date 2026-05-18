@@ -138,6 +138,19 @@ time { color: var(--text-muted); font-size: 0.8rem; }
 .disabled { color: var(--text-muted); pointer-events: none; }
 .continuation { border: 1px solid var(--thinking-border); border-radius: 8px; padding: 12px; margin: 12px 0; }
 .continuation summary { cursor: pointer; font-weight: 500; color: var(--thinking-text); }
+.entry-banner { border-left: 3px solid var(--text-muted); background: rgba(0,0,0,0.02); padding: 6px 12px; margin: 8px 0; font-size: 0.85rem; }
+.entry-banner-label { display: inline-block; font-weight: 600; text-transform: uppercase; font-size: 0.7rem; letter-spacing: 0.5px; color: var(--text-muted); margin-right: 8px; }
+.entry-banner-detail { display: block; margin: 6px 0 0; padding: 0; background: transparent; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; font-size: 0.85rem; color: var(--text-color); white-space: pre-wrap; }
+.entry-banner--system { border-left-color: var(--user-border); }
+.entry-banner--thinking { border-left-color: var(--thinking-border); }
+.entry-banner--tool { border-left-color: var(--tool-border); }
+.entry-banner--user { border-left-color: var(--user-border); }
+.entry-fallback { border: 1px solid var(--text-muted); border-radius: 6px; padding: 6px 12px; margin: 8px 0; font-size: 0.85rem; }
+.entry-fallback summary { cursor: pointer; color: var(--text-muted); }
+.entry-fallback pre { background: rgba(0,0,0,0.03); padding: 8px; border-radius: 4px; font-size: 0.8rem; margin: 8px 0 0; overflow-x: auto; white-space: pre-wrap; }
+.message[class*="entry-"] { background: transparent; border-left: none; box-shadow: none; }
+.message[class*="entry-"] .message-header { background: transparent; padding: 4px 16px; }
+.message[class*="entry-"] .message-content { padding: 0 16px 8px; }
 .commit-card a { color: inherit; text-decoration: none; display: flex; align-items: center; gap: 12px; }
 .commit-card-hash { font-family: monospace; font-size: 0.85rem; color: #e94560; }
 .image-block { margin: 12px 0; }
