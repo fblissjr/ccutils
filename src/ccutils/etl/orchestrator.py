@@ -45,6 +45,7 @@ from ccutils.etl.entry_type_facts import (
     populate_fact_system_events,
 )
 from ccutils.etl.facets import FacetExtractor
+from ccutils.etl.facets.populator import populate_tier2_facets
 from ccutils.etl.bridge_session_file import populate_bridge_session_file
 from ccutils.etl.dim_session_chain import populate_dim_session_chain
 from ccutils.etl.dim_session_heuristics import populate_dim_session_heuristics
@@ -209,16 +210,6 @@ def _upsert_minimal_dimensions(conn) -> None:
     )
 
 
-def _populate_tier2_facets_stub(conn, *, run, extractor: FacetExtractor) -> None:
-    """No-op stub for the Tier 2 populator. Step 3 wires the orchestrator
-    signature + dispatch guard; step 4 fills the body (build SessionInputs
-    from facts, call extractor.extract(), write rows via lineage_upsert).
-
-    Kept inline so the orchestrator import graph stays bounded; the body
-    will move into ccutils.etl.facets.populator when it's non-trivial."""
-    _ = conn, run, extractor
-
-
 def run_v15_etl(
     conn,
     session_path: str | Path,
@@ -311,11 +302,9 @@ def run_v15_etl(
         # final aggregate roll-up.
         populate_tier1_facets(conn, run=run)
         # Tier 2 facets (LLM-extracted) only run when a FacetExtractor is
-        # injected. Step 3 wires the dispatch; step 4 fills the populator
-        # body. Until then this is a no-op when an extractor is supplied,
-        # and entirely skipped when it's None.
+        # injected. Default None disables Tier 2 entirely.
         if facet_extractor is not None:
-            _populate_tier2_facets_stub(conn, run=run, extractor=facet_extractor)
+            populate_tier2_facets(conn, run=run, extractor=facet_extractor)
         populate_fact_session_summary(conn, run=run)
 
         run.complete(sessions_inserted=1)

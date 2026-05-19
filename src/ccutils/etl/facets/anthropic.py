@@ -294,10 +294,17 @@ class AnthropicFacetExtractor:
         raw_response = ""
         cache_hit = False
         retry_count = 0
+        input_tokens = 0
+        output_tokens = 0
         all_facet_ids = {s.facet_id for s in enabled_facets}
         result = _ValidationResult(
             valid={}, soft_failed=set(), hard_failed=all_facet_ids
         )
+
+        # latency_ms includes everything inside extract(): HTTP calls,
+        # backoff sleeps, validation retries. Wall-clock as the user
+        # experiences it.
+        start = time.monotonic()
 
         # `retry_count` reflects the number of retries actually performed
         # (HTTP-level + validation-level), incremented only when we COMMIT
@@ -317,6 +324,7 @@ class AnthropicFacetExtractor:
 
             raw_response = self._extract_text(api_response)
             cache_hit = self._compute_cache_hit(api_response)
+            input_tokens, output_tokens = self._extract_token_counts(api_response)
 
             try:
                 data = json.loads(raw_response)
@@ -340,8 +348,11 @@ class AnthropicFacetExtractor:
                 continue
             break
 
+        latency_ms = int((time.monotonic() - start) * 1000)
+
         return self._build_outputs(
-            enabled_facets, result, raw_response, retry_count, cache_hit
+            enabled_facets, result, raw_response, retry_count, cache_hit,
+            input_tokens, output_tokens, latency_ms,
         )
 
     # ------------------------------------------------------------------
@@ -435,23 +446,39 @@ class AnthropicFacetExtractor:
         return usage.get("cache_read_input_tokens", 0) > 0
 
     @staticmethod
+    def _extract_token_counts(api_response: dict) -> tuple[int, int]:
+        usage = api_response.get("usage", {})
+        return int(usage.get("input_tokens", 0)), int(usage.get("output_tokens", 0))
+
+    @staticmethod
     def _build_outputs(
         specs: list[FacetSpec],
         result: _ValidationResult,
         raw_response: str,
         retry_count: int,
         cache_hit: bool,
+        input_tokens: int,
+        output_tokens: int,
+        latency_ms: int,
     ) -> dict[str, FacetOutput]:
-        metadata = json.dumps(
-            {
-                "retry_count": retry_count,
-                "cache_hit": cache_hit,
-                "raw_response": raw_response,
-            },
-            separators=(",", ":"),
-        )
+        # Schema documented in protocol §3.1; downstream QA queries
+        # depend on these field names being stable. prompt_version is
+        # per-spec (different facets could carry different versions in
+        # principle, though in practice one call uses one registry).
         out: dict[str, FacetOutput] = {}
         for spec in specs:
+            metadata = json.dumps(
+                {
+                    "raw_response": raw_response,
+                    "prompt_version": spec.prompt_version,
+                    "retry_count": retry_count,
+                    "cache_hit": cache_hit,
+                    "input_tokens": input_tokens,
+                    "output_tokens": output_tokens,
+                    "latency_ms": latency_ms,
+                },
+                separators=(",", ":"),
+            )
             if spec.facet_id in result.valid:
                 out[spec.facet_id] = FacetOutput(
                     facet_id=spec.facet_id,

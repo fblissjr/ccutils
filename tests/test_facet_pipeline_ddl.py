@@ -98,9 +98,13 @@ class TestDimFacetType:
     def test_historical_prompt_versions_survive_rerun(self, tmp_path):
         # ON CONFLICT DO NOTHING: when create_star_schema() is called on an
         # existing DB (the normal CLI path), a prompt_version row added
-        # post-seed (e.g. F20 v2) must NOT be wiped. Otherwise re-running
-        # the CLI would destroy the historical registry that
-        # fact_session_facets rows already reference by facet_type_key.
+        # post-seed must NOT be wiped. Otherwise re-running the CLI would
+        # destroy the historical registry that fact_session_facets rows
+        # already reference by facet_type_key.
+        #
+        # Uses F90 (a hypothetical facet, not in the catalog) so the test
+        # exercises the survival contract without colliding with the
+        # already-seeded F20 v1 row.
         from ccutils import create_star_schema
 
         db_path = tmp_path / "rerun.duckdb"
@@ -110,7 +114,7 @@ class TestDimFacetType:
             INSERT INTO dim_facet_type
                 (facet_type_key, facet_id, facet_name, tier, method,
                  output_type, prompt_text, prompt_version)
-            VALUES (md5('F20' || '|' || 'v1'), 'F20', 'task_description',
+            VALUES (md5('F90' || '|' || 'v1'), 'F90', 'hypothetical',
                     2, 'llm', 'text', 'prompt v1', 'v1')
             """
         )
@@ -120,10 +124,10 @@ class TestDimFacetType:
         conn2 = create_star_schema(db_path)
         survivors = conn2.execute(
             "SELECT facet_id, prompt_version FROM dim_facet_type "
-            "WHERE facet_id = 'F20'"
+            "WHERE facet_id = 'F90'"
         ).fetchall()
-        assert survivors == [("F20", "v1")], (
-            f"F20 v1 should survive re-create_star_schema, got {survivors}"
+        assert survivors == [("F90", "v1")], (
+            f"F90 v1 should survive re-create_star_schema, got {survivors}"
         )
         # Tier 1 seeds should still be all there.
         n_tier1 = conn2.execute(

@@ -239,18 +239,24 @@ class TestTier1FacetLineage:
 
 
 @pytest.fixture
-def two_f20_versions(conn):
-    """Seeds dim_facet_type with two prompt-versioned rows for F20. Shared
-    setup for the prompt-version property tests below."""
+def two_f90_versions(conn):
+    """Seeds dim_facet_type with two prompt-versioned rows for a
+    hypothetical facet F90. Shared setup for the prompt-version property
+    tests below.
+
+    Uses F90 rather than F20 because F20 is now pre-seeded by
+    create_star_schema (Step 4 catalog landed). The property under test
+    is about ANY pair of (facet_id, prompt_version) rows, not anything
+    F20-specific."""
     conn.execute(
         """
         INSERT INTO dim_facet_type
             (facet_type_key, facet_id, facet_name, tier, method,
              output_type, prompt_text, prompt_version)
         VALUES
-            (md5('F20' || '|' || 'v1'), 'F20', 'task_description',
+            (md5('F90' || '|' || 'v1'), 'F90', 'hypothetical',
              2, 'llm', 'text', 'prompt v1', 'v1'),
-            (md5('F20' || '|' || 'v2'), 'F20', 'task_description',
+            (md5('F90' || '|' || 'v2'), 'F90', 'hypothetical',
              2, 'llm', 'text', 'prompt v2 (better)', 'v2')
         """
     )
@@ -267,12 +273,12 @@ class TestFacetTypeKeyVersionProperty:
     """
 
     def test_same_id_different_version_yields_different_key(
-        self, two_f20_versions
+        self, two_f90_versions
     ):
-        conn = two_f20_versions
+        conn = two_f90_versions
         keys = conn.execute(
             "SELECT prompt_version, facet_type_key FROM dim_facet_type "
-            "WHERE facet_id = 'F20' ORDER BY prompt_version"
+            "WHERE facet_id = 'F90' ORDER BY prompt_version"
         ).fetchall()
         assert len(keys) == 2
         assert keys[0][1] != keys[1][1], (
@@ -281,9 +287,9 @@ class TestFacetTypeKeyVersionProperty:
         )
 
     def test_both_versions_resolve_after_new_version_lands(
-        self, two_f20_versions
+        self, two_f90_versions
     ):
-        conn = two_f20_versions
+        conn = two_f90_versions
         # Insert a fact row keyed against v1 BEFORE v2 was seeded (simulated
         # by inserting now under v1's key only).
         conn.execute(
@@ -297,9 +303,9 @@ class TestFacetTypeKeyVersionProperty:
             VALUES (
                 'vk', 'vk', 'run-1', 'claude_code_jsonl',
                 'h1',
-                md5('s1' || '|' || 'F20' || '|' || 'v1'),
+                md5('s1' || '|' || 'F90' || '|' || 'v1'),
                 md5('s1'), 's1',
-                md5('F20' || '|' || 'v1'), 'v1',
+                md5('F90' || '|' || 'v1'), 'v1',
                 'fixed the bug under prompt v1'
             )
             """
@@ -316,9 +322,9 @@ class TestFacetTypeKeyVersionProperty:
             VALUES (
                 'vk', 'vk', 'run-2', 'claude_code_jsonl',
                 'h2',
-                md5('s1' || '|' || 'F20' || '|' || 'v2'),
+                md5('s1' || '|' || 'F90' || '|' || 'v2'),
                 md5('s1'), 's1',
-                md5('F20' || '|' || 'v2'), 'v2',
+                md5('F90' || '|' || 'v2'), 'v2',
                 'addressed the bug (re-extracted under prompt v2)'
             )
             """
@@ -329,7 +335,7 @@ class TestFacetTypeKeyVersionProperty:
             SELECT dft.prompt_version, fsf.value_text
             FROM fact_session_facets fsf
             JOIN dim_facet_type dft USING (facet_type_key)
-            WHERE fsf.session_id = 's1' AND dft.facet_id = 'F20'
+            WHERE fsf.session_id = 's1' AND dft.facet_id = 'F90'
             ORDER BY dft.prompt_version
             """
         ).fetchall()

@@ -1354,6 +1354,32 @@ def create_star_schema(db_path):
          for (fid, fname, otype, notes) in _tier1_seeds],
     )
 
+    # Seed Tier 2 facets from the catalog module. Each FacetSpec produces
+    # one row keyed by md5(facet_id || '|' || prompt_version) -- bumping
+    # prompt_version on a FacetSpec adds a new row rather than overwriting
+    # (ON CONFLICT DO NOTHING preserves the historical row that existing
+    # fact_session_facets rows reference). The description text becomes
+    # prompt_text in the registry so it's queryable / auditable post-hoc.
+    from ccutils.etl.facets.catalog import FACET_SPECS as _TIER2_SPECS
+
+    conn.executemany(
+        """
+        INSERT INTO dim_facet_type
+            (facet_type_key, facet_id, facet_name, tier, method, output_type,
+             prompt_text, prompt_version)
+        VALUES (md5(? || '|' || ?), ?, ?, 2, 'llm', ?, ?, ?)
+        ON CONFLICT (facet_type_key) DO NOTHING
+        """,
+        [
+            (
+                spec.facet_id, spec.prompt_version,
+                spec.facet_id, spec.facet_name, spec.output_type,
+                spec.description, spec.prompt_version,
+            )
+            for spec in _TIER2_SPECS
+        ],
+    )
+
     conn.execute(
         """
         CREATE OR REPLACE TABLE fact_session_facets (

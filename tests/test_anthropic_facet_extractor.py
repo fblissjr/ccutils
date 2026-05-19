@@ -5,6 +5,14 @@ exercise the real httpx code path with canned responses, so the tests
 catch issues in request shape (cache_control wiring, system/user
 split, JSON schema in the prompt) as well as response parsing.
 
+**Note on `_no_sleep`:** the autouse fixture below patches `time.sleep`
+to a no-op for the entire module. The retry tests would otherwise add
+seconds (1s + 4s backoff per validation attempt; up to 21s for HTTP
+retries). Patching is the right call for unit speed but means we have
+no end-to-end test asserting that real backoff intervals fire as
+designed. If backoff correctness ever needs a real-time test, write it
+as a separate module without `_no_sleep` and gate it behind a marker.
+
 Coverage targets correspond to the malformed-output policy table in
 internal/plans/facet_extractor_protocol.md §3:
   - happy path: single + multi facet
@@ -140,6 +148,31 @@ class TestHappyPath:
         assert "raw_response" in meta
         assert "F20" in meta["raw_response"]
         assert "cache_hit" in meta
+
+    def test_metadata_schema_matches_documented_contract(
+        self, httpx_mock, extractor, session_inputs, f20_spec
+    ):
+        # Schema per protocol §3.1 -- downstream QA queries depend on
+        # these field names being stable. Adding fields is fine; removing
+        # or renaming requires a coordinated change.
+        httpx_mock.add_response(json=_api_response('{"F20": "ok"}'))
+        out = extractor.extract(session_inputs, [f20_spec])
+        meta = json.loads(out["F20"].metadata_json)
+        for key in (
+            "raw_response", "prompt_version", "retry_count",
+            "cache_hit", "input_tokens", "output_tokens", "latency_ms",
+        ):
+            assert key in meta, f"metadata schema missing {key}"
+        # prompt_version threads through from the spec to the metadata
+        # so logs can GROUP BY prompt_version cleanly.
+        assert meta["prompt_version"] == "v1"
+        # Tokens come from the API response usage block (100 / 20 in
+        # _api_response helper).
+        assert meta["input_tokens"] == 100
+        assert meta["output_tokens"] == 20
+        # latency_ms is non-negative (time.sleep is patched to no-op so
+        # the lower bound is just "set, not None").
+        assert meta["latency_ms"] >= 0
 
 
 class TestMalformedOutput:

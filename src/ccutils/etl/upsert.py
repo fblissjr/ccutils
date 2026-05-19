@@ -61,6 +61,7 @@ def lineage_upsert(
     derive_session_keys: bool = True,
     timestamp_col: str = "timestamp",
     record_source: str = "claude_code_jsonl",
+    soft_delete_scope_sql: str | None = None,
 ) -> None:
     """Generic UPDATE/INSERT/soft-delete pattern shared by every populator.
 
@@ -88,6 +89,14 @@ def lineage_upsert(
             populators (fact_session_summary uses "first_timestamp")
             override.
         record_source: provenance label stamped on inserted rows.
+        soft_delete_scope_sql: optional extra WHERE clause for the
+            soft-delete step. Use when multiple populators write to the
+            same table and the helper must not soft-delete rows belonging
+            to other populators (e.g. fact_session_facets is written by
+            both the Tier 1 and Tier 2 populators; each needs to scope
+            its soft-delete by `facet_type_key IN (... WHERE tier=N)`).
+            Default None preserves the original "this populator owns the
+            session" semantics.
     """
     _validate_ident(table)
     _validate_ident(inbound_table)
@@ -166,6 +175,9 @@ def lineage_upsert(
         [run.version_key, run.version_key, run.etl_run_id, record_source],
     )
 
+    extra_scope = (
+        f" AND ({soft_delete_scope_sql})" if soft_delete_scope_sql else ""
+    )
     conn.execute(
         f"""
         UPDATE {table} tgt
@@ -177,6 +189,7 @@ def lineage_upsert(
         WHERE tgt.is_deleted = FALSE
           AND tgt.session_id IN (SELECT DISTINCT session_id FROM {inbound_table})
           AND tgt.{natural_key} NOT IN (SELECT {natural_key} FROM {inbound_table})
+          {extra_scope}
         """,
         [run.version_key, run.etl_run_id],
     )

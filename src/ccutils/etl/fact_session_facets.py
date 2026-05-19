@@ -42,6 +42,7 @@ so the summary populator stays last as the aggregate roll-up.
 
 from __future__ import annotations
 
+from ccutils.etl.facets.catalog import facet_tier_scope_sql
 from ccutils.etl.lineage import EtlRun
 from ccutils.etl.upsert import lineage_upsert
 
@@ -338,6 +339,10 @@ def populate_tier1_facets(conn, *, run: EtlRun) -> None:
     # connection lifetime.
     conn.execute(f"DROP TABLE IF EXISTS {_SCOPE}")
 
+    # Scope the soft-delete to Tier 1 facet_type_keys only. fact_session_facets
+    # is written by both Tier 1 and Tier 2 populators; without scoping, this
+    # populator would soft-delete every Tier 2 row in the session (and Tier 2
+    # would soft-delete every Tier 1 row on its own pass).
     lineage_upsert(
         conn, run=run,
         table="fact_session_facets",
@@ -345,4 +350,5 @@ def populate_tier1_facets(conn, *, run: EtlRun) -> None:
         natural_key="facet_row_key",
         payload_cols=_PAYLOAD_COLS,
         hash_cols=_HASH_COLS,
+        soft_delete_scope_sql=facet_tier_scope_sql(1),
     )

@@ -18,6 +18,19 @@ from typing import Literal, Protocol, runtime_checkable
 
 OutputType = Literal["text", "enum", "json", "int", "float", "bool"]
 
+# Maps a FacetSpec.output_type to the `fact_session_facets.value_*`
+# column that stores it. Made explicit so the contract between extractor
+# output and DDL storage is one lookup, not a 6-arm if/else at each
+# call site.
+OUTPUT_TYPE_TO_COL: dict[OutputType, str] = {
+    "text": "value_text",
+    "enum": "value_text",
+    "json": "value_json",
+    "int": "value_numeric",
+    "float": "value_numeric",
+    "bool": "value_bool",
+}
+
 
 @dataclass(frozen=True)
 class FacetSpec:

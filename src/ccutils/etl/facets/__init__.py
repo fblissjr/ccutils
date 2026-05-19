@@ -13,6 +13,7 @@ from ccutils.etl.facets.anthropic import (
     AnthropicFacetExtractor,
     FacetExtractionError,
 )
+from ccutils.etl.facets.catalog import FACET_SPECS
 from ccutils.etl.facets.extractor import (
     CannedFacetExtractor,
     FacetExtractor,
@@ -20,13 +21,16 @@ from ccutils.etl.facets.extractor import (
     FacetSpec,
     SessionInputs,
 )
+from ccutils.etl.facets.populator import populate_tier2_facets
 
 __all__ = [
     "AnthropicFacetExtractor",
     "CannedFacetExtractor",
+    "FACET_SPECS",
     "FacetExtractionError",
     "FacetExtractor",
     "FacetOutput",
     "FacetSpec",
     "SessionInputs",
+    "populate_tier2_facets",
 ]
