@@ -19,11 +19,30 @@ Commit early and often. Commits should bundle the test, implementation, and docu
 - **Four tiers:** JSONL (Claude Code writes) → Parquet lake (Tier 1, `src/ccutils/parsers/parquet_writer.py`) → `stg_log_entries` staging (Tier 2) → fact tables (Tier 3).
 - **Every v0.15 fact** follows the lineage convention via `lineage_upsert(conn, *, run, table, inbound_table, natural_key, payload_cols, hash_cols)` in `src/ccutils/etl/upsert.py`. Lineage block on every row: `created_at`, `last_updated_at`, `created_by_version_key`, `last_updated_by_version_key`, `etl_run_id`, `record_source`, `hash_diff`, `is_deleted`, `deleted_at`.
 
+## Facet pipeline (v0.15+)
+
+Three-tier facet system on top of v0.15 facts. Writes one row per (session × facet) into `fact_session_facets`.
+
+- **Tier 1 (F01-F19, SQL-computed):** `populate_tier1_facets` in `src/ccutils/etl/fact_session_facets.py`. Zero inference, always runs.
+- **Tier 2 (F20+, LLM-extracted via Haiku 4.5):** `populate_tier2_facets` in `src/ccutils/etl/facets/populator.py`. Opt-in via `--with-llm-facets` (local) or `--batch-llm-facets` (all). Requires `ANTHROPIC_API_KEY` env var or `ccutils-anthropic` keychain entry.
+- **Tier 3 (clustering):** not yet built (Step 5+).
+
+**Catalog as single source of truth:** `src/ccutils/etl/facets/catalog.py::FACET_SPECS` lists every Tier 2 facet + its `prompt_version`. `create_star_schema()` seeds one `dim_facet_type` row per spec via `INSERT ... ON CONFLICT DO NOTHING`. Bumping `prompt_version` on a `FacetSpec` adds a new row (old rows survive, fact rows referencing them remain valid).
+
+**Import direction (one-way):** `schemas/star/schema.py` imports `FACET_SPECS` from `ccutils.etl.facets.catalog` at DDL seed time. The `facets/` package MUST NOT import from `schemas/` — would loop at CLI startup.
+
+**Shared dim DDL:** `dim_facet_type` uses `CREATE TABLE IF NOT EXISTS` + `INSERT ... ON CONFLICT DO NOTHING` (not `CREATE OR REPLACE`). `create_star_schema()` runs on every CLI invocation; the historical-state strategy preserves prompt_version rows that fact_session_facets references. Apply the same pattern to any future dim that retains historical state.
+
+**Credentials boundary:** `src/ccutils/cli/utils.py::build_facet_extractor_or_exit` is the single seam where Tier 2 credentials are resolved + an `AnthropicFacetExtractor` is constructed. Both CLI commands import it; future Tier 2 callers should too.
+
+**Design doc:** `internal/plans/facet_extractor_protocol.md` (gitignored).
+
 ## lineage_upsert pitfalls
 
 - `payload_cols` MUST NOT include `session_key` — it's added by `extra_keys`; duplicates cause "Multiple assignments to same column".
 - Target fact table MUST have `date_key` + `time_key` columns; lineage_upsert always references them on UPDATE.
 - Aggregate facts without a plain `timestamp` column: pass `timestamp_col="first_operation_timestamp"` (or similar) so date/time keys derive from the right field.
+- **Shared fact tables (multiple populators writing the same table) MUST pass `soft_delete_scope_sql`** to `lineage_upsert` so each populator's soft-delete only touches rows it owns. Without it, Populator A's pass soft-deletes every row Populator B just wrote. See `fact_session_facets`: both Tier 1 and Tier 2 populators pass `facet_tier_scope_sql(N)` from `etl/facets/catalog.py`.
 
 ## Populator scoping
 
@@ -54,6 +73,17 @@ Commit early and often. Commits should bundle the test, implementation, and docu
 ## JSON library
 
 Stdlib `json` is the project convention (13 files use it). Do NOT auto-migrate to orjson — global rule was removed earlier; project-wide migration is out of scope.
+
+## CLI / test patterns
+
+- **CLI test monkeypatching:** `cli.add_command(local_cmd, "local")` makes `ccutils.cli.local` resolve to the click subcommand, shadowing the Python submodule for `getattr`-based attribute walks (including pytest's dotted-string monkeypatch). Use `importlib.import_module("ccutils.cli.local")` to get the actual module. See `tests/test_cli_llm_facets.py` for the pattern.
+- **CLI stderr in tests:** `click.echo(err=True)` writes to stderr. Click's `CliRunner` may mix or separate stdout/stderr depending on version. Use `_combined_output(result)` (in `tests/test_cli_llm_facets.py`) + assert on `exit_code` for version-robust assertions.
+- **F90+ test fixture convention:** test fixtures seeding hypothetical `dim_facet_type` rows MUST use facet ids in F90+ to avoid colliding with the real catalog as it grows. Canonical: `tests/test_fact_session_facets_v15.py::two_f90_versions`.
+- **Live-API smoke (run once after `AnthropicFacetExtractor` changes; pennies):**
+  ```bash
+  ANTHROPIC_API_KEY=$(security find-generic-password -s ccutils-anthropic -a $USER -w) \
+    uv run pytest tests/test_populate_tier2_facets.py::TestLiveApiSmoke -v
+  ```
 
 ## Project Structure
 
@@ -104,11 +134,18 @@ ccutils/
 │   │   ├── lineage.py        # EtlRun + hash_diff + record_source_label
 │   │   ├── upsert.py         # lineage_upsert() shared by every fact populator
 │   │   ├── staging.py        # load_session_to_staging() (Tier 1 -> Tier 2)
+│   │   ├── utils.py          # Shared ETL utilities (extract_text_from_content_json)
 │   │   ├── fact_messages.py
 │   │   ├── fact_tool_calls.py        # fact_tool_uses + fact_tool_results
 │   │   ├── fact_token_usage.py
 │   │   ├── fact_session_summary.py
-│   │   └── entry_type_facts.py       # attachments, progress, system, meta, file_history, queue_ops, pr_links
+│   │   ├── entry_type_facts.py       # attachments, progress, system, meta, file_history, queue_ops, pr_links
+│   │   ├── fact_session_facets.py    # Tier 1 facet populator (F01-F19, SQL-computed)
+│   │   └── facets/                    # Tier 2 LLM-extracted facets
+│   │       ├── catalog.py             # FACET_SPECS registry + facet_tier_scope_sql helper
+│   │       ├── extractor.py           # FacetExtractor Protocol + dataclasses + CannedFacetExtractor
+│   │       ├── anthropic.py           # AnthropicFacetExtractor (Haiku via httpx)
+│   │       └── populator.py           # populate_tier2_facets
 │   ├── export/                # Export format handlers
 │   │   ├── __init__.py
 │   │   ├── html.py           # HTML generation
