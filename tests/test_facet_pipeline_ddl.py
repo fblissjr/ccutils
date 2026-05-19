@@ -67,9 +67,33 @@ class TestDimFacetType:
             "prompt_text",
             "prompt_version",
             "embedding_model",
+            "notes",  # data-level caveats (e.g. F16's UTC-hour limitation)
             "created_at",
         ):
             assert col in cols, f"Missing column: {col}"
+
+    def test_facet_type_key_is_primary_key(self, conn):
+        # Without an enforced PK, a future non-OR-REPLACE migration path could
+        # silently seed duplicates. DuckDB DESCRIBE reports the PK in the 'key'
+        # column.
+        info = conn.execute("DESCRIBE dim_facet_type").fetchall()
+        pk_cols = [row[0] for row in info if row[3] == "PRI"]
+        assert pk_cols == ["facet_type_key"], (
+            f"facet_type_key should be the PRIMARY KEY, got {pk_cols}"
+        )
+
+    def test_facet_with_caveat_carries_a_note(self, conn):
+        # F16 (local_hour) and F08 (loc_delta) both have known data-level
+        # caveats. The note must live on the row so analytical queries see it,
+        # not just in source-code comments.
+        rows = conn.execute(
+            "SELECT facet_id, notes FROM dim_facet_type "
+            "WHERE facet_id IN ('F08', 'F16')"
+        ).fetchall()
+        for facet_id, notes in rows:
+            assert notes is not None and len(notes) > 0, (
+                f"{facet_id} should carry a caveat in `notes`"
+            )
 
     def test_seeded_with_tier1_facets(self, conn):
         rows = conn.execute(

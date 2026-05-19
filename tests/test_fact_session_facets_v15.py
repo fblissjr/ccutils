@@ -238,6 +238,25 @@ class TestTier1FacetLineage:
             )
 
 
+@pytest.fixture
+def two_f20_versions(conn):
+    """Seeds dim_facet_type with two prompt-versioned rows for F20. Shared
+    setup for the prompt-version property tests below."""
+    conn.execute(
+        """
+        INSERT INTO dim_facet_type
+            (facet_type_key, facet_id, facet_name, tier, method,
+             output_type, prompt_text, prompt_version)
+        VALUES
+            (md5('F20' || '|' || 'v1'), 'F20', 'task_description',
+             2, 'llm', 'text', 'prompt v1', 'v1'),
+            (md5('F20' || '|' || 'v2'), 'F20', 'task_description',
+             2, 'llm', 'text', 'prompt v2 (better)', 'v2')
+        """
+    )
+    return conn
+
+
 class TestFacetTypeKeyVersionProperty:
     """Reflection 3 from the step-1 review: prompt versioning semantics.
 
@@ -247,19 +266,10 @@ class TestFacetTypeKeyVersionProperty:
     versions must coexist in dim_facet_type and resolve via the join.
     """
 
-    def test_same_id_different_version_yields_different_key(self, conn):
-        conn.execute(
-            """
-            INSERT INTO dim_facet_type
-                (facet_type_key, facet_id, facet_name, tier, method,
-                 output_type, prompt_text, prompt_version)
-            VALUES
-                (md5('F20' || '|' || 'v1'), 'F20', 'task_description',
-                 2, 'llm', 'text', 'prompt v1...', 'v1'),
-                (md5('F20' || '|' || 'v2'), 'F20', 'task_description',
-                 2, 'llm', 'text', 'prompt v2 (better)...', 'v2')
-            """
-        )
+    def test_same_id_different_version_yields_different_key(
+        self, two_f20_versions
+    ):
+        conn = two_f20_versions
         keys = conn.execute(
             "SELECT prompt_version, facet_type_key FROM dim_facet_type "
             "WHERE facet_id = 'F20' ORDER BY prompt_version"
@@ -270,20 +280,10 @@ class TestFacetTypeKeyVersionProperty:
             "distinct facet_type_key"
         )
 
-    def test_both_versions_resolve_after_new_version_lands(self, conn):
-        # Seed two versions for F20.
-        conn.execute(
-            """
-            INSERT INTO dim_facet_type
-                (facet_type_key, facet_id, facet_name, tier, method,
-                 output_type, prompt_text, prompt_version)
-            VALUES
-                (md5('F20' || '|' || 'v1'), 'F20', 'task_description',
-                 2, 'llm', 'text', 'prompt v1', 'v1'),
-                (md5('F20' || '|' || 'v2'), 'F20', 'task_description',
-                 2, 'llm', 'text', 'prompt v2', 'v2')
-            """
-        )
+    def test_both_versions_resolve_after_new_version_lands(
+        self, two_f20_versions
+    ):
+        conn = two_f20_versions
         # Insert a fact row keyed against v1 BEFORE v2 was seeded (simulated
         # by inserting now under v1's key only).
         conn.execute(

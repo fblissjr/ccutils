@@ -21,6 +21,11 @@ orchestrator):
     fact_token_usage
     fact_agent_delegations, fact_pr_links, fact_plan_revisions
 
+Ordering: F01..F04 read `intent`/`complexity`/`outcome`/`domain` from
+`dim_session`, which `populate_dim_session_heuristics` writes earlier in
+the orchestrator. Calling this populator standalone (without the
+heuristic pass first) emits NULL for those four facets.
+
 Per-session scoping: every per-session source-fact read is bounded by
 stg_log_entries.session_id (which only carries the session currently
 being ETL'd). Without this guard, the populator would rescan the whole
@@ -28,9 +33,8 @@ warehouse on every per-session call.
 
 Graceful absence: bool facets (F17/F18/F19) emit FALSE for sessions
 without subagents / PR links / plan revisions, rather than going
-missing. Same shape for the JSON facets when the source is empty
-(F05/F06/F07/F09 emit an empty JSON array; F11 emits an empty JSON
-object).
+missing. JSON facets emit an empty array when source is empty
+(F05/F06/F07/F09/F11).
 
 Run AFTER all source-fact populators; BEFORE populate_fact_session_summary
 so the summary populator stays last as the aggregate roll-up.
@@ -57,30 +61,23 @@ _PAYLOAD_COLS = [
     "extracted_at",
 ]
 
-# extracted_at is lineage metadata; excluding it from hash_cols keeps the
-# no-op re-run path clean (otherwise last_updated_at would churn on every
-# call).
-_HASH_COLS = [
-    "facet_type_key",
-    "prompt_version",
-    "value_text",
-    "value_json",
-    "value_numeric",
-    "value_bool",
-]
+# `extracted_at` is lineage metadata; excluding it keeps no-op re-runs from
+# churning last_updated_at. Derive rather than re-list so the exclusion rule
+# stays in one place.
+_HASH_COLS = [c for c in _PAYLOAD_COLS if c != "extracted_at"]
 
 
 def _facet_type_key_sql(facet_id: str) -> str:
-    """Inline-md5 form of the Tier 1 facet_type_key. Mirrors the seed
-    formula in schemas/star/schema.py: md5(facet_id || '|' || '') for
-    facets whose prompt_version is NULL."""
+    """Mirrors the Tier 1 seed formula in schemas/star/schema.py:
+    md5(facet_id || '|' || '') when prompt_version is NULL. Tier 2's
+    populator will compute the same shape with a real prompt_version."""
     return f"md5('{facet_id}' || '|' || '')"
 
 
 def _facet_row_key_sql(facet_id: str) -> str:
-    """Inline-md5 form of the per-row natural key. Composite logical key
-    (session_id, facet_id, prompt_version) collapsed to one column so
-    lineage_upsert can WHERE on it."""
+    """Composite logical key (session_id, facet_id, prompt_version)
+    collapsed to a single column so lineage_upsert can WHERE on it. Same
+    pattern as fact_errors.error_id."""
     return f"md5(scope.session_id || '|' || '{facet_id}' || '|' || '')"
 
 
@@ -105,8 +102,6 @@ def _create_inbound(conn) -> None:
 
 
 def _create_scope(conn) -> None:
-    """One row per session currently in staging, with its first_timestamp.
-    Reused by every facet INSERT below."""
     conn.execute(f"DROP TABLE IF EXISTS {_SCOPE}")
     conn.execute(
         f"""
@@ -123,73 +118,23 @@ def _create_scope(conn) -> None:
     )
 
 
-def _insert_text(conn, facet_id: str, value_expr: str) -> None:
-    """value_expr is a SQL expression returning VARCHAR for a row in scope."""
+def _insert_facet(conn, facet_id: str, value_col: str, value_expr: str) -> None:
+    """Emit one row per scope session into the inbound table. `value_col` is
+    one of value_text / value_json / value_numeric / value_bool; `value_expr`
+    is the SQL expression that produces it (may use `scope.*` to access
+    per-session attrs). JSON facets pass an expression that already evaluates
+    to JSON — no implicit CAST."""
     conn.execute(
         f"""
         INSERT INTO {_INBOUND}
             (facet_row_key, session_id, facet_type_key, prompt_version,
-             value_text, timestamp)
+             {value_col}, timestamp)
         SELECT
             {_facet_row_key_sql(facet_id)},
             scope.session_id,
             {_facet_type_key_sql(facet_id)},
             NULL,
             {value_expr},
-            scope.first_timestamp
-        FROM {_SCOPE} scope
-        """
-    )
-
-
-def _insert_numeric(conn, facet_id: str, value_expr: str) -> None:
-    conn.execute(
-        f"""
-        INSERT INTO {_INBOUND}
-            (facet_row_key, session_id, facet_type_key, prompt_version,
-             value_numeric, timestamp)
-        SELECT
-            {_facet_row_key_sql(facet_id)},
-            scope.session_id,
-            {_facet_type_key_sql(facet_id)},
-            NULL,
-            {value_expr},
-            scope.first_timestamp
-        FROM {_SCOPE} scope
-        """
-    )
-
-
-def _insert_bool(conn, facet_id: str, value_expr: str) -> None:
-    conn.execute(
-        f"""
-        INSERT INTO {_INBOUND}
-            (facet_row_key, session_id, facet_type_key, prompt_version,
-             value_bool, timestamp)
-        SELECT
-            {_facet_row_key_sql(facet_id)},
-            scope.session_id,
-            {_facet_type_key_sql(facet_id)},
-            NULL,
-            {value_expr},
-            scope.first_timestamp
-        FROM {_SCOPE} scope
-        """
-    )
-
-
-def _insert_json(conn, facet_id: str, value_expr: str) -> None:
-    conn.execute(
-        f"""
-        INSERT INTO {_INBOUND}
-            (facet_row_key, session_id, facet_type_key, prompt_version,
-             value_json, timestamp)
-        SELECT
-            {_facet_row_key_sql(facet_id)},
-            scope.session_id,
-            {_facet_type_key_sql(facet_id)},
-            NULL,
-            CAST({value_expr} AS JSON),
             scope.first_timestamp
         FROM {_SCOPE} scope
         """
@@ -199,19 +144,24 @@ def _insert_json(conn, facet_id: str, value_expr: str) -> None:
 def populate_tier1_facets(conn, *, run: EtlRun) -> None:
     """Compute Tier 1 facets for every session currently in staging."""
     _create_scope(conn)
+
+    # Empty staging => empty scope => no work. Skip the 19 INSERTs +
+    # lineage_upsert ALTER/UPDATE sequence entirely.
+    if conn.execute(f"SELECT COUNT(*) FROM {_SCOPE}").fetchone()[0] == 0:
+        conn.execute(f"DROP TABLE IF EXISTS {_SCOPE}")
+        return
+
     _create_inbound(conn)
 
-    # F01..F04 -- heuristic columns already on dim_session (populated by
-    # populate_dim_session_heuristics earlier in the orchestrator).
-    _insert_text(conn, "F01", "scope.intent")
-    _insert_text(conn, "F02", "scope.complexity")
-    _insert_text(conn, "F03", "scope.outcome")
-    _insert_text(conn, "F04", "scope.domain")
+    # F01..F04 -- heuristic columns already on dim_session.
+    _insert_facet(conn, "F01", "value_text", "scope.intent")
+    _insert_facet(conn, "F02", "value_text", "scope.complexity")
+    _insert_facet(conn, "F03", "value_text", "scope.outcome")
+    _insert_facet(conn, "F04", "value_text", "scope.domain")
 
-    # F05 error_signature -- ordered JSON array of error_types per session.
-    # Empty array when the session has no errors (graceful absence).
-    _insert_json(
-        conn, "F05",
+    # F05 -- ordered list of error_types; empty array when no errors.
+    _insert_facet(
+        conn, "F05", "value_json",
         """COALESCE(
             (SELECT to_json(list(fe.error_type ORDER BY fe.timestamp))
              FROM fact_errors fe
@@ -221,11 +171,9 @@ def populate_tier1_facets(conn, *, run: EtlRun) -> None:
         )""",
     )
 
-    # F06 tool_mix -- histogram of tool_name -> count, as a JSON object of
-    # {tool, count} entries. dim_tool join gives tool_name (degenerate would
-    # also work but the FK path is canonical).
-    _insert_json(
-        conn, "F06",
+    # F06 -- tool_name -> count histogram as JSON array of {tool, count}.
+    _insert_facet(
+        conn, "F06", "value_json",
         """COALESCE(
             (SELECT to_json(list({'tool': tool_name, 'count': ct}))
              FROM (
@@ -240,13 +188,12 @@ def populate_tier1_facets(conn, *, run: EtlRun) -> None:
         )""",
     )
 
-    # F07 tool_bigram_top3 -- top 3 (prev -> next) tool pairs by frequency,
-    # as JSON array of strings like "Read->Edit". fact_tool_chain_steps
-    # already carries next_tool_key.
-    _insert_json(
-        conn, "F07",
+    # F07 -- top 3 (prev -> next) tool pairs. Inner LIMIT 3 + ORDER BY does
+    # the selection; outer list() preserves arrival order, no re-sort needed.
+    _insert_facet(
+        conn, "F07", "value_json",
         """COALESCE(
-            (SELECT to_json(list(pair ORDER BY ct DESC))
+            (SELECT to_json(list(pair))
              FROM (
                 SELECT
                     dt_curr.tool_name || '->' || dt_next.tool_name AS pair,
@@ -265,13 +212,11 @@ def populate_tier1_facets(conn, *, run: EtlRun) -> None:
         )""",
     )
 
-    # F08 loc_delta -- v0.15 doesn't surface line-add/line-remove counts as
-    # typed columns (the data lives inside fact_tool_results.edit_structured_patch_json
-    # as opaque JSON). For step 2 we emit a count-of-modifying-operations
-    # proxy and leave the literal-LOC computation as a follow-up once the
-    # structured_patch JSON is unpacked into a typed shape.
-    _insert_numeric(
-        conn, "F08",
+    # F08 emits a proxy (count of modifying ops). The real LOC delta lives
+    # inside fact_tool_results.edit_structured_patch_json and needs unpacking
+    # into typed columns -- tracked as a follow-up (see dim_facet_type.notes).
+    _insert_facet(
+        conn, "F08", "value_numeric",
         """COALESCE(
             (SELECT COUNT(*)::DOUBLE
              FROM fact_file_operations ffo
@@ -282,12 +227,11 @@ def populate_tier1_facets(conn, *, run: EtlRun) -> None:
         )""",
     )
 
-    # F09 file_extensions_touched -- distinct extensions per session, as
-    # JSON array.
-    _insert_json(
-        conn, "F09",
+    _insert_facet(
+        conn, "F09", "value_json",
         """COALESCE(
-            (SELECT to_json(list(DISTINCT df.file_extension ORDER BY df.file_extension))
+            (SELECT to_json(list(DISTINCT df.file_extension
+                                 ORDER BY df.file_extension))
              FROM fact_file_operations ffo
              JOIN dim_file df USING (file_key)
              WHERE ffo.is_deleted = FALSE
@@ -297,16 +241,14 @@ def populate_tier1_facets(conn, *, run: EtlRun) -> None:
         )""",
     )
 
-    # F10 repo_slug -- dim_project.project_name (stable per repo).
-    _insert_text(
-        conn, "F10",
+    _insert_facet(
+        conn, "F10", "value_text",
         """(SELECT dp.project_name FROM dim_project dp
             WHERE dp.project_key = scope.project_key)""",
     )
 
-    # F11 model_mix -- tokens per model as JSON object of {model, tokens}.
-    _insert_json(
-        conn, "F11",
+    _insert_facet(
+        conn, "F11", "value_json",
         """COALESCE(
             (SELECT to_json(list({'model': model_name, 'tokens': total_tokens}))
              FROM (
@@ -323,21 +265,19 @@ def populate_tier1_facets(conn, *, run: EtlRun) -> None:
         )""",
     )
 
-    # F12 duration_seconds -- last_timestamp - first_timestamp.
-    _insert_numeric(
-        conn, "F12",
+    _insert_facet(
+        conn, "F12", "value_numeric",
         """COALESCE(
             EXTRACT(EPOCH FROM (scope.last_timestamp - scope.first_timestamp)),
             0.0
         )""",
     )
 
-    # F13 agent_depth -- 0 for primary sessions, >0 for subagents.
-    _insert_numeric(conn, "F13", "COALESCE(scope.depth_level, 0)::DOUBLE")
+    _insert_facet(conn, "F13", "value_numeric",
+                  "COALESCE(scope.depth_level, 0)::DOUBLE")
 
-    # F14 human_message_count -- user messages, excluding meta entries.
-    _insert_numeric(
-        conn, "F14",
+    _insert_facet(
+        conn, "F14", "value_numeric",
         """COALESCE(
             (SELECT COUNT(*)::DOUBLE
              FROM fact_messages fm
@@ -349,11 +289,10 @@ def populate_tier1_facets(conn, *, run: EtlRun) -> None:
         )""",
     )
 
-    # F15 tokens_in -- sum of input_tokens from fact_token_usage. Sourcing
-    # from the per-API-response fact (not fact_session_summary) keeps Tier 1
-    # independent of the summary populator order.
-    _insert_numeric(
-        conn, "F15",
+    # F15 sources from fact_token_usage rather than fact_session_summary so
+    # Tier 1 stays independent of summary populator order.
+    _insert_facet(
+        conn, "F15", "value_numeric",
         """COALESCE(
             (SELECT SUM(COALESCE(ftu.input_tokens, 0))::DOUBLE
              FROM fact_token_usage ftu
@@ -363,34 +302,30 @@ def populate_tier1_facets(conn, *, run: EtlRun) -> None:
         )""",
     )
 
-    # F16 local_hour -- hour of session start. Source timestamps are UTC;
-    # ccutils does not record the system TZ at capture, so "local" here is
-    # UTC-hour. True-local-hour would require a Claude Code change.
-    _insert_numeric(
-        conn, "F16",
-        "EXTRACT(hour FROM scope.first_timestamp)::DOUBLE",
-    )
+    _insert_facet(conn, "F16", "value_numeric",
+                  "EXTRACT(hour FROM scope.first_timestamp)::DOUBLE")
 
-    # F17/F18/F19 -- bool presence flags. EXISTS subqueries; graceful FALSE
-    # for sessions without subagents / PR links / plan revisions.
-    _insert_bool(
-        conn, "F17",
+    # F17 -- fact_agent_delegations.parent_session_key is the md5 of the
+    # parent session_id (no plain parent_session_id column carried), so hash
+    # inline. Asymmetric with F18/F19 which compare session_id directly.
+    _insert_facet(
+        conn, "F17", "value_bool",
         """EXISTS (
             SELECT 1 FROM fact_agent_delegations fad
             WHERE fad.is_deleted = FALSE
               AND fad.parent_session_key = md5(scope.session_id)
         )""",
     )
-    _insert_bool(
-        conn, "F18",
+    _insert_facet(
+        conn, "F18", "value_bool",
         """EXISTS (
             SELECT 1 FROM fact_pr_links fpl
             WHERE fpl.is_deleted = FALSE
               AND fpl.session_id = scope.session_id
         )""",
     )
-    _insert_bool(
-        conn, "F19",
+    _insert_facet(
+        conn, "F19", "value_bool",
         """EXISTS (
             SELECT 1 FROM fact_plan_revisions fpr
             WHERE fpr.is_deleted = FALSE
@@ -398,10 +333,11 @@ def populate_tier1_facets(conn, *, run: EtlRun) -> None:
         )""",
     )
 
-    # Delegate to lineage_upsert. extracted_at on inbound is set by
-    # CREATE TEMP TABLE's default (current_timestamp) at table creation
-    # time -- which is fine; the column is in payload_cols but excluded
-    # from hash_cols so no-op re-runs don't churn last_updated_at.
+    # Free scope before lineage_upsert mutates the inbound. If
+    # lineage_upsert raises, we don't want the scope to leak across the
+    # connection lifetime.
+    conn.execute(f"DROP TABLE IF EXISTS {_SCOPE}")
+
     lineage_upsert(
         conn, run=run,
         table="fact_session_facets",
@@ -410,6 +346,3 @@ def populate_tier1_facets(conn, *, run: EtlRun) -> None:
         payload_cols=_PAYLOAD_COLS,
         hash_cols=_HASH_COLS,
     )
-
-    # Scope cleanup; inbound is dropped by lineage_upsert itself.
-    conn.execute(f"DROP TABLE IF EXISTS {_SCOPE}")

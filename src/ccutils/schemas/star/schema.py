@@ -1292,7 +1292,7 @@ def create_star_schema(db_path):
     conn.execute(
         """
         CREATE OR REPLACE TABLE dim_facet_type (
-            facet_type_key VARCHAR,
+            facet_type_key VARCHAR PRIMARY KEY,
             facet_id VARCHAR NOT NULL,
             facet_name VARCHAR NOT NULL,
             tier INTEGER NOT NULL,
@@ -1301,6 +1301,7 @@ def create_star_schema(db_path):
             prompt_text VARCHAR,
             prompt_version VARCHAR,
             embedding_model VARCHAR,
+            notes VARCHAR,
             created_at TIMESTAMP NOT NULL DEFAULT current_timestamp
         )
         """
@@ -1309,34 +1310,41 @@ def create_star_schema(db_path):
     # Seed Tier 1 facets F01..F19. Names + output types mirror
     # FACET_CLUSTER_PIPELINE.md §3 "Tier 1" exactly. Tier 1 is computed by SQL
     # off existing facts so prompt_text / prompt_version stay NULL.
+    # `notes` carries data-level caveats so future analytical queries can see
+    # them (F16's UTC-hour limitation is the current example).
     _tier1_seeds = [
-        ("F01", "session_intent", "enum"),
-        ("F02", "session_complexity", "enum"),
-        ("F03", "session_outcome", "enum"),
-        ("F04", "session_domain", "enum"),
-        ("F05", "error_signature", "json"),
-        ("F06", "tool_mix", "json"),
-        ("F07", "tool_bigram_top3", "json"),
-        ("F08", "loc_delta", "int"),
-        ("F09", "file_extensions_touched", "json"),
-        ("F10", "repo_slug", "text"),
-        ("F11", "model_mix", "json"),
-        ("F12", "duration_seconds", "int"),
-        ("F13", "agent_depth", "int"),
-        ("F14", "human_message_count", "int"),
-        ("F15", "tokens_in", "int"),
-        ("F16", "local_hour", "int"),
-        ("F17", "had_subagents", "bool"),
-        ("F18", "pr_referenced", "bool"),
-        ("F19", "had_plan_revision", "bool"),
+        ("F01", "session_intent", "enum", None),
+        ("F02", "session_complexity", "enum", None),
+        ("F03", "session_outcome", "enum", None),
+        ("F04", "session_domain", "enum", None),
+        ("F05", "error_signature", "json", None),
+        ("F06", "tool_mix", "json", None),
+        ("F07", "tool_bigram_top3", "json", None),
+        ("F08", "loc_delta", "int",
+         "Proxy: count of write+edit operations. Literal LOC requires "
+         "unpacking fact_tool_results.edit_structured_patch_json."),
+        ("F09", "file_extensions_touched", "json", None),
+        ("F10", "repo_slug", "text", None),
+        ("F11", "model_mix", "json", None),
+        ("F12", "duration_seconds", "int", None),
+        ("F13", "agent_depth", "int", None),
+        ("F14", "human_message_count", "int", None),
+        ("F15", "tokens_in", "int", None),
+        ("F16", "local_hour", "int",
+         "Hour-of-day in UTC; user-local TZ not preserved at capture time."),
+        ("F17", "had_subagents", "bool", None),
+        ("F18", "pr_referenced", "bool", None),
+        ("F19", "had_plan_revision", "bool", None),
     ]
     conn.executemany(
         """
         INSERT INTO dim_facet_type
-            (facet_type_key, facet_id, facet_name, tier, method, output_type)
-        VALUES (md5(? || '|' || ''), ?, ?, 1, 'computed', ?)
+            (facet_type_key, facet_id, facet_name, tier, method, output_type,
+             notes)
+        VALUES (md5(? || '|' || ''), ?, ?, 1, 'computed', ?, ?)
         """,
-        [(fid, fid, fname, otype) for (fid, fname, otype) in _tier1_seeds],
+        [(fid, fid, fname, otype, notes)
+         for (fid, fname, otype, notes) in _tier1_seeds],
     )
 
     conn.execute(
