@@ -1,5 +1,6 @@
 """Session selection and conversion command."""
 
+import sys
 import tempfile
 from pathlib import Path
 
@@ -8,6 +9,7 @@ import questionary
 from click_option_group import optgroup
 from rich.console import Console
 
+from ..api import CredentialsError, resolve_anthropic_key
 from ..parsers import (
     find_agent_sessions,
     flatten_selected_sessions,
@@ -34,12 +36,30 @@ from ..schemas.star import (
     create_star_schema,
     export_star_schema_to_json,
 )
+from ..etl.facets import AnthropicFacetExtractor
 from ..etl.orchestrator import run_v15_etl
 from ..export import (
     generate_html,
     generate_multi_session_index,
 )
 from .utils import maybe_open_browser, run_embedding_pipeline
+
+
+def _build_facet_extractor_or_exit(with_llm_facets: bool):
+    """Resolve credentials and construct an AnthropicFacetExtractor when
+    --with-llm-facets is set. CredentialsError surfaces as a helpful
+    message + non-zero exit code rather than a stack trace.
+
+    Returns None when the flag is off (default), keeping the basic
+    pipeline credential-free."""
+    if not with_llm_facets:
+        return None
+    try:
+        api_key = resolve_anthropic_key()
+    except CredentialsError as e:
+        click.echo(str(e), err=True)
+        sys.exit(2)
+    return AnthropicFacetExtractor(api_key=api_key)
 
 
 @click.command("local")
@@ -105,6 +125,16 @@ from .utils import maybe_open_browser, run_embedding_pipeline
     flag_value="default",
     help="Run ColBERT embeddings (optionally specify model name).",
 )
+@optgroup.option(
+    "--with-llm-facets",
+    is_flag=True,
+    default=False,
+    help=(
+        "Extract Tier 2 LLM facets (F20 task_description via Haiku) into "
+        "fact_session_facets. Requires ANTHROPIC_API_KEY or a "
+        "ccutils-anthropic keychain entry. Star schema only."
+    ),
+)
 def local_cmd(
     input_file,
     output,
@@ -117,6 +147,7 @@ def local_cmd(
     no_subagents,
     private,
     embed,
+    with_llm_facets,
 ):
     """Convert Claude Code sessions to HTML, DuckDB, or JSON.
 
@@ -129,6 +160,7 @@ def local_cmd(
       ccutils session.jsonl                      # convert file, open in browser
       ccutils session.jsonl --format duckdb-star -o ./out  # star schema
       ccutils --format duckdb-star -o ./archive  # pick sessions, star schema
+      ccutils session.jsonl --format duckdb-star -o ./out --with-llm-facets
     """
     include_thinking = not no_thinking
 
@@ -136,18 +168,19 @@ def local_cmd(
         # Direct file conversion mode
         _convert_file(
             input_file, output, output_format, open_browser,
-            include_thinking, private,
+            include_thinking, private, with_llm_facets,
         )
     else:
         # Interactive picker mode
         _interactive_mode(
             output, output_format, open_browser, flat, expand_chains,
-            project_filter, include_thinking, not no_subagents, private, embed,
+            project_filter, include_thinking, not no_subagents, private,
+            embed, with_llm_facets,
         )
 
 
 def _convert_file(input_file, output, output_format, open_browser,
-                   include_thinking, private):
+                   include_thinking, private, with_llm_facets=False):
     """Convert a single session file to the requested format."""
     json_file_path = Path(input_file)
     if not json_file_path.exists():
@@ -167,12 +200,13 @@ def _convert_file(input_file, output, output_format, open_browser,
         private=private,
         project_name=json_file_path.parent.name or "unknown",
         open_browser=open_browser,
+        with_llm_facets=with_llm_facets,
     )
 
 
 def _interactive_mode(output, output_format, open_browser, flat, expand_chains,
                       project_filter, include_thinking, include_subagents,
-                      private, embed):
+                      private, embed, with_llm_facets=False):
     """Interactive session picker followed by export."""
     projects_folder = Path.home() / ".claude" / "projects"
 
@@ -226,6 +260,7 @@ def _interactive_mode(output, output_format, open_browser, flat, expand_chains,
         open_browser=open_browser,
         agent_map=agent_map,
         embed=embed,
+        with_llm_facets=with_llm_facets,
     )
 
 
@@ -239,6 +274,7 @@ def _run_export_pipeline(
     project_name=None,
     agent_map=None,
     embed=None,
+    with_llm_facets=False,
 ):
     """Shared export pipeline for all output formats.
 
@@ -252,11 +288,18 @@ def _run_export_pipeline(
         project_name: Override project name (for single-file mode).
         agent_map: Agent session relationships (from interactive picker).
         embed: Embedding model name, "default", or None.
+        with_llm_facets: If True, build an AnthropicFacetExtractor and pass
+            it to run_v15_etl so Tier 2 LLM facets are extracted.
     """
     if agent_map is None:
         agent_map = {}
 
     schema, fmt = resolve_schema_format(output_format)
+
+    # Build the Tier 2 facet extractor at the boundary (CLI), not inside
+    # run_v15_etl, so credential failures exit cleanly here with a helpful
+    # message rather than as a stack trace deep in the ETL.
+    facet_extractor = _build_facet_extractor_or_exit(with_llm_facets)
 
     # Resolve embed model
     embed_model = None
@@ -309,6 +352,7 @@ def _run_export_pipeline(
                     session_file,
                     project_name=project_name or session_file.parent.name,
                     parquet_lake_root=parquet_lake,
+                    facet_extractor=facet_extractor,
                 )
             if embed:
                 run_embedding_pipeline(conn, embed_model)
@@ -348,6 +392,7 @@ def _run_export_pipeline(
                     session_file,
                     project_name=project_name or session_file.parent.name,
                     parquet_lake_root=parquet_lake,
+                    facet_extractor=facet_extractor,
                 )
             if embed:
                 run_embedding_pipeline(conn, embed_model)

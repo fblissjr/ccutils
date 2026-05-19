@@ -59,7 +59,10 @@ ccutils -p myproject                             # Filter by project name
 ccutils --flat                                   # Legacy single-list mode
 ccutils --no-thinking --no-subagents             # Exclude thinking/agents
 ccutils --format duckdb-star --embed -o .        # With ColBERT embeddings
+ccutils --format duckdb-star --with-llm-facets -o .  # + Tier 2 LLM facets (F20 via Haiku)
 ```
+
+`--with-llm-facets` requires `ANTHROPIC_API_KEY` in the environment OR a `ccutils-anthropic` keychain entry (`security add-generic-password -s ccutils-anthropic -a $USER -w`). Star schema only.
 
 ### all
 
@@ -69,6 +72,7 @@ Batch convert every session. Agents and thinking blocks included by default.
 ccutils all -o ./archive                         # HTML archive with search index
 ccutils all --format duckdb-star -o ./analytics   # Star schema for all sessions
 ccutils all --format duckdb-star --embed -o ./out # With ColBERT embeddings
+ccutils all --format duckdb-star --batch-llm-facets -o ./out  # + Tier 2 LLM facets
 ccutils all -j 4 --batch-size 20 -o ./archive    # Parallel processing
 ccutils all --no-agents --no-thinking             # Exclude agents and thinking
 ccutils all --dry-run                            # Preview without converting

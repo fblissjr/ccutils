@@ -32,6 +32,16 @@ All notable changes to this project will be documented in this file.
   - `dim_facet_type` seeded with F20 v1 (Tier 2) row in `create_star_schema` alongside the Tier 1 seeds; same `ON CONFLICT DO NOTHING` pattern so historical prompt_versions survive re-runs.
   - Orchestrator's stub call replaced with the real `populate_tier2_facets` import; old `_populate_tier2_facets_stub` deleted.
   - Tests (`tests/test_populate_tier2_facets.py`): 8 cases covering canned-value happy path, missing-canned fallback, default-None skip, extractor-raises isolation, dim_facet_type seed, metadata storage, idempotency. Live-API smoke test (`TestLiveApiSmoke`) skips unless `ANTHROPIC_API_KEY` is set.
+- **Facet & cluster pipeline -- step 4.5 (CLI flags).** Tier 2 extraction is now reachable from the CLI:
+  - `ccutils local --with-llm-facets ...` -- single-session opt-in.
+  - `ccutils all --batch-llm-facets ...` -- batch opt-in.
+  - Both flags resolve credentials via `resolve_anthropic_key()` (env var first, macOS keychain second), construct `AnthropicFacetExtractor`, and thread it through to `run_v15_etl` via `facet_extractor=`. `CredentialsError` is caught at the CLI boundary and emits a helpful message + non-zero exit; users never see a stack trace.
+  - `generate_duckdb_archive` and `generate_star_json_archive` accept the new `facet_extractor=None` parameter and pass it through the per-session ETL loop.
+  - **Live-API smoke command** (run once after any change to `AnthropicFacetExtractor` or its prompt template; costs pennies):
+    ```bash
+    ANTHROPIC_API_KEY=$(security find-generic-password -s ccutils-anthropic -a $USER -w) \
+      uv run pytest tests/test_populate_tier2_facets.py::TestLiveApiSmoke -v
+    ```
 
 ## 0.15.0
 

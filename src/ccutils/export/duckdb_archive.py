@@ -33,6 +33,7 @@ def generate_duckdb_archive(
     max_workers=1,
     batch_size=10,
     private=False,
+    facet_extractor=None,
 ):
     """Generate DuckDB archive for all sessions.
 
@@ -69,6 +70,10 @@ def generate_duckdb_archive(
     if schema_type == "star":
         conn = create_star_schema(db_path)
         parquet_lake = output_dir / "parquet_lake"
+        # facet_extractor is captured by the closure; None disables Tier 2
+        # entirely. Legacy include_thinking / truncate_output / private
+        # kwargs flow through **_legacy_kwargs unused -- the v0.15 ETL
+        # captures everything by default.
         etl_func = (
             lambda conn, session_path, project_name, **_legacy_kwargs:
             run_v15_etl(
@@ -76,6 +81,7 @@ def generate_duckdb_archive(
                 session_path,
                 project_name=project_name,
                 parquet_lake_root=parquet_lake,
+                facet_extractor=facet_extractor,
             )
         )
     else:
@@ -306,6 +312,7 @@ def generate_star_json_archive(
     max_workers=1,
     batch_size=10,
     private=False,
+    facet_extractor=None,
 ):
     """Generate star schema JSON archive for all sessions.
 
@@ -345,6 +352,7 @@ def generate_star_json_archive(
             max_workers=max_workers,
             batch_size=batch_size,
             private=private,
+            facet_extractor=facet_extractor,
         )
 
         # Export to JSON

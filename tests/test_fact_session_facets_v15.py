@@ -244,10 +244,12 @@ def two_f90_versions(conn):
     hypothetical facet F90. Shared setup for the prompt-version property
     tests below.
 
-    Uses F90 rather than F20 because F20 is now pre-seeded by
-    create_star_schema (Step 4 catalog landed). The property under test
-    is about ANY pair of (facet_id, prompt_version) rows, not anything
-    F20-specific."""
+    **Convention:** hypothetical facet ids used by test fixtures should
+    live in the F90+ range to avoid colliding with the real catalog as
+    it grows (F20, F21, F22...). The property under test is about ANY
+    pair of (facet_id, prompt_version) rows, not anything F20-specific.
+    Future fixtures seeding their own `dim_facet_type` rows should
+    follow the same convention."""
     conn.execute(
         """
         INSERT INTO dim_facet_type
