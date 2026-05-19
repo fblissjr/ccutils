@@ -1353,6 +1353,10 @@ def create_star_schema(db_path):
             is_deleted BOOLEAN NOT NULL DEFAULT FALSE,
             deleted_at TIMESTAMP,
 
+            -- Natural key (synthesized, single-column for lineage_upsert):
+            -- md5(session_id || '|' || facet_id || '|' || COALESCE(prompt_version, ''))
+            facet_row_key VARCHAR NOT NULL,
+
             -- Natural key parts + degenerate dims
             session_key VARCHAR NOT NULL,
             session_id VARCHAR NOT NULL,
@@ -1385,6 +1389,10 @@ def create_star_schema(db_path):
             hash_diff VARCHAR NOT NULL,
             is_deleted BOOLEAN NOT NULL DEFAULT FALSE,
             deleted_at TIMESTAMP,
+
+            -- Natural key (synthesized): md5(session_id || facet_type_key ||
+            -- embedding_model || embedding_model_version)
+            embedding_row_key VARCHAR NOT NULL,
 
             -- Natural key parts + degenerate dims
             session_key VARCHAR NOT NULL,

@@ -120,6 +120,7 @@ class TestFactSessionFacets:
     def test_columns(self, conn):
         cols = [c[0] for c in conn.execute("DESCRIBE fact_session_facets").fetchall()]
         for col in (
+            "facet_row_key",  # synthesized natural key for lineage_upsert
             "session_key",
             "session_id",
             "facet_type_key",
@@ -160,6 +161,7 @@ class TestFactFacetEmbeddings:
     def test_columns(self, conn):
         cols = [c[0] for c in conn.execute("DESCRIBE fact_facet_embeddings").fetchall()]
         for col in (
+            "embedding_row_key",  # synthesized natural key for lineage_upsert
             "session_key",
             "session_id",
             "facet_type_key",

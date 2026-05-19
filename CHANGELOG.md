@@ -10,7 +10,10 @@ All notable changes to this project will be documented in this file.
   - `dim_facet_type` -- registry of facet definitions. Seeded with the 19 Tier 1 facets (F01-F19) from `docs/FACET_CLUSTER_PIPELINE.md` §3. All `method='computed'`, no prompt fields.
   - `fact_session_facets` -- one row per (session, facet_type, prompt_version). Typed value columns (text/json/numeric/bool). Carries the full v0.15 lineage envelope.
   - `fact_facet_embeddings` -- one row per (session, facet_type, embedding_model, embedding_model_version). Stores the vector as `FLOAT[384]` so DuckDB's native `array_cosine_similarity` / `array_inner_product` work without a vector DB. Lineage envelope on every row.
-- **Schema-split decision** (departure from original design doc): embeddings live in their own table rather than as an inline `BLOB` column on `fact_session_facets`. Rationale lives in `docs/FACET_CLUSTER_PIPELINE.md` §4. No populator wiring yet -- step 2 (Tier 1 SQL populator) is next.
+- **Schema-split decision** (departure from original design doc): embeddings live in their own table rather than as an inline `BLOB` column on `fact_session_facets`. Rationale lives in `docs/FACET_CLUSTER_PIPELINE.md` §4.
+- **Synthesized natural-key columns** -- `fact_session_facets.facet_row_key = md5(session_id || facet_id || prompt_version)` and `fact_facet_embeddings.embedding_row_key = md5(session_id || facet_type_key || model || model_version)`. Step-1 follow-up surfaced by step 2 (`lineage_upsert` takes a single-column natural key).
+- **Facet & cluster pipeline -- step 2 (Tier 1 SQL populator).** New `populate_tier1_facets(conn, *, run)` in `src/ccutils/etl/fact_session_facets.py`. Computes all 19 Tier 1 facets per session via SQL aggregations over the v0.15 facts (`dim_session` heuristics, `fact_tool_uses`, `fact_tool_chain_steps`, `fact_errors`, `fact_file_operations`, `fact_token_usage`, `fact_agent_delegations`, `fact_pr_links`, `fact_plan_revisions`). Bool facets (F17/F18/F19) default to `FALSE` on absence; JSON facets default to `[]` so downstream consumers can rely on schema-stable shapes.
+- Wired into `run_v15_etl` after the heuristic / chain populators and before `populate_fact_session_summary`, preserving the "summary runs last" invariant.
 
 ## 0.15.0
 

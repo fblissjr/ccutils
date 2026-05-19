@@ -58,6 +58,7 @@ from ccutils.etl.fact_plan_revisions import populate_fact_plan_revisions
 from ccutils.etl.fact_tool_chain_steps import populate_fact_tool_chain_steps
 from ccutils.etl.subagent_enrichment import populate_subagent_dim_session
 from ccutils.etl.fact_messages import populate_fact_messages
+from ccutils.etl.fact_session_facets import populate_tier1_facets
 from ccutils.etl.fact_session_summary import populate_fact_session_summary
 from ccutils.etl.fact_token_usage import populate_fact_token_usage
 from ccutils.etl.fact_tool_calls import (
@@ -288,6 +289,11 @@ def run_v15_etl(
         # dim_session_chain groups sessions sharing a slug; rebuilt fresh
         # each run since adding a new session can re-aggregate the chain
         populate_dim_session_chain(conn, run=run)
+        # Tier 1 facets: 19 SQL-computed facets per session (F01..F19) into
+        # fact_session_facets. Runs after every source fact / dim is in
+        # place; runs before fact_session_summary so summary stays the
+        # final aggregate roll-up.
+        populate_tier1_facets(conn, run=run)
         populate_fact_session_summary(conn, run=run)
 
         run.complete(sessions_inserted=1)
