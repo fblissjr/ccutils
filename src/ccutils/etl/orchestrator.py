@@ -44,6 +44,7 @@ from ccutils.etl.entry_type_facts import (
     populate_fact_queue_operations,
     populate_fact_system_events,
 )
+from ccutils.etl.facets import FacetExtractor
 from ccutils.etl.bridge_session_file import populate_bridge_session_file
 from ccutils.etl.dim_session_chain import populate_dim_session_chain
 from ccutils.etl.dim_session_heuristics import populate_dim_session_heuristics
@@ -208,12 +209,23 @@ def _upsert_minimal_dimensions(conn) -> None:
     )
 
 
+def _populate_tier2_facets_stub(conn, *, run, extractor: FacetExtractor) -> None:
+    """No-op stub for the Tier 2 populator. Step 3 wires the orchestrator
+    signature + dispatch guard; step 4 fills the body (build SessionInputs
+    from facts, call extractor.extract(), write rows via lineage_upsert).
+
+    Kept inline so the orchestrator import graph stays bounded; the body
+    will move into ccutils.etl.facets.populator when it's non-trivial."""
+    _ = conn, run, extractor
+
+
 def run_v15_etl(
     conn,
     session_path: str | Path,
     *,
     project_name: str = "unknown",
     parquet_lake_root: str | Path | None = None,
+    facet_extractor: FacetExtractor | None = None,
 ) -> dict[str, Any]:
     """End-to-end ETL for one session JSONL.
 
@@ -224,6 +236,10 @@ def run_v15_etl(
             actual project_name in dim_project is derived from source_path.
         parquet_lake_root: where to write the per-session Parquet files.
             Defaults to a sibling 'parquet_lake' dir next to session_path.
+        facet_extractor: optional Tier 2 LLM-facet extractor. None (the
+            default) disables Tier 2 entirely. When supplied, the Tier 2
+            populator runs after Tier 1 and before fact_session_summary
+            so the summary roll-up still sees every facet.
 
     Returns:
         dict with 'etl_run_id' and 'sessions_inserted' for caller use.
@@ -294,6 +310,12 @@ def run_v15_etl(
         # place; runs before fact_session_summary so summary stays the
         # final aggregate roll-up.
         populate_tier1_facets(conn, run=run)
+        # Tier 2 facets (LLM-extracted) only run when a FacetExtractor is
+        # injected. Step 3 wires the dispatch; step 4 fills the populator
+        # body. Until then this is a no-op when an extractor is supplied,
+        # and entirely skipped when it's None.
+        if facet_extractor is not None:
+            _populate_tier2_facets_stub(conn, run=run, extractor=facet_extractor)
         populate_fact_session_summary(conn, run=run)
 
         run.complete(sessions_inserted=1)

@@ -95,6 +95,42 @@ class TestDimFacetType:
                 f"{facet_id} should carry a caveat in `notes`"
             )
 
+    def test_historical_prompt_versions_survive_rerun(self, tmp_path):
+        # ON CONFLICT DO NOTHING: when create_star_schema() is called on an
+        # existing DB (the normal CLI path), a prompt_version row added
+        # post-seed (e.g. F20 v2) must NOT be wiped. Otherwise re-running
+        # the CLI would destroy the historical registry that
+        # fact_session_facets rows already reference by facet_type_key.
+        from ccutils import create_star_schema
+
+        db_path = tmp_path / "rerun.duckdb"
+        conn = create_star_schema(db_path)
+        conn.execute(
+            """
+            INSERT INTO dim_facet_type
+                (facet_type_key, facet_id, facet_name, tier, method,
+                 output_type, prompt_text, prompt_version)
+            VALUES (md5('F20' || '|' || 'v1'), 'F20', 'task_description',
+                    2, 'llm', 'text', 'prompt v1', 'v1')
+            """
+        )
+        conn.close()
+
+        # Reopen via create_star_schema as the CLI does.
+        conn2 = create_star_schema(db_path)
+        survivors = conn2.execute(
+            "SELECT facet_id, prompt_version FROM dim_facet_type "
+            "WHERE facet_id = 'F20'"
+        ).fetchall()
+        assert survivors == [("F20", "v1")], (
+            f"F20 v1 should survive re-create_star_schema, got {survivors}"
+        )
+        # Tier 1 seeds should still be all there.
+        n_tier1 = conn2.execute(
+            "SELECT COUNT(*) FROM dim_facet_type WHERE tier = 1"
+        ).fetchone()[0]
+        assert n_tier1 == 19
+
     def test_seeded_with_tier1_facets(self, conn):
         rows = conn.execute(
             "SELECT facet_id, tier, method "
@@ -153,11 +189,35 @@ class TestFactSessionFacets:
             "value_json",
             "value_numeric",
             "value_bool",
+            # Step 3: Tier 2 QA aids (NULL / FALSE for Tier 1 rows)
+            "is_fallback",
+            "extraction_metadata_json",
             "extracted_at",
             "date_key",
             "time_key",
         ):
             assert col in cols, f"Missing column: {col}"
+
+    def test_is_fallback_defaults_false(self, conn):
+        # Tier 2 QA aid: rows written without an explicit value should
+        # default to "successful extraction" (is_fallback=FALSE).
+        # Tier 1 populator never sets is_fallback so it must default
+        # cleanly there too.
+        conn.execute(
+            """
+            INSERT INTO fact_session_facets (
+                created_by_version_key, last_updated_by_version_key,
+                etl_run_id, record_source, hash_diff,
+                facet_row_key, session_key, session_id, facet_type_key
+            )
+            VALUES ('vk', 'vk', 'r1', 'claude_code_jsonl', 'h1',
+                    'rk1', 'sk1', 's1', 'ftk1')
+            """
+        )
+        is_fallback = conn.execute(
+            "SELECT is_fallback FROM fact_session_facets WHERE facet_row_key = 'rk1'"
+        ).fetchone()[0]
+        assert is_fallback is False
 
     def test_no_embedding_column(self, conn):
         # Schema-split contract: embeddings live in fact_facet_embeddings.

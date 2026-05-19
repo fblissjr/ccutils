@@ -1289,9 +1289,15 @@ def create_star_schema(db_path):
     # a vector DB, and absorbs future model-version coexistence as new rows
     # rather than destructive overwrites of structured-value facets.
 
+    # IMPORTANT: dim_facet_type uses CREATE IF NOT EXISTS, not CREATE OR
+    # REPLACE. The registry holds historical prompt_version rows that
+    # fact_session_facets references by facet_type_key -- wiping them on
+    # every create_star_schema() call (the CLI path) would orphan fact rows.
+    # Tier 1 seeds below use INSERT ... ON CONFLICT DO NOTHING for the same
+    # reason: existing seed rows from a prior run survive untouched.
     conn.execute(
         """
-        CREATE OR REPLACE TABLE dim_facet_type (
+        CREATE TABLE IF NOT EXISTS dim_facet_type (
             facet_type_key VARCHAR PRIMARY KEY,
             facet_id VARCHAR NOT NULL,
             facet_name VARCHAR NOT NULL,
@@ -1342,6 +1348,7 @@ def create_star_schema(db_path):
             (facet_type_key, facet_id, facet_name, tier, method, output_type,
              notes)
         VALUES (md5(? || '|' || ''), ?, ?, 1, 'computed', ?, ?)
+        ON CONFLICT (facet_type_key) DO NOTHING
         """,
         [(fid, fid, fname, otype, notes)
          for (fid, fname, otype, notes) in _tier1_seeds],
@@ -1376,6 +1383,14 @@ def create_star_schema(db_path):
             value_json JSON,
             value_numeric DOUBLE,
             value_bool BOOLEAN,
+
+            -- Tier 2 QA aids. NULL / FALSE for Tier 1 rows.
+            -- is_fallback distinguishes "model said it couldn't extract"
+            -- (genuine null) from "we couldn't parse the response"
+            -- (parse-fail null). extraction_metadata_json holds raw model
+            -- response + retry/cache bookkeeping for QA inspection.
+            is_fallback BOOLEAN NOT NULL DEFAULT FALSE,
+            extraction_metadata_json JSON,
 
             date_key INTEGER,
             time_key INTEGER,

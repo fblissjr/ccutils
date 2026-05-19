@@ -16,6 +16,7 @@ import json
 import pytest
 
 from ccutils import create_star_schema
+from ccutils.etl.facets import CannedFacetExtractor
 from ccutils.etl.orchestrator import run_v15_etl
 
 
@@ -203,3 +204,31 @@ class TestDimSessionEnrichment:
         assert len(rows) == 1
         assert rows[0][0] == "basic-s"
         assert rows[0][1] is not None
+
+
+class TestFacetExtractorWiring:
+    """Step 3: run_v15_etl accepts an optional facet_extractor and calls
+    the Tier 2 populator (currently a no-op stub) only when one is
+    supplied. Step 4 wires the real populator body.
+    """
+
+    def test_default_extractor_is_none(self, conn, basic_session, tmp_path):
+        # Existing callers (no kwarg) keep working.
+        result = run_v15_etl(
+            conn, basic_session, project_name="test-project",
+            parquet_lake_root=tmp_path / "lake",
+        )
+        assert result["etl_run_id"] is not None
+
+    def test_canned_extractor_does_not_break_run(
+        self, conn, basic_session, tmp_path
+    ):
+        # Passing a real-shaped extractor should run cleanly; step 4
+        # will wire the populator body that actually calls it.
+        extractor = CannedFacetExtractor({})
+        result = run_v15_etl(
+            conn, basic_session, project_name="test-project",
+            parquet_lake_root=tmp_path / "lake",
+            facet_extractor=extractor,
+        )
+        assert result["etl_run_id"] is not None
