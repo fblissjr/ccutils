@@ -1275,6 +1275,136 @@ def create_star_schema(db_path):
     )
 
     # =========================================================================
+    # Facet & Cluster Pipeline (docs/FACET_CLUSTER_PIPELINE.md)
+    # =========================================================================
+    # dim_facet_type        - registry of facet definitions (Tier 1/2/3)
+    # fact_session_facets   - one row per (session, facet, prompt_version);
+    #                         typed value columns; NO embedding here.
+    # fact_facet_embeddings - one row per (session, facet, model, model_version);
+    #                         FLOAT[384] so DuckDB array_cosine_similarity works
+    #                         natively.
+    #
+    # Embeddings are split off into their own table on purpose: keeps the EAV
+    # facet table lean for SQL scans, lets DuckDB native array ops work without
+    # a vector DB, and absorbs future model-version coexistence as new rows
+    # rather than destructive overwrites of structured-value facets.
+
+    conn.execute(
+        """
+        CREATE OR REPLACE TABLE dim_facet_type (
+            facet_type_key VARCHAR,
+            facet_id VARCHAR NOT NULL,
+            facet_name VARCHAR NOT NULL,
+            tier INTEGER NOT NULL,
+            method VARCHAR NOT NULL,
+            output_type VARCHAR NOT NULL,
+            prompt_text VARCHAR,
+            prompt_version VARCHAR,
+            embedding_model VARCHAR,
+            created_at TIMESTAMP NOT NULL DEFAULT current_timestamp
+        )
+        """
+    )
+
+    # Seed Tier 1 facets F01..F19. Names + output types mirror
+    # FACET_CLUSTER_PIPELINE.md §3 "Tier 1" exactly. Tier 1 is computed by SQL
+    # off existing facts so prompt_text / prompt_version stay NULL.
+    _tier1_seeds = [
+        ("F01", "session_intent", "enum"),
+        ("F02", "session_complexity", "enum"),
+        ("F03", "session_outcome", "enum"),
+        ("F04", "session_domain", "enum"),
+        ("F05", "error_signature", "json"),
+        ("F06", "tool_mix", "json"),
+        ("F07", "tool_bigram_top3", "json"),
+        ("F08", "loc_delta", "int"),
+        ("F09", "file_extensions_touched", "json"),
+        ("F10", "repo_slug", "text"),
+        ("F11", "model_mix", "json"),
+        ("F12", "duration_seconds", "int"),
+        ("F13", "agent_depth", "int"),
+        ("F14", "human_message_count", "int"),
+        ("F15", "tokens_in", "int"),
+        ("F16", "local_hour", "int"),
+        ("F17", "had_subagents", "bool"),
+        ("F18", "pr_referenced", "bool"),
+        ("F19", "had_plan_revision", "bool"),
+    ]
+    conn.executemany(
+        """
+        INSERT INTO dim_facet_type
+            (facet_type_key, facet_id, facet_name, tier, method, output_type)
+        VALUES (md5(? || '|' || ''), ?, ?, 1, 'computed', ?)
+        """,
+        [(fid, fid, fname, otype) for (fid, fname, otype) in _tier1_seeds],
+    )
+
+    conn.execute(
+        """
+        CREATE OR REPLACE TABLE fact_session_facets (
+            -- Lineage envelope (v0.15 convention)
+            created_at TIMESTAMP NOT NULL DEFAULT current_timestamp,
+            created_by_version_key VARCHAR NOT NULL,
+            last_updated_at TIMESTAMP NOT NULL DEFAULT current_timestamp,
+            last_updated_by_version_key VARCHAR NOT NULL,
+            etl_run_id VARCHAR NOT NULL,
+            record_source VARCHAR NOT NULL,
+            hash_diff VARCHAR NOT NULL,
+            is_deleted BOOLEAN NOT NULL DEFAULT FALSE,
+            deleted_at TIMESTAMP,
+
+            -- Natural key parts + degenerate dims
+            session_key VARCHAR NOT NULL,
+            session_id VARCHAR NOT NULL,
+            facet_type_key VARCHAR NOT NULL,
+            prompt_version VARCHAR,
+
+            -- Typed value columns (one populated per row depending on output_type)
+            value_text VARCHAR,
+            value_json JSON,
+            value_numeric DOUBLE,
+            value_bool BOOLEAN,
+
+            date_key INTEGER,
+            time_key INTEGER,
+            extracted_at TIMESTAMP NOT NULL DEFAULT current_timestamp
+        )
+        """
+    )
+
+    conn.execute(
+        """
+        CREATE OR REPLACE TABLE fact_facet_embeddings (
+            -- Lineage envelope
+            created_at TIMESTAMP NOT NULL DEFAULT current_timestamp,
+            created_by_version_key VARCHAR NOT NULL,
+            last_updated_at TIMESTAMP NOT NULL DEFAULT current_timestamp,
+            last_updated_by_version_key VARCHAR NOT NULL,
+            etl_run_id VARCHAR NOT NULL,
+            record_source VARCHAR NOT NULL,
+            hash_diff VARCHAR NOT NULL,
+            is_deleted BOOLEAN NOT NULL DEFAULT FALSE,
+            deleted_at TIMESTAMP,
+
+            -- Natural key parts + degenerate dims
+            session_key VARCHAR NOT NULL,
+            session_id VARCHAR NOT NULL,
+            facet_type_key VARCHAR NOT NULL,
+            embedding_model VARCHAR NOT NULL,
+            embedding_model_version VARCHAR NOT NULL,
+
+            -- (embedding_model, embedding_model_version) uniquely determines
+            -- dim, so no embedding_dim column is carried.
+            embedding FLOAT[384],
+
+            date_key INTEGER,
+            time_key INTEGER,
+            embedded_at TIMESTAMP NOT NULL DEFAULT current_timestamp
+        )
+        """
+    )
+
+    # =========================================================================
     # Semantic Views (10)
     # =========================================================================
 

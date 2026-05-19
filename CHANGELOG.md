@@ -3,6 +3,15 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+### Added
+- **Facet & cluster pipeline -- step 1 (DDL + Tier 1 registry).** Three new tables land in `create_star_schema()`:
+  - `dim_facet_type` -- registry of facet definitions. Seeded with the 19 Tier 1 facets (F01-F19) from `docs/FACET_CLUSTER_PIPELINE.md` §3. All `method='computed'`, no prompt fields.
+  - `fact_session_facets` -- one row per (session, facet_type, prompt_version). Typed value columns (text/json/numeric/bool). Carries the full v0.15 lineage envelope.
+  - `fact_facet_embeddings` -- one row per (session, facet_type, embedding_model, embedding_model_version). Stores the vector as `FLOAT[384]` so DuckDB's native `array_cosine_similarity` / `array_inner_product` work without a vector DB. Lineage envelope on every row.
+- **Schema-split decision** (departure from original design doc): embeddings live in their own table rather than as an inline `BLOB` column on `fact_session_facets`. Rationale lives in `docs/FACET_CLUSTER_PIPELINE.md` §4. No populator wiring yet -- step 2 (Tier 1 SQL populator) is next.
+
 ## 0.15.0
 
 A reshape of the ETL and most of the star schema, driven by a structural-signal bug in v0.14's plan-revision outcome classification. v0.15 widens what gets captured from Claude Code JSONL (all 12 entry types, 23 attachment subtypes, 6 progress variants, 7 system subtypes), corrects cache-token arithmetic for the 5m/1h pricing tiers, splits `fact_tool_calls` into `fact_tool_uses` + `fact_tool_results` with structured per-tool `toolUseResult` payloads, and adds a lineage block to every fact so re-ETL on unchanged source is a verifiable no-op.
