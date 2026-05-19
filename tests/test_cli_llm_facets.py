@@ -26,13 +26,14 @@ from click.testing import CliRunner
 from ccutils.cli import cli
 
 # `cli.add_command(local_cmd, "local")` in `ccutils.cli/__init__.py`
-# binds the click subcommand as the `local` attribute on the cli group,
-# which shadows the `ccutils.cli.local` submodule for `getattr`-based
-# attribute walks (including pytest monkeypatch's dotted-string form
-# and even `import ccutils.cli.local as ...`). Use importlib to load
-# the actual module directly.
+# sets the click command as `cli.local`, which means dotted-string
+# monkeypatch resolution that walks `getattr(cli_package, "local")`
+# returns the Click command object instead of the Python submodule.
+# `importlib.import_module` bypasses that attribute walk and gives us
+# the module namespace where the helpers actually live.
 local_module = importlib.import_module("ccutils.cli.local")
 all_module = importlib.import_module("ccutils.cli.all")
+utils_module = importlib.import_module("ccutils.cli.utils")
 
 
 @pytest.fixture
@@ -59,15 +60,48 @@ def sample_jsonl(tmp_path):
 
 class _RecordingExtractor:
     """Test double that the CLI builds in place of AnthropicFacetExtractor.
-    Captures construction args so tests can assert the wiring."""
-
-    constructed_with: dict | None = None
+    Captures construction args on the INSTANCE (not the class) so tests
+    don't leak state between runs. Each test that uses this also
+    captures the constructed instance via a spy hook so the assertion
+    reads from a known-good reference."""
 
     def __init__(self, **kwargs):
-        type(self).constructed_with = kwargs
+        self.constructed_with = kwargs
 
     def extract(self, _inputs, _specs):
         return {}
+
+
+@pytest.fixture
+def recorded_extractors():
+    """A list that captures every _RecordingExtractor instance the CLI
+    constructs during a test. Used by tests asserting on construction
+    args without relying on shared class state."""
+    return []
+
+
+def _make_recording_class(captures: list):
+    """Returns a class that records every instance in `captures`."""
+    class _Recorder(_RecordingExtractor):
+        def __init__(self, **kwargs):
+            super().__init__(**kwargs)
+            captures.append(self)
+    return _Recorder
+
+
+def _combined_output(result):
+    """CLI errors land on stderr via `click.echo(err=True)`. Click's
+    `CliRunner` mixes stdout+stderr into `result.output` by default
+    (and raises ValueError on `.stderr` in that mode); if a future Click
+    version separates them, fall back to concatenating. Either way the
+    caller gets a single string to search."""
+    out = result.output or ""
+    try:
+        err = result.stderr or ""
+    except ValueError:
+        # Streams are mixed -- everything is already in result.output.
+        err = ""
+    return out + err
 
 
 class TestLocalCommand:
@@ -79,12 +113,14 @@ class TestLocalCommand:
         # users without an API key can't use the basic pipeline.
         called = []
 
-        def _should_not_call(*_a, **_k):
+        def _should_not_call():
             called.append(True)
             return "sk-test"
 
+        # Spy on the shared helper's resolver -- patching utils_module
+        # covers both `local` and `all` since both import from there.
         monkeypatch.setattr(
-            local_module, "resolve_anthropic_key", _should_not_call,
+            utils_module, "resolve_anthropic_key", _should_not_call,
         )
 
         runner = CliRunner()
@@ -100,17 +136,17 @@ class TestLocalCommand:
         )
 
     def test_with_llm_facets_constructs_and_passes_extractor(
-        self, sample_jsonl, tmp_path, monkeypatch
+        self, sample_jsonl, tmp_path, monkeypatch, recorded_extractors
     ):
-        _RecordingExtractor.constructed_with = None
         captured = {}
 
         monkeypatch.setattr(
-            local_module, "resolve_anthropic_key",
+            utils_module, "resolve_anthropic_key",
             lambda: "sk-test-from-keychain",
         )
         monkeypatch.setattr(
-            local_module, "AnthropicFacetExtractor", _RecordingExtractor,
+            utils_module, "AnthropicFacetExtractor",
+            _make_recording_class(recorded_extractors),
         )
 
         from ccutils.etl import orchestrator as _orch
@@ -133,14 +169,17 @@ class TestLocalCommand:
         assert isinstance(captured["facet_extractor"], _RecordingExtractor)
         # Credentials resolved through resolve_anthropic_key() and threaded
         # into the constructor.
-        assert _RecordingExtractor.constructed_with["api_key"] == "sk-test-from-keychain"
+        assert len(recorded_extractors) == 1
+        assert recorded_extractors[0].constructed_with["api_key"] == (
+            "sk-test-from-keychain"
+        )
 
     def test_credentials_error_exits_cleanly(
         self, sample_jsonl, tmp_path, monkeypatch
     ):
         from ccutils.api import CredentialsError
 
-        def _raise(*_a, **_k):
+        def _raise():
             raise CredentialsError(
                 "No Anthropic API key found.\n"
                 "Set ANTHROPIC_API_KEY in the environment, or store it in "
@@ -150,7 +189,7 @@ class TestLocalCommand:
             )
 
         monkeypatch.setattr(
-            local_module, "resolve_anthropic_key", _raise,
+            utils_module, "resolve_anthropic_key", _raise,
         )
 
         runner = CliRunner()
@@ -160,16 +199,17 @@ class TestLocalCommand:
             [str(sample_jsonl), "--format", "duckdb-star",
              "-o", str(db_path), "--with-llm-facets"],
         )
-        # Non-zero exit, helpful message, NOT a Python traceback.
-        assert result.exit_code != 0
-        assert "ANTHROPIC_API_KEY" in result.output
-        assert "keychain" in result.output.lower()
-        assert "Traceback" not in result.output
+        # Exit code 2 is the contract from build_facet_extractor_or_exit.
+        assert result.exit_code == 2
+        combined = _combined_output(result)
+        assert "ANTHROPIC_API_KEY" in combined
+        assert "keychain" in combined.lower()
+        assert "Traceback" not in combined
 
 
 class TestAllCommand:
     def test_batch_llm_facets_constructs_extractor(
-        self, sample_jsonl, tmp_path, monkeypatch
+        self, sample_jsonl, tmp_path, monkeypatch, recorded_extractors
     ):
         # `all` resolves a directory of projects; build a minimal layout.
         projects_root = tmp_path / "projects"
@@ -177,14 +217,13 @@ class TestAllCommand:
         proj.mkdir(parents=True)
         (proj / "cli-s.jsonl").write_text(sample_jsonl.read_text())
 
-        _RecordingExtractor.constructed_with = None
-
         monkeypatch.setattr(
-            all_module, "resolve_anthropic_key",
+            utils_module, "resolve_anthropic_key",
             lambda: "sk-test-from-env",
         )
         monkeypatch.setattr(
-            all_module, "AnthropicFacetExtractor", _RecordingExtractor,
+            utils_module, "AnthropicFacetExtractor",
+            _make_recording_class(recorded_extractors),
         )
 
         captured = {}
@@ -209,6 +248,7 @@ class TestAllCommand:
         )
         assert result.exit_code == 0, result.output
         assert isinstance(captured["facet_extractor"], _RecordingExtractor)
+        assert len(recorded_extractors) == 1
 
     def test_batch_default_does_not_resolve_credentials(
         self, sample_jsonl, tmp_path, monkeypatch
@@ -220,7 +260,7 @@ class TestAllCommand:
 
         called = []
         monkeypatch.setattr(
-            all_module, "resolve_anthropic_key",
+            utils_module, "resolve_anthropic_key",
             lambda: called.append(True) or "should-not-be-used",
         )
 
@@ -235,3 +275,47 @@ class TestAllCommand:
         assert called == [], (
             "Credentials must NOT be resolved when --batch-llm-facets is absent"
         )
+
+    def test_json_star_format_forwards_extractor(
+        self, sample_jsonl, tmp_path, monkeypatch, recorded_extractors
+    ):
+        # R-6 from simplify review: --format json-star + --batch-llm-facets
+        # goes through generate_star_json_archive, which delegates to
+        # generate_duckdb_archive internally. Ensure the extractor
+        # actually reaches that internal path.
+        projects_root = tmp_path / "projects"
+        proj = projects_root / "myproj"
+        proj.mkdir(parents=True)
+        (proj / "cli-s.jsonl").write_text(sample_jsonl.read_text())
+
+        monkeypatch.setattr(
+            utils_module, "resolve_anthropic_key",
+            lambda: "sk-test-from-env",
+        )
+        monkeypatch.setattr(
+            utils_module, "AnthropicFacetExtractor",
+            _make_recording_class(recorded_extractors),
+        )
+
+        captured = {}
+        from ccutils.export import duckdb_archive as _da
+        real_star_json = _da.generate_star_json_archive
+
+        def _spy_star_json(*args, **kwargs):
+            captured["facet_extractor"] = kwargs.get("facet_extractor")
+            return real_star_json(*args, **kwargs)
+
+        monkeypatch.setattr(
+            all_module, "generate_star_json_archive", _spy_star_json,
+        )
+
+        runner = CliRunner()
+        out = tmp_path / "out-json-star"
+        result = runner.invoke(
+            cli,
+            ["all", "--source", str(projects_root),
+             "--format", "json-star", "-o", str(out),
+             "--batch-llm-facets", "--quiet"],
+        )
+        assert result.exit_code == 0, result.output
+        assert isinstance(captured["facet_extractor"], _RecordingExtractor)

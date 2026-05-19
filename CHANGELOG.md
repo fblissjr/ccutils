@@ -35,8 +35,11 @@ All notable changes to this project will be documented in this file.
 - **Facet & cluster pipeline -- step 4.5 (CLI flags).** Tier 2 extraction is now reachable from the CLI:
   - `ccutils local --with-llm-facets ...` -- single-session opt-in.
   - `ccutils all --batch-llm-facets ...` -- batch opt-in.
-  - Both flags resolve credentials via `resolve_anthropic_key()` (env var first, macOS keychain second), construct `AnthropicFacetExtractor`, and thread it through to `run_v15_etl` via `facet_extractor=`. `CredentialsError` is caught at the CLI boundary and emits a helpful message + non-zero exit; users never see a stack trace.
+  - Both flags live in a new `Enrichment` option group (the original `Embeddings` group was misleading -- LLM facets aren't embeddings).
+  - Both flags resolve credentials via `resolve_anthropic_key()` (env var first, macOS keychain second), construct `AnthropicFacetExtractor`, and thread it through to `run_v15_etl` via `facet_extractor=`. `CredentialsError` is caught at the CLI boundary and emits a helpful message + non-zero exit; users never see a stack trace. Construction happens once in the command entry point (`local_cmd` / `all_cmd`) before any session-parsing work begins.
+  - Shared `build_facet_extractor_or_exit` helper in `src/ccutils/cli/utils.py` -- both CLI commands import it, so credential-resolution wording stays in lockstep.
   - `generate_duckdb_archive` and `generate_star_json_archive` accept the new `facet_extractor=None` parameter and pass it through the per-session ETL loop.
+  - **Footgun:** pairing `--batch-llm-facets` with `--format json-star` runs the full LLM extraction against a temporary DuckDB that's discarded after the JSON export. The user pays the API cost but gets no queryable DuckDB to inspect F20 outputs. Documented in README; long-term fix is either keeping the DuckDB sidecar or surfacing a warning at invocation time.
   - **Live-API smoke command** (run once after any change to `AnthropicFacetExtractor` or its prompt template; costs pennies):
     ```bash
     ANTHROPIC_API_KEY=$(security find-generic-password -s ccutils-anthropic -a $USER -w) \

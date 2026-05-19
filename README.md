@@ -64,6 +64,8 @@ ccutils --format duckdb-star --with-llm-facets -o .  # + Tier 2 LLM facets (F20 
 
 `--with-llm-facets` requires `ANTHROPIC_API_KEY` in the environment OR a `ccutils-anthropic` keychain entry (`security add-generic-password -s ccutils-anthropic -a $USER -w`). Star schema only.
 
+Note: pairing `--batch-llm-facets` with `--format json-star` runs the full LLM extraction against a temporary DuckDB that's discarded after the JSON export — you pay the API cost but don't get a queryable database to inspect the F20 outputs. If you want to see the extracted facets, use `--format duckdb-star` instead.
+
 ### all
 
 Batch convert every session. Agents and thinking blocks included by default.

@@ -1,6 +1,5 @@
 """Session selection and conversion command."""
 
-import sys
 import tempfile
 from pathlib import Path
 
@@ -9,7 +8,6 @@ import questionary
 from click_option_group import optgroup
 from rich.console import Console
 
-from ..api import CredentialsError, resolve_anthropic_key
 from ..parsers import (
     find_agent_sessions,
     flatten_selected_sessions,
@@ -36,30 +34,16 @@ from ..schemas.star import (
     create_star_schema,
     export_star_schema_to_json,
 )
-from ..etl.facets import AnthropicFacetExtractor
 from ..etl.orchestrator import run_v15_etl
 from ..export import (
     generate_html,
     generate_multi_session_index,
 )
-from .utils import maybe_open_browser, run_embedding_pipeline
-
-
-def _build_facet_extractor_or_exit(with_llm_facets: bool):
-    """Resolve credentials and construct an AnthropicFacetExtractor when
-    --with-llm-facets is set. CredentialsError surfaces as a helpful
-    message + non-zero exit code rather than a stack trace.
-
-    Returns None when the flag is off (default), keeping the basic
-    pipeline credential-free."""
-    if not with_llm_facets:
-        return None
-    try:
-        api_key = resolve_anthropic_key()
-    except CredentialsError as e:
-        click.echo(str(e), err=True)
-        sys.exit(2)
-    return AnthropicFacetExtractor(api_key=api_key)
+from .utils import (
+    build_facet_extractor_or_exit,
+    maybe_open_browser,
+    run_embedding_pipeline,
+)
 
 
 @click.command("local")
@@ -125,6 +109,7 @@ def _build_facet_extractor_or_exit(with_llm_facets: bool):
     flag_value="default",
     help="Run ColBERT embeddings (optionally specify model name).",
 )
+@optgroup.group("Enrichment")
 @optgroup.option(
     "--with-llm-facets",
     is_flag=True,
@@ -164,23 +149,28 @@ def local_cmd(
     """
     include_thinking = not no_thinking
 
+    # Build the Tier 2 facet extractor at the CLI boundary -- credential
+    # failures exit cleanly here rather than as a stack trace from inside
+    # _run_export_pipeline. Returns None when --with-llm-facets is off.
+    facet_extractor = build_facet_extractor_or_exit(with_llm_facets)
+
     if input_file:
         # Direct file conversion mode
         _convert_file(
             input_file, output, output_format, open_browser,
-            include_thinking, private, with_llm_facets,
+            include_thinking, private, facet_extractor,
         )
     else:
         # Interactive picker mode
         _interactive_mode(
             output, output_format, open_browser, flat, expand_chains,
             project_filter, include_thinking, not no_subagents, private,
-            embed, with_llm_facets,
+            embed, facet_extractor,
         )
 
 
 def _convert_file(input_file, output, output_format, open_browser,
-                   include_thinking, private, with_llm_facets=False):
+                   include_thinking, private, facet_extractor=None):
     """Convert a single session file to the requested format."""
     json_file_path = Path(input_file)
     if not json_file_path.exists():
@@ -200,13 +190,13 @@ def _convert_file(input_file, output, output_format, open_browser,
         private=private,
         project_name=json_file_path.parent.name or "unknown",
         open_browser=open_browser,
-        with_llm_facets=with_llm_facets,
+        facet_extractor=facet_extractor,
     )
 
 
 def _interactive_mode(output, output_format, open_browser, flat, expand_chains,
                       project_filter, include_thinking, include_subagents,
-                      private, embed, with_llm_facets=False):
+                      private, embed, facet_extractor=None):
     """Interactive session picker followed by export."""
     projects_folder = Path.home() / ".claude" / "projects"
 
@@ -260,7 +250,7 @@ def _interactive_mode(output, output_format, open_browser, flat, expand_chains,
         open_browser=open_browser,
         agent_map=agent_map,
         embed=embed,
-        with_llm_facets=with_llm_facets,
+        facet_extractor=facet_extractor,
     )
 
 
@@ -274,7 +264,7 @@ def _run_export_pipeline(
     project_name=None,
     agent_map=None,
     embed=None,
-    with_llm_facets=False,
+    facet_extractor=None,
 ):
     """Shared export pipeline for all output formats.
 
@@ -288,18 +278,14 @@ def _run_export_pipeline(
         project_name: Override project name (for single-file mode).
         agent_map: Agent session relationships (from interactive picker).
         embed: Embedding model name, "default", or None.
-        with_llm_facets: If True, build an AnthropicFacetExtractor and pass
-            it to run_v15_etl so Tier 2 LLM facets are extracted.
+        facet_extractor: Pre-built FacetExtractor instance (or None).
+            Construction happens at the CLI boundary in local_cmd so
+            credential errors exit cleanly before any work starts.
     """
     if agent_map is None:
         agent_map = {}
 
     schema, fmt = resolve_schema_format(output_format)
-
-    # Build the Tier 2 facet extractor at the boundary (CLI), not inside
-    # run_v15_etl, so credential failures exit cleanly here with a helpful
-    # message rather than as a stack trace deep in the ETL.
-    facet_extractor = _build_facet_extractor_or_exit(with_llm_facets)
 
     # Resolve embed model
     embed_model = None

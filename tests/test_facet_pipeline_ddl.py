@@ -102,9 +102,9 @@ class TestDimFacetType:
         # destroy the historical registry that fact_session_facets rows
         # already reference by facet_type_key.
         #
-        # Uses F90 (a hypothetical facet, not in the catalog) so the test
-        # exercises the survival contract without colliding with the
-        # already-seeded F20 v1 row.
+        # Uses F90 (hypothetical facet) per the F90+ convention for test
+        # fixtures -- see `tests/test_fact_session_facets_v15.py::
+        # two_f90_versions` for the canonical convention statement.
         from ccutils import create_star_schema
 
         db_path = tmp_path / "rerun.duckdb"

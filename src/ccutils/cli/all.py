@@ -1,15 +1,12 @@
 # path-privacy: skip-file -- references universal Claude Code data paths (not personal)
 """Batch conversion command for all sessions."""
 
-import sys
 from datetime import datetime
 from pathlib import Path
 
 import click
 from click_option_group import optgroup
 
-from ..api import CredentialsError, resolve_anthropic_key
-from ..etl.facets import AnthropicFacetExtractor
 from ..parsers import find_all_sessions
 from ..schemas import resolve_schema_format
 from ..export import (
@@ -17,21 +14,11 @@ from ..export import (
     generate_duckdb_archive,
     generate_star_json_archive,
 )
-from .utils import maybe_open_browser, run_embedding_pipeline
-
-
-def _build_facet_extractor_or_exit(with_llm_facets: bool):
-    """Mirrors `cli.local._build_facet_extractor_or_exit`. Centralizing
-    the construction is a future refactor; for now keep symmetric so
-    each CLI module owns its own boundary."""
-    if not with_llm_facets:
-        return None
-    try:
-        api_key = resolve_anthropic_key()
-    except CredentialsError as e:
-        click.echo(str(e), err=True)
-        sys.exit(2)
-    return AnthropicFacetExtractor(api_key=api_key)
+from .utils import (
+    build_facet_extractor_or_exit,
+    maybe_open_browser,
+    run_embedding_pipeline,
+)
 
 
 @click.command("all")
@@ -123,6 +110,7 @@ def _build_facet_extractor_or_exit(with_llm_facets: bool):
     flag_value="default",
     help="Run ColBERT embeddings (optionally specify model name).",
 )
+@optgroup.group("Enrichment")
 @optgroup.option(
     "--batch-llm-facets",
     is_flag=True,
@@ -172,7 +160,7 @@ def all_cmd(
     # Build the Tier 2 facet extractor at the CLI boundary so credential
     # failures exit cleanly here rather than as a stack trace deep in the
     # batch.
-    facet_extractor = _build_facet_extractor_or_exit(batch_llm_facets)
+    facet_extractor = build_facet_extractor_or_exit(batch_llm_facets)
 
     # Resolve embed model
     embed_model = None
