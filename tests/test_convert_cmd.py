@@ -49,9 +49,9 @@ class TestFileConversionHTML:
 
 
 class TestHonestyGuards:
-    """v0.15 doesn't yet honor --private or --no-thinking on the duckdb/json
-    paths. Rather than silently accepting the flag and producing a
-    non-sanitized / thinking-included database, the CLI fails loud."""
+    """v0.15 doesn't yet wire --private through the ETL. Rather than
+    silently accepting the flag and producing a non-sanitized database,
+    the CLI fails loud. --no-thinking IS wired -- see tests/test_no_thinking_v15.py."""
 
     def test_private_rejected_on_duckdb(self, sample_session_file, output_dir):
         runner = CliRunner()
@@ -73,16 +73,6 @@ class TestHonestyGuards:
         )
         assert result.exit_code != 0
         assert "private" in result.output.lower()
-
-    def test_no_thinking_rejected_on_duckdb(self, sample_session_file, output_dir):
-        runner = CliRunner()
-        result = runner.invoke(
-            cli,
-            [str(sample_session_file), "--format", "duckdb",
-             "-o", str(output_dir / "test.duckdb"), "--no-thinking"],
-        )
-        assert result.exit_code != 0
-        assert "thinking" in result.output.lower()
 
 
 class TestFileConversionDuckDB:

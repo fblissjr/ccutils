@@ -54,7 +54,7 @@ ccutils session.jsonl --format duckdb -o .       # v0.15 star schema DuckDB
 ccutils --format duckdb -o ./analytics           # Pick sessions, star schema
 ccutils -p myproject                             # Filter by project name
 ccutils --flat                                   # Legacy single-list mode
-ccutils --no-thinking --no-subagents             # Exclude thinking/agents (HTML only)
+ccutils --no-thinking --no-subagents             # Exclude thinking (all formats) / agents (HTML only)
 ccutils --format duckdb --embed -o .             # With ColBERT embeddings
 ccutils --format duckdb --with-llm-facets -o .   # + Tier 2 LLM facets (F20 via Haiku)
 ```
@@ -73,7 +73,7 @@ ccutils all --format duckdb -o ./analytics       # v0.15 star schema for all ses
 ccutils all --format duckdb --embed -o ./out     # With ColBERT embeddings
 ccutils all --format duckdb --batch-llm-facets -o ./out  # + Tier 2 LLM facets
 ccutils all -j 4 --batch-size 20 -o ./archive    # Parallel processing
-ccutils all --no-agents --no-thinking             # Exclude agents (any format); --no-thinking only on --format html
+ccutils all --no-agents --no-thinking             # Exclude agents and thinking (any format)
 ccutils all --dry-run                            # Preview without converting
 ```
 
@@ -223,7 +223,11 @@ ccutils --format json -o ./json-export/
 --open                     Open result in browser
 
 # Content (included by default -- use flags to exclude)
---no-thinking              Exclude thinking blocks (HTML only; v0.15 captures unconditionally)
+--no-thinking              Exclude thinking from outputs. Drops thinking from
+                           dim_session messages + Tier 2 facet inputs and
+                           clears the staging artifact (fact_messages already
+                           excludes thinking by projection). Parquet lake is
+                           unaffected -- delete it post-run if needed.
 --no-subagents             Exclude related agent sessions (local)
 --no-agents                Exclude agent-* session files (all)
 --private                  Sanitize file paths for sharing (HTML only; v0.15 sanitization not yet wired)

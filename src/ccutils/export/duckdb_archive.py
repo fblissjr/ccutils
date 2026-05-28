@@ -54,7 +54,7 @@ def generate_duckdb_archive(
     source_folder,
     output_dir,
     include_agents=False,
-    include_thinking=False,
+    include_thinking=True,
     truncate_output=2000,
     progress_callback=None,
     max_workers=1,
@@ -72,10 +72,13 @@ def generate_duckdb_archive(
         source_folder: Path to Claude Code projects folder.
         output_dir: Path for output.
         include_agents: Whether to include agent sessions.
-        include_thinking: ACCEPTED FOR BACK-COMPAT; the v0.15 ETL captures
-            thinking unconditionally. Pass False at your peril -- thinking
-            blocks will be in the output regardless. The CLI rejects
-            `--no-thinking` for duckdb/json upstream.
+        include_thinking: When False, `stg_log_entries` is cleared after each
+            session ETL so the raw message_json (which contains thinking
+            blocks) doesn't survive in the warehouse.
+            `fact_messages.content_text` already excludes thinking
+            unconditionally (SQL projection). The Parquet lake is the
+            re-derivable cache and intentionally captures everything --
+            delete it post-run if you don't want thinking in any cache.
         truncate_output: ACCEPTED FOR BACK-COMPAT; v0.15 stores full payloads.
         progress_callback: callback(project_name, session_name, current,
             total, stats) where stats has 'rows_inserted', 'db_size_mb',
@@ -104,16 +107,24 @@ def generate_duckdb_archive(
 
     conn = create_star_schema(db_path)
 
-    # Per-session ETL closure. v0.15 doesn't need include_thinking /
-    # truncate_output / private (captures everything by default), so
-    # **_legacy_kwargs swallows them at the closure boundary.
-    def _etl(conn, session_path, project_name, **_legacy_kwargs):
+    # Per-session ETL closure. include_thinking forwards through; the other
+    # legacy back-compat kwargs (truncate_output, private) are explicitly
+    # named at the closure boundary rather than absorbed by **kwargs (CLAUDE.md
+    # closure rule -- the **_legacy_kwargs shim once hid a --private silent
+    # drop). Naming what we discard makes signature drift fail loud.
+    def _etl(
+        conn, session_path, project_name,
+        include_thinking=True,
+        truncate_output=None, private=None,
+    ):
+        _ = truncate_output, private  # explicitly discarded; v0.15 doesn't use
         return run_v15_etl(
             conn,
             session_path,
             project_name=project_name,
             parquet_lake_root=parquet_lake,
             facet_extractor=facet_extractor,
+            include_thinking=include_thinking,
         )
 
     projects = find_all_sessions(source_folder, include_agents=include_agents)

@@ -5,6 +5,9 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Behavior
+- **`--no-thinking` now works on `--format duckdb` and `--format json`.** Previously the CLI rejected the flag on those paths with a `click.UsageError` based on a misread of the populator (it assumed thinking text was in `fact_messages.content_text`; it never was — the SQL projection filters to `type='text'` blocks). The flag now flows through `run_v15_etl(include_thinking=False)` → `extract_text_from_content_json(..., include_thinking=False)` (so `dim_session.last_assistant_message` and Tier 2 facet inputs exclude thinking) and finishes with a `DELETE FROM stg_log_entries` so no raw thinking JSON survives in the warehouse staging table. The Parquet lake is intentionally untouched (it's the re-derivable cache); delete it post-run if you don't want thinking in any cache. `--private` remains rejected on duckdb/json until PathSanitizer is wired through the v0.15 ETL.
+
 ### Breaking
 - **Simple 4-table schema removed.** `src/ccutils/schemas/simple/` is gone; `--format duckdb` and `--format json` now write the v0.15 star schema unconditionally. Previously `duckdb`/`json` produced a 4-table snapshot (`sessions`, `messages`, `tool_calls`, `thinking`) and the star schema lived behind `--format duckdb-star` / `--format json-star`. Migration: any scripts that read the 4-table shape need to switch to the star schema (query `fact_messages` / `fact_tool_uses` / `fact_session_summary` instead of `messages` / `tool_calls` / `sessions`). The `-star` suffix is no longer accepted; pass `duckdb` and `json` instead.
 - **`ccutils import` is HTML-only.** The legacy `import --format duckdb` path went through the now-removed simple schema. The Claude.ai export shape doesn't match v0.15's Claude Code session JSONL grain, so no automatic migration to star; if a Claude.ai → star ETL is wanted later it warrants its own populator.

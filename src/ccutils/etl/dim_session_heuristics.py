@@ -31,7 +31,9 @@ from ccutils.etl.utils import extract_text_from_content_json
 _MAX_MESSAGE_CHARS = 500
 
 
-def populate_dim_session_heuristics(conn, *, run: EtlRun) -> None:
+def populate_dim_session_heuristics(
+    conn, *, run: EtlRun, include_thinking: bool = True,
+) -> None:
     """UPDATE dim_session with intent / complexity / outcome / domain
     + first_user_message + last_assistant_message for every session
     currently in staging."""
@@ -127,8 +129,12 @@ def populate_dim_session_heuristics(conn, *, run: EtlRun) -> None:
         error_count,
         extensions_pipe,
     ) in rows:
-        first_user_text = extract_text_from_content_json(first_user_content_json)
-        last_assistant_text = extract_text_from_content_json(last_assistant_content_json)
+        first_user_text = extract_text_from_content_json(
+            first_user_content_json, include_thinking=include_thinking,
+        )
+        last_assistant_text = extract_text_from_content_json(
+            last_assistant_content_json, include_thinking=include_thinking,
+        )
         error_rate = (error_count / tool_count) if tool_count else 0.0
         extensions = (
             [e for e in extensions_pipe.split("|") if e]

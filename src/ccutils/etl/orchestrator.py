@@ -217,6 +217,7 @@ def run_v15_etl(
     project_name: str = "unknown",
     parquet_lake_root: str | Path | None = None,
     facet_extractor: FacetExtractor | None = None,
+    include_thinking: bool = True,
 ) -> dict[str, Any]:
     """End-to-end ETL for one session JSONL.
 
@@ -231,6 +232,13 @@ def run_v15_etl(
             default) disables Tier 2 entirely. When supplied, the Tier 2
             populator runs after Tier 1 and before fact_session_summary
             so the summary roll-up still sees every facet.
+        include_thinking: when False, `stg_log_entries` is cleared at the
+            end of this call. `fact_messages.content_text` already excludes
+            thinking by SQL projection (the populator picks only
+            `type='text'` blocks); the per-call truncate removes the raw
+            staging JSON so no thinking text survives in the warehouse.
+            The Parquet lake is unaffected -- it's the re-derivable cache
+            and intentionally captures everything.
 
     Returns:
         dict with 'etl_run_id' and 'sessions_inserted' for caller use.
@@ -292,7 +300,9 @@ def run_v15_etl(
         populate_fact_tool_chain_steps(conn, run=run)
         # dim_session enrichment runs after all facts so the classifiers
         # see complete metrics + file-extension data
-        populate_dim_session_heuristics(conn, run=run)
+        populate_dim_session_heuristics(
+            conn, run=run, include_thinking=include_thinking,
+        )
         # dim_session_chain groups sessions sharing a slug; rebuilt fresh
         # each run since adding a new session can re-aggregate the chain
         populate_dim_session_chain(conn, run=run)
@@ -304,8 +314,18 @@ def run_v15_etl(
         # Tier 2 facets (LLM-extracted) only run when a FacetExtractor is
         # injected. Default None disables Tier 2 entirely.
         if facet_extractor is not None:
-            populate_tier2_facets(conn, run=run, extractor=facet_extractor)
+            populate_tier2_facets(
+                conn, run=run, extractor=facet_extractor,
+                include_thinking=include_thinking,
+            )
         populate_fact_session_summary(conn, run=run)
+
+        # When include_thinking=False, clear the staging artifact so the
+        # raw message_json (which DOES contain thinking blocks) doesn't
+        # survive in the warehouse. Per-session staging is overwritten
+        # anyway on the next load; we just bring that forward.
+        if not include_thinking:
+            conn.execute("DELETE FROM stg_log_entries")
 
         run.complete(sessions_inserted=1)
     except Exception as e:

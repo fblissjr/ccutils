@@ -143,23 +143,16 @@ def local_cmd(
     """
     include_thinking = not no_thinking
 
-    # Honesty guard: v0.15 captures everything and has no PathSanitizer wiring,
-    # so --private and --no-thinking only do anything on the HTML path. Fail
-    # loud here rather than accept the flags and silently produce a
-    # non-sanitized / thinking-included database (the legacy simple-schema
-    # path honored both; v0.15 does not).
-    if output_format in ("duckdb", "json"):
-        if private:
-            raise click.UsageError(
-                "--private is not yet wired through the v0.15 ETL; it only "
-                "affects --format html. Either drop --private or use --format html."
-            )
-        if no_thinking:
-            raise click.UsageError(
-                "--no-thinking has no effect on --format duckdb / --format json: "
-                "the v0.15 ETL captures thinking blocks unconditionally. Drop "
-                "--no-thinking or use --format html."
-            )
+    # Honesty guard: v0.15 has no PathSanitizer wiring yet, so --private
+    # would silently produce a non-sanitized database on the duckdb/json
+    # paths. Fail loud rather than ship the regression. --no-thinking IS
+    # wired (truncates stg_log_entries; fact_messages.content_text already
+    # excludes thinking by SQL projection).
+    if output_format in ("duckdb", "json") and private:
+        raise click.UsageError(
+            "--private is not yet wired through the v0.15 ETL; it only "
+            "affects --format html. Either drop --private or use --format html."
+        )
 
     # Build the Tier 2 facet extractor at the CLI boundary -- credential
     # failures exit cleanly here rather than as a stack trace from inside
@@ -338,6 +331,7 @@ def _run_export_pipeline(
                 project_name=project_name or session_file.parent.name,
                 parquet_lake_root=parquet_lake,
                 facet_extractor=facet_extractor,
+                include_thinking=include_thinking,
             )
         if embed:
             run_embedding_pipeline(conn, embed_model)
@@ -366,6 +360,7 @@ def _run_export_pipeline(
                 project_name=project_name or session_file.parent.name,
                 parquet_lake_root=parquet_lake,
                 facet_extractor=facet_extractor,
+                include_thinking=include_thinking,
             )
         if embed:
             run_embedding_pipeline(conn, embed_model)
