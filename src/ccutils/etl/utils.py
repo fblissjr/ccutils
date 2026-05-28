@@ -25,12 +25,15 @@ def extract_text_from_content_json(
     block types are skipped because they're tool output, not user
     intent or assistant conclusion.
 
-    When `include_thinking=False`, thinking blocks (`type='thinking'`
-    and `type='redacted_thinking'`) are also skipped -- this is the
-    seam that lets `--no-thinking` propagate beyond `fact_messages`
-    (whose SQL projection already excludes thinking) into derived
-    columns like `dim_session.last_assistant_message` and the Tier 2
-    facet extractor's `SessionInputs`.
+    When `include_thinking=False`, `type='thinking'` blocks are skipped
+    too -- this is the seam that lets `--no-thinking` propagate beyond
+    `fact_messages` (whose SQL projection already excludes thinking)
+    into derived columns like `dim_session.last_assistant_message` and
+    the Tier 2 facet extractor's `SessionInputs`. `type='redacted_thinking'`
+    blocks are never emitted by this helper regardless of the flag --
+    redacted content is the API's signal that the payload is sensitive,
+    so we drop it unconditionally. Note the asymmetry with
+    `fact_messages.has_thinking`, which IS set TRUE for redacted blocks.
 
     Returns an empty string when the input is None, unparseable, or
     contains no text blocks. The empty-string fallback (vs. None) lets

@@ -322,8 +322,12 @@ def run_v15_etl(
 
         # When include_thinking=False, clear the staging artifact so the
         # raw message_json (which DOES contain thinking blocks) doesn't
-        # survive in the warehouse. Per-session staging is overwritten
-        # anyway on the next load; we just bring that forward.
+        # survive in the warehouse. `load_session_to_staging` only DELETEs
+        # rows matching the next session's source_path -- it does NOT
+        # clean up other sessions' staging on its own. This blanket DELETE
+        # is the only thing that clears the previous session's residue;
+        # don't remove it on the assumption "staging gets overwritten
+        # anyway."
         if not include_thinking:
             conn.execute("DELETE FROM stg_log_entries")
 

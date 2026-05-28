@@ -195,6 +195,16 @@ class TestCliAcceptsNoThinkingOnDuckdb:
             "WHERE session_id = 'think-s' AND message_type = 'assistant'"
         ).fetchone()
         assert _THINKING_PAYLOAD not in (fm[0] or "")
+        # dim_session.last_assistant_message is the primary derived column
+        # where the flag matters (fact_messages.content_text excludes thinking
+        # unconditionally; dim_session would include it without the flag).
+        # Pin the regression contract: a future drop of the include_thinking
+        # forwarding to populate_dim_session_heuristics would fail HERE.
+        ds = conn.execute(
+            "SELECT last_assistant_message FROM dim_session "
+            "WHERE session_id = 'think-s'"
+        ).fetchone()
+        assert _THINKING_PAYLOAD not in (ds[0] or "")
         conn.close()
 
     def test_no_thinking_accepted_on_json(
@@ -218,3 +228,107 @@ class TestCliAcceptsNoThinkingOnDuckdb:
         assert leaked == [], (
             f"Thinking payload leaked into JSON files: {leaked}"
         )
+
+
+class TestParquetLakeRetainsThinkingByDesign:
+    """The Parquet lake is the re-derivable cache and intentionally captures
+    everything -- including thinking blocks -- regardless of `--no-thinking`.
+    The README and CLAUDE.md both say "delete it post-run if you don't want
+    thinking in any cache." This characterization test pins that contract so
+    a future change that filters parquet at write time has to consciously
+    update this test (and the docs).
+    """
+
+    def test_parquet_lake_retains_thinking_even_under_no_thinking(
+        self, session_with_thinking, tmp_path
+    ):
+        runner = CliRunner()
+        out = tmp_path / "out-json"
+        result = runner.invoke(
+            cli,
+            [str(session_with_thinking), "--format", "json",
+             "-o", str(out), "--no-thinking"],
+        )
+        assert result.exit_code == 0, result.output
+
+        parquet_files = list((out / "parquet_lake").rglob("*.parquet"))
+        assert parquet_files, "Parquet lake should exist alongside the JSON export"
+
+        # Read each parquet via DuckDB and assert the thinking payload is
+        # in the message_json column. If a future change starts filtering
+        # parquet at write time, this fails and forces a doc + design update.
+        import duckdb as _duckdb
+        any_found = False
+        scratch = _duckdb.connect(":memory:")
+        for pq in parquet_files:
+            try:
+                result = scratch.execute(
+                    f"SELECT COUNT(*) FROM read_parquet('{pq}') "
+                    f"WHERE CAST(message_json AS VARCHAR) LIKE ?",
+                    [f"%{_THINKING_PAYLOAD}%"],
+                ).fetchone()
+            except Exception:
+                # Not every parquet has a message_json column (session_meta
+                # is a different shape). Skip those.
+                continue
+            if result and result[0] > 0:
+                any_found = True
+                break
+        scratch.close()
+        assert any_found, (
+            "Parquet lake should retain thinking text by design (re-derivable "
+            "cache). If this fails, parquet write is now filtering -- update "
+            "the README/CLAUDE.md docs and this test together."
+        )
+
+
+class TestTier2WithNoThinkingExcludesThinkingFromExtractor:
+    """When `--with-llm-facets --no-thinking` are combined, the Tier 2
+    extractor's `SessionInputs` must not contain thinking text -- otherwise
+    the LLM sees content the user explicitly opted out of, and the extracted
+    facet (persisted to fact_session_facets.value_text) could echo it.
+
+    Uses a `CannedFacetExtractor`-like spy to capture the SessionInputs the
+    populator actually builds, without making a real API call.
+    """
+
+    def test_session_inputs_passed_to_extractor_exclude_thinking(
+        self, conn, session_with_thinking, tmp_path
+    ):
+        from ccutils.etl.facets import FacetSpec
+
+        captured: list = []
+
+        class _SpyExtractor:
+            def extract(self, session_inputs, enabled_facets):
+                captured.append(session_inputs)
+                return {
+                    spec.facet_id: __import__(
+                        "ccutils.etl.facets", fromlist=["FacetOutput"]
+                    ).FacetOutput(
+                        facet_id=spec.facet_id,
+                        prompt_version=spec.prompt_version,
+                        value="canned summary",
+                    )
+                    for spec in enabled_facets
+                }
+
+        from ccutils.etl.orchestrator import run_v15_etl
+        run_v15_etl(
+            conn, session_with_thinking,
+            project_name="x", parquet_lake_root=tmp_path / "lake",
+            include_thinking=False,
+            facet_extractor=_SpyExtractor(),
+        )
+
+        assert len(captured) == 1, (
+            "Spy should have been called once per session in staging"
+        )
+        inputs = captured[0]
+        assert _THINKING_PAYLOAD not in inputs.first_user_message
+        assert _THINKING_PAYLOAD not in inputs.last_assistant_message
+        # Sanity: visible text DID make it through.
+        assert _VISIBLE_TEXT in inputs.last_assistant_message
+        # FacetSpec is unused here but imported as a verification that the
+        # Tier 2 plumbing imports are correct.
+        _ = FacetSpec

@@ -317,7 +317,7 @@ def generate_json_archive(
     source_folder,
     output_dir,
     include_agents=False,
-    include_thinking=False,
+    include_thinking=True,
     truncate_output=2000,
     progress_callback=None,
     max_workers=1,
