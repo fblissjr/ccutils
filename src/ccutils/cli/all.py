@@ -8,11 +8,10 @@ import click
 from click_option_group import optgroup
 
 from ..parsers import find_all_sessions
-from ..schemas import resolve_schema_format
 from ..export import (
     generate_batch_html,
     generate_duckdb_archive,
-    generate_star_json_archive,
+    generate_json_archive,
 )
 from .utils import (
     build_facet_extractor_or_exit,
@@ -39,9 +38,9 @@ from .utils import (
 @optgroup.option(
     "--format",
     "output_format",
-    type=click.Choice(["html", "duckdb", "duckdb-star", "json", "json-star", "both"]),
+    type=click.Choice(["html", "duckdb", "json", "both"]),
     default="html",
-    help="Output format: html (default), duckdb[-star], json[-star], or both.",
+    help="Output format: html (default), duckdb, json, or both (html+duckdb). duckdb/json write the v0.15 star schema.",
 )
 @optgroup.option(
     "--open",
@@ -145,11 +144,9 @@ def all_cmd(
 
     \b
     - html: Browsable HTML archive with master index and per-project pages
-    - duckdb: DuckDB database with simple schema (4 tables)
-    - duckdb-star: DuckDB database with star schema (28 tables + 14 views)
-    - json: JSON files with simple schema
-    - json-star: JSON directory with star schema (dimensions/ + facts/)
-    - both: Generate both HTML archive and simple DuckDB database
+    - duckdb: DuckDB database with the v0.15 star schema
+    - json: JSON directory with the v0.15 star schema (dimensions/ + facts/)
+    - both: Generate both HTML archive and DuckDB database
 
     Thinking blocks and agent sessions are included by default. Use --no-thinking
     or --no-agents to exclude them.
@@ -216,9 +213,6 @@ def all_cmd(
     if not quiet:
         click.echo(f"\nGenerating archive in {output}...")
 
-    # Resolve schema type from format
-    resolved_schema, resolved_format = resolve_schema_format(output_format)
-
     # Progress callback for non-quiet mode with enhanced stats
     def on_progress(project_name, session_name, current, total, stats=None):
         if quiet:
@@ -253,18 +247,14 @@ def all_cmd(
             private=private,
         )
 
-    # Generate DuckDB if requested (simple or star schema)
-    if output_format in ("duckdb", "duckdb-star", "both"):
-        if not quiet:
-            if output_format == "both":
-                click.echo("\nGenerating DuckDB archive...")
-            elif output_format == "duckdb-star":
-                click.echo(f"Using star schema ({resolved_schema})")
+    # Generate DuckDB if requested (always v0.15 star schema)
+    if output_format in ("duckdb", "both"):
+        if not quiet and output_format == "both":
+            click.echo("\nGenerating DuckDB archive...")
 
         duckdb_stats = generate_duckdb_archive(
             source,
             output,
-            schema_type=resolved_schema,
             include_agents=include_agents,
             include_thinking=include_thinking,
             progress_callback=on_progress if output_format != "both" else None,
@@ -276,7 +266,7 @@ def all_cmd(
         if stats is None:
             stats = duckdb_stats
 
-    # Run embedding pipeline if requested (star schema only)
+    # Run embedding pipeline if requested
     if embed and duckdb_stats and duckdb_stats.get("db_path"):
         import duckdb as _duckdb
 
@@ -284,11 +274,11 @@ def all_cmd(
         run_embedding_pipeline(emb_conn, embed_model, quiet=quiet)
         emb_conn.close()
 
-    # Generate JSON star schema if requested
-    if output_format == "json-star":
+    # Generate JSON archive if requested (v0.15 star schema as JSON dir)
+    if output_format == "json":
         if not quiet:
-            click.echo("Generating JSON star schema archive...")
-        duckdb_stats = generate_star_json_archive(
+            click.echo("Generating JSON archive...")
+        duckdb_stats = generate_json_archive(
             source,
             output,
             include_agents=include_agents,
@@ -301,34 +291,6 @@ def all_cmd(
         )
         if stats is None:
             stats = duckdb_stats
-
-    # Generate simple JSON if requested
-    if output_format == "json":
-        if not quiet:
-            click.echo("Generating JSON archive...")
-        from ..schemas import export_sessions_to_json
-
-        # Collect all session paths
-        session_paths = []
-        for project in projects:
-            for session in project["sessions"]:
-                session_paths.append(session["path"])
-
-        output.mkdir(parents=True, exist_ok=True)
-        json_path = output / "sessions.json"
-        export_sessions_to_json(
-            session_paths,
-            json_path,
-            include_thinking=include_thinking,
-            private=private,
-        )
-        stats = {
-            "total_projects": len(projects),
-            "total_sessions": total_sessions,
-            "failed_sessions": [],
-            "output_dir": output,
-            "db_path": None,
-        }
 
     # Report any failures
     if stats and stats.get("failed_sessions"):

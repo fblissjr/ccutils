@@ -26,11 +26,8 @@ ccutils
 # Convert a single session file (opens in browser)
 ccutils session.jsonl
 
-# Export to DuckDB for SQL analytics
-ccutils --format duckdb -o ./archive
-
-# Export with star schema (v0.15 four-tier ETL + Parquet lake)
-ccutils --format duckdb-star -o ./analytics
+# Export to DuckDB (v0.15 star schema + four-tier ETL + Parquet lake)
+ccutils --format duckdb -o ./analytics
 ```
 
 ## Commands
@@ -53,18 +50,18 @@ Thinking blocks and subagent sessions are included by default.
 ```bash
 ccutils                                          # Interactive picker
 ccutils session.jsonl                            # Convert file, open in browser
-ccutils session.jsonl --format duckdb-star -o .  # Star schema from file
-ccutils --format duckdb-star -o ./analytics      # Pick sessions, star schema
+ccutils session.jsonl --format duckdb -o .       # v0.15 star schema DuckDB
+ccutils --format duckdb -o ./analytics           # Pick sessions, star schema
 ccutils -p myproject                             # Filter by project name
 ccutils --flat                                   # Legacy single-list mode
 ccutils --no-thinking --no-subagents             # Exclude thinking/agents
-ccutils --format duckdb-star --embed -o .        # With ColBERT embeddings
-ccutils --format duckdb-star --with-llm-facets -o .  # + Tier 2 LLM facets (F20 via Haiku)
+ccutils --format duckdb --embed -o .             # With ColBERT embeddings
+ccutils --format duckdb --with-llm-facets -o .   # + Tier 2 LLM facets (F20 via Haiku)
 ```
 
 `--with-llm-facets` requires `ANTHROPIC_API_KEY` in the environment OR a `ccutils-anthropic` keychain entry (`security add-generic-password -s ccutils-anthropic -a $USER -w`). Star schema only.
 
-Note: pairing `--batch-llm-facets` with `--format json-star` runs the full LLM extraction against a temporary DuckDB that's discarded after the JSON export — you pay the API cost but don't get a queryable database to inspect the F20 outputs. If you want to see the extracted facets, use `--format duckdb-star` instead.
+Note: pairing `--batch-llm-facets` with `--format json` runs the full LLM extraction against a temporary DuckDB that's discarded after the JSON export — you pay the API cost but don't get a queryable database to inspect the F20 outputs. If you want to see the extracted facets, use `--format duckdb` instead.
 
 ### all
 
@@ -72,9 +69,9 @@ Batch convert every session. Agents and thinking blocks included by default.
 
 ```bash
 ccutils all -o ./archive                         # HTML archive with search index
-ccutils all --format duckdb-star -o ./analytics   # Star schema for all sessions
-ccutils all --format duckdb-star --embed -o ./out # With ColBERT embeddings
-ccutils all --format duckdb-star --batch-llm-facets -o ./out  # + Tier 2 LLM facets
+ccutils all --format duckdb -o ./analytics       # v0.15 star schema for all sessions
+ccutils all --format duckdb --embed -o ./out     # With ColBERT embeddings
+ccutils all --format duckdb --batch-llm-facets -o ./out  # + Tier 2 LLM facets
 ccutils all -j 4 --batch-size 20 -o ./archive    # Parallel processing
 ccutils all --no-agents --no-thinking             # Exclude agents and thinking
 ccutils all --dry-run                            # Preview without converting
@@ -82,11 +79,10 @@ ccutils all --dry-run                            # Preview without converting
 
 ### import
 
-Import Claude.ai web conversation exports (the ZIP/directory from Settings > Privacy).
+Import Claude.ai web conversation exports (the ZIP/directory from Settings > Privacy). HTML output only.
 
 ```bash
 ccutils import ./my-claude-export --open         # HTML, opens in browser
-ccutils import ./export --format duckdb -o data.duckdb  # DuckDB
 ccutils import ./export --interactive            # Pick conversations
 ccutils import ./export --list                   # List without converting
 ```
@@ -122,7 +118,7 @@ ccutils schema ./export --json > schema.json     # Machine-readable output
 
 ## Export Formats
 
-Schema type is auto-inferred from `--format`: `duckdb-star` and `json-star` use star schema, plain `duckdb` and `json` use simple.
+Three formats: `html`, `duckdb`, `json`. All three are first-class; `duckdb` and `json` both write the v0.15 star schema.
 
 ### HTML Transcripts
 
@@ -133,20 +129,10 @@ ccutils -o ./transcript --open
 ccutils all -o ./archive                    # Archive with master index and search
 ```
 
-### DuckDB Analytics
-
-#### Simple Schema (4 tables)
+### DuckDB Analytics (v0.15 star schema)
 
 ```bash
-ccutils --format duckdb -o ./archive
-```
-
-Tables: `sessions`, `messages`, `tool_calls`, `thinking`
-
-#### Star Schema (v0.15, on the `etl-rethink` branch)
-
-```bash
-ccutils --format duckdb-star -o ./analytics
+ccutils --format duckdb -o ./analytics
 ```
 
 v0.15 rebuilds the ETL as a four-tier pipeline:
@@ -222,12 +208,10 @@ LIMIT 10;
 
 ### JSON Export
 
-```bash
-# Simple schema - single file
-ccutils --format json -o ./sessions.json
+The v0.15 star schema as a JSON directory tree (`meta.json` + `dimensions/` + `facts/`).
 
-# Star schema - directory structure (dimensions/ + facts/ + meta.json)
-ccutils --format json-star -o ./star-export/
+```bash
+ccutils --format json -o ./json-export/
 ```
 
 ## Common Options
@@ -235,7 +219,7 @@ ccutils --format json-star -o ./star-export/
 ```bash
 # Output
 -o, --output PATH          Output directory or file
---format FORMAT            html, duckdb, duckdb-star, json, json-star (+ both for all)
+--format FORMAT            html, duckdb, json (+ both for all)
 --open                     Open result in browser
 
 # Content (included by default -- use flags to exclude)

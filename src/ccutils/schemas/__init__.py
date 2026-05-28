@@ -1,19 +1,10 @@
 """Schema definitions for Claude Code transcripts.
 
-This package provides two schemas:
-- simple: 4 tables (sessions, messages, tool_calls, thinking)
-- star: v0.15 dimensional schema; per-session ETL lives in
-  ``ccutils.etl.orchestrator.run_v15_etl``
-
-Use resolve_schema_format() to handle CLI schema/format combinations.
+Single schema: v0.15 dimensional model. Per-session ETL lives in
+``ccutils.etl.orchestrator.run_v15_etl``. The legacy "simple" 4-table
+schema was removed when v0.15 stabilized -- the CLI's `--format duckdb`
+and `--format json` now write the star schema unconditionally.
 """
-
-from .simple import (
-    create_duckdb_schema,
-    export_session_to_duckdb,
-    export_sessions_to_json,
-    _extract_session_data,
-)
 
 from .star import (
     create_star_schema,
@@ -25,28 +16,7 @@ from .star import (
     TOOL_CATEGORIES,
 )
 
-
-def resolve_schema_format(output_format):
-    """Infer schema type from compound format names.
-
-    'duckdb-star' and 'json-star' -> star schema.
-    'duckdb', 'json', 'html' -> simple schema.
-
-    Returns:
-        Tuple of (schema, base_format) e.g. ("star", "duckdb") or ("simple", "json")
-    """
-    if output_format.endswith("-star"):
-        return "star", output_format.replace("-star", "")
-    return "simple", output_format
-
-
 __all__ = [
-    # Simple schema
-    "create_duckdb_schema",
-    "export_session_to_duckdb",
-    "export_sessions_to_json",
-    "_extract_session_data",
-    # Star schema
     "create_star_schema",
     "export_star_schema_to_json",
     "generate_dimension_key",
@@ -54,6 +24,4 @@ __all__ = [
     "get_model_family",
     "get_time_of_day",
     "TOOL_CATEGORIES",
-    # Utilities
-    "resolve_schema_format",
 ]

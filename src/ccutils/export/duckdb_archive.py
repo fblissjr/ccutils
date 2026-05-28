@@ -1,9 +1,12 @@
 # path-privacy: skip-file -- references universal Claude Code data paths (not personal)
-"""DuckDB archive generation.
+"""DuckDB / JSON archive generation.
 
-Drives the per-session ETL pipeline for both the simple (4-table) schema
-and the v0.15 star schema (run via the four-tier orchestrator at
-src/ccutils/etl/orchestrator.py).
+Star schema only. Drives the v0.15 four-tier per-session ETL
+(``ccutils.etl.orchestrator.run_v15_etl``) across a project tree and
+writes either a DuckDB database or its JSON export.
+
+The legacy `schema_type` parameter is gone; star is the only schema.
+The legacy `simple` 4-table schema was removed when v0.15 stabilized.
 """
 
 import os
@@ -14,18 +17,31 @@ import duckdb
 
 from ..parsers import find_all_sessions
 from ..schemas import (
-    create_duckdb_schema,
-    export_session_to_duckdb,
     create_star_schema,
     export_star_schema_to_json,
 )
 from ..etl.orchestrator import run_v15_etl
 
 
+# Tables `_count_rows` polls for the progress display. v0.15 names only;
+# the historical list referenced legacy facts that weren't populated by
+# `run_v15_etl` and showed misleading zeros.
+_PROGRESS_TABLES = (
+    "fact_messages",
+    "fact_tool_uses",
+    "fact_tool_results",
+    "fact_token_usage",
+    "fact_session_summary",
+    "fact_attachments",
+    "fact_progress_events",
+    "fact_system_events",
+    "fact_session_facets",
+)
+
+
 def generate_duckdb_archive(
     source_folder,
     output_dir,
-    schema_type="simple",
     include_agents=False,
     include_thinking=False,
     truncate_output=2000,
@@ -35,58 +51,49 @@ def generate_duckdb_archive(
     private=False,
     facet_extractor=None,
 ):
-    """Generate DuckDB archive for all sessions.
+    """Generate a DuckDB archive for all sessions under ``source_folder``.
 
-    Supports both simple (4-table) and star (28 tables + 14 views) schemas.
-    Uses a stage-and-load pattern for efficient batch processing:
-    - Stage: Parse sessions (parallelizable with max_workers)
-    - Load: Bulk insert in batches (batch_size sessions per transaction)
+    Writes ``archive.duckdb`` plus a sibling ``parquet_lake/`` directory.
+    Stage-and-load: parses sessions (parallelizable with ``max_workers``)
+    then bulk-inserts in batches of ``batch_size``.
 
     Args:
-        source_folder: Path to Claude projects folder
-        output_dir: Path for output
-        schema_type: "simple" (4 tables) or "star" (dimensional model)
-        include_agents: Whether to include agent sessions
-        include_thinking: Whether to include thinking blocks
-        truncate_output: Max chars for tool output
-        progress_callback: Optional callback with signature:
-            callback(project_name, session_name, current, total, stats)
-            where stats is a dict with 'rows_inserted', 'db_size_mb', 'rate'
-        max_workers: Number of parallel workers for staging (default: 1)
-        batch_size: Sessions per transaction batch (default: 10)
+        source_folder: Path to Claude Code projects folder.
+        output_dir: Path for output.
+        include_agents: Whether to include agent sessions.
+        include_thinking: kept for back-compat; v0.15 captures everything.
+        truncate_output: kept for back-compat; v0.15 captures everything.
+        progress_callback: callback(project_name, session_name, current,
+            total, stats) where stats has 'rows_inserted', 'db_size_mb',
+            'rate'.
+        max_workers: Number of parallel workers for staging (default: 1).
+        batch_size: Sessions per transaction batch (default: 10).
+        private: Sanitize file paths in stored content.
+        facet_extractor: Optional Tier 2 facet extractor; None disables.
 
     Returns:
-        dict with statistics including row counts
+        dict with statistics including row counts.
     """
     source_folder = Path(source_folder)
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
     db_path = output_dir / "archive.duckdb"
+    parquet_lake = output_dir / "parquet_lake"
 
-    # Star uses the v0.15 orchestrator. Loop callers pass legacy
-    # include_thinking / truncate_output / private kwargs that v0.15 doesn't
-    # use (it always captures everything); the **kwargs swallow them.
-    if schema_type == "star":
-        conn = create_star_schema(db_path)
-        parquet_lake = output_dir / "parquet_lake"
-        # facet_extractor is captured by the closure; None disables Tier 2
-        # entirely. Legacy include_thinking / truncate_output / private
-        # kwargs flow through **_legacy_kwargs unused -- the v0.15 ETL
-        # captures everything by default.
-        etl_func = (
-            lambda conn, session_path, project_name, **_legacy_kwargs:
-            run_v15_etl(
-                conn,
-                session_path,
-                project_name=project_name,
-                parquet_lake_root=parquet_lake,
-                facet_extractor=facet_extractor,
-            )
+    conn = create_star_schema(db_path)
+
+    # Per-session ETL closure. v0.15 doesn't need include_thinking /
+    # truncate_output / private (captures everything by default), so
+    # **_legacy_kwargs swallows them at the closure boundary.
+    def _etl(conn, session_path, project_name, **_legacy_kwargs):
+        return run_v15_etl(
+            conn,
+            session_path,
+            project_name=project_name,
+            parquet_lake_root=parquet_lake,
+            facet_extractor=facet_extractor,
         )
-    else:
-        conn = create_duckdb_schema(db_path)
-        etl_func = export_session_to_duckdb
 
     projects = find_all_sessions(source_folder, include_agents=include_agents)
 
@@ -94,24 +101,19 @@ def generate_duckdb_archive(
     processed_count = 0
     successful_sessions = 0
     failed_sessions = []
-
-    # Stats tracking
     start_time = time.time()
 
-    # Flatten sessions for processing
     session_tasks = []
     for project in projects:
         project_name = project["name"]
         for session in project["sessions"]:
             session_tasks.append((project_name, session["path"]))
 
-    # Process sessions
     if max_workers > 1 and len(session_tasks) > 1:
-        # Parallel processing - stage then load in batches
         _process_parallel(
             conn,
             session_tasks,
-            etl_func,
+            _etl,
             include_thinking,
             truncate_output,
             batch_size,
@@ -119,15 +121,13 @@ def generate_duckdb_archive(
             db_path,
             start_time,
             failed_sessions,
-            schema_type,
             private,
         )
         successful_sessions = len(session_tasks) - len(failed_sessions)
     else:
-        # Sequential processing (original behavior)
         for project_name, session_path in session_tasks:
             try:
-                etl_func(
+                _etl(
                     conn,
                     session_path,
                     project_name,
@@ -151,7 +151,7 @@ def generate_duckdb_archive(
                 rate = processed_count / elapsed if elapsed > 0 else 0
                 db_size = _get_db_size_mb(db_path)
                 stats = {
-                    "rows_inserted": _count_rows(conn, schema_type),
+                    "rows_inserted": _count_rows(conn),
                     "db_size_mb": db_size,
                     "rate": rate,
                 }
@@ -163,24 +163,19 @@ def generate_duckdb_archive(
                     stats,
                 )
 
-    # Note: v0.15 populates per-session aggregates (fact_session_summary)
-    # inside run_v15_etl. Cross-session work (depth chains, agent
-    # delegations, file bridge) lives in run_v15_etl too now.
     # history.jsonl is a global file (not per-session) so we ingest it
     # once after the per-session loop, best-effort.
-    if schema_type == "star":
-        try:
-            from ..etl.dim_prompt import import_history
+    try:
+        from ..etl.dim_prompt import import_history
 
-            history_path = Path.home() / ".claude" / "history.jsonl"
-            import_history(conn, history_path)
-        except Exception:
-            # history ingestion is optional -- never fail the archive
-            # build because of it.
-            pass
+        history_path = Path.home() / ".claude" / "history.jsonl"
+        import_history(conn, history_path)
+    except Exception:
+        # history ingestion is optional -- never fail the archive build
+        # because of it.
+        pass
 
-    # Get final row counts
-    final_row_count = _count_rows(conn, schema_type)
+    final_row_count = _count_rows(conn)
     final_db_size = _get_db_size_mb(db_path)
 
     conn.close()
@@ -191,7 +186,6 @@ def generate_duckdb_archive(
         "failed_sessions": failed_sessions,
         "output_dir": output_dir,
         "db_path": db_path,
-        "schema_type": schema_type,
         "rows_inserted": final_row_count,
         "db_size_mb": final_db_size,
     }
@@ -208,24 +202,22 @@ def _process_parallel(
     db_path,
     start_time,
     failed_sessions,
-    schema_type,
     private=False,
 ):
     """Process sessions in batches with progress reporting.
 
-    Note: DuckDB connections are not thread-safe for writes, so we
-    process in batches and serialize the actual DB writes.
+    Note: DuckDB connections are not thread-safe for writes, so the
+    actual DB writes are serialized; batching only affects how often we
+    report progress.
     """
     total = len(session_tasks)
     processed = 0
     rows_total = 0
 
-    # Process in batches
     for batch_start in range(0, total, batch_size):
         batch_end = min(batch_start + batch_size, total)
         batch = session_tasks[batch_start:batch_end]
 
-        # Process batch - serialize DB writes
         for project_name, session_path in batch:
             try:
                 etl_func(
@@ -250,9 +242,8 @@ def _process_parallel(
                 elapsed = time.time() - start_time
                 rate = processed / elapsed if elapsed > 0 else 0
                 db_size = _get_db_size_mb(db_path)
-                # Count rows periodically (expensive, so estimate)
                 if processed % 5 == 0:
-                    rows_total = _count_rows(conn, schema_type)
+                    rows_total = _count_rows(conn)
                 stats = {
                     "rows_inserted": rows_total,
                     "db_size_mb": db_size,
@@ -267,24 +258,12 @@ def _process_parallel(
                 )
 
 
-def _count_rows(conn, schema_type):
-    """Count total rows across relevant tables."""
-    if schema_type == "star":
-        tables = [
-            "fact_messages",
-            "fact_tool_calls",
-            "fact_content_blocks",
-            "fact_session_summary",
-            "fact_token_usage",
-            "fact_turn_durations",
-            "fact_diagnostics",
-            "fact_stop_events",
-        ]
-    else:
-        tables = ["messages", "tool_calls", "sessions"]
-
+def _count_rows(conn):
+    """Sum row counts across the v0.15 fact tables that the progress
+    display surfaces. Missing tables are silently skipped (a fresh DDL
+    may not have populated them yet)."""
     total = 0
-    for table in tables:
+    for table in _PROGRESS_TABLES:
         try:
             result = conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()
             total += result[0] if result else 0
@@ -294,7 +273,7 @@ def _count_rows(conn, schema_type):
 
 
 def _get_db_size_mb(db_path):
-    """Get database file size in MB."""
+    """Database file size in MB."""
     try:
         size_bytes = os.path.getsize(db_path)
         return round(size_bytes / (1024 * 1024), 2)
@@ -302,7 +281,7 @@ def _get_db_size_mb(db_path):
         return 0.0
 
 
-def generate_star_json_archive(
+def generate_json_archive(
     source_folder,
     output_dir,
     include_agents=False,
@@ -314,37 +293,27 @@ def generate_star_json_archive(
     private=False,
     facet_extractor=None,
 ):
-    """Generate star schema JSON archive for all sessions.
+    """Generate a JSON archive for all sessions under ``source_folder``.
 
-    Creates a JSON directory structure with dimensions/ and facts/ subdirs.
+    Builds the v0.15 star DuckDB in a temp dir, then exports it as a
+    JSON directory tree (meta.json + dimensions/ + facts/). The DuckDB
+    is discarded after export.
 
-    Args:
-        source_folder: Path to Claude projects folder
-        output_dir: Path for output
-        include_agents: Whether to include agent sessions
-        include_thinking: Whether to include thinking blocks
-        truncate_output: Max chars for tool output
-        progress_callback: Optional progress callback
-        max_workers: Number of parallel workers (default: 1)
-        batch_size: Sessions per batch (default: 10)
-
-    Returns:
-        dict with statistics
+    Footgun: pairing this with `facet_extractor` pays the full LLM API
+    cost during the temp-DB build, then throws the DB away. Use
+    ``generate_duckdb_archive`` if you want the queryable DuckDB.
     """
     import tempfile
 
     source_folder = Path(source_folder)
     output_dir = Path(output_dir)
 
-    # First build the DuckDB, then export to JSON
     with tempfile.TemporaryDirectory() as tmpdir:
         tmp_path = Path(tmpdir)
 
-        # Generate DuckDB with star schema
         stats = generate_duckdb_archive(
             source_folder,
             tmp_path,
-            schema_type="star",
             include_agents=include_agents,
             include_thinking=include_thinking,
             truncate_output=truncate_output,
@@ -355,14 +324,11 @@ def generate_star_json_archive(
             facet_extractor=facet_extractor,
         )
 
-        # Export to JSON
         db_path = tmp_path / "archive.duckdb"
         conn = duckdb.connect(str(db_path))
         export_star_schema_to_json(conn, output_dir)
         conn.close()
 
     stats["output_dir"] = output_dir
-    stats["db_path"] = None  # No DuckDB file for JSON export
+    stats["db_path"] = None  # JSON output discards the DuckDB
     return stats
-
-

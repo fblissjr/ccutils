@@ -522,65 +522,11 @@ class TestAllCommand:
 
 
 class TestDuckDBStarSchema:
-    """Tests for star schema DuckDB export via CLI."""
+    """Tests for the batch DuckDB/JSON export via CLI. v0.15 star is the
+    only schema -- `--format duckdb` and `--format json` both write it."""
 
-    def test_all_duckdb_star_creates_archive(self, mock_projects_dir, output_dir):
-        """Test duckdb-star format creates star schema database."""
-        runner = CliRunner()
-        result = runner.invoke(
-            cli,
-            [
-                "all",
-                "--source",
-                str(mock_projects_dir),
-                "--output",
-                str(output_dir),
-                "--format",
-                "duckdb-star",
-            ],
-        )
-
-        assert result.exit_code == 0
-        assert (output_dir / "archive.duckdb").exists()
-        # Verify it's a star schema by checking for dim_tool table
-        import duckdb
-
-        conn = duckdb.connect(str(output_dir / "archive.duckdb"))
-        tables = conn.execute("SHOW TABLES").fetchall()
-        table_names = [t[0] for t in tables]
-        assert "dim_tool" in table_names
-        assert "fact_messages" in table_names
-        assert "dim_session" in table_names
-        conn.close()
-
-    def test_all_json_star_creates_directory_structure(
-        self, mock_projects_dir, output_dir
-    ):
-        """Test json-star format creates dimensions/ and facts/ directories."""
-        runner = CliRunner()
-        result = runner.invoke(
-            cli,
-            [
-                "all",
-                "--source",
-                str(mock_projects_dir),
-                "--output",
-                str(output_dir),
-                "--format",
-                "json-star",
-            ],
-        )
-
-        assert result.exit_code == 0
-        assert (output_dir / "meta.json").exists()
-        assert (output_dir / "dimensions").is_dir()
-        assert (output_dir / "facts").is_dir()
-        # Check for some expected files
-        assert (output_dir / "dimensions" / "dim_tool.json").exists()
-        assert (output_dir / "facts" / "fact_messages.json").exists()
-
-    def test_all_duckdb_simple_uses_simple_schema(self, mock_projects_dir, output_dir):
-        """Test that plain duckdb format uses simple schema."""
+    def test_all_duckdb_creates_star_archive(self, mock_projects_dir, output_dir):
+        """--format duckdb produces a v0.15 star schema database."""
         runner = CliRunner()
         result = runner.invoke(
             cli,
@@ -595,18 +541,44 @@ class TestDuckDBStarSchema:
             ],
         )
 
-        assert result.exit_code == 0
+        assert result.exit_code == 0, result.output
         assert (output_dir / "archive.duckdb").exists()
-        # Verify it's a simple schema (has messages, not fact_messages)
         import duckdb
 
         conn = duckdb.connect(str(output_dir / "archive.duckdb"))
         tables = conn.execute("SHOW TABLES").fetchall()
         table_names = [t[0] for t in tables]
-        assert "messages" in table_names
-        assert "sessions" in table_names
-        assert "dim_tool" not in table_names  # Star schema table shouldn't exist
+        assert "dim_tool" in table_names
+        assert "fact_messages" in table_names
+        assert "dim_session" in table_names
+        # Legacy 4-table simple schema sentinels MUST be absent.
+        assert "thinking" not in table_names
         conn.close()
+
+    def test_all_json_creates_star_directory_structure(
+        self, mock_projects_dir, output_dir
+    ):
+        """--format json produces meta.json + dimensions/ + facts/."""
+        runner = CliRunner()
+        result = runner.invoke(
+            cli,
+            [
+                "all",
+                "--source",
+                str(mock_projects_dir),
+                "--output",
+                str(output_dir),
+                "--format",
+                "json",
+            ],
+        )
+
+        assert result.exit_code == 0, result.output
+        assert (output_dir / "meta.json").exists()
+        assert (output_dir / "dimensions").is_dir()
+        assert (output_dir / "facts").is_dir()
+        assert (output_dir / "dimensions" / "dim_tool.json").exists()
+        assert (output_dir / "facts" / "fact_messages.json").exists()
 
     def test_jobs_option_accepted(self, mock_projects_dir, output_dir):
         """Test that -j/--jobs option is accepted."""

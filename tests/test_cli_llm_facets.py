@@ -127,7 +127,7 @@ class TestLocalCommand:
         db_path = tmp_path / "out.duckdb"
         result = runner.invoke(
             cli,
-            [str(sample_jsonl), "--format", "duckdb-star",
+            [str(sample_jsonl), "--format", "duckdb",
              "-o", str(db_path)],
         )
         assert result.exit_code == 0, result.output
@@ -162,7 +162,7 @@ class TestLocalCommand:
         db_path = tmp_path / "out.duckdb"
         result = runner.invoke(
             cli,
-            [str(sample_jsonl), "--format", "duckdb-star",
+            [str(sample_jsonl), "--format", "duckdb",
              "-o", str(db_path), "--with-llm-facets"],
         )
         assert result.exit_code == 0, result.output
@@ -196,7 +196,7 @@ class TestLocalCommand:
         db_path = tmp_path / "out.duckdb"
         result = runner.invoke(
             cli,
-            [str(sample_jsonl), "--format", "duckdb-star",
+            [str(sample_jsonl), "--format", "duckdb",
              "-o", str(db_path), "--with-llm-facets"],
         )
         # Exit code 2 is the contract from build_facet_extractor_or_exit.
@@ -243,7 +243,7 @@ class TestAllCommand:
         result = runner.invoke(
             cli,
             ["all", "--source", str(projects_root),
-             "--format", "duckdb-star", "-o", str(out),
+             "--format", "duckdb", "-o", str(out),
              "--batch-llm-facets", "--quiet"],
         )
         assert result.exit_code == 0, result.output
@@ -269,7 +269,7 @@ class TestAllCommand:
         result = runner.invoke(
             cli,
             ["all", "--source", str(projects_root),
-             "--format", "duckdb-star", "-o", str(out), "--quiet"],
+             "--format", "duckdb", "-o", str(out), "--quiet"],
         )
         assert result.exit_code == 0, result.output
         assert called == [], (
@@ -279,8 +279,8 @@ class TestAllCommand:
     def test_json_star_format_forwards_extractor(
         self, sample_jsonl, tmp_path, monkeypatch, recorded_extractors
     ):
-        # R-6 from simplify review: --format json-star + --batch-llm-facets
-        # goes through generate_star_json_archive, which delegates to
+        # R-6 from simplify review: --format json + --batch-llm-facets
+        # goes through generate_json_archive, which delegates to
         # generate_duckdb_archive internally. Ensure the extractor
         # actually reaches that internal path.
         projects_root = tmp_path / "projects"
@@ -299,22 +299,22 @@ class TestAllCommand:
 
         captured = {}
         from ccutils.export import duckdb_archive as _da
-        real_star_json = _da.generate_star_json_archive
+        real_star_json = _da.generate_json_archive
 
         def _spy_star_json(*args, **kwargs):
             captured["facet_extractor"] = kwargs.get("facet_extractor")
             return real_star_json(*args, **kwargs)
 
         monkeypatch.setattr(
-            all_module, "generate_star_json_archive", _spy_star_json,
+            all_module, "generate_json_archive", _spy_star_json,
         )
 
         runner = CliRunner()
-        out = tmp_path / "out-json-star"
+        out = tmp_path / "out-json"
         result = runner.invoke(
             cli,
             ["all", "--source", str(projects_root),
-             "--format", "json-star", "-o", str(out),
+             "--format", "json", "-o", str(out),
              "--batch-llm-facets", "--quiet"],
         )
         assert result.exit_code == 0, result.output

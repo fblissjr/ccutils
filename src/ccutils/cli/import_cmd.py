@@ -1,4 +1,11 @@
-"""Import command for Claude.ai account exports."""
+"""Import command for Claude.ai account exports.
+
+HTML-only as of the simple-schema removal: the legacy DuckDB path used
+the now-deleted 4-table schema, and the v0.15 star schema is shaped
+around Claude Code session JSONL (tool calls, tool results, ...) which
+doesn't match the Claude.ai export shape. If a Claude.ai → star schema
+ETL is needed later, it warrants its own populator.
+"""
 
 import html
 import tempfile
@@ -8,7 +15,6 @@ import click
 
 from ..parsers.claude_ai import parse_claude_ai_export, load_export_files
 from ..export import generate_html
-from ..schemas.simple import create_duckdb_schema, export_session_to_duckdb
 from .utils import maybe_open_browser
 
 
@@ -18,14 +24,7 @@ from .utils import maybe_open_browser
     "-o",
     "--output",
     type=click.Path(),
-    help="Output path. For HTML: directory. For DuckDB: .duckdb file.",
-)
-@click.option(
-    "--format",
-    "output_format",
-    type=click.Choice(["html", "duckdb"]),
-    default="html",
-    help="Output format: html (default) or duckdb.",
+    help="Output directory for the generated HTML.",
 )
 @click.option(
     "--conversation-id",
@@ -49,7 +48,7 @@ from .utils import maybe_open_browser
     "--open",
     "open_browser",
     is_flag=True,
-    help="Open the result in browser after export (HTML only).",
+    help="Open the result in browser after export.",
 )
 @click.option(
     "--list",
@@ -65,7 +64,6 @@ from .utils import maybe_open_browser
 def import_cmd(
     export_path,
     output,
-    output_format,
     conversation_ids,
     include_thinking,
     interactive,
@@ -76,7 +74,7 @@ def import_cmd(
     """Import a Claude.ai account export (from Settings > Privacy).
 
     EXPORT_PATH should be the directory containing conversations.json,
-    projects.json, etc.
+    projects.json, etc. Output is HTML only.
 
     Examples:
 
@@ -85,8 +83,8 @@ def import_cmd(
       ccutils import ./my-claude-export --open
 
     \b
-      # Export specific conversations to DuckDB
-      ccutils import ./export -c abc123 -c def456 --format duckdb -o data.duckdb
+      # Export specific conversations
+      ccutils import ./export -c abc123 -c def456 -o ./html-out
 
     \b
       # Interactive selection
@@ -143,10 +141,7 @@ def import_cmd(
         f"Found {len(loglines)} messages across {len(session_ids)} conversations"
     )
 
-    if output_format == "html":
-        _export_to_html(parsed, output, open_browser, private=private)
-    elif output_format == "duckdb":
-        _export_to_duckdb(parsed, output, include_thinking, private=private)
+    _export_to_html(parsed, output, open_browser, private=private)
 
 
 def _list_conversations(conversations):
@@ -272,37 +267,3 @@ def _group_loglines_by_session(loglines):
     return sessions
 
 
-def _resolve_db_path(output):
-    """Resolve DuckDB output path from user-provided output argument."""
-    if output is None:
-        return Path("claude-ai-export.duckdb")
-    p = Path(output)
-    if not p.suffix:
-        return p.with_suffix(".duckdb")
-    return p
-
-
-def _export_to_duckdb(parsed, output, include_thinking, private=False):
-    """Export parsed data to DuckDB."""
-    loglines = parsed["loglines"]
-    sessions = _group_loglines_by_session(loglines)
-
-    db_path = _resolve_db_path(output)
-    db_path.parent.mkdir(parents=True, exist_ok=True)
-
-    click.echo(f"Creating DuckDB database: {db_path}")
-    conn = create_duckdb_schema(db_path)
-
-    for session_id, session_loglines in sessions.items():
-        export_session_to_duckdb(
-            conn,
-            session_path=None,
-            project_name="Claude.ai Import",
-            include_thinking=include_thinking,
-            loglines=session_loglines,
-            session_id_override=session_id,
-            private=private,
-        )
-
-    conn.close()
-    click.echo(f"Exported {len(sessions)} conversations to {db_path}")

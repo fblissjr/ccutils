@@ -5,6 +5,11 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Breaking
+- **Simple 4-table schema removed.** `src/ccutils/schemas/simple/` is gone; `--format duckdb` and `--format json` now write the v0.15 star schema unconditionally. Previously `duckdb`/`json` produced a 4-table snapshot (`sessions`, `messages`, `tool_calls`, `thinking`) and the star schema lived behind `--format duckdb-star` / `--format json-star`. Migration: any scripts that read the 4-table shape need to switch to the star schema (query `fact_messages` / `fact_tool_uses` / `fact_session_summary` instead of `messages` / `tool_calls` / `sessions`). The `-star` suffix is no longer accepted; pass `duckdb` and `json` instead.
+- **`ccutils import` is HTML-only.** The legacy `import --format duckdb` path went through the now-removed simple schema. The Claude.ai export shape doesn't match v0.15's Claude Code session JSONL grain, so no automatic migration to star; if a Claude.ai → star ETL is wanted later it warrants its own populator.
+- **Internal renames** (impact callers of the public Python API): `ccutils.schemas.resolve_schema_format` removed (no longer needed; only one schema). `ccutils.export.generate_star_json_archive` → `ccutils.export.generate_json_archive`. `ccutils.export.generate_duckdb_archive` no longer accepts a `schema_type` parameter. `ccutils.schemas.create_duckdb_schema` / `export_session_to_duckdb` / `export_sessions_to_json` / `_extract_session_data` are gone (the four were the simple-schema re-exports).
+
 ### Added
 - **Facet & cluster pipeline -- step 1 (DDL + Tier 1 registry).** Three new tables land in `create_star_schema()`:
   - `dim_facet_type` -- registry of facet definitions. Seeded with the 19 Tier 1 facets (F01-F19) from `docs/FACET_CLUSTER_PIPELINE.md` §3. All `method='computed'`, no prompt fields.

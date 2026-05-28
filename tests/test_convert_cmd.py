@@ -1,8 +1,5 @@
 """Tests for single-file conversion (positional arg to default command)."""
 
-import json
-from pathlib import Path
-
 from click.testing import CliRunner
 
 from ccutils.cli import cli
@@ -53,8 +50,13 @@ class TestFileConversionHTML:
 class TestFileConversionDuckDB:
     """Tests for single-file conversion with DuckDB output."""
 
-    def test_duckdb_simple(self, sample_session_file, output_dir):
-        """Convert to simple DuckDB."""
+    def test_duckdb_produces_v15_tables(self, sample_session_file, output_dir):
+        """--format duckdb writes the v0.15 star schema. There is no
+        longer a 'simple' schema (4-table) variant; the only DDL the CLI
+        produces is the v0.15 dimensional model. This test pins the
+        contract: --format duckdb -> v0.15 fact tables."""
+        import duckdb as _duckdb
+
         db_path = output_dir / "test.duckdb"
         runner = CliRunner()
         result = runner.invoke(
@@ -62,22 +64,29 @@ class TestFileConversionDuckDB:
             [str(sample_session_file), "--format", "duckdb", "-o", str(db_path)],
         )
 
-        assert result.exit_code == 0
-        assert "Exported to" in result.output
+        assert result.exit_code == 0, result.output
         assert db_path.exists()
 
-    def test_duckdb_star(self, sample_session_file, output_dir):
-        """Convert to star DuckDB."""
-        db_path = output_dir / "test.duckdb"
-        runner = CliRunner()
-        result = runner.invoke(
-            cli,
-            [str(sample_session_file), "--format", "duckdb-star", "-o", str(db_path)],
-        )
+        conn = _duckdb.connect(str(db_path))
+        tables = {row[0] for row in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        ).fetchall()}
+        conn.close()
 
-        assert result.exit_code == 0
-        assert "Exported to" in result.output
-        assert db_path.exists()
+        # v0.15-only fact tables that must exist after a star ETL.
+        for expected in ("dim_etl_version", "fact_messages",
+                         "fact_session_summary", "fact_session_facets",
+                         "dim_facet_type"):
+            assert expected in tables, (
+                f"Expected v0.15 table {expected} missing -- "
+                "did --format duckdb still write the legacy simple schema?"
+            )
+
+        # Sanity check: legacy 4-table simple schema sentinels MUST NOT exist.
+        for legacy in ("sessions", "thinking"):
+            assert legacy not in tables, (
+                f"Legacy simple-schema table {legacy} still being written by --format duckdb"
+            )
 
     def test_thinking_included_by_default(self, sample_session_file, output_dir):
         """Thinking blocks are included by default in DuckDB export."""
@@ -108,38 +117,24 @@ class TestFileConversionDuckDB:
 
 
 class TestFileConversionJSON:
-    """Tests for single-file conversion with JSON output."""
+    """Tests for single-file conversion with JSON output (v0.15 star schema
+    as a directory tree)."""
 
-    def test_json_simple(self, sample_session_file, output_dir):
-        """Convert to simple JSON export."""
-        runner = CliRunner()
-        result = runner.invoke(
-            cli,
-            [str(sample_session_file), "--format", "json", "-o", str(output_dir)],
-        )
-
-        assert result.exit_code == 0
-        assert "Exported to" in result.output
-        json_file = output_dir / "sessions.json"
-        assert json_file.exists()
-        data = json.loads(json_file.read_text())
-        assert data["schema_type"] == "simple"
-        assert "tables" in data
-
-    def test_json_star(self, sample_session_file, output_dir):
-        """Convert to star JSON export."""
+    def test_json_produces_star_directory(self, sample_session_file, output_dir):
+        """`--format json` writes the v0.15 star schema as a meta.json +
+        dimensions/ + facts/ tree."""
         runner = CliRunner()
         result = runner.invoke(
             cli,
             [
                 str(sample_session_file),
-                "--format", "json-star",
-                "-o", str(output_dir / "star_out"),
+                "--format", "json",
+                "-o", str(output_dir / "json_out"),
             ],
         )
 
-        assert result.exit_code == 0
+        assert result.exit_code == 0, result.output
         assert "Exported to" in result.output
-        star_dir = output_dir / "star_out"
-        assert star_dir.exists()
-        assert (star_dir / "meta.json").exists()
+        out_dir = output_dir / "json_out"
+        assert out_dir.exists()
+        assert (out_dir / "meta.json").exists()

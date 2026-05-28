@@ -43,15 +43,6 @@ from .parsers import (
     shorten_model_name,
 )
 
-# Simple schema imports (from modular package)
-from .schemas import (
-    create_duckdb_schema,
-    export_session_to_duckdb,
-    export_sessions_to_json,
-    _extract_session_data,
-    resolve_schema_format,
-)
-
 # API client imports (from modular package)
 from .api import (
     API_BASE_URL,

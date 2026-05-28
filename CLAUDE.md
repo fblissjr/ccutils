@@ -112,12 +112,8 @@ ccutils/
 │   │   ├── metadata.py       # SessionMetadata dataclass + rich extraction
 │   │   ├── claude_ai.py      # Claude.ai export parser
 │   │   └── schema_inspector.py # JSON structure analysis
-│   ├── schemas/              # Schema definitions
-│   │   ├── __init__.py       # Unified exports for both schemas
-│   │   ├── simple/           # Simple 4-table schema
-│   │   │   ├── __init__.py
-│   │   │   ├── schema.py     # DDL for simple schema
-│   │   │   └── etl.py        # Simple schema ETL
+│   ├── schemas/              # Schema definitions (v0.15 star only; simple was removed)
+│   │   ├── __init__.py       # Re-exports the star schema public surface
 │   │   └── star/             # Star schema (DDL + legacy ETL)
 │   │       ├── __init__.py   # Public API exports
 │   │       ├── schema.py     # DDL for star schema tables + semantic views (v0.15 reshape)
@@ -186,21 +182,17 @@ ccutils/
 - `convert` - Hidden alias for `local` (backwards compatibility)
 
 ### 2. Export Formats
-Three output formats with two schema types:
 
-**Simple schema** (4 tables: `sessions`, `messages`, `tool_calls`, `thinking`):
-- `--format duckdb` - DuckDB database file
-- `--format json` - Single JSON file with nested tables
+Three output formats; only one schema:
 
-**Star schema** (v0.15, on etl-rethink branch):
-- `--format duckdb-star` - DuckDB database file
-- `--format json-star` - Directory with meta.json + dimensions/*.json + facts/*.json
-- Pipeline entry: `run_v15_etl()` in `src/ccutils/etl/orchestrator.py` (see the v0.15 ETL pipeline section above).
-- DDL: `create_star_schema()` in `src/ccutils/schemas/star/schema.py`.
-- `--embed [MODEL]` flag available on both `local` and `all` commands (requires pylate optional dependency)
-- `docs/STAR_SCHEMA.md` describes the legacy schema; rewrite for v0.15 pending.
+- `--format html` - Browsable transcript pages (interactive use).
+- `--format duckdb` - DuckDB database file. Writes the v0.15 star schema.
+- `--format json` - Directory with `meta.json` + `dimensions/*.json` + `facts/*.json`. Same star schema as `duckdb`, serialized to JSON.
+- `ccutils all` also accepts `--format both` (HTML + DuckDB).
 
-**Schema inference**: Schema type is auto-inferred from `--format` -- `duckdb-star` and `json-star` use star schema, plain `duckdb` and `json` use simple schema.
+Pipeline entry: `run_v15_etl()` in `src/ccutils/etl/orchestrator.py`. DDL: `create_star_schema()` in `src/ccutils/schemas/star/schema.py`. `--embed [MODEL]` (ColBERT, requires pylate) and `--with-llm-facets` / `--batch-llm-facets` (Tier 2 LLM facets) are available on the DuckDB / JSON paths.
+
+**Legacy simple 4-table schema removed.** The `--format duckdb-star` / `--format json-star` aliases are gone -- the `-star` suffix is no longer accepted. `ccutils import` is HTML-only now (the Claude.ai export shape doesn't match v0.15's Claude Code grain).
 
 **Defaults**: Thinking blocks and subagents/agents are included by default. Use `--no-thinking`, `--no-subagents` (local), or `--no-agents` (all) to exclude them.
 
@@ -238,14 +230,7 @@ Three output formats with two schema types:
 
 **Estimated tokens** still available via `estimate_tokens()` in `schemas/star/extractors.py` (text x1.3, code x1.5) for sessions predating API-side usage data; not surfaced by default in v0.15.
 
-### 5. Simple Schema ETL Architecture
-
-`schemas/simple/etl.py` uses a shared extraction core:
-- `_extract_session_core()` → returns `SimpleExtractionResult` dataclass with all parsed data
-- `export_session_to_duckdb()` → thin wrapper that INSERTs the result into DuckDB
-- `_extract_session_data()` → thin wrapper that converts the result to dicts for JSON export
-
-### 6. Heuristic Classification
+### 5. Heuristic Classification
 
 Runs during ETL with zero external dependencies:
 ```python

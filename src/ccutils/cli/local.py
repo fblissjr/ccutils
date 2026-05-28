@@ -24,12 +24,6 @@ from ..tui import (
     render_project_table,
     render_session_table,
 )
-from ..schemas import (
-    create_duckdb_schema,
-    export_session_to_duckdb,
-    export_sessions_to_json,
-    resolve_schema_format,
-)
 from ..schemas.star import (
     create_star_schema,
     export_star_schema_to_json,
@@ -58,9 +52,9 @@ from .utils import (
 @optgroup.option(
     "--format",
     "output_format",
-    type=click.Choice(["html", "duckdb", "duckdb-star", "json", "json-star"]),
+    type=click.Choice(["html", "duckdb", "json"]),
     default="html",
-    help="Output format: html (default), duckdb[-star], or json[-star].",
+    help="Output format: html (default), duckdb, or json. Both duckdb and json write the v0.15 star schema.",
 )
 @optgroup.option(
     "--open",
@@ -143,9 +137,9 @@ def local_cmd(
     Examples:
       ccutils                                    # interactive picker
       ccutils session.jsonl                      # convert file, open in browser
-      ccutils session.jsonl --format duckdb-star -o ./out  # star schema
-      ccutils --format duckdb-star -o ./archive  # pick sessions, star schema
-      ccutils session.jsonl --format duckdb-star -o ./out --with-llm-facets
+      ccutils session.jsonl --format duckdb -o ./out  # star schema DuckDB
+      ccutils --format duckdb -o ./archive  # pick sessions, star schema
+      ccutils session.jsonl --format duckdb -o ./out --with-llm-facets
     """
     include_thinking = not no_thinking
 
@@ -271,7 +265,9 @@ def _run_export_pipeline(
     Args:
         session_files: List of Path objects to session JSONL files.
         output: Output path (directory for HTML/JSON, file for DuckDB).
-        output_format: One of html, duckdb, duckdb-star, json, json-star.
+        output_format: One of html, duckdb, json. The simple 4-table
+            schema is gone; duckdb/json now always write the v0.15 star
+            schema (DDL in schemas/star, ETL in etl/orchestrator).
         include_thinking: Whether to include thinking blocks.
         private: Whether to sanitize file paths.
         open_browser: Open result in browser after HTML export.
@@ -285,8 +281,6 @@ def _run_export_pipeline(
     if agent_map is None:
         agent_map = {}
 
-    schema, fmt = resolve_schema_format(output_format)
-
     # Resolve embed model
     embed_model = None
     if embed and embed != "default":
@@ -294,7 +288,7 @@ def _run_export_pipeline(
 
     # github_repo is auto-detected by generate_html() from git push output
     # in the JSONL session data, or from the current working directory's git remote.
-    if fmt == "html":
+    if output_format == "html":
         if len(session_files) == 1 and not agent_map:
             generate_html(session_files[0], output, private=private)
         else:
@@ -310,82 +304,55 @@ def _run_export_pipeline(
         if open_browser:
             maybe_open_browser(output)
 
-    elif fmt == "duckdb":
+    elif output_format == "duckdb":
         db_path = (
             output.with_suffix(".duckdb") if output.suffix != ".duckdb" else output
         )
         db_path.parent.mkdir(parents=True, exist_ok=True)
 
-        if schema == "simple":
-            conn = create_duckdb_schema(db_path)
-            for idx, session_file in enumerate(session_files, 1):
-                click.echo(f"[{idx}/{len(session_files)}] {session_file.name}")
-                export_session_to_duckdb(
-                    conn,
-                    session_file,
-                    project_name or session_file.parent.name,
-                    include_thinking=include_thinking,
-                    private=private,
-                )
-            conn.close()
-        else:  # star schema -- v0.15 four-tier pipeline
-            conn = create_star_schema(db_path)
-            parquet_lake = output.parent / "parquet_lake"
-            for idx, session_file in enumerate(session_files, 1):
-                click.echo(f"[{idx}/{len(session_files)}] {session_file.name}")
-                run_v15_etl(
-                    conn,
-                    session_file,
-                    project_name=project_name or session_file.parent.name,
-                    parquet_lake_root=parquet_lake,
-                    facet_extractor=facet_extractor,
-                )
-            if embed:
-                run_embedding_pipeline(conn, embed_model)
-            conn.close()
+        conn = create_star_schema(db_path)
+        parquet_lake = output.parent / "parquet_lake"
+        for idx, session_file in enumerate(session_files, 1):
+            click.echo(f"[{idx}/{len(session_files)}] {session_file.name}")
+            run_v15_etl(
+                conn,
+                session_file,
+                project_name=project_name or session_file.parent.name,
+                parquet_lake_root=parquet_lake,
+                facet_extractor=facet_extractor,
+            )
+        if embed:
+            run_embedding_pipeline(conn, embed_model)
+        conn.close()
 
         click.echo(f"Exported to {db_path}")
 
-    elif fmt == "json":
-        if schema == "simple":
-            # Determine JSON output path from user-provided output
-            if output.suffix == "" or output.suffix != ".json":
-                json_path = output / "sessions.json" if output.suffix == "" else output.with_suffix(".json")
-            else:
-                json_path = output
-            json_path.parent.mkdir(parents=True, exist_ok=True)
-            click.echo(f"Exporting {len(session_files)} session(s) to JSON...")
-            export_sessions_to_json(
-                session_files, json_path,
-                include_thinking=include_thinking, private=private,
+    elif output_format == "json":
+        # JSON output is a directory containing meta.json + dimensions/ + facts/
+        if output.suffix != "":
+            output_dir = output.with_suffix("")
+        else:
+            output_dir = output
+        output_dir.mkdir(parents=True, exist_ok=True)
+        click.echo(f"Exporting {len(session_files)} session(s) to JSON...")
+
+        conn = create_star_schema(":memory:")
+        parquet_lake = output_dir / "parquet_lake"
+        for idx, session_file in enumerate(session_files, 1):
+            click.echo(f"[{idx}/{len(session_files)}] {session_file.name}")
+            run_v15_etl(
+                conn,
+                session_file,
+                project_name=project_name or session_file.parent.name,
+                parquet_lake_root=parquet_lake,
+                facet_extractor=facet_extractor,
             )
-            click.echo(f"Exported to {json_path}")
-        else:  # star schema
-            # Determine star schema output directory
-            if output.suffix != "":
-                output_dir = output.with_suffix("")
-            else:
-                output_dir = output
-            output_dir.mkdir(parents=True, exist_ok=True)
-            click.echo(f"Exporting {len(session_files)} session(s) to star schema JSON...")
+        if embed:
+            run_embedding_pipeline(conn, embed_model)
 
-            conn = create_star_schema(":memory:")
-            parquet_lake = output_dir / "parquet_lake"
-            for idx, session_file in enumerate(session_files, 1):
-                click.echo(f"[{idx}/{len(session_files)}] {session_file.name}")
-                run_v15_etl(
-                    conn,
-                    session_file,
-                    project_name=project_name or session_file.parent.name,
-                    parquet_lake_root=parquet_lake,
-                    facet_extractor=facet_extractor,
-                )
-            if embed:
-                run_embedding_pipeline(conn, embed_model)
-
-            export_star_schema_to_json(conn, output_dir)
-            conn.close()
-            click.echo(f"Exported to {output_dir}/")
+        export_star_schema_to_json(conn, output_dir)
+        conn.close()
+        click.echo(f"Exported to {output_dir}/")
 
 
 def _flat_mode_selection(projects_folder, limit, project_filter, expand_chains, style):

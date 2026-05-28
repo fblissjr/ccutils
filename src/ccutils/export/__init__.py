@@ -6,7 +6,7 @@ including DuckDB databases, JSON files, and HTML archives.
 
 from .duckdb_archive import (
     generate_duckdb_archive,
-    generate_star_json_archive,
+    generate_json_archive,
 )
 from .html import (
     CSS,
@@ -45,7 +45,7 @@ from .html import (
 __all__ = [
     # DuckDB archive
     "generate_duckdb_archive",
-    "generate_star_json_archive",
+    "generate_json_archive",
     # HTML generation
     "CSS",
     "JS",

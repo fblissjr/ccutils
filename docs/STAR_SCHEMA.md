@@ -202,16 +202,16 @@ The remainder of this document describes the v0.14 schema (28 tables + 14 views)
 
 ```bash
 # Generate star schema DuckDB from local sessions
-ccutils local --format duckdb-star -o ./analytics
+ccutils local --format duckdb -o ./analytics
 
 # Or export to JSON directory structure
-ccutils local --format json-star -o ./star-export/
+ccutils local --format json -o ./star-export/
 
 # Or generate from all sessions
-ccutils all --format duckdb-star -o ./analytics
+ccutils all --format duckdb -o ./analytics
 
 # With ColBERT embeddings (requires pylate)
-ccutils local --format duckdb-star --embed -o ./analytics
+ccutils local --format duckdb --embed -o ./analytics
 
 # Launch the visual Data Explorer
 ccutils explore ./analytics/archive.duckdb
@@ -1288,7 +1288,7 @@ Classified from error message text on `fact_errors`:
 
 ## JSON Export Structure
 
-When using `--format json-star`, the output is a directory:
+When using `--format json`, the output is a directory:
 
 ```
 output_dir/
@@ -1327,8 +1327,8 @@ pipeline.cluster_sessions(conn)
 CLI integration:
 
 ```bash
-ccutils local --format duckdb-star --embed -o ./analytics
-ccutils all --format duckdb-star --embed -o ./analytics
+ccutils local --format duckdb --embed -o ./analytics
+ccutils all --format duckdb --embed -o ./analytics
 ```
 
 **Current status:** The vectors are stored and queryable via raw SQL but there is no built-in search interface or downstream query consumer. This is infrastructure for future semantic search (similar session lookup, project clustering). To use the embeddings today, query `fact_session_embeddings` directly.
