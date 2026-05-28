@@ -154,6 +154,31 @@ def all_cmd(
     include_thinking = not no_thinking
     include_agents = not no_agents
 
+    # Honesty guards (mirror cli/local.py): v0.15 captures everything and has
+    # no PathSanitizer wiring, so --private and --no-thinking are silent
+    # no-ops on duckdb/json. --embed against --format json discards the
+    # embeddings (DB is built in a tempdir and thrown away after export). Fail
+    # loud rather than ship surprises.
+    if output_format in ("duckdb", "json", "both"):
+        if private:
+            raise click.UsageError(
+                "--private is not yet wired through the v0.15 ETL; it only "
+                "affects --format html. Either drop --private or use --format html."
+            )
+        if no_thinking:
+            raise click.UsageError(
+                "--no-thinking has no effect on --format duckdb / --format json / "
+                "--format both: the v0.15 ETL captures thinking blocks "
+                "unconditionally. Drop --no-thinking or use --format html."
+            )
+    if embed and output_format == "json":
+        raise click.UsageError(
+            "--embed cannot combine with --format json: the JSON archive is "
+            "built in a temporary DuckDB that's discarded after export, so "
+            "the embeddings would be lost. Use --format duckdb if you need "
+            "embeddings."
+        )
+
     # Build the Tier 2 facet extractor at the CLI boundary so credential
     # failures exit cleanly here rather than as a stack trace deep in the
     # batch.

@@ -36,8 +36,9 @@ class TestFileConversionHTML:
         assert result.exit_code != 0
         assert "not found" in result.output.lower() or "Error" in result.output
 
-    def test_private_flag(self, sample_session_file, output_dir):
-        """--private flag is accepted."""
+    def test_private_flag_accepted_on_html(self, sample_session_file, output_dir):
+        """--private is honored on the HTML path (PathSanitizer is wired
+        into generate_html)."""
         runner = CliRunner()
         result = runner.invoke(
             cli,
@@ -45,6 +46,43 @@ class TestFileConversionHTML:
         )
 
         assert result.exit_code == 0
+
+
+class TestHonestyGuards:
+    """v0.15 doesn't yet honor --private or --no-thinking on the duckdb/json
+    paths. Rather than silently accepting the flag and producing a
+    non-sanitized / thinking-included database, the CLI fails loud."""
+
+    def test_private_rejected_on_duckdb(self, sample_session_file, output_dir):
+        runner = CliRunner()
+        result = runner.invoke(
+            cli,
+            [str(sample_session_file), "--format", "duckdb",
+             "-o", str(output_dir / "test.duckdb"), "--private"],
+        )
+        assert result.exit_code != 0
+        assert "private" in result.output.lower()
+        assert "v0.15" in result.output or "html" in result.output.lower()
+
+    def test_private_rejected_on_json(self, sample_session_file, output_dir):
+        runner = CliRunner()
+        result = runner.invoke(
+            cli,
+            [str(sample_session_file), "--format", "json",
+             "-o", str(output_dir / "json_out"), "--private"],
+        )
+        assert result.exit_code != 0
+        assert "private" in result.output.lower()
+
+    def test_no_thinking_rejected_on_duckdb(self, sample_session_file, output_dir):
+        runner = CliRunner()
+        result = runner.invoke(
+            cli,
+            [str(sample_session_file), "--format", "duckdb",
+             "-o", str(output_dir / "test.duckdb"), "--no-thinking"],
+        )
+        assert result.exit_code != 0
+        assert "thinking" in result.output.lower()
 
 
 class TestFileConversionDuckDB:
@@ -98,23 +136,6 @@ class TestFileConversionDuckDB:
         )
 
         assert result.exit_code == 0
-
-    def test_no_thinking_flag(self, sample_session_file, output_dir):
-        """--no-thinking flag is accepted for DuckDB."""
-        db_path = output_dir / "test.duckdb"
-        runner = CliRunner()
-        result = runner.invoke(
-            cli,
-            [
-                str(sample_session_file),
-                "--format", "duckdb",
-                "-o", str(db_path),
-                "--no-thinking",
-            ],
-        )
-
-        assert result.exit_code == 0
-
 
 class TestFileConversionJSON:
     """Tests for single-file conversion with JSON output (v0.15 star schema

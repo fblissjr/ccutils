@@ -23,9 +23,10 @@ from ..schemas import (
 from ..etl.orchestrator import run_v15_etl
 
 
-# Tables `_count_rows` polls for the progress display. v0.15 names only;
-# the historical list referenced legacy facts that weren't populated by
-# `run_v15_etl` and showed misleading zeros.
+# Tables `_count_rows` polls for the progress display. Every fact table
+# `run_v15_etl` populates -- omitting one undercounts row totals by
+# multiples on real corpora (fact_attachments and fact_file_operations
+# in particular dwarf fact_messages). Order doesn't matter (SUM).
 _PROGRESS_TABLES = (
     "fact_messages",
     "fact_tool_uses",
@@ -35,6 +36,16 @@ _PROGRESS_TABLES = (
     "fact_attachments",
     "fact_progress_events",
     "fact_system_events",
+    "fact_meta_events",
+    "fact_file_history_snapshots",
+    "fact_queue_operations",
+    "fact_pr_links",
+    "fact_file_operations",
+    "fact_diagnostics",
+    "fact_plan_revisions",
+    "fact_agent_delegations",
+    "fact_errors",
+    "fact_tool_chain_steps",
     "fact_session_facets",
 )
 
@@ -61,14 +72,24 @@ def generate_duckdb_archive(
         source_folder: Path to Claude Code projects folder.
         output_dir: Path for output.
         include_agents: Whether to include agent sessions.
-        include_thinking: kept for back-compat; v0.15 captures everything.
-        truncate_output: kept for back-compat; v0.15 captures everything.
+        include_thinking: ACCEPTED FOR BACK-COMPAT; the v0.15 ETL captures
+            thinking unconditionally. Pass False at your peril -- thinking
+            blocks will be in the output regardless. The CLI rejects
+            `--no-thinking` for duckdb/json upstream.
+        truncate_output: ACCEPTED FOR BACK-COMPAT; v0.15 stores full payloads.
         progress_callback: callback(project_name, session_name, current,
             total, stats) where stats has 'rows_inserted', 'db_size_mb',
             'rate'.
-        max_workers: Number of parallel workers for staging (default: 1).
-        batch_size: Sessions per transaction batch (default: 10).
-        private: Sanitize file paths in stored content.
+        max_workers: Reserved for future parallelism; the current implementation
+            is fully sequential (DuckDB connections aren't write-safe across
+            threads). Pass anything; only `batch_size`'s progress-reporting
+            cadence is affected.
+        batch_size: Sessions per progress-report batch (default: 10).
+        private: ACCEPTED FOR BACK-COMPAT but NOT honored -- v0.15 has no
+            PathSanitizer wiring. The CLI rejects `--private` for duckdb/json
+            upstream so library callers won't normally hit this. If you call
+            this function programmatically with private=True, you will NOT
+            get sanitized paths.
         facet_extractor: Optional Tier 2 facet extractor; None disables.
 
     Returns:
@@ -331,4 +352,8 @@ def generate_json_archive(
 
     stats["output_dir"] = output_dir
     stats["db_path"] = None  # JSON output discards the DuckDB
+    # db_size_mb on the returned dict still reflected the now-deleted
+    # tempfile; clear it so the CLI's "Size: X MB" line doesn't print a
+    # number referring to a path that no longer exists.
+    stats["db_size_mb"] = None
     return stats

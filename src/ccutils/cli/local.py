@@ -143,6 +143,24 @@ def local_cmd(
     """
     include_thinking = not no_thinking
 
+    # Honesty guard: v0.15 captures everything and has no PathSanitizer wiring,
+    # so --private and --no-thinking only do anything on the HTML path. Fail
+    # loud here rather than accept the flags and silently produce a
+    # non-sanitized / thinking-included database (the legacy simple-schema
+    # path honored both; v0.15 does not).
+    if output_format in ("duckdb", "json"):
+        if private:
+            raise click.UsageError(
+                "--private is not yet wired through the v0.15 ETL; it only "
+                "affects --format html. Either drop --private or use --format html."
+            )
+        if no_thinking:
+            raise click.UsageError(
+                "--no-thinking has no effect on --format duckdb / --format json: "
+                "the v0.15 ETL captures thinking blocks unconditionally. Drop "
+                "--no-thinking or use --format html."
+            )
+
     # Build the Tier 2 facet extractor at the CLI boundary -- credential
     # failures exit cleanly here rather than as a stack trace from inside
     # _run_export_pipeline. Returns None when --with-llm-facets is off.
@@ -328,11 +346,13 @@ def _run_export_pipeline(
         click.echo(f"Exported to {db_path}")
 
     elif output_format == "json":
-        # JSON output is a directory containing meta.json + dimensions/ + facts/
-        if output.suffix != "":
-            output_dir = output.with_suffix("")
-        else:
-            output_dir = output
+        # JSON output is a directory containing meta.json + dimensions/ + facts/.
+        # If user passes `-o ./out.json`, we treat that literally as the
+        # directory name (was: silently strip the `.json` suffix to `./out`).
+        # The legacy simple-JSON path wrote a single file at that exact path;
+        # v0.15's directory shape is intentionally different, but the rename
+        # belongs to the user, not us.
+        output_dir = output
         output_dir.mkdir(parents=True, exist_ok=True)
         click.echo(f"Exporting {len(session_files)} session(s) to JSON...")
 
