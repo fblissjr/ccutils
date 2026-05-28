@@ -18,6 +18,8 @@ Commit early and often. Commits should bundle the test, implementation, and docu
 - **Entry point for new code:** `run_v15_etl(conn, session_path, *, project_name, parquet_lake_root)` in `src/ccutils/etl/orchestrator.py`. The legacy `run_star_schema_etl` + `finalize_star_schema` pair was deleted in the cull.
 - **Four tiers:** JSONL (Claude Code writes) → Parquet lake (Tier 1, `src/ccutils/parsers/parquet_writer.py`) → `stg_log_entries` staging (Tier 2) → fact tables (Tier 3).
 - **Every v0.15 fact** follows the lineage convention via `lineage_upsert(conn, *, run, table, inbound_table, natural_key, payload_cols, hash_cols)` in `src/ccutils/etl/upsert.py`. Lineage block on every row: `created_at`, `last_updated_at`, `created_by_version_key`, `last_updated_by_version_key`, `etl_run_id`, `record_source`, `hash_diff`, `is_deleted`, `deleted_at`.
+- **Closures wrapping `run_v15_etl` MUST list every swallowed kwarg explicitly, not `**kwargs`.** A `**_legacy_kwargs` shim silently drops args (the `--private` regression hid here for one commit). Name what you discard so signature drift fails loud.
+- **`_PROGRESS_TABLES` in `src/ccutils/export/duckdb_archive.py` MUST list every fact `run_v15_etl` populates.** Stale entries undercount the progress display by multiples (3-5× on real corpora). Update when adding a new populator.
 
 ## Facet pipeline (v0.15+)
 
@@ -79,6 +81,8 @@ Stdlib `json` is the project convention (13 files use it). Do NOT auto-migrate t
 - **CLI test monkeypatching:** `cli.add_command(local_cmd, "local")` makes `ccutils.cli.local` resolve to the click subcommand, shadowing the Python submodule for `getattr`-based attribute walks (including pytest's dotted-string monkeypatch). Use `importlib.import_module("ccutils.cli.local")` to get the actual module. See `tests/test_cli_llm_facets.py` for the pattern.
 - **CLI stderr in tests:** `click.echo(err=True)` writes to stderr. Click's `CliRunner` may mix or separate stdout/stderr depending on version. Use `_combined_output(result)` (in `tests/test_cli_llm_facets.py`) + assert on `exit_code` for version-robust assertions.
 - **F90+ test fixture convention:** test fixtures seeding hypothetical `dim_facet_type` rows MUST use facet ids in F90+ to avoid colliding with the real catalog as it grows. Canonical: `tests/test_fact_session_facets_v15.py::two_f90_versions`.
+- **CLI honesty guards for v0.15:** `--private` and `--no-thinking` are HTML-only on v0.15. No PathSanitizer in `src/ccutils/etl/`; v0.15 captures everything. `local_cmd`/`all_cmd` raise `click.UsageError` for these flags on `duckdb`/`json` rather than silently no-op (silent no-ops shipped a privacy regression once).
+- **Exit-code-only flag tests are insufficient:** `assert result.exit_code == 0` documents "CLI accepted the flag", not "the flag did what its help text claims." Test the flag's actual effect (paths sanitized in stored content, thinking blocks absent, etc.).
 - **Live-API smoke (run once after `AnthropicFacetExtractor` changes; pennies):**
   ```bash
   ANTHROPIC_API_KEY=$(security find-generic-password -s ccutils-anthropic -a $USER -w) \
