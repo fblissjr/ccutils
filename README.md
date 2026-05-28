@@ -54,7 +54,7 @@ ccutils session.jsonl --format duckdb -o .       # v0.15 star schema DuckDB
 ccutils --format duckdb -o ./analytics           # Pick sessions, star schema
 ccutils -p myproject                             # Filter by project name
 ccutils --flat                                   # Legacy single-list mode
-ccutils --no-thinking --no-subagents             # Exclude thinking/agents
+ccutils --no-thinking --no-subagents             # Exclude thinking/agents (HTML only)
 ccutils --format duckdb --embed -o .             # With ColBERT embeddings
 ccutils --format duckdb --with-llm-facets -o .   # + Tier 2 LLM facets (F20 via Haiku)
 ```
@@ -73,7 +73,7 @@ ccutils all --format duckdb -o ./analytics       # v0.15 star schema for all ses
 ccutils all --format duckdb --embed -o ./out     # With ColBERT embeddings
 ccutils all --format duckdb --batch-llm-facets -o ./out  # + Tier 2 LLM facets
 ccutils all -j 4 --batch-size 20 -o ./archive    # Parallel processing
-ccutils all --no-agents --no-thinking             # Exclude agents and thinking
+ccutils all --no-agents --no-thinking             # Exclude agents (any format); --no-thinking only on --format html
 ccutils all --dry-run                            # Preview without converting
 ```
 
@@ -144,16 +144,16 @@ v0.15 rebuilds the ETL as a four-tier pipeline:
 
 Every fact carries the v0.15 lineage convention: `created_at`, `last_updated_at`, `created_by_version_key`, `last_updated_by_version_key`, `etl_run_id`, `record_source`, `hash_diff`, plus soft-delete (`is_deleted`, `deleted_at`). Re-running ETL on unchanged source is a no-op (the `hash_diff` gate prevents spurious UPDATEs). Mutations are tracked via `dim_etl_version` + `fact_etl_runs`; DDL migrations are tracked via `meta_schema_version`.
 
-**Tables wired by the v0.15 orchestrator (`run_v15_etl`):**
+**Tables populated by `run_v15_etl`:**
 
-- **Dimensions:** `dim_etl_version`, `dim_session`, `dim_project`, `dim_tool`, `dim_model` (minimal envelope -- heuristic enrichment is Phase D; `dim_date` / `dim_time` DDL exists but is not wired yet)
-- **Core facts:** `fact_messages`, `fact_tool_uses`, `fact_tool_results` (with structured per-tool `toolUseResult` payloads -- Edit `structuredPatch`, Bash `exit_code`/`interrupted`, Read `numLines`, Agent rollups), `fact_token_usage` (R11 cache split: `cache_creation_5m_tokens` + `cache_creation_1h_tokens`), `fact_session_summary`
-- **Entry-type facts:** `fact_attachments`, `fact_progress_events`, `fact_system_events`, `fact_meta_events` (permission-mode time series), `fact_file_history_snapshots`, `fact_queue_operations`, `fact_pr_links`
-- **Lineage:** `fact_etl_runs`, `meta_schema_version`
+- **Lineage / Meta:** `dim_etl_version`, `fact_etl_runs`, `meta_schema_version`.
+- **Dimensions:** `dim_session` (with intent/complexity/outcome/domain enrichment + subagent linkage), `dim_project`, `dim_tool`, `dim_model`, `dim_file`, `dim_session_chain`, `dim_prompt`, `dim_facet_type` (facet registry).
+- **Core facts:** `fact_messages`, `fact_tool_uses`, `fact_tool_results` (R1 structured `toolUseResult` payloads: Edit `structured_patch`, Bash `exit_code` / `interrupted`, Read `num_lines`, Agent rollups), `fact_token_usage` (R11 cache split: `cache_creation_5m_tokens` + `cache_creation_1h_tokens`), `fact_session_summary`.
+- **Entry-type facts:** `fact_attachments`, `fact_progress_events`, `fact_system_events`, `fact_meta_events` (permission-mode time series), `fact_file_history_snapshots`, `fact_queue_operations`, `fact_pr_links`.
+- **Derived:** `fact_file_operations` + `bridge_session_file`, `fact_diagnostics`, `fact_plan_revisions` (structural outcome from `fact_tool_results.is_error`), `fact_agent_delegations` (cross-session linkage via `dim_session.agent_id`), `fact_errors`, `fact_tool_chain_steps`.
+- **Facets:** `fact_session_facets` Tier 1 (F01-F19, SQL-computed; always on). Tier 2 (F20+, LLM-extracted via Haiku) is opt-in via `--with-llm-facets` / `--batch-llm-facets`.
 
-**Also populated by Phase D ports:** `dim_file`, `bridge_session_file`, `fact_file_operations`, `fact_diagnostics`, `fact_plan_revisions` (with structural outcome classification from `fact_tool_results.is_error`), `fact_agent_delegations` (with cross-session subagent linkage via `dim_session.agent_id`), `fact_errors`, `fact_tool_chain_steps`, `dim_session_chain`, `dim_prompt` (from prompt history JSONL), plus heuristic enrichment on `dim_session` (intent, complexity, outcome, domain, first_user_message, last_assistant_message, is_agent, agent_id, parent_session_key, agent_type, agent_description, depth_level).
-
-**Pending:** the granular content/code/entity extracts (`fact_content_blocks`, `fact_code_blocks`, `fact_entity_mentions`), the legacy stop/turn telemetry that the v0.15 `fact_system_events` already overlaps (`fact_stop_events`, `fact_turn_durations`), and `fact_session_embeddings` / `fact_tool_input_params`. The semantic views are now rebuilt against the v0.15 facts and return rows.
+**Not yet populated (DDL stubs only):** `fact_content_blocks`, `fact_code_blocks`, `fact_entity_mentions`, `fact_session_embeddings`, `fact_tool_input_params`. `fact_turn_durations` / `fact_stop_events` are subsumed by `fact_system_events`; `fact_tool_calls` by `fact_tool_uses` + `fact_tool_results`.
 
 ```sql
 -- Sessions ranked by uncached-equivalent token cost
@@ -223,10 +223,10 @@ ccutils --format json -o ./json-export/
 --open                     Open result in browser
 
 # Content (included by default -- use flags to exclude)
---no-thinking              Exclude thinking blocks
+--no-thinking              Exclude thinking blocks (HTML only; v0.15 captures unconditionally)
 --no-subagents             Exclude related agent sessions (local)
 --no-agents                Exclude agent-* session files (all)
---private                  Sanitize file paths for sharing
+--private                  Sanitize file paths for sharing (HTML only; v0.15 sanitization not yet wired)
 
 # Selection
 --flat                     Flat single-list mode (local)
@@ -247,17 +247,16 @@ ccutils --format json -o ./json-export/
 
 ## Documentation
 
-- [Star Schema Reference](docs/STAR_SCHEMA.md) -- table definitions, ETL capabilities, heuristic classification, example queries
+- [Star Schema Reference](docs/STAR_SCHEMA.md) -- table definitions, populator notes, example queries.
+- [Facet & Cluster Pipeline](docs/FACET_CLUSTER_PIPELINE.md) -- Tier 1/2/3 facet design, status, and roadmap.
 
 ## Development
 
 ```bash
-uv run pytest              # Run tests
+uv run pytest              # Run tests (~934 + 1 skipped live-API)
 uv run ccutils --help      # Run development version
 uv run pytest --cov=ccutils  # Coverage
 ```
-
-> On the `etl-rethink` branch the v0.15 pipeline (133 tests) passes; legacy tests that target dropped fact columns will be ported / replaced as Phase D lands.
 
 ## License
 

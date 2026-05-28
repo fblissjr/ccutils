@@ -2,8 +2,8 @@
 
 *Companion to `STAR_SCHEMA.md`. Defines the data, transforms, and pipeline layers that turn the v0.15 transcript archive into a queryable map of usage patterns. Use cases are derived from the data we capture, not the other way around.*
 
-**Status:** Step 1 (DDL + Tier 1 facet registry) landed; populator + Tier 2 / clustering pending.
-**Last updated:** 2026-05-19
+**Status:** Steps 1-4.5 landed. DDL + Tier 1 registry, Tier 1 SQL populator (F01-F19), Tier 2 extractor protocol (`AnthropicFacetExtractor` + `CannedFacetExtractor`), F20 `task_description` populator end-to-end, CLI flags `--with-llm-facets` (local) / `--batch-llm-facets` (all). Step 5 (embedding + clustering) not yet started; awaiting first F20 sample run on a real corpus to inform the embedding-model choice.
+**Last updated:** 2026-05-28
 
 ---
 

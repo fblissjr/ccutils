@@ -116,31 +116,38 @@ ccutils/
 │   │   ├── metadata.py       # SessionMetadata dataclass + rich extraction
 │   │   ├── claude_ai.py      # Claude.ai export parser
 │   │   └── schema_inspector.py # JSON structure analysis
-│   ├── schemas/              # Schema definitions (v0.15 star only; simple was removed)
+│   ├── schemas/              # Schema definitions (v0.15 star only)
 │   │   ├── __init__.py       # Re-exports the star schema public surface
-│   │   └── star/             # Star schema (DDL + legacy ETL)
-│   │       ├── __init__.py   # Public API exports
-│   │       ├── schema.py     # DDL for star schema tables + semantic views (v0.15 reshape)
-│   │       ├── etl.py        # LEGACY per-session ETL (dead on etl-rethink; pending Phase D)
-│   │       ├── migrations/   # DDL migration runner + baseline migration
-│   │       ├── extractors.py # Code blocks, entities, file extraction (legacy)
-│   │       ├── heuristics.py # Keyword/metric-based classification (legacy)
-│   │       ├── history_etl.py# History.jsonl -> dim_prompt ETL (legacy)
-│   │       ├── json_export.py# JSON export for star schema
-│   │       ├── embeddings.py # Optional ColBERT embedding pipeline
-│   │       └── utils.py      # Key generation, tool/model classification, dim_date helper
-│   ├── etl/                  # v0.15 four-tier ETL (NEW; supersedes legacy schemas/star/etl.py)
-│   │   ├── orchestrator.py   # run_v15_etl() entry point
+│   │   └── star/
+│   │       ├── __init__.py
+│   │       ├── schema.py     # DDL for every star table + semantic views (single source of truth)
+│   │       ├── json_export.py# JSON export of the star schema
+│   │       ├── embeddings.py # Optional ColBERT embedding pipeline (requires pylate)
+│   │       └── utils.py      # Key generation, tool/model classification helpers
+│   ├── etl/                  # v0.15 four-tier ETL -- every fact populator lives here
+│   │   ├── orchestrator.py   # run_v15_etl() entry point + populator order
 │   │   ├── lineage.py        # EtlRun + hash_diff + record_source_label
 │   │   ├── upsert.py         # lineage_upsert() shared by every fact populator
 │   │   ├── staging.py        # load_session_to_staging() (Tier 1 -> Tier 2)
 │   │   ├── utils.py          # Shared ETL utilities (extract_text_from_content_json)
+│   │   ├── heuristics.py     # dim_session intent/complexity/outcome/domain classifiers
+│   │   ├── dim_session_heuristics.py # populator that runs the classifiers
+│   │   ├── dim_session_chain.py
+│   │   ├── dim_prompt.py             # history.jsonl import
+│   │   ├── subagent_enrichment.py    # dim_session.is_agent / parent_session_key / agent_type
 │   │   ├── fact_messages.py
 │   │   ├── fact_tool_calls.py        # fact_tool_uses + fact_tool_results
+│   │   ├── fact_tool_chain_steps.py
 │   │   ├── fact_token_usage.py
-│   │   ├── fact_session_summary.py
-│   │   ├── entry_type_facts.py       # attachments, progress, system, meta, file_history, queue_ops, pr_links
+│   │   ├── fact_session_summary.py   # MUST run last; aggregates over every other fact
 │   │   ├── fact_session_facets.py    # Tier 1 facet populator (F01-F19, SQL-computed)
+│   │   ├── fact_file_operations.py   # + dim_file
+│   │   ├── bridge_session_file.py
+│   │   ├── fact_errors.py
+│   │   ├── fact_diagnostics.py
+│   │   ├── fact_plan_revisions.py
+│   │   ├── fact_agent_delegations.py
+│   │   ├── entry_type_facts.py       # attachments, progress, system, meta, file_history, queue_ops, pr_links
 │   │   └── facets/                    # Tier 2 LLM-extracted facets
 │   │       ├── catalog.py             # FACET_SPECS registry + facet_tier_scope_sql helper
 │   │       ├── extractor.py           # FacetExtractor Protocol + dataclasses + CannedFacetExtractor
@@ -149,7 +156,7 @@ ccutils/
 │   ├── export/                # Export format handlers
 │   │   ├── __init__.py
 │   │   ├── html.py           # HTML generation
-│   │   └── duckdb_archive.py # DuckDB batch export (rewired to run_v15_etl on etl-rethink)
+│   │   └── duckdb_archive.py # DuckDB / JSON batch export (drives run_v15_etl)
 │   ├── tui/                   # Terminal UI components
 │   │   ├── __init__.py
 │   │   ├── theme.py          # Color theme
@@ -167,10 +174,11 @@ ccutils/
 │       ├── search.js         # Per-session search (Jinja2 template)
 │       └── global_search.js  # Archive-wide search (Jinja2 template)
 ├── tests/
-│   ├── conftest.py                   # Shared fixtures (sample_session_file, interrupted_session_file, etc.)
-│   └── test_*.py                     # 24 test files (star schema split across ddl/etl/analytics/advanced)
+│   ├── conftest.py           # Shared fixtures (sample_session_file, ...)
+│   └── test_*.py             # ~50 test files; v0.15 facts split per-populator into test_<fact>_v15.py
 ├── docs/
-│   └── STAR_SCHEMA.md        # Star schema documentation
+│   ├── STAR_SCHEMA.md            # Star schema reference (DDL + populator-by-populator notes)
+│   └── FACET_CLUSTER_PIPELINE.md # Facet pipeline design + status
 └── README.md
 ```
 
@@ -200,29 +208,32 @@ Pipeline entry: `run_v15_etl()` in `src/ccutils/etl/orchestrator.py`. DDL: `crea
 
 **Defaults**: Thinking blocks and subagents/agents are included by default. Use `--no-thinking`, `--no-subagents` (local), or `--no-agents` (all) to exclude them.
 
-### 3. Star Schema Tables (v0.15 on etl-rethink)
+### 3. Star Schema Tables
 
-**Lineage / Meta (3):** dim_etl_version, fact_etl_runs, meta_schema_version
+**Authoritative list:** every fact populated by `run_v15_etl` is also listed in `_PROGRESS_TABLES` in `src/ccutils/export/duckdb_archive.py`. Update both together.
 
-**Core Dimensions:** dim_session, dim_project, dim_tool, dim_model, dim_date, dim_time, dim_prompt, dim_file. Populated as stub rows by the v0.15 orchestrator; heuristic enrichment (intent, complexity, outcome, domain) was a legacy concern and will be rewritten in a separate pass.
+**Lineage / Meta:** `dim_etl_version`, `fact_etl_runs`, `meta_schema_version`.
 
-**Staging (2):** stg_log_entries (one row per JSONL line; Tier 2 of the four-tier pipeline), stg_task_agent_map (legacy)
+**Dimensions:** `dim_session` (enriched with intent/complexity/outcome/domain + subagent linkage via `populate_dim_session_heuristics` + `populate_subagent_dim_session`), `dim_project`, `dim_tool`, `dim_model`, `dim_file`, `dim_session_chain`, `dim_prompt`, `dim_facet_type` (facet registry, seeded). `dim_date` / `dim_time` DDL exist but are not wired by v0.15 facts (date_key / time_key are integer surrogates derived inline).
 
-**v0.15 Facts (populated by `run_v15_etl`):**
-- `fact_messages` (one row per user/assistant entry; includes `stop_reason`, `permission_mode_at_send`, `prompt_id`, `request_id`, `is_api_error_message`)
-- `fact_tool_uses` (one row per tool_use block)
-- `fact_tool_results` (one row per tool_use_id; combines tool_result content with the entry-level `toolUseResult` structured payload; per-tool typed columns: Bash `exit_code`/`interrupted`, Edit `structured_patch`, Read `num_lines`/`total_lines`, Agent rollup, etc.)
-- `fact_token_usage` (per-API-response; R11 cache split into `cache_creation_5m_tokens` / `cache_creation_1h_tokens` + `total_uncached_equivalent_tokens`)
-- `fact_session_summary` (one row per session, aggregates over all the above)
-- `fact_attachments` (all 23 attachment subtypes)
-- `fact_progress_events` (all 6 progress data variants — hook_progress, bash_progress, agent_progress, etc.)
-- `fact_system_events` (all 7 system subtypes — turn_duration, stop_hook_summary, api_error, compact_boundary, local_command, away_summary, bridge_status)
-- `fact_meta_events` (time-series for permission-mode, custom-title, agent-name, last-prompt)
+**Staging:** `stg_log_entries` (one row per JSONL line, Tier 2 of the four-tier pipeline).
+
+**Facts populated by `run_v15_etl` (per-session, in dependency order):**
+- `fact_messages` (stop_reason, permission_mode_at_send, prompt_id, request_id, is_api_error_message)
+- `fact_tool_uses` + `fact_tool_results` (R1 structured `toolUseResult` capture; per-tool typed cols on results: Bash `exit_code`/`interrupted`, Edit `structured_patch`, Read `num_lines`, Agent rollup)
+- `fact_token_usage` (R11 cache split: `cache_creation_5m_tokens` + `cache_creation_1h_tokens` + `total_uncached_equivalent_tokens`)
+- `fact_attachments` (23 attachment subtypes), `fact_progress_events` (6 variants), `fact_system_events` (7 subtypes), `fact_meta_events` (permission-mode time series + custom-title + agent-name + last-prompt)
 - `fact_file_history_snapshots`, `fact_queue_operations`, `fact_pr_links`
+- `fact_file_operations` (+ `bridge_session_file` aggregate), `fact_diagnostics`, `fact_plan_revisions` (structural outcome via `fact_tool_results.is_error`), `fact_agent_delegations` (Task spawn + agent rollup; cross-session linkage via `dim_session.agent_id`)
+- `fact_errors`, `fact_tool_chain_steps`
+- `fact_session_facets` Tier 1 (F01-F19, SQL-computed; runs before fact_session_summary)
+- `fact_session_summary` (MUST run last; aggregates over every other fact)
 
-**Legacy facts in DDL but not populated by v0.15** (pending Phase D): fact_file_operations, fact_errors, fact_content_blocks, fact_code_blocks, fact_entity_mentions, fact_tool_chain_steps, fact_diagnostics, fact_turn_durations, fact_stop_events, fact_agent_delegations, fact_plan_revisions, dim_session_chain, bridge_session_file, fact_session_embeddings, fact_tool_input_params, fact_tool_calls. Some are redundant with v0.15 (fact_turn_durations / fact_stop_events live in fact_system_events now); others still need ports.
+**Optionally populated:** `fact_session_facets` Tier 2 rows (F20+, via `--with-llm-facets` / `--batch-llm-facets`); `fact_facet_embeddings` (Step 5, not built yet).
 
-**Semantic views:** semantic_sessions, semantic_messages, semantic_tool_calls (legacy-compat UNION over fact_tool_uses+fact_tool_results), semantic_token_usage, semantic_cost_analysis (R11-corrected hit-rate denominator), semantic_prompt_history, semantic_session_chains, semantic_project_context, plus other legacy views that still reference dropped columns — those need rewrites pending Phase D.
+**Not yet populated (DDL only):** `fact_content_blocks`, `fact_code_blocks`, `fact_entity_mentions`, `fact_session_embeddings`, `fact_tool_input_params`. Some redundant-with-v0.15 facts also remain as DDL stubs (`fact_turn_durations` / `fact_stop_events` are subsumed by `fact_system_events`; `fact_tool_calls` is subsumed by `fact_tool_uses` + `fact_tool_results`).
+
+**Semantic views:** `semantic_sessions`, `semantic_messages`, `semantic_tool_calls` (UNION over uses+results), `semantic_token_usage`, `semantic_cost_analysis` (R11-corrected hit-rate denominator), `semantic_prompt_history`, `semantic_session_chains`, `semantic_project_context`, plus per-fact analytics views.
 
 ### 4. Token Tracking (v0.15)
 
@@ -232,78 +243,59 @@ Pipeline entry: `run_v15_etl()` in `src/ccutils/etl/orchestrator.py`. DDL: `crea
 - `fact_session_summary`: aggregated `total_*` versions of all the above.
 - `semantic_cost_analysis` view: `cache_hit_rate_pct` denominator now includes cache_creation (legacy view excluded it, over-stating hit rate).
 
-**Estimated tokens** still available via `estimate_tokens()` in `schemas/star/extractors.py` (text x1.3, code x1.5) for sessions predating API-side usage data; not surfaced by default in v0.15.
+**Estimated tokens** removed -- the legacy `estimate_tokens()` lived in `schemas/star/extractors.py`, which was deleted with the simple-schema cull. Sessions predating API-side usage data carry NULLs for the actual-token columns; that's the honest signal.
 
 ### 5. Heuristic Classification
 
-Runs during ETL with zero external dependencies:
-```python
-from ccutils import classify_intent, classify_complexity, classify_outcome, classify_domain, classify_error_type
-```
+Runs during ETL with zero external dependencies. Classifiers live in `src/ccutils/etl/heuristics.py`; the populator wiring them onto `dim_session` is `src/ccutils/etl/dim_session_heuristics.py`. Outputs: `intent`, `complexity`, `outcome`, `domain`, plus a separate `classify_error_type` used by `populate_fact_errors`.
 
 ## Testing
 
-Run all tests:
+```
+uv run pytest                   # full suite (~934 tests + 1 skipped live-API)
+uv run pytest tests/test_<fact>_v15.py -v  # one populator
+uv run pytest --cov=ccutils    # with coverage
+```
 
-    uv run pytest
-
-Run star schema tests specifically:
-
-    uv run pytest tests/test_star_schema_ddl.py tests/test_star_schema_etl.py tests/test_star_schema_analytics.py tests/test_star_schema_advanced.py -v
-
-Run with coverage:
-
-    uv run pytest --cov=ccutils
+v0.15 facts are split per-populator into `tests/test_<fact>_v15.py` files; HTML / template tests live in `tests/test_generate_html.py` + `tests/test_html_css_coverage.py` and need `--snapshot-update` after CSS/macro changes.
 
 ## Common Workflows
 
-### Adding a new dimension
-1. Write failing tests in `test_star_schema_ddl.py` (table exists, columns correct) and `test_star_schema_etl.py` (rows populated)
-2. Add CREATE TABLE in `schemas/star/schema.py`
-3. Add ETL logic in `schemas/star/etl.py`
-4. Run tests green, then update docs/STAR_SCHEMA.md
-
 ### Adding a new v0.15 fact table
 1. Write failing tests (DDL existence + lineage columns + populator behavior + idempotency) in `tests/test_<fact>_v15.py`.
-2. Add CREATE TABLE in `schemas/star/schema.py` with the standard lineage block (created_at, last_updated_at, version keys, etl_run_id, record_source, hash_diff, is_deleted, deleted_at + degenerate dims).
-3. Add `populate_fact_<name>(conn, *, run)` in `src/ccutils/etl/<fact>.py` -- build inbound temp table from staging, delegate to `lineage_upsert()`.
-4. Wire into `run_v15_etl()` in `src/ccutils/etl/orchestrator.py` in dependency order (anything fact_session_summary aggregates over must run before it).
-5. Tests green; CHANGELOG entry; (eventually) update docs/STAR_SCHEMA.md when the v0.15 rewrite of that doc happens.
+2. Add `CREATE OR REPLACE TABLE` in `schemas/star/schema.py` with the standard lineage block (created_at, last_updated_at, version keys, etl_run_id, record_source, hash_diff, is_deleted, deleted_at + degenerate dims). If multiple populators will write the table, use `CREATE TABLE IF NOT EXISTS` instead (see `dim_facet_type`).
+3. Add `populate_fact_<name>(conn, *, run)` in `src/ccutils/etl/<fact>.py`. Build inbound temp table from staging (or from already-populated facts with the staging-scoping guard); delegate to `lineage_upsert()`.
+4. Wire into `run_v15_etl()` in `src/ccutils/etl/orchestrator.py` in dependency order — anything `fact_session_summary` aggregates over MUST run before it.
+5. Add the new table name to `_PROGRESS_TABLES` in `src/ccutils/export/duckdb_archive.py`.
+6. Tests green; CHANGELOG entry under `[Unreleased]`; update `docs/STAR_SCHEMA.md` if the table is non-trivial.
 
 ### Removing a feature
-1. Grep for all imports, call sites, `__all__` exports, CLI registrations, and test references
-2. Delete source files, remove from `cli/__init__.py`, `schemas/*/__init__.py`, `__init__.py`
-3. Remove tests, update CHANGELOG, CLAUDE.md project tree, README
-4. Check CLI help text and docstrings for stale table/view counts or feature references
+1. Grep for all imports, call sites, `__all__` exports, CLI registrations, and test references.
+2. Delete source files; remove from `cli/__init__.py`, `schemas/__init__.py`, top-level `__init__.py`.
+3. Remove tests, update CHANGELOG, CLAUDE.md project tree, README, `_PROGRESS_TABLES`.
+4. CLI help text + docstrings: grep for stale table/view counts or feature references.
 
 ### v0.15 ETL pipeline (per session)
-```
-create_star_schema(conn)                                   # DDL
-run_v15_etl(conn, session_path,                           # Four-tier per-session ETL
-            project_name="...",
-            parquet_lake_root="/path/to/parquet_lake")
-# Internally orchestrates: write Parquet -> load staging -> stub dims ->
-# populate every v0.15 fact in dependency order (fact_session_summary last).
-# Optional: EmbeddingPipeline(conn).embed_sessions(conn)
+```python
+from ccutils import create_star_schema
+from ccutils.etl.orchestrator import run_v15_etl
+
+conn = create_star_schema(db_path)
+run_v15_etl(
+    conn,
+    session_path,
+    project_name="...",
+    parquet_lake_root="/path/to/parquet_lake",
+    facet_extractor=None,  # or AnthropicFacetExtractor(...) for Tier 2
+)
+# Optional: ccutils.schemas.star.embeddings.EmbeddingPipeline(conn).embed_sessions(conn)
 ```
 
 ## Versioning
 
-- Version lives in `pyproject.toml` -- keep it in sync with CHANGELOG.md
-- Tag releases: `git tag v0.X.0 <commit> -m "v0.X.0: summary"`
-- Use `/release` skill to bump version, verify CHANGELOG, and tag in one step
-- Current on main: v0.14.0. The etl-rethink branch is the in-progress v0.15.0.
-
-## Automations (.claude/)
-
-`.claude/` is gitignored -- agents, skills, hooks are local-only.
-
-**Agents:** `schema-reviewer` (star schema consistency), `doc-drift-checker` (stale counts in docs/CLI/docstrings)
-**Skills:** `new-dimension`, `new-fact`, `test-schema`, `release` (version bump + tag)
-**Hooks:** PreToolUse blocks Edit/Write to `tests/__snapshots__/` (use `--snapshot-update`)
-
-Run doc-drift-checker after any schema change or feature removal.
-Use `/release` to cut versions instead of manual pyproject.toml edits.
+- Version lives in `pyproject.toml`; keep it in sync with `CHANGELOG.md`.
+- Tag releases: `git tag v0.X.0 <commit> -m "v0.X.0: summary"`.
+- `[Unreleased]` is the in-flight section; promote it on release.
 
 ## HTML Export Gotchas
 
