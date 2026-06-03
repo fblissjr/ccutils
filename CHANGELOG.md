@@ -5,6 +5,10 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## 0.16.0
+
+The facet & cluster pipeline lands its first five steps (Tier 1 SQL facets, the Tier 2 LLM extractor boundary, the F20 `task_description` populator, and the `--with-llm-facets` / `--batch-llm-facets` CLI flags), the legacy simple 4-table schema is removed so the v0.15 star schema is the only one, and `--no-thinking` is honored on the DuckDB / JSON paths. Breaking: `--format duckdb` / `--format json` now write the star schema (the `-star` suffix is gone), `ccutils import` is HTML-only, and several simple-schema Python re-exports were dropped.
+
 ### Behavior
 - **`--no-thinking` now works on `--format duckdb` and `--format json`.** Previously the CLI rejected the flag on those paths with a `click.UsageError` based on a misread of the populator (it assumed thinking text was in `fact_messages.content_text`; it never was — the SQL projection filters to `type='text'` blocks). The flag now flows through `run_v15_etl(include_thinking=False)` → `extract_text_from_content_json(..., include_thinking=False)` (so `dim_session.last_assistant_message` and Tier 2 facet inputs exclude thinking) and finishes with a `DELETE FROM stg_log_entries` so no raw thinking JSON survives in the warehouse staging table. The Parquet lake is intentionally untouched (it's the re-derivable cache); delete it post-run if you don't want thinking in any cache. `--private` remains rejected on duckdb/json until PathSanitizer is wired through the v0.15 ETL.
 
@@ -46,8 +50,8 @@ All notable changes to this project will be documented in this file.
   - Both flags live in a new `Enrichment` option group (the original `Embeddings` group was misleading -- LLM facets aren't embeddings).
   - Both flags resolve credentials via `resolve_anthropic_key()` (env var first, macOS keychain second), construct `AnthropicFacetExtractor`, and thread it through to `run_v15_etl` via `facet_extractor=`. `CredentialsError` is caught at the CLI boundary and emits a helpful message + non-zero exit; users never see a stack trace. Construction happens once in the command entry point (`local_cmd` / `all_cmd`) before any session-parsing work begins.
   - Shared `build_facet_extractor_or_exit` helper in `src/ccutils/cli/utils.py` -- both CLI commands import it, so credential-resolution wording stays in lockstep.
-  - `generate_duckdb_archive` and `generate_star_json_archive` accept the new `facet_extractor=None` parameter and pass it through the per-session ETL loop.
-  - **Footgun:** pairing `--batch-llm-facets` with `--format json-star` runs the full LLM extraction against a temporary DuckDB that's discarded after the JSON export. The user pays the API cost but gets no queryable DuckDB to inspect F20 outputs. Documented in README; long-term fix is either keeping the DuckDB sidecar or surfacing a warning at invocation time.
+  - `generate_duckdb_archive` and `generate_json_archive` accept the new `facet_extractor=None` parameter and pass it through the per-session ETL loop.
+  - **Footgun:** pairing `--batch-llm-facets` with `--format json` runs the full LLM extraction against a temporary DuckDB that's discarded after the JSON export. The user pays the API cost but gets no queryable DuckDB to inspect F20 outputs. Documented in README; long-term fix is either keeping the DuckDB sidecar or surfacing a warning at invocation time.
   - **Live-API smoke command** (run once after any change to `AnthropicFacetExtractor` or its prompt template; costs pennies):
     ```bash
     ANTHROPIC_API_KEY=$(security find-generic-password -s ccutils-anthropic -a $USER -w) \
