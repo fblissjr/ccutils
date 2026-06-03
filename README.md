@@ -214,6 +214,36 @@ The v0.15 star schema as a JSON directory tree (`meta.json` + `dimensions/` + `f
 ccutils --format json -o ./json-export/
 ```
 
+## Archiving the full corpus (encrypted)
+
+`ccutils all` with no `--source` walks every project under your Claude config dir (the `--source` default) and writes a single `archive.duckdb` plus a `parquet_lake/` cache covering every session on the machine. ccutils does not do encryption itself -- that's an ops concern, kept out of the tool's scope -- but the export lands as plain files, so any encrypted-volume or encrypt-the-tarball approach works. On macOS the least-friction option is an encrypted sparse disk image: create it once, then mount → export → detach each run.
+
+```bash
+# One-time: create a password-protected, AES-256 encrypted sparse image.
+# Size it for your corpus -- a full-system DuckDB + parquet lake is
+# typically tens to a few hundred MB; grow the image if needed.
+IMG=cc-archive.sparseimage   # put this wherever you keep backups
+hdiutil create -size 5g -type SPARSE -encryption AES-256 \
+  -fs APFS -volname CCArchive "$IMG"
+
+# Each run: mount (prompts for password), export everything, detach.
+hdiutil attach "$IMG"
+ccutils all --format duckdb -o /Volumes/CCArchive/$(date +%Y-%m-%d)
+hdiutil detach /Volumes/CCArchive
+```
+
+The encrypted volume covers both the DuckDB file and the parquet lake (they're just files on it). Two caveats for a full-system export:
+
+- **`--private` is not wired through the v0.15 ETL** (the flag is rejected on `duckdb`/`json`). Raw home paths, working directories, and tool inputs land in the database unsanitized. That's fine inside an encrypted volume that never leaves the machine; it's a problem if the archive is meant to be shared.
+- **Tier 2 LLM facets cost real money at full-system scale.** `--with-llm-facets` runs one Haiku call per session -- pennies on a handful of sessions, but potentially dollars across hundreds. Omit it for a bulk archive run, or run it separately on a filtered subset.
+
+Portable alternative (any OS), encrypting the export as a single artifact with [age](https://github.com/FiloSottile/age):
+
+```bash
+ccutils all --format duckdb -o ./archive
+tar czf - ./archive | age -r <recipient-key> > archive.tar.gz.age && rm -rf ./archive
+```
+
 ## Common Options
 
 ```bash
