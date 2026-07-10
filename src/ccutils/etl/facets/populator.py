@@ -119,15 +119,6 @@ def populate_tier2_facets(
     if inbound_rows:
         _bulk_insert_inbound(conn, inbound_rows)
 
-    inbound_count = conn.execute(
-        f"SELECT COUNT(*) FROM {_INBOUND}"
-    ).fetchone()[0]
-    if inbound_count == 0:
-        # No rows accumulated (every session failed). Skip the
-        # lineage_upsert sequence entirely -- it would no-op anyway,
-        # but the cleanup is honest.
-        conn.execute(f"DROP TABLE IF EXISTS {_INBOUND}")
-        return
 
     lineage_upsert(
         conn, run=run,

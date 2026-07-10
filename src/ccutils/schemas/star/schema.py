@@ -44,7 +44,7 @@ def create_star_schema(db_path):
 
     conn.execute(
         """
-        CREATE OR REPLACE TABLE dim_etl_version (
+        CREATE TABLE IF NOT EXISTS dim_etl_version (
             version_key VARCHAR,           -- MD5(ccutils_version || business_rules_version)
             ccutils_version VARCHAR NOT NULL,
             business_rules_version VARCHAR NOT NULL DEFAULT '1',
@@ -56,7 +56,7 @@ def create_star_schema(db_path):
 
     conn.execute(
         """
-        CREATE OR REPLACE TABLE fact_etl_runs (
+        CREATE TABLE IF NOT EXISTS fact_etl_runs (
             etl_run_id VARCHAR NOT NULL,        -- UUID4 hex per run
             version_key VARCHAR,                -- FK dim_etl_version
             started_at TIMESTAMP NOT NULL DEFAULT current_timestamp,
@@ -77,7 +77,7 @@ def create_star_schema(db_path):
 
     conn.execute(
         """
-        CREATE OR REPLACE TABLE meta_schema_version (
+        CREATE TABLE IF NOT EXISTS meta_schema_version (
             migration_id VARCHAR NOT NULL,      -- e.g., '20260419_0001_initial'
             applied_at TIMESTAMP NOT NULL DEFAULT current_timestamp,
             description VARCHAR,
@@ -96,7 +96,7 @@ def create_star_schema(db_path):
 
     conn.execute(
         """
-        CREATE OR REPLACE TABLE stg_log_entries (
+        CREATE TABLE IF NOT EXISTS stg_log_entries (
             etl_run_id VARCHAR NOT NULL,
             parsed_at TIMESTAMP NOT NULL,
             parser_version VARCHAR NOT NULL,
@@ -133,7 +133,7 @@ def create_star_schema(db_path):
 
     conn.execute(
         """
-        CREATE OR REPLACE TABLE stg_task_agent_map (
+        CREATE TABLE IF NOT EXISTS stg_task_agent_map (
             tool_use_id VARCHAR,
             agent_id VARCHAR,
             session_key VARCHAR
@@ -147,7 +147,7 @@ def create_star_schema(db_path):
 
     conn.execute(
         """
-        CREATE OR REPLACE TABLE dim_tool (
+        CREATE TABLE IF NOT EXISTS dim_tool (
             tool_key VARCHAR,
             tool_name VARCHAR,
             tool_category VARCHAR
@@ -157,7 +157,7 @@ def create_star_schema(db_path):
 
     conn.execute(
         """
-        CREATE OR REPLACE TABLE dim_model (
+        CREATE TABLE IF NOT EXISTS dim_model (
             model_key VARCHAR,
             model_name VARCHAR,
             model_family VARCHAR
@@ -167,7 +167,7 @@ def create_star_schema(db_path):
 
     conn.execute(
         """
-        CREATE OR REPLACE TABLE dim_project (
+        CREATE TABLE IF NOT EXISTS dim_project (
             project_key VARCHAR,
             project_path VARCHAR,
             project_name VARCHAR
@@ -177,7 +177,7 @@ def create_star_schema(db_path):
 
     conn.execute(
         """
-        CREATE OR REPLACE TABLE dim_session (
+        CREATE TABLE IF NOT EXISTS dim_session (
             session_key VARCHAR,
             session_id VARCHAR,
             project_key VARCHAR,
@@ -209,7 +209,7 @@ def create_star_schema(db_path):
 
     conn.execute(
         """
-        CREATE OR REPLACE TABLE dim_date (
+        CREATE TABLE IF NOT EXISTS dim_date (
             date_key INTEGER,
             full_date DATE,
             year INTEGER,
@@ -227,7 +227,7 @@ def create_star_schema(db_path):
 
     conn.execute(
         """
-        CREATE OR REPLACE TABLE dim_time (
+        CREATE TABLE IF NOT EXISTS dim_time (
             time_key INTEGER,
             hour INTEGER,
             minute INTEGER,
@@ -245,7 +245,7 @@ def create_star_schema(db_path):
     # every fact table in v0.15+.
     conn.execute(
         """
-        CREATE OR REPLACE TABLE fact_messages (
+        CREATE TABLE IF NOT EXISTS fact_messages (
             -- Lineage (every fact in v0.15+ carries this block)
             created_at TIMESTAMP NOT NULL DEFAULT current_timestamp,
             created_by_version_key VARCHAR NOT NULL,
@@ -310,7 +310,7 @@ def create_star_schema(db_path):
     # Grain: one row per tool_use content block emitted by the assistant.
     conn.execute(
         """
-        CREATE OR REPLACE TABLE fact_tool_uses (
+        CREATE TABLE IF NOT EXISTS fact_tool_uses (
             -- Lineage
             created_at TIMESTAMP NOT NULL DEFAULT current_timestamp,
             created_by_version_key VARCHAR NOT NULL,
@@ -356,7 +356,7 @@ def create_star_schema(db_path):
     # Grain: one row per attachment entry attached to a user message.
     conn.execute(
         """
-        CREATE OR REPLACE TABLE fact_attachments (
+        CREATE TABLE IF NOT EXISTS fact_attachments (
             created_at TIMESTAMP NOT NULL DEFAULT current_timestamp,
             created_by_version_key VARCHAR NOT NULL,
             last_updated_at TIMESTAMP NOT NULL DEFAULT current_timestamp,
@@ -382,7 +382,7 @@ def create_star_schema(db_path):
     # Grain: one row per progress entry emitted during tool/hook execution.
     conn.execute(
         """
-        CREATE OR REPLACE TABLE fact_progress_events (
+        CREATE TABLE IF NOT EXISTS fact_progress_events (
             created_at TIMESTAMP NOT NULL DEFAULT current_timestamp,
             created_by_version_key VARCHAR NOT NULL,
             last_updated_at TIMESTAMP NOT NULL DEFAULT current_timestamp,
@@ -414,7 +414,7 @@ def create_star_schema(db_path):
     # columns for the 7 documented subtypes plus a JSON catch-all.
     conn.execute(
         """
-        CREATE OR REPLACE TABLE fact_system_events (
+        CREATE TABLE IF NOT EXISTS fact_system_events (
             created_at TIMESTAMP NOT NULL DEFAULT current_timestamp,
             created_by_version_key VARCHAR NOT NULL,
             last_updated_at TIMESTAMP NOT NULL DEFAULT current_timestamp,
@@ -466,7 +466,7 @@ def create_star_schema(db_path):
     # last-prompt) AT THE MOMENT IT OCCURRED. Time-series, NOT last-value-only.
     conn.execute(
         """
-        CREATE OR REPLACE TABLE fact_meta_events (
+        CREATE TABLE IF NOT EXISTS fact_meta_events (
             created_at TIMESTAMP NOT NULL DEFAULT current_timestamp,
             created_by_version_key VARCHAR NOT NULL,
             last_updated_at TIMESTAMP NOT NULL DEFAULT current_timestamp,
@@ -493,7 +493,7 @@ def create_star_schema(db_path):
     # JSON for restore-point analysis.
     conn.execute(
         """
-        CREATE OR REPLACE TABLE fact_file_history_snapshots (
+        CREATE TABLE IF NOT EXISTS fact_file_history_snapshots (
             created_at TIMESTAMP NOT NULL DEFAULT current_timestamp,
             created_by_version_key VARCHAR NOT NULL,
             last_updated_at TIMESTAMP NOT NULL DEFAULT current_timestamp,
@@ -521,7 +521,7 @@ def create_star_schema(db_path):
     # mid-turn).
     conn.execute(
         """
-        CREATE OR REPLACE TABLE fact_queue_operations (
+        CREATE TABLE IF NOT EXISTS fact_queue_operations (
             created_at TIMESTAMP NOT NULL DEFAULT current_timestamp,
             created_by_version_key VARCHAR NOT NULL,
             last_updated_at TIMESTAMP NOT NULL DEFAULT current_timestamp,
@@ -547,7 +547,7 @@ def create_star_schema(db_path):
     # Grain: one row per pr-link entry binding a session to a GitHub PR.
     conn.execute(
         """
-        CREATE OR REPLACE TABLE fact_pr_links (
+        CREATE TABLE IF NOT EXISTS fact_pr_links (
             created_at TIMESTAMP NOT NULL DEFAULT current_timestamp,
             created_by_version_key VARCHAR NOT NULL,
             last_updated_at TIMESTAMP NOT NULL DEFAULT current_timestamp,
@@ -576,7 +576,7 @@ def create_star_schema(db_path):
     # payload (typed per-tool columns + JSON catch-all).
     conn.execute(
         """
-        CREATE OR REPLACE TABLE fact_tool_results (
+        CREATE TABLE IF NOT EXISTS fact_tool_results (
             -- Lineage
             created_at TIMESTAMP NOT NULL DEFAULT current_timestamp,
             created_by_version_key VARCHAR NOT NULL,
@@ -652,7 +652,7 @@ def create_star_schema(db_path):
     # see one self-contained row per session and never join facts to facts.
     conn.execute(
         """
-        CREATE OR REPLACE TABLE fact_session_summary (
+        CREATE TABLE IF NOT EXISTS fact_session_summary (
             created_at TIMESTAMP NOT NULL DEFAULT current_timestamp,
             created_by_version_key VARCHAR NOT NULL,
             last_updated_at TIMESTAMP NOT NULL DEFAULT current_timestamp,
@@ -726,7 +726,7 @@ def create_star_schema(db_path):
         -- Grain: one row per file-touching tool call (Read/Write/Edit/MultiEdit
         -- /Glob/Grep/NotebookEdit/etc.). Derived from fact_tool_uses joined
         -- to fact_tool_results on tool_use_id.
-        CREATE OR REPLACE TABLE fact_file_operations (
+        CREATE TABLE IF NOT EXISTS fact_file_operations (
             -- Lineage (every v0.15 fact carries this block)
             created_at TIMESTAMP NOT NULL DEFAULT current_timestamp,
             created_by_version_key VARCHAR NOT NULL,
@@ -764,7 +764,7 @@ def create_star_schema(db_path):
         -- fact_tool_results where is_error = TRUE. error_type is
         -- classified by zero-dep regex rules in
         -- ccutils.etl.heuristics.classify_error_type.
-        CREATE OR REPLACE TABLE fact_errors (
+        CREATE TABLE IF NOT EXISTS fact_errors (
             -- Lineage (every v0.15 fact carries this block)
             created_at TIMESTAMP NOT NULL DEFAULT current_timestamp,
             created_by_version_key VARCHAR NOT NULL,
@@ -803,7 +803,7 @@ def create_star_schema(db_path):
         -- message_id). prev_tool_key / next_tool_key let queries like
         -- "after I Read, do I usually Edit?" work without window functions
         -- on every query.
-        CREATE OR REPLACE TABLE fact_tool_chain_steps (
+        CREATE TABLE IF NOT EXISTS fact_tool_chain_steps (
             -- Lineage (every v0.15 fact carries this block)
             created_at TIMESTAMP NOT NULL DEFAULT current_timestamp,
             created_by_version_key VARCHAR NOT NULL,
@@ -846,7 +846,7 @@ def create_star_schema(db_path):
 
     conn.execute(
         """
-        CREATE OR REPLACE TABLE dim_file (
+        CREATE TABLE IF NOT EXISTS dim_file (
             file_key VARCHAR,
             file_path VARCHAR,
             file_name VARCHAR,
@@ -859,7 +859,7 @@ def create_star_schema(db_path):
 
     conn.execute(
         """
-        CREATE OR REPLACE TABLE dim_session_chain (
+        CREATE TABLE IF NOT EXISTS dim_session_chain (
             chain_key VARCHAR,
             slug VARCHAR,
             project_key VARCHAR,
@@ -879,7 +879,7 @@ def create_star_schema(db_path):
 
     conn.execute(
         """
-        CREATE OR REPLACE TABLE fact_content_blocks (
+        CREATE TABLE IF NOT EXISTS fact_content_blocks (
             content_block_id VARCHAR,
             message_id VARCHAR,
             session_key VARCHAR,
@@ -896,7 +896,7 @@ def create_star_schema(db_path):
 
     conn.execute(
         """
-        CREATE OR REPLACE TABLE fact_code_blocks (
+        CREATE TABLE IF NOT EXISTS fact_code_blocks (
             code_block_id VARCHAR,
             message_id VARCHAR,
             session_key VARCHAR,
@@ -913,7 +913,7 @@ def create_star_schema(db_path):
 
     conn.execute(
         """
-        CREATE OR REPLACE TABLE fact_entity_mentions (
+        CREATE TABLE IF NOT EXISTS fact_entity_mentions (
             mention_id VARCHAR,
             message_id VARCHAR,
             session_key VARCHAR,
@@ -942,7 +942,7 @@ def create_star_schema(db_path):
         -- to mark dim_session.is_agent / parent_session_key) is a
         -- separate Phase D follow-up. session_id on this fact = parent
         -- session that did the delegating.
-        CREATE OR REPLACE TABLE fact_agent_delegations (
+        CREATE TABLE IF NOT EXISTS fact_agent_delegations (
             -- Lineage (every v0.15 fact carries this block)
             created_at TIMESTAMP NOT NULL DEFAULT current_timestamp,
             created_by_version_key VARCHAR NOT NULL,
@@ -1007,7 +1007,7 @@ def create_star_schema(db_path):
         --   'unknown'    -- tool_result present but is_error is NULL
         --
         -- parent_revision_key chains revisions within a session by timestamp.
-        CREATE OR REPLACE TABLE fact_plan_revisions (
+        CREATE TABLE IF NOT EXISTS fact_plan_revisions (
             -- Lineage (every v0.15 fact carries this block)
             created_at TIMESTAMP NOT NULL DEFAULT current_timestamp,
             created_by_version_key VARCHAR NOT NULL,
@@ -1061,7 +1061,7 @@ def create_star_schema(db_path):
         """
         -- Grain: one row per (session, file) touched together. Aggregate
         -- over fact_file_operations. Idempotent re-builds drop-and-reload.
-        CREATE OR REPLACE TABLE bridge_session_file (
+        CREATE TABLE IF NOT EXISTS bridge_session_file (
             -- Lineage (every v0.15 fact carries this block)
             created_at TIMESTAMP NOT NULL DEFAULT current_timestamp,
             created_by_version_key VARCHAR NOT NULL,
@@ -1106,7 +1106,7 @@ def create_star_schema(db_path):
     # is the "what would this have cost with no caching" derivation.
     conn.execute(
         """
-        CREATE OR REPLACE TABLE fact_token_usage (
+        CREATE TABLE IF NOT EXISTS fact_token_usage (
             created_at TIMESTAMP NOT NULL DEFAULT current_timestamp,
             created_by_version_key VARCHAR NOT NULL,
             last_updated_at TIMESTAMP NOT NULL DEFAULT current_timestamp,
@@ -1147,7 +1147,7 @@ def create_star_schema(db_path):
 
     conn.execute(
         """
-        CREATE OR REPLACE TABLE fact_turn_durations (
+        CREATE TABLE IF NOT EXISTS fact_turn_durations (
             turn_id VARCHAR,
             session_key VARCHAR,
             date_key INTEGER,
@@ -1165,7 +1165,7 @@ def create_star_schema(db_path):
         -- Derived from fact_attachments.attachment_type='diagnostics'; the
         -- attachment_json carries a list of diagnostic objects that get
         -- flattened here. natural_key is diagnostic_id = md5(entry_id || index).
-        CREATE OR REPLACE TABLE fact_diagnostics (
+        CREATE TABLE IF NOT EXISTS fact_diagnostics (
             -- Lineage (every v0.15 fact carries this block)
             created_at TIMESTAMP NOT NULL DEFAULT current_timestamp,
             created_by_version_key VARCHAR NOT NULL,
@@ -1205,7 +1205,7 @@ def create_star_schema(db_path):
 
     conn.execute(
         """
-        CREATE OR REPLACE TABLE fact_stop_events (
+        CREATE TABLE IF NOT EXISTS fact_stop_events (
             stop_event_id VARCHAR,
             session_key VARCHAR,
             date_key INTEGER,
@@ -1227,7 +1227,7 @@ def create_star_schema(db_path):
 
     conn.execute(
         """
-        CREATE OR REPLACE TABLE dim_prompt (
+        CREATE TABLE IF NOT EXISTS dim_prompt (
             prompt_key VARCHAR,
             session_key VARCHAR,
             project_path VARCHAR,
@@ -1247,7 +1247,7 @@ def create_star_schema(db_path):
 
     conn.execute(
         """
-        CREATE OR REPLACE TABLE fact_session_embeddings (
+        CREATE TABLE IF NOT EXISTS fact_session_embeddings (
             embedding_key VARCHAR,
             session_key VARCHAR,
             content_type VARCHAR,
@@ -1262,7 +1262,7 @@ def create_star_schema(db_path):
 
     conn.execute(
         """
-        CREATE OR REPLACE TABLE fact_tool_input_params (
+        CREATE TABLE IF NOT EXISTS fact_tool_input_params (
             param_id VARCHAR,
             tool_call_id VARCHAR,
             session_key VARCHAR,
@@ -1382,7 +1382,7 @@ def create_star_schema(db_path):
 
     conn.execute(
         """
-        CREATE OR REPLACE TABLE fact_session_facets (
+        CREATE TABLE IF NOT EXISTS fact_session_facets (
             -- Lineage envelope (v0.15 convention)
             created_at TIMESTAMP NOT NULL DEFAULT current_timestamp,
             created_by_version_key VARCHAR NOT NULL,
@@ -1427,7 +1427,7 @@ def create_star_schema(db_path):
 
     conn.execute(
         """
-        CREATE OR REPLACE TABLE fact_facet_embeddings (
+        CREATE TABLE IF NOT EXISTS fact_facet_embeddings (
             -- Lineage envelope
             created_at TIMESTAMP NOT NULL DEFAULT current_timestamp,
             created_by_version_key VARCHAR NOT NULL,

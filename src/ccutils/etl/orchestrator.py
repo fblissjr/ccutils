@@ -32,6 +32,7 @@ pass not yet rewritten for v0.15.
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -210,6 +211,16 @@ def _upsert_minimal_dimensions(conn) -> None:
     )
 
 
+@contextmanager
+def staging_scope(conn):
+    """Context manager to ensure staging tables are cleared at exit."""
+    try:
+        yield
+    finally:
+        conn.execute("DELETE FROM stg_log_entries")
+        conn.execute("DELETE FROM stg_task_agent_map")
+
+
 def run_v15_etl(
     conn,
     session_path: str | Path,
@@ -249,91 +260,92 @@ def run_v15_etl(
     parquet_lake_root = Path(parquet_lake_root)
 
     run = EtlRun.start(conn, source_path=str(session_path))
-    try:
-        # Tier 1: parse + write Parquet
-        log_path, _ = write_session_to_parquet(
-            session_path,
-            parquet_lake_root,
-            etl_run_id=run.etl_run_id,
-            project_slug=project_name,
-        )
-
-        # Tier 2: load staging
-        load_session_to_staging(conn, log_path)
-
-        # Stub dimensions so fact FKs resolve
-        _upsert_minimal_dimensions(conn)
-        # Subagent enrichment looks at the JSONL source_path + sidecar
-        # .meta.json to set is_agent / agent_id / parent_session_key /
-        # agent_type / agent_description on dim_session.
-        populate_subagent_dim_session(conn, run=run)
-
-        # Populate every v0.15 fact in order. fact_session_summary MUST be
-        # last -- it aggregates over the others.
-        populate_fact_messages(conn, run=run)
-        populate_fact_tool_uses(conn, run=run)
-        populate_fact_tool_results(conn, run=run)
-        populate_fact_token_usage(conn, run=run)
-        populate_fact_attachments(conn, run=run)
-        populate_fact_progress_events(conn, run=run)
-        populate_fact_system_events(conn, run=run)
-        populate_fact_meta_events(conn, run=run)
-        populate_fact_file_history_snapshots(conn, run=run)
-        populate_fact_queue_operations(conn, run=run)
-        populate_fact_pr_links(conn, run=run)
-        # dim_file + fact_file_operations depend on fact_tool_uses + fact_tool_results
-        populate_dim_file(conn, run=run)
-        populate_fact_file_operations(conn, run=run)
-        # bridge_session_file aggregates fact_file_operations
-        populate_bridge_session_file(conn, run=run)
-        # fact_diagnostics flattens fact_attachments where type='diagnostics'
-        populate_fact_diagnostics(conn, run=run)
-        # fact_plan_revisions classifies ExitPlanMode outcomes from
-        # fact_tool_results.is_error (R16 tri-state)
-        populate_fact_plan_revisions(conn, run=run)
-        # fact_agent_delegations captures Task tool spawns + agent rollup
-        populate_fact_agent_delegations(conn, run=run)
-        # fact_errors flattens fact_tool_results where is_error=TRUE; must
-        # run before dim_session_heuristics so error_count is accurate.
-        populate_fact_errors(conn, run=run)
-        # fact_tool_chain_steps captures tool sequences per assistant turn
-        populate_fact_tool_chain_steps(conn, run=run)
-        # dim_session enrichment runs after all facts so the classifiers
-        # see complete metrics + file-extension data
-        populate_dim_session_heuristics(
-            conn, run=run, include_thinking=include_thinking,
-        )
-        # dim_session_chain groups sessions sharing a slug; rebuilt fresh
-        # each run since adding a new session can re-aggregate the chain
-        populate_dim_session_chain(conn, run=run)
-        # Tier 1 facets: 19 SQL-computed facets per session (F01..F19) into
-        # fact_session_facets. Runs after every source fact / dim is in
-        # place; runs before fact_session_summary so summary stays the
-        # final aggregate roll-up.
-        populate_tier1_facets(conn, run=run)
-        # Tier 2 facets (LLM-extracted) only run when a FacetExtractor is
-        # injected. Default None disables Tier 2 entirely.
-        if facet_extractor is not None:
-            populate_tier2_facets(
-                conn, run=run, extractor=facet_extractor,
-                include_thinking=include_thinking,
+    with staging_scope(conn):
+        try:
+            # Tier 1: parse + write Parquet
+            log_path, _ = write_session_to_parquet(
+                session_path,
+                parquet_lake_root,
+                etl_run_id=run.etl_run_id,
+                project_slug=project_name,
             )
-        populate_fact_session_summary(conn, run=run)
 
-        # When include_thinking=False, clear the staging artifact so the
-        # raw message_json (which DOES contain thinking blocks) doesn't
-        # survive in the warehouse. `load_session_to_staging` only DELETEs
-        # rows matching the next session's source_path -- it does NOT
-        # clean up other sessions' staging on its own. This blanket DELETE
-        # is the only thing that clears the previous session's residue;
-        # don't remove it on the assumption "staging gets overwritten
-        # anyway."
-        if not include_thinking:
-            conn.execute("DELETE FROM stg_log_entries")
+            # Tier 2: load staging
+            load_session_to_staging(conn, log_path)
 
-        run.complete(sessions_inserted=1)
-    except Exception as e:
-        run.fail(str(e))
-        raise
+            # Stub dimensions so fact FKs resolve
+            _upsert_minimal_dimensions(conn)
+            # Subagent enrichment looks at the JSONL source_path + sidecar
+            # .meta.json to set is_agent / agent_id / parent_session_key /
+            # agent_type / agent_description on dim_session.
+            populate_subagent_dim_session(conn, run=run)
+
+            # Populate every v0.15 fact in order. fact_session_summary MUST be
+            # last -- it aggregates over the others.
+            populate_fact_messages(conn, run=run)
+            populate_fact_tool_uses(conn, run=run)
+            populate_fact_tool_results(conn, run=run)
+            populate_fact_token_usage(conn, run=run)
+            populate_fact_attachments(conn, run=run)
+            populate_fact_progress_events(conn, run=run)
+            populate_fact_system_events(conn, run=run)
+            populate_fact_meta_events(conn, run=run)
+            populate_fact_file_history_snapshots(conn, run=run)
+            populate_fact_queue_operations(conn, run=run)
+            populate_fact_pr_links(conn, run=run)
+            # dim_file + fact_file_operations depend on fact_tool_uses + fact_tool_results
+            populate_dim_file(conn, run=run)
+            populate_fact_file_operations(conn, run=run)
+            # bridge_session_file aggregates fact_file_operations
+            populate_bridge_session_file(conn, run=run)
+            # fact_diagnostics flattens fact_attachments where type='diagnostics'
+            populate_fact_diagnostics(conn, run=run)
+            # fact_plan_revisions classifies ExitPlanMode outcomes from
+            # fact_tool_results.is_error (R16 tri-state)
+            populate_fact_plan_revisions(conn, run=run)
+            # fact_agent_delegations captures Task tool spawns + agent rollup
+            populate_fact_agent_delegations(conn, run=run)
+            # fact_errors flattens fact_tool_results where is_error=TRUE; must
+            # run before dim_session_heuristics so error_count is accurate.
+            populate_fact_errors(conn, run=run)
+            # fact_tool_chain_steps captures tool sequences per assistant turn
+            populate_fact_tool_chain_steps(conn, run=run)
+            # dim_session enrichment runs after all facts so the classifiers
+            # see complete metrics + file-extension data
+            populate_dim_session_heuristics(
+                conn, run=run, include_thinking=include_thinking,
+            )
+            # dim_session_chain groups sessions sharing a slug; rebuilt fresh
+            # each run since adding a new session can re-aggregate the chain
+            populate_dim_session_chain(conn, run=run)
+            # Tier 1 facets: 19 SQL-computed facets per session (F01..F19) into
+            # fact_session_facets. Runs after every source fact / dim is in
+            # place; runs before fact_session_summary so summary stays the
+            # final aggregate roll-up.
+            populate_tier1_facets(conn, run=run)
+            # Tier 2 facets (LLM-extracted) only run when a FacetExtractor is
+            # injected. Default None disables Tier 2 entirely.
+            if facet_extractor is not None:
+                populate_tier2_facets(
+                    conn, run=run, extractor=facet_extractor,
+                    include_thinking=include_thinking,
+                )
+            populate_fact_session_summary(conn, run=run)
+
+            # When include_thinking=False, clear the staging artifact so the
+            # raw message_json (which DOES contain thinking blocks) doesn't
+            # survive in the warehouse. `load_session_to_staging` only DELETEs
+            # rows matching the next session's source_path -- it does NOT
+            # clean up other sessions' staging on its own. This blanket DELETE
+            # is the only thing that clears the previous session's residue;
+            # don't remove it on the assumption "staging gets overwritten
+            # anyway."
+            if not include_thinking:
+                conn.execute("DELETE FROM stg_log_entries")
+
+            run.complete(sessions_inserted=1)
+        except Exception as e:
+            run.fail(str(e))
+            raise
 
     return {"etl_run_id": run.etl_run_id, "sessions_inserted": 1}

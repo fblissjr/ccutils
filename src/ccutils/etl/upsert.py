@@ -187,8 +187,14 @@ def lineage_upsert(
             last_updated_by_version_key = ?,
             etl_run_id = ?
         WHERE tgt.is_deleted = FALSE
-          AND tgt.session_id IN (SELECT DISTINCT session_id FROM {inbound_table})
-          AND tgt.{natural_key} NOT IN (SELECT {natural_key} FROM {inbound_table})
+          AND tgt.session_id IN (
+              SELECT DISTINCT session_id FROM stg_log_entries WHERE session_id IS NOT NULL
+              UNION
+              SELECT DISTINCT session_id FROM {inbound_table} WHERE session_id IS NOT NULL
+          )
+          AND tgt.{natural_key} NOT IN (
+              SELECT {natural_key} FROM {inbound_table} WHERE {natural_key} IS NOT NULL
+          )
           {extra_scope}
         """,
         [run.version_key, run.etl_run_id],

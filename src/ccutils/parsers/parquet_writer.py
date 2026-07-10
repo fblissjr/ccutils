@@ -275,6 +275,9 @@ def write_session_to_parquet(
         if agent_id is None:
             agent_id = row["agent_id"]
 
+    if not rows:
+        raise ValueError(f"No valid JSON log entries found in {jsonl_path}")
+
     # Write log_entries.parquet
     table = pa.Table.from_pylist(rows, schema=_LOG_ENTRY_SCHEMA)
     pq.write_table(table, log_entries_path, compression="zstd")

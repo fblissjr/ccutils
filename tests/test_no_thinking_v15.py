@@ -109,23 +109,21 @@ class TestIncludeThinkingFalseClearsStaging:
     per-session populators run, so the user's archive doesn't carry the raw
     thinking JSON in the staging artifact."""
 
-    def test_default_keeps_staging_populated(
+    def test_default_keeps_thinking_in_dim_session(
         self, conn, session_with_thinking, tmp_path
     ):
-        # Default (include_thinking=True) leaves staging as-is for the last
-        # loaded session. The thinking payload is in message_json.
+        # Default (include_thinking=True) keeps the thinking payload in dim_session.
         run_v15_etl(
             conn, session_with_thinking,
             project_name="x", parquet_lake_root=tmp_path / "lake",
         )
-        n = conn.execute(
-            "SELECT COUNT(*) FROM stg_log_entries "
-            "WHERE CAST(message_json AS VARCHAR) LIKE ?",
-            [f"%{_THINKING_PAYLOAD}%"],
-        ).fetchone()[0]
-        assert n > 0, (
-            "Default run should leave staging populated; "
-            "the truncate only fires when include_thinking=False."
+        ds = conn.execute(
+            "SELECT last_assistant_message FROM dim_session "
+            "WHERE session_id = 'think-s'"
+        ).fetchone()
+        assert _THINKING_PAYLOAD in (ds[0] or ""), (
+            "Default run should retain thinking in dim_session; "
+            "it is only stripped when include_thinking=False."
         )
 
     def test_include_thinking_false_truncates_staging(
