@@ -113,48 +113,32 @@ def populate_subagent_dim_session(conn, *, run: EtlRun) -> None:
 def _propagate_depth_level(conn) -> None:
     """Walk the parent_session_key chain to set depth_level.
 
-    Root sessions stay at depth 0 (table default). Each iteration sets
-    depth_level on subagents whose parent's depth is known and whose own
-    depth hasn't been set yet. Caps at 100 iterations for safety;
-    realistic agent trees are 1-2 levels deep.
+    Uses a single recursive CTE update in DuckDB to traverse the subagent
+    hierarchy natively.
     """
-    # Start over: reset all subagent depths to NULL so we can resolve
-    # the chain freshly each run. Roots stay at 0.
+    conn.execute("UPDATE dim_session SET depth_level = NULL")
     conn.execute(
-        "UPDATE dim_session SET depth_level = 0 WHERE is_agent = FALSE"
-    )
-    conn.execute(
-        "UPDATE dim_session SET depth_level = NULL WHERE is_agent = TRUE"
-    )
-    for _ in range(100):
-        result = conn.execute(
-            """
-            UPDATE dim_session child
-            SET depth_level = parent.depth_level + 1
-            FROM dim_session parent
-            WHERE child.parent_session_key = parent.session_key
-              AND child.is_agent = TRUE
-              AND child.depth_level IS NULL
-              AND parent.depth_level IS NOT NULL
-            """
-        )
-        if result.fetchone() is None:
-            break
-        remaining = conn.execute(
-            """
-            SELECT COUNT(*) FROM dim_session child
-            LEFT JOIN dim_session parent
-                ON child.parent_session_key = parent.session_key
+        """
+        WITH RECURSIVE depth_calc AS (
+            SELECT session_key, 0 AS computed_depth
+            FROM dim_session
+            WHERE is_agent = FALSE
+               OR parent_session_key IS NULL
+               OR parent_session_key NOT IN (SELECT session_key FROM dim_session)
+
+            UNION ALL
+
+            SELECT child.session_key, parent.computed_depth + 1
+            FROM dim_session child
+            JOIN depth_calc parent ON child.parent_session_key = parent.session_key
             WHERE child.is_agent = TRUE
-              AND child.depth_level IS NULL
-              AND parent.depth_level IS NOT NULL
-            """
-        ).fetchone()
-        if remaining is None or remaining[0] == 0:
-            break
-    # Anything still NULL is an orphan subagent (parent not ETL'd yet);
-    # fall back to 0 so queries don't break on the NULL.
+        )
+        UPDATE dim_session
+        SET depth_level = dc.computed_depth
+        FROM depth_calc dc
+        WHERE dim_session.session_key = dc.session_key
+        """
+    )
     conn.execute(
-        "UPDATE dim_session SET depth_level = 0 "
-        "WHERE depth_level IS NULL"
+        "UPDATE dim_session SET depth_level = 0 WHERE depth_level IS NULL"
     )

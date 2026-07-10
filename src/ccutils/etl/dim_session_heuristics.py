@@ -108,8 +108,10 @@ def populate_dim_session_heuristics(
             COALESCE(tm.tool_count, 0) AS tool_count,
             COALESCE(mm.msg_count, 0) AS msg_count,
             COALESCE(tm.error_count, 0) AS error_count,
-            fe.extensions_pipe
+            fe.extensions_pipe,
+            COALESCE(ds.depth_level, 0) AS depth_level
         FROM staging_sessions ss
+        LEFT JOIN dim_session ds USING (session_id)
         LEFT JOIN first_user fu USING (session_id)
         LEFT JOIN last_assistant la USING (session_id)
         LEFT JOIN tool_metrics tm USING (session_id)
@@ -128,6 +130,7 @@ def populate_dim_session_heuristics(
         msg_count,
         error_count,
         extensions_pipe,
+        depth_level,
     ) in rows:
         first_user_text = extract_text_from_content_json(
             first_user_content_json, include_thinking=include_thinking,
@@ -145,7 +148,7 @@ def populate_dim_session_heuristics(
         updates.append(
             (
                 classify_intent(first_user_text),
-                classify_complexity(tool_count, msg_count, 0, error_count),
+                classify_complexity(tool_count, msg_count, depth_level, error_count),
                 classify_outcome(last_assistant_text, error_rate=error_rate),
                 classify_domain(extensions),
                 first_user_text[:_MAX_MESSAGE_CHARS] if first_user_text else None,

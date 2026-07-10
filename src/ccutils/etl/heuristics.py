@@ -27,7 +27,7 @@ _INTENT_RULES = [
 ]
 
 _DOMAIN_MAP = {
-    "web": {".tsx", ".jsx", ".css", ".scss", ".html", ".vue", ".svelte"},
+    "web": {".tsx", ".jsx", ".css", ".scss", ".html", ".vue", ".svelte", ".js", ".ts"},
     "backend": {".py", ".rs", ".go", ".java", ".rb"},
     "data": {".sql", ".parquet", ".csv"},
     "devops": {".yaml", ".yml", ".tf", ".dockerfile", ".sh"},
@@ -78,7 +78,7 @@ def classify_intent(first_user_message: str | None) -> str:
 
 
 def classify_complexity(
-    tool_count: int, msg_count: int, agent_depth: int, error_count: int
+    tool_count: int, msg_count: int, agent_depth: int | None, error_count: int
 ) -> str:
     """Classify session complexity from metrics.
 
@@ -95,7 +95,8 @@ def classify_complexity(
     elif msg_count > 8:
         score += 1
 
-    if agent_depth > 0:
+    depth = agent_depth if agent_depth is not None else 0
+    if depth > 0:
         score += 2
 
     if error_count > 3:
