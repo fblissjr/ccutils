@@ -59,11 +59,6 @@ _HTML_CLASS_ATTR = re.compile(r"""class\s*=\s*["']([^"']+)["']""")
 _JINJA_LITERAL_CLASS = re.compile(r"""class\s*=\s*["']([^"'{]+)["']""")
 
 
-def _extract_css_block(html: str) -> str:
-    match = re.search(r"<style[^>]*>(.*?)</style>", html, re.DOTALL)
-    return match.group(1) if match else ""
-
-
 def _classes_defined_in_css(css: str) -> set[str]:
     defined: set[str] = set()
     for chunk in css.split("{"):
@@ -154,3 +149,66 @@ class TestTemplateStaticCssCoverage:
             f"Templates emit class tokens with no CSS rule: {missing_by_file}. "
             f"Add rules to transcript.css, or extend KNOWN_SAFE_UNSTYLED with justification."
         )
+
+
+# base.html serves a strict CSP: `style-src 'self'; script-src 'self'` with NO
+# 'unsafe-inline'. The browser silently blocks any inline style/script under
+# that policy -- and pytest never renders under an enforcing CSP, so nothing
+# else catches a regression. These patterns are what the policy forbids.
+_INLINE_STYLE_ATTR = re.compile(r"""\bstyle\s*=\s*["']""")
+_INLINE_STYLE_BLOCK = re.compile(r"<style[\s>]", re.IGNORECASE)
+_INLINE_EVENT_HANDLER = re.compile(r"""\bon[a-z]+\s*=\s*["']""", re.IGNORECASE)
+_SCRIPT_OPEN_TAG = re.compile(r"<script\b([^>]*)>", re.IGNORECASE)
+
+
+def _csp_blocked_inline_constructs(text: str) -> list[str]:
+    """Return the CSP-forbidden inline constructs a template contains."""
+    found: list[str] = []
+    if _INLINE_STYLE_ATTR.search(text):
+        found.append("inline style= attribute")
+    if _INLINE_STYLE_BLOCK.search(text):
+        found.append("inline <style> block")
+    if _INLINE_EVENT_HANDLER.search(text):
+        found.append("inline on*= event handler")
+    for match in _SCRIPT_OPEN_TAG.finditer(text):
+        if "src=" not in match.group(1):
+            found.append("inline <script> without src=")
+            break
+    return found
+
+
+class TestNoInlineConstructsForCsp:
+    """Keystone guard for the tightened CSP (base.html, `*-src 'self'`).
+
+    The inline-style regression -- CSP tightened to 'self' while macros.html /
+    page.html / the index templates still carried `style=` attrs -- passed every
+    test because the class-coverage checks only look at class rules and pytest
+    doesn't enforce CSP. This scans template source directly so re-introducing an
+    inline style/script/handler fails loud.
+    """
+
+    def test_templates_have_no_csp_blocked_inline_constructs(self):
+        templates_dir = Path(__file__).parent.parent / "src" / "ccutils" / "templates"
+        offenders: dict[str, list[str]] = {}
+        for tpl in sorted(templates_dir.glob("*.html")):
+            found = _csp_blocked_inline_constructs(tpl.read_text(encoding="utf-8"))
+            if found:
+                offenders[tpl.name] = found
+
+        assert not offenders, (
+            f"Templates contain CSP-blocked inline constructs: {offenders}. "
+            f"base.html forbids 'unsafe-inline' -- move inline styles into "
+            f"transcript.css classes and load scripts via <script src=...>."
+        )
+
+    def test_rendered_output_has_no_csp_blocked_inline_constructs(
+        self, rendered_sample_outputs
+    ):
+        # Belt-and-suspenders against the actual rendered HTML (catches anything
+        # a macro emits at runtime that the static template scan can't see).
+        for doc_name in ("index", "page"):
+            found = _csp_blocked_inline_constructs(rendered_sample_outputs[doc_name])
+            assert not found, (
+                f"Rendered {doc_name}.html contains CSP-blocked inline constructs: "
+                f"{found}."
+            )

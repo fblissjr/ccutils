@@ -17,6 +17,7 @@ All notable changes to this project will be documented in this file.
 
 ### Added
 - `tests/test_e2e_star.py` -- a 50-test end-to-end suite exercising all four warehouse tiers, the heuristic classifiers, and the HTML output. Run the suite with `uv run pytest tests/ --confcutdir=tests` so parent-workspace imports don't shadow the package.
+- CSP regression guard in `tests/test_html_css_coverage.py` -- statically scans every template (and the rendered sample) for inline `style=` / `<style>` / `on*=` / inline `<script>`, all silently blocked by the tightened `*-src 'self'` CSP. This is the check that would have caught the inline-style regression above at commit time.
 
 ## 0.16.0
 
