@@ -9,3 +9,22 @@ claude-archive/
 internal/
 coderef/
 .path-privacy.local.json
+
+# Local virtualenv
+.venv/
+
+# Tool data outputs -- real transcript data must NEVER be committed.
+# These are the exact shapes run_v15_etl / the HTML+JSON exporters emit.
+*.duckdb
+*.duckdb.wal
+*.parquet
+parquet_lake/
+# Raw Claude Code session logs are .jsonl -- ignore them everywhere and
+# keep only the synthetic test fixture explicitly.
+*.jsonl
+!tests/sample_session.jsonl
+# JSON star-schema export leaves a recognizable meta.json + dimensions/ + facts/
+# tree; ignore those export roots wherever they land.
+**/dimensions/
+**/facts/
+meta.json
