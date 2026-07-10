@@ -259,6 +259,47 @@ def _interactive_mode(output, output_format, open_browser, flat, expand_chains,
     )
 
 
+def _etl_session_files(
+    conn,
+    session_files,
+    *,
+    project_name,
+    parquet_lake,
+    facet_extractor,
+    include_thinking,
+):
+    """Run run_v15_etl over each file, isolating per-file failures.
+
+    One empty/unparseable session (e.g. write_session_to_parquet raising
+    "No valid JSON log entries found") must not abort the whole export --
+    it is reported and skipped, mirroring the per-session isolation in the
+    batch path (export/duckdb_archive.py). Returns the list of
+    (session_file, exception) failures.
+    """
+    failures = []
+    for idx, session_file in enumerate(session_files, 1):
+        click.echo(f"[{idx}/{len(session_files)}] {session_file.name}")
+        try:
+            run_v15_etl(
+                conn,
+                session_file,
+                project_name=project_name or session_file.parent.name,
+                parquet_lake_root=parquet_lake,
+                facet_extractor=facet_extractor,
+                include_thinking=include_thinking,
+            )
+        except Exception as exc:  # noqa: BLE001 -- isolate one bad file
+            failures.append((session_file, exc))
+            click.echo(f"  skipped {session_file.name}: {exc}", err=True)
+    if failures:
+        click.echo(
+            f"{len(failures)} of {len(session_files)} session(s) failed "
+            "and were skipped.",
+            err=True,
+        )
+    return failures
+
+
 def _run_export_pipeline(
     session_files,
     output,
@@ -323,16 +364,13 @@ def _run_export_pipeline(
 
         conn = create_star_schema(db_path)
         parquet_lake = output.parent / "parquet_lake"
-        for idx, session_file in enumerate(session_files, 1):
-            click.echo(f"[{idx}/{len(session_files)}] {session_file.name}")
-            run_v15_etl(
-                conn,
-                session_file,
-                project_name=project_name or session_file.parent.name,
-                parquet_lake_root=parquet_lake,
-                facet_extractor=facet_extractor,
-                include_thinking=include_thinking,
-            )
+        _etl_session_files(
+            conn, session_files,
+            project_name=project_name,
+            parquet_lake=parquet_lake,
+            facet_extractor=facet_extractor,
+            include_thinking=include_thinking,
+        )
         if embed:
             run_embedding_pipeline(conn, embed_model)
         conn.close()
@@ -352,16 +390,13 @@ def _run_export_pipeline(
 
         conn = create_star_schema(":memory:")
         parquet_lake = output_dir / "parquet_lake"
-        for idx, session_file in enumerate(session_files, 1):
-            click.echo(f"[{idx}/{len(session_files)}] {session_file.name}")
-            run_v15_etl(
-                conn,
-                session_file,
-                project_name=project_name or session_file.parent.name,
-                parquet_lake_root=parquet_lake,
-                facet_extractor=facet_extractor,
-                include_thinking=include_thinking,
-            )
+        _etl_session_files(
+            conn, session_files,
+            project_name=project_name,
+            parquet_lake=parquet_lake,
+            facet_extractor=facet_extractor,
+            include_thinking=include_thinking,
+        )
         if embed:
             run_embedding_pipeline(conn, embed_model)
 

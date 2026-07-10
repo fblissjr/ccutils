@@ -127,6 +127,25 @@ class TestFileConversionDuckDB:
 
         assert result.exit_code == 0
 
+    def test_empty_session_file_is_skipped_not_crashed(self, tmp_path, output_dir):
+        """A session file with no valid entries must be skipped with a
+        reported failure, not abort the export with an unhandled ValueError
+        from write_session_to_parquet. The batch `all` path already isolates
+        per-session failures; the single-file `local` path must too."""
+        empty = tmp_path / "empty.jsonl"
+        empty.write_text("")
+        db_path = output_dir / "out.duckdb"
+        runner = CliRunner()
+        result = runner.invoke(
+            cli,
+            [str(empty), "--format", "duckdb", "-o", str(db_path)],
+        )
+
+        # No unhandled exception should escape the command.
+        assert result.exception is None, result.exception
+        assert result.exit_code == 0, result.output
+        assert db_path.exists()
+
 class TestFileConversionJSON:
     """Tests for single-file conversion with JSON output (v0.15 star schema
     as a directory tree)."""

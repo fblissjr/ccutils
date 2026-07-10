@@ -23,8 +23,9 @@ parquet_lake/
 # keep only the synthetic test fixture explicitly.
 *.jsonl
 !tests/sample_session.jsonl
-# JSON star-schema export leaves a recognizable meta.json + dimensions/ + facts/
-# tree; ignore those export roots wherever they land.
+# JSON star-schema export writes its data into dimensions/ + facts/ subdirs;
+# ignore those wherever they land. The sibling meta.json holds only schema
+# metadata + row counts (no transcript data), so it is deliberately NOT ignored
+# here -- an unanchored `meta.json` would silently swallow unrelated files.
 **/dimensions/
 **/facts/
-meta.json
