@@ -213,12 +213,12 @@ def _upsert_minimal_dimensions(conn) -> None:
 
 @contextmanager
 def staging_scope(conn):
-    """Context manager to ensure staging tables are cleared at exit."""
+    """Clear the staging table at exit so one session's rows never bleed
+    into the next (the warehouse is persistent; staging is per-session)."""
     try:
         yield
     finally:
         conn.execute("DELETE FROM stg_log_entries")
-        conn.execute("DELETE FROM stg_task_agent_map")
 
 
 def run_v15_etl(
@@ -332,16 +332,12 @@ def run_v15_etl(
                 )
             populate_fact_session_summary(conn, run=run)
 
-            # When include_thinking=False, clear the staging artifact so the
-            # raw message_json (which DOES contain thinking blocks) doesn't
-            # survive in the warehouse. `load_session_to_staging` only DELETEs
-            # rows matching the next session's source_path -- it does NOT
-            # clean up other sessions' staging on its own. This blanket DELETE
-            # is the only thing that clears the previous session's residue;
-            # don't remove it on the assumption "staging gets overwritten
-            # anyway."
-            if not include_thinking:
-                conn.execute("DELETE FROM stg_log_entries")
+            # No per-thinking staging cleanup here: `staging_scope` clears
+            # stg_log_entries unconditionally at exit, so the raw message_json
+            # (which carries thinking blocks) never survives the run regardless
+            # of include_thinking. include_thinking still governs what lands in
+            # the FACTS (dim_session.last_assistant_message, Tier 2 inputs,
+            # fact_messages.content_text projection).
 
             run.complete(sessions_inserted=1)
         except Exception as e:

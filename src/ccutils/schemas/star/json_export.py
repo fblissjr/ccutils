@@ -35,7 +35,6 @@ FACT_TABLES = [
     "fact_diagnostics",
     "fact_stop_events",
     "bridge_session_file",
-    "stg_task_agent_map",
 ]
 
 # Key relationships for the star schema

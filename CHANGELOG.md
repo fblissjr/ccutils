@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed (post-review)
+- **Tier 2 facets are no longer destroyed by a failed re-extraction.** `populate_tier2_facets` now scopes its soft-delete to sessions that actually produced rows this run (`session_id IN _INBOUND`), not every session in staging. Previously, re-ETLing a session with `--with-llm-facets` while the LLM API was failing left the inbound empty, and the widened staging-based soft-delete marked the session's existing good facets `is_deleted=TRUE` -- data loss from a transient failure. Tier 1 (deterministic, always emits a row per session) keeps the default scope. Regression test: `test_failed_reextraction_preserves_prior_tier2_facets`.
+
+### Removed (post-review)
+- **`stg_task_agent_map` dropped.** The staging table was created, cleared by `staging_scope`, and listed in the JSON export, but no populator ever wrote to or read from it -- vestigial infrastructure. Removed the DDL, the `staging_scope` DELETE, the `json_export` entry, and the three e2e assertions that vacuously checked it stayed empty (they passed regardless of ETL behavior). The redundant `--no-thinking`-only `DELETE FROM stg_log_entries` in `run_v15_etl` is also gone: `staging_scope` clears staging unconditionally, so raw thinking never survives the run regardless of the flag.
+
 ### Changed
 - **The star schema is now a persistent, incrementally-updatable warehouse.** Every table in `create_star_schema()` switched from `CREATE OR REPLACE TABLE` to `CREATE TABLE IF NOT EXISTS`, so re-running the CLI accumulates sessions instead of wiping the warehouse each run. Aggregate/rollup populators are now scoped to the current session so a persistent warehouse doesn't get rescanned or clobbered: every rollup CTE in `fact_session_summary` and the soft-delete in `lineage_upsert` gate on `session_id IN (SELECT session_id FROM stg_log_entries ...)`, and `run_v15_etl` wraps its body in a `staging_scope` context manager that clears `stg_log_entries` + `stg_task_agent_map` on exit (staging is always cleared now, not only under `--no-thinking`).
 - **Subagent depth is computed with a single recursive CTE.** `_propagate_depth_level` replaced its 100-iteration Python cursor loop with one `WITH RECURSIVE` DuckDB update over the parent/child chain.

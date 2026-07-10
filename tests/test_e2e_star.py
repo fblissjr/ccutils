@@ -1,6 +1,6 @@
 """E2E and Integration test suite for the ccutils star schema warehouse.
 
-This suite contains 50 distinct E2E tests covering all 4 tiers of test case design
+This suite contains 49 distinct E2E tests covering all 4 tiers of test case design
 for the features defined in TEST_INFRA.md and ORIGINAL_REQUEST.md.
 
 Specifically:
@@ -296,15 +296,6 @@ def test_t1_staging_unconditionally_cleared_log_entries(conn, temp_dir):
     # Verify staging is empty
     count = conn.execute("SELECT COUNT(*) FROM stg_log_entries").fetchone()[0]
     assert count == 0, "stg_log_entries was not cleared at the end of the ETL run"
-
-
-def test_t1_staging_unconditionally_cleared_task_agent_map(conn, temp_dir):
-    """Test 9: Verify stg_task_agent_map is unconditionally cleared after run_v15_etl completes."""
-    session = create_mock_session_file(temp_dir, "sess_stg_2", make_basic_loglines("sess_stg_2"))
-    run_v15_etl(conn, session, project_name="test-project", parquet_lake_root=temp_dir / "lake")
-    
-    count = conn.execute("SELECT COUNT(*) FROM stg_task_agent_map").fetchone()[0]
-    assert count == 0, "stg_task_agent_map was not cleared at the end of the ETL run"
 
 
 def test_t1_session_summary_scoping_fact_messages(conn):
@@ -860,7 +851,6 @@ def test_t3_zero_rows_soft_delete_and_unconditional_staging_clearance(conn, temp
     
     assert conn.execute("SELECT COUNT(*) FROM fact_errors WHERE session_id = 'sess_combo' AND is_deleted = FALSE").fetchone()[0] == 0
     assert conn.execute("SELECT COUNT(*) FROM stg_log_entries").fetchone()[0] == 0
-    assert conn.execute("SELECT COUNT(*) FROM stg_task_agent_map").fetchone()[0] == 0
 
 
 # =========================================================================
@@ -1033,9 +1023,8 @@ def test_t4_scenario_6_e2e_cli_flow(conn, temp_dir):
     depths = {r[0]: r[1] for r in conn.execute("SELECT session_id, depth_level FROM dim_session").fetchall()}
     assert depths["sess_p"] == 0
     assert depths["agent-c"] == 1
-    
+
     assert conn.execute("SELECT COUNT(*) FROM stg_log_entries").fetchone()[0] == 0
-    assert conn.execute("SELECT COUNT(*) FROM stg_task_agent_map").fetchone()[0] == 0
     
     output_dir = temp_dir / "html_e2e_out"
     generate_html(json_path=parent_file, output_dir=output_dir)

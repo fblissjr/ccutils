@@ -131,16 +131,6 @@ def create_star_schema(db_path):
         """
     )
 
-    conn.execute(
-        """
-        CREATE TABLE IF NOT EXISTS stg_task_agent_map (
-            tool_use_id VARCHAR,
-            agent_id VARCHAR,
-            session_key VARCHAR
-        )
-    """
-    )
-
     # =========================================================================
     # Core Dimension Tables (6)
     # =========================================================================

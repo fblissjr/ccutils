@@ -226,6 +226,53 @@ class TestCannedExtractor:
         ).fetchone()[0]
         assert tier2_count == 0
 
+    def test_failed_reextraction_preserves_prior_tier2_facets(
+        self, conn, session_path, tmp_path
+    ):
+        # Run 1 lands a good F20 row. Run 2's extractor raises (transient API
+        # failure), so it produces no inbound rows. The prior good facet MUST
+        # survive -- an extraction failure is "unknown", not "this session has
+        # no facets", so the soft-delete must not treat the empty inbound as a
+        # signal to wipe existing rows. Regression guard for the data-loss bug
+        # where the widened soft-delete scope keyed off staging, not inbound.
+        lake = tmp_path / "lake"
+        run_v15_etl(
+            conn, session_path,
+            project_name="test-project",
+            parquet_lake_root=lake,
+            facet_extractor=CannedFacetExtractor(
+                {("tier2-s", "F20"): "did a real thing"}
+            ),
+        )
+        live_before = conn.execute(
+            """
+            SELECT COUNT(*) FROM fact_session_facets fsf
+            JOIN dim_facet_type dft USING (facet_type_key)
+            WHERE fsf.session_id = 'tier2-s' AND dft.tier = 2
+              AND fsf.is_deleted = FALSE
+            """
+        ).fetchone()[0]
+        assert live_before == 1, "run 1 should land one live F20 row"
+
+        run_v15_etl(
+            conn, session_path,
+            project_name="test-project",
+            parquet_lake_root=lake,
+            facet_extractor=_AlwaysRaisingExtractor(),
+        )
+        survivors = conn.execute(
+            """
+            SELECT fsf.value_text FROM fact_session_facets fsf
+            JOIN dim_facet_type dft USING (facet_type_key)
+            WHERE fsf.session_id = 'tier2-s' AND dft.tier = 2
+              AND fsf.is_deleted = FALSE
+            """
+        ).fetchall()
+        assert len(survivors) == 1, (
+            "a failed re-extraction soft-deleted the prior Tier 2 facet"
+        )
+        assert survivors[0][0] == "did a real thing"
+
 
 class TestMetadataAndIdempotency:
     def test_extraction_metadata_json_is_stored(

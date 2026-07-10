@@ -1,7 +1,7 @@
 <!-- path-privacy: skip-file -- references universal Claude Code data paths (not personal) -->
 # Star Schema DuckDB Implementation
 
-Last updated: 2026-05-28
+Last updated: 2026-07-10
 
 A dimensional data model for Claude Code transcript analytics, built on a four-tier ETL pipeline with full lineage tracking. The star schema is now the only schema (the legacy 4-table simple schema was removed when v0.15 stabilized).
 
@@ -23,7 +23,7 @@ Tier 0 -- raw JSONL on disk in the user's Claude Code data directory
                   |
                   v  read_parquet(...)
 DuckDB:
-    stg_log_entries, stg_task_agent_map          (Tier 2 -- transient staging)
+    stg_log_entries                              (Tier 2 -- transient staging)
                   |
                   v  per-fact populators
     fact_messages, fact_tool_uses, fact_tool_results,

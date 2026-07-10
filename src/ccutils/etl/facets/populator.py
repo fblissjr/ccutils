@@ -119,7 +119,15 @@ def populate_tier2_facets(
     if inbound_rows:
         _bulk_insert_inbound(conn, inbound_rows)
 
-
+    # Scope the soft-delete to sessions that produced rows THIS run (present in
+    # _INBOUND), not every session in staging. Tier 2 extraction is
+    # non-deterministic: a session whose extractor raised (or yielded nothing)
+    # contributes no inbound rows, and lineage_upsert's default staging-based
+    # scope would then mark its prior good facets is_deleted=TRUE -- data loss
+    # from a transient failure. Restricting to inbound sessions leaves a failed
+    # session's existing facets untouched (and makes the empty-inbound case a
+    # clean no-op). Deterministic Tier 1 always emits a row per session, so it
+    # keeps the default scope.
     lineage_upsert(
         conn, run=run,
         table="fact_session_facets",
@@ -127,7 +135,10 @@ def populate_tier2_facets(
         natural_key="facet_row_key",
         payload_cols=_PAYLOAD_COLS,
         hash_cols=_HASH_COLS,
-        soft_delete_scope_sql=facet_tier_scope_sql(2),
+        soft_delete_scope_sql=(
+            f"{facet_tier_scope_sql(2)} "
+            f"AND tgt.session_id IN (SELECT session_id FROM {_INBOUND})"
+        ),
     )
 
 
