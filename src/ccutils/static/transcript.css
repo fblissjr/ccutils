@@ -154,6 +154,7 @@ time { color: var(--text-muted); font-size: 0.8rem; }
 .commit-card a { color: inherit; text-decoration: none; display: flex; align-items: center; gap: 12px; }
 .commit-card-hash { font-family: monospace; font-size: 0.85rem; color: #e94560; }
 .image-block { margin: 12px 0; }
+.image-block img { max-width: 100%; }
 .date { color: var(--text-muted); font-size: 0.8rem; }
 /* Search modal (global) */
 .search-modal { border: none; border-radius: 12px; padding: 0; max-width: 700px; width: 90vw; max-height: 80vh; box-shadow: 0 4px 20px rgba(0,0,0,0.3); }
@@ -163,3 +164,9 @@ time { color: var(--text-muted); font-size: 0.8rem; }
 .search-results { max-height: 50vh; overflow-y: auto; }
 .size { color: var(--text-muted); font-size: 0.8rem; }
 .agent-badge { display: inline-block; padding: 2px 6px; font-size: 0.75rem; background: var(--tool-bg); color: var(--tool-border); border-radius: 3px; margin-left: 8px; }
+/* Index / header utilities (replace inline style= attrs; CSP forbids 'unsafe-inline') */
+.header-link { color: inherit; text-decoration: none; }
+.page-subtitle { color: var(--text-muted); margin-bottom: 24px; }
+.index-item-size { color: var(--text-muted); }
+.index-actions { margin-top: 24px; }
+.back-button { display: inline-block; padding: 8px 16px; background: var(--user-border); color: white; text-decoration: none; border-radius: 6px; }

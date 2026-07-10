@@ -18,11 +18,7 @@
     // Show search box (progressive enhancement)
     searchBox.style.display = 'flex';
 
-    function escapeHtml(text) {
-        var div = document.createElement('div');
-        div.textContent = text;
-        return div.innerHTML;
-    }
+
 
     function escapeRegex(string) {
         return string.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -30,7 +26,7 @@
 
     function openModal(query) {
         modalInput.value = query || '';
-        searchResults.innerHTML = '';
+        searchResults.textContent = '';
         searchStatus.textContent = '';
         modal.showModal();
         modalInput.focus();
@@ -118,10 +114,23 @@
 
                 var resultDiv = document.createElement('div');
                 resultDiv.className = 'search-result';
-                resultDiv.innerHTML = '<a href="' + link + '">' +
-                    '<div class="search-result-page">' + escapeHtml(pageFile) + '</div>' +
-                    '<div class="search-result-content">' + clone.innerHTML + '</div>' +
-                    '</a>';
+                
+                var anchor = document.createElement('a');
+                anchor.setAttribute('href', link);
+                
+                var pageDiv = document.createElement('div');
+                pageDiv.className = 'search-result-page';
+                pageDiv.textContent = pageFile;
+                
+                var contentDiv = document.createElement('div');
+                contentDiv.className = 'search-result-content';
+                while (clone.firstChild) {
+                    contentDiv.appendChild(clone.firstChild);
+                }
+                
+                anchor.appendChild(pageDiv);
+                anchor.appendChild(contentDiv);
+                resultDiv.appendChild(anchor);
                 searchResults.appendChild(resultDiv);
             }
         });
@@ -136,7 +145,7 @@
         }
 
         updateUrlHash(query);
-        searchResults.innerHTML = '';
+        searchResults.textContent = '';
         searchStatus.textContent = 'Searching...';
 
         var resultsFound = 0;

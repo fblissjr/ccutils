@@ -20,24 +20,36 @@
     // Show search box (progressive enhancement)
     searchBox.style.display = 'flex';
 
-    function escapeHtml(text) {
-        var div = document.createElement('div');
-        div.textContent = text;
-        return div.innerHTML;
-    }
+
 
     function escapeRegex(string) {
         return string.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     }
 
-    function highlightText(text, query) {
-        if (!query) return escapeHtml(text);
+    function highlightText(element, text, query) {
+        element.textContent = '';
+        if (!query) {
+            element.textContent = text;
+            return;
+        }
         var terms = query.toLowerCase().split(/\s+/).filter(function(t) { return t.length > 0; });
-        if (terms.length === 0) return escapeHtml(text);
+        if (terms.length === 0) {
+            element.textContent = text;
+            return;
+        }
 
         var pattern = terms.map(escapeRegex).join('|');
         var regex = new RegExp('(' + pattern + ')', 'gi');
-        return escapeHtml(text).replace(regex, '<mark>$1</mark>');
+        var parts = text.split(regex);
+        parts.forEach(function(part) {
+            if (terms.indexOf(part.toLowerCase()) !== -1) {
+                var mark = document.createElement('mark');
+                mark.textContent = part;
+                element.appendChild(mark);
+            } else {
+                element.appendChild(document.createTextNode(part));
+            }
+        });
     }
 
     function getSnippetWithContext(content, query, maxLength) {
@@ -86,7 +98,7 @@
 
     function openModal(query) {
         modalInput.value = query || '';
-        searchResults.innerHTML = '';
+        searchResults.textContent = '';
         searchStatus.textContent = '';
         modal.showModal();
         modalInput.focus();
@@ -115,7 +127,7 @@
         }
 
         updateUrlHash(query);
-        searchResults.innerHTML = '';
+        searchResults.textContent = '';
         searchStatus.textContent = 'Searching...';
 
         var queryLower = query.toLowerCase();
@@ -145,7 +157,6 @@
         for (var j = 0; j < displayLimit; j++) {
             var result = results[j];
             var snippet = getSnippetWithContext(result.content, query, 200);
-            var highlightedSnippet = highlightText(snippet, query);
 
             var link = result.project + '/' + result.session + '/' + result.page;
             if (result.anchor) {
@@ -154,15 +165,35 @@
 
             var resultDiv = document.createElement('div');
             resultDiv.className = 'search-result';
-            resultDiv.innerHTML =
-                '<a href="' + escapeHtml(link) + '">' +
-                    '<div class="search-result-meta">' +
-                        '<span class="search-result-project">' + escapeHtml(result.project) + '</span>' +
-                        '<span class="search-result-type">' + escapeHtml(getTypeLabel(result.type)) + '</span>' +
-                        '<time>' + escapeHtml(formatTimestamp(result.timestamp)) + '</time>' +
-                    '</div>' +
-                    '<div class="search-result-snippet">' + highlightedSnippet + '</div>' +
-                '</a>';
+            
+            var anchor = document.createElement('a');
+            anchor.setAttribute('href', link);
+            
+            var metaDiv = document.createElement('div');
+            metaDiv.className = 'search-result-meta';
+            
+            var projectSpan = document.createElement('span');
+            projectSpan.className = 'search-result-project';
+            projectSpan.textContent = result.project;
+            
+            var typeSpan = document.createElement('span');
+            typeSpan.className = 'search-result-type';
+            typeSpan.textContent = getTypeLabel(result.type);
+            
+            var timeElem = document.createElement('time');
+            timeElem.textContent = formatTimestamp(result.timestamp);
+            
+            metaDiv.appendChild(projectSpan);
+            metaDiv.appendChild(typeSpan);
+            metaDiv.appendChild(timeElem);
+            
+            var snippetDiv = document.createElement('div');
+            snippetDiv.className = 'search-result-snippet';
+            highlightText(snippetDiv, snippet, query);
+            
+            anchor.appendChild(metaDiv);
+            anchor.appendChild(snippetDiv);
+            resultDiv.appendChild(anchor);
             searchResults.appendChild(resultDiv);
         }
 

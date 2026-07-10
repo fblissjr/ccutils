@@ -345,8 +345,8 @@ class TestGenerateMultiSessionIndex:
         generate_multi_session_index(output_dir, [parent])
 
         html = (output_dir / "index.html").read_text()
-        assert "<style>" in html
-        assert "<script>" in html
+        assert 'href="transcript.css"' in html
+        assert 'src="transcript.js"' in html
 
     def test_custom_title(self, session_dir, tmp_path):
         """Should use custom title if provided."""

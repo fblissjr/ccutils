@@ -138,7 +138,7 @@
 
 {# Image block with base64 data URL #}
 {% macro image_block(media_type, data) %}
-<div class="image-block"><img src="data:{{ media_type }};base64,{{ data }}" style="max-width: 100%"></div>
+<div class="image-block"><img src="data:{{ media_type }};base64,{{ data }}"></div>
 {%- endmacro %}
 
 {# Commit card (in tool results) #}

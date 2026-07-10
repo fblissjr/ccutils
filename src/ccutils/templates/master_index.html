@@ -5,7 +5,7 @@
 {% block content %}
         <div class="header-row">
             <h1>Claude Code Archive</h1>
-            <div id="global-search-box" class="search-box" style="display: none;">
+            <div id="global-search-box" class="search-box">
                 <input type="text" id="global-search-input" placeholder="Search all sessions..." aria-label="Search all sessions">
                 <button id="global-search-btn" type="button" aria-label="Search">
                     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -15,7 +15,7 @@
                 </button>
             </div>
         </div>
-        <p style="color: var(--text-muted); margin-bottom: 24px;">{{ total_projects }} projects · {{ total_sessions }} sessions</p>
+        <p class="page-subtitle">{{ total_projects }} projects · {{ total_sessions }} sessions</p>
 
         {% for project in projects %}
         <div class="index-item">
@@ -25,7 +25,7 @@
                     <time>{{ project.recent_date }}</time>
                 </div>
                 <div class="index-item-content">
-                    <p style="margin: 0;">{{ project.session_count }} session{% if project.session_count != 1 %}s{% endif %}</p>
+                    <p>{{ project.session_count }} session{% if project.session_count != 1 %}s{% endif %}</p>
                 </div>
             </a>
         </div>
@@ -45,6 +45,6 @@
 
         {% if has_search_index %}
         <script src="search-index.js"></script>
-        <script>{{ global_search_js|safe }}</script>
+        <script src="global_search.js"></script>
         {% endif %}
 {%- endblock %}

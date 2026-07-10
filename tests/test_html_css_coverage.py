@@ -112,6 +112,7 @@ def rendered_sample_outputs(tmp_path_factory):
     return {
         "index": (out / "index.html").read_text(encoding="utf-8"),
         "page": pages[0].read_text(encoding="utf-8"),
+        "out_dir": out,
     }
 
 
@@ -121,7 +122,9 @@ class TestRenderedCssCoverage:
     @pytest.mark.parametrize("doc_name", ["index", "page"])
     def test_rendered_classes_have_rules(self, rendered_sample_outputs, doc_name):
         html = rendered_sample_outputs[doc_name]
-        defined = _classes_defined_in_css(_extract_css_block(html))
+        out_dir = rendered_sample_outputs["out_dir"]
+        css_content = (out_dir / "transcript.css").read_text(encoding="utf-8")
+        defined = _classes_defined_in_css(css_content)
         missing = _filter_known_safe(_classes_used_in_html(html) - defined)
         assert not missing, (
             f"Classes in {doc_name}.html without CSS rules: {sorted(missing)}. "

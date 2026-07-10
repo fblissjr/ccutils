@@ -641,6 +641,9 @@ def generate_batch_html(
     source_folder = Path(source_folder)
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
+    
+    (output_dir / "transcript.css").write_text(CSS, encoding="utf-8")
+    (output_dir / "transcript.js").write_text(JS, encoding="utf-8")
 
     # Find all sessions
     projects = find_all_sessions(source_folder, include_agents=include_agents)
@@ -663,7 +666,7 @@ def generate_batch_html(
 
             # Generate transcript HTML with error handling
             try:
-                generate_html(session["path"], session_dir, private=private)
+                generate_html(session["path"], session_dir, private=private, rel_path="../../")
                 successful_sessions += 1
             except Exception as e:
                 failed_sessions.append(
@@ -719,7 +722,7 @@ def _generate_project_index(project, output_dir):
         )
 
     content = template.render(
-        css=CSS,
+        rel_path="../",
         project_name=project["name"],
         sessions=sessions_data,
         session_count=len(sessions_data),
@@ -747,18 +750,16 @@ def _generate_master_index(projects, output_dir, has_search_index=False):
 
     total_sessions = sum(p["session_count"] for p in projects_data)
 
-    # Load global search JS if search index is enabled
-    global_search_js = ""
     if has_search_index:
         global_search_js = _jinja_env.get_template("global_search.js").render()
+        (output_dir / "global_search.js").write_text(global_search_js, encoding="utf-8")
 
     content = template.render(
-        css=CSS,
+        rel_path="",
         projects=projects_data,
         total_projects=len(projects_data),
         total_sessions=total_sessions,
         has_search_index=has_search_index,
-        global_search_js=global_search_js,
     )
     (output_dir / "index.html").write_text(content, encoding="utf-8")
 
@@ -840,9 +841,11 @@ def generate_multi_session_index(
             }
         )
 
+    (output_dir / "transcript.css").write_text(CSS, encoding="utf-8")
+    (output_dir / "transcript.js").write_text(JS, encoding="utf-8")
+
     content = template.render(
-        css=CSS,
-        js=JS,
+        rel_path="",
         title=title,
         sessions=sessions_data,
     )
@@ -927,6 +930,7 @@ def generate_html(
     github_repo=None,
     loglines=None,
     private=False,
+    rel_path="",
 ):
     """Generate HTML transcript from a session file or pre-parsed loglines.
 
@@ -964,15 +968,19 @@ def generate_html(
 
     # Save previous global so back-to-back generate_html() calls (e.g. from
     # generate_batch_html) don't leak state between sessions.
+    if rel_path == "":
+        (output_dir / "transcript.css").write_text(CSS, encoding="utf-8")
+        (output_dir / "transcript.js").write_text(JS, encoding="utf-8")
+
     _saved_github_repo = get_github_repo()
     set_github_repo(github_repo)
     try:
-        return _generate_html_body(loglines, output_dir)
+        return _generate_html_body(loglines, output_dir, rel_path=rel_path)
     finally:
         set_github_repo(_saved_github_repo)
 
 
-def _generate_html_body(loglines, output_dir):
+def _generate_html_body(loglines, output_dir, rel_path=""):
     """Render-side body of generate_html. Reads _github_repo via get_github_repo()."""
     # Group messages into conversations (each starting with a user prompt)
     conversations = []
@@ -1057,8 +1065,7 @@ def _generate_html_body(loglines, output_dir):
 
         page_template = get_template("page.html")
         page_content = page_template.render(
-            css=CSS,
-            js=JS,
+            rel_path=rel_path,
             page_num=page_num,
             total_pages=total_pages,
             pagination_html=pagination_html,
@@ -1140,8 +1147,7 @@ def _generate_html_body(loglines, output_dir):
     index_pagination = generate_index_pagination_html(total_pages)
     index_template = get_template("index.html")
     index_content = index_template.render(
-        css=CSS,
-        js=JS,
+        rel_path=rel_path,
         pagination_html=index_pagination,
         prompt_num=prompt_num,
         total_messages=total_messages,
@@ -1153,5 +1159,8 @@ def _generate_html_body(loglines, output_dir):
 
     index_path = output_dir / "index.html"
     index_path.write_text(index_content, encoding="utf-8")
+
+    search_js = _jinja_env.get_template("search.js").render(total_pages=total_pages)
+    (output_dir / "search.js").write_text(search_js, encoding="utf-8")
 
     return output_dir

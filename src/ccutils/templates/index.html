@@ -13,7 +13,7 @@
             </div>
         </div>
         {{ pagination_html|safe }}
-        <p style="color: var(--text-muted); margin-bottom: 24px;">{{ prompt_num }} prompts · {{ total_messages }} messages · {{ total_tool_calls }} tool calls · {{ total_commits }} commits · {{ total_pages }} pages</p>
+        <p class="page-subtitle">{{ prompt_num }} prompts · {{ total_messages }} messages · {{ total_tool_calls }} tool calls · {{ total_commits }} commits · {{ total_pages }} pages</p>
         {{ index_items_html|safe }}
         {{ pagination_html|safe }}
 
@@ -30,7 +30,5 @@
             <div id="search-status"></div>
             <div id="search-results"></div>
         </dialog>
-        <script>
-{% include "search.js" %}
-        </script>
+        <script src="search.js"></script>
 {%- endblock %}

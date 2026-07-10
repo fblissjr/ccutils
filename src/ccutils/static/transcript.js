@@ -8,12 +8,44 @@ document.querySelectorAll('time[data-timestamp]').forEach(function(el) {
     else { el.textContent = date.toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) + ' ' + timeStr; }
 });
 document.querySelectorAll('pre.json').forEach(function(el) {
-    let text = el.textContent;
-    text = text.replace(/"([^"]+)":/g, '<span style="color: #ce93d8">"$1"</span>:');
-    text = text.replace(/: "([^"]*)"/g, ': <span style="color: #81d4fa">"$1"</span>');
-    text = text.replace(/: (\d+)/g, ': <span style="color: #ffcc80">$1</span>');
-    text = text.replace(/: (true|false|null)/g, ': <span style="color: #f48fb1">$1</span>');
-    el.innerHTML = text;
+    const text = el.textContent;
+    el.textContent = '';
+    const tokenRegex = /("([^"]+)":)|(: "([^"]*)")|(: (\d+))|(: (true|false|null))|([^":\s]+|[:"\s]+)/g;
+    let match;
+    while ((match = tokenRegex.exec(text)) !== null) {
+        const fullToken = match[0];
+        if (match[1]) {
+            const key = match[2];
+            const span = document.createElement('span');
+            span.style.color = '#ce93d8';
+            span.textContent = '"' + key + '"';
+            el.appendChild(span);
+            el.appendChild(document.createTextNode(':'));
+        } else if (match[3]) {
+            const val = match[4];
+            el.appendChild(document.createTextNode(': '));
+            const span = document.createElement('span');
+            span.style.color = '#81d4fa';
+            span.textContent = '"' + val + '"';
+            el.appendChild(span);
+        } else if (match[5]) {
+            const val = match[6];
+            el.appendChild(document.createTextNode(': '));
+            const span = document.createElement('span');
+            span.style.color = '#ffcc80';
+            span.textContent = val;
+            el.appendChild(span);
+        } else if (match[7]) {
+            const val = match[8];
+            el.appendChild(document.createTextNode(': '));
+            const span = document.createElement('span');
+            span.style.color = '#f48fb1';
+            span.textContent = val;
+            el.appendChild(span);
+        } else {
+            el.appendChild(document.createTextNode(fullToken));
+        }
+    }
 });
 document.querySelectorAll('.truncatable').forEach(function(wrapper) {
     const content = wrapper.querySelector('.truncatable-content');
