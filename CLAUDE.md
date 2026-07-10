@@ -3,7 +3,7 @@
 
 Uses uv. Run tests like this:
 
-    uv run pytest
+    uv run pytest tests/ --confcutdir=tests
 
 Run the development version of the tool like this:
 

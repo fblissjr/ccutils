@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Changed
+- **The star schema is now a persistent, incrementally-updatable warehouse.** Every table in `create_star_schema()` switched from `CREATE OR REPLACE TABLE` to `CREATE TABLE IF NOT EXISTS`, so re-running the CLI accumulates sessions instead of wiping the warehouse each run. Aggregate/rollup populators are now scoped to the current session so a persistent warehouse doesn't get rescanned or clobbered: every rollup CTE in `fact_session_summary` and the soft-delete in `lineage_upsert` gate on `session_id IN (SELECT session_id FROM stg_log_entries ...)`, and `run_v15_etl` wraps its body in a `staging_scope` context manager that clears `stg_log_entries` + `stg_task_agent_map` on exit (staging is always cleared now, not only under `--no-thinking`).
+- **Subagent depth is computed with a single recursive CTE.** `_propagate_depth_level` replaced its 100-iteration Python cursor loop with one `WITH RECURSIVE` DuckDB update over the parent/child chain.
+
+### Fixed
+- **Session complexity now reflects real agent depth.** `populate_dim_session_heuristics` joins `dim_session` for `depth_level` and passes it to `classify_complexity` (previously hardcoded `0`, so deep agent trees never earned the depth bonus).
+- **`.js` / `.ts` files classify as the `web` domain** (previously fell through to `unknown`).
+- **HTML export is CSP-strict.** `base.html` drops `'unsafe-inline'` from `style-src` / `script-src` (both now `'self'`); CSS/JS are written as external `transcript.css` / `transcript.js` / `search.js` / `global_search.js` files linked via a per-page-depth `rel_path`. All remaining inline `style=` attributes were moved into CSS classes (`.header-link`, `.page-subtitle`, `.index-item-size`, `.index-actions`, `.back-button`, `.image-block img`), and the search renderers + JSON highlighter were rewritten from `innerHTML` string-building to DOM-node construction, so nothing trips the tightened policy. (The inline styles were a live regression: the CSP was tightened before the attributes were removed, so headers, muted text, and image sizing were silently blocked in the browser while every test still passed.)
+- `write_session_to_parquet` raises `ValueError` on a JSONL file with no valid entries instead of writing an empty Parquet table.
+
+### Added
+- `tests/test_e2e_star.py` -- a 50-test end-to-end suite exercising all four warehouse tiers, the heuristic classifiers, and the HTML output. Run the suite with `uv run pytest tests/ --confcutdir=tests` so parent-workspace imports don't shadow the package.
+
 ## 0.16.0
 
 The facet & cluster pipeline lands its first five steps (Tier 1 SQL facets, the Tier 2 LLM extractor boundary, the F20 `task_description` populator, and the `--with-llm-facets` / `--batch-llm-facets` CLI flags), the legacy simple 4-table schema is removed so the v0.15 star schema is the only one, and `--no-thinking` is honored on the DuckDB / JSON paths. Breaking: `--format duckdb` / `--format json` now write the star schema (the `-star` suffix is gone), `ccutils import` is HTML-only, and several simple-schema Python re-exports were dropped.
