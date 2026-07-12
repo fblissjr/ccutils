@@ -14,6 +14,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from ccutils.etl.utils import insert_missing_dim_dates
 from ccutils.parsers.history import iter_history_entries
 
 
@@ -98,4 +99,16 @@ def import_history(conn, history_path: str | Path) -> int:
     ).rowcount
 
     conn.execute("DROP TABLE IF EXISTS _inbound_prompts")
+
+    # history.jsonl carries dates no staged session covers; without their
+    # dim_date rows semantic_prompt_history returns NULL full_date.
+    insert_missing_dim_dates(
+        conn,
+        """
+        SELECT DISTINCT CAST(timestamp AS DATE) AS day
+        FROM dim_prompt
+        WHERE timestamp IS NOT NULL
+        """,
+    )
+
     return inserted or 0

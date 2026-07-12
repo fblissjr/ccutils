@@ -177,7 +177,7 @@ ccutils/
 │       └── global_search.js  # Archive-wide search (Jinja2 template)
 ├── tests/
 │   ├── conftest.py           # Shared fixtures (sample_session_file, ...)
-│   └── test_*.py             # ~50 test files; v0.15 facts split per-populator into test_<fact>_v15.py
+│   └── test_*.py             # ~56 test files; v0.15 facts split per-populator into test_<fact>_v15.py
 ├── docs/
 │   ├── STAR_SCHEMA.md            # Star schema reference (DDL + populator-by-populator notes)
 │   └── FACET_CLUSTER_PIPELINE.md # Facet pipeline design + status
@@ -236,7 +236,7 @@ Pipeline entry: `run_v15_etl()` in `src/ccutils/etl/orchestrator.py`. DDL: `crea
 
 **Not yet populated (DDL only):** `fact_content_blocks`, `fact_code_blocks`, `fact_entity_mentions`, `fact_session_embeddings`, `fact_tool_input_params`. Some redundant-with-v0.15 facts also remain as DDL stubs (`fact_turn_durations` / `fact_stop_events` are subsumed by `fact_system_events`; `fact_tool_calls` is subsumed by `fact_tool_uses` + `fact_tool_results`).
 
-**Semantic views:** `semantic_sessions`, `semantic_messages`, `semantic_tool_calls` (UNION over uses+results), `semantic_token_usage`, `semantic_cost_analysis` (R11-corrected hit-rate denominator), `semantic_prompt_history`, `semantic_session_chains`, `semantic_project_context`, `semantic_decisions` (decision timeline UNION over plan revisions + permission-mode changes + stop/api_error/compact system events), plus per-fact analytics views.
+**Semantic views (15):** `semantic_sessions`, `semantic_messages`, `semantic_tool_calls` (UNION over uses+results), `semantic_token_usage`, `semantic_cost_analysis` (R11-corrected hit-rate denominator), `semantic_prompt_history`, `semantic_session_chains`, `semantic_project_context`, `semantic_decisions` (decision timeline UNION over plan revisions + permission-mode changes + stop/api_error/compact system events), `semantic_agent_delegations`, `semantic_file_evolution`, `semantic_file_operations`, `semantic_plan_revisions`, `semantic_project_files`, `semantic_tool_patterns`.
 
 ### 4. Token Tracking (v0.15)
 
@@ -255,7 +255,7 @@ Runs during ETL with zero external dependencies. Classifiers live in `src/ccutil
 ## Testing
 
 ```
-uv run pytest                   # full suite (~934 tests + 1 skipped live-API)
+uv run pytest                   # full suite (~1046 tests, incl. 1 skipped live-API)
 uv run pytest tests/test_<fact>_v15.py -v  # one populator
 uv run pytest --cov=ccutils    # with coverage
 ```

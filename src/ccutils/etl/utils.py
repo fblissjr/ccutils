@@ -27,6 +27,40 @@ def fetch_scalar(conn, sql: str, params=None):
     return row[0]
 
 
+def insert_missing_dim_dates(conn, day_source_sql: str) -> None:
+    """Insert dim_date rows for calendar dates the warehouse hasn't seen.
+
+    ``day_source_sql`` must be a SELECT yielding one DATE column named
+    ``day``. date_key matches the YYYYMMDD integers lineage_upsert derives
+    on every fact; day_of_week mirrors Python's weekday() (Monday=0).
+    Callers: _upsert_minimal_dimensions (staging dates) and import_history
+    (dim_prompt dates, which staging never covers).
+    """
+    conn.execute(
+        f"""
+        INSERT INTO dim_date
+        SELECT
+            CAST(strftime(d.day, '%Y%m%d') AS INTEGER) AS date_key,
+            d.day AS full_date,
+            EXTRACT(year FROM d.day) AS year,
+            EXTRACT(month FROM d.day) AS month,
+            EXTRACT(day FROM d.day) AS day,
+            EXTRACT(isodow FROM d.day) - 1 AS day_of_week,
+            dayname(d.day) AS day_name,
+            monthname(d.day) AS month_name,
+            EXTRACT(quarter FROM d.day) AS quarter,
+            EXTRACT(isodow FROM d.day) >= 6 AS is_weekend,
+            EXTRACT(week FROM d.day) AS week_of_year
+        FROM ({day_source_sql}) d
+        WHERE d.day IS NOT NULL
+          AND NOT EXISTS (
+              SELECT 1 FROM dim_date dd
+              WHERE dd.date_key = CAST(strftime(d.day, '%Y%m%d') AS INTEGER)
+          )
+        """
+    )
+
+
 def extract_text_from_content_json(
     content_json_raw: str | None,
     *,

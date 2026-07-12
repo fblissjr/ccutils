@@ -1,7 +1,7 @@
 # path-privacy: skip-file -- references universal Claude Code data paths (not personal)
 """Star schema DDL - creates the dimensional model tables.
 
-28 tables + 14 views. Tiny lookup dimensions (message_type, content_block_type,
+42 tables + 15 views. Tiny lookup dimensions (message_type, content_block_type,
 error_type, entity_type, programming_language) replaced by degenerate VARCHAR
 columns on fact tables. LLM enrichment tables removed entirely -- replaced by
 heuristic classification columns on dim_session.
@@ -13,16 +13,19 @@ import duckdb
 def create_star_schema(db_path):
     """Create DuckDB database with star schema for transcript analytics.
 
-    This creates a dimensional model with:
-    - 6 core dimensions (session, project, tool, model, date, time)
-    - 6 core facts (messages, tool_calls, session_summary, file_operations, errors, tool_chain_steps)
-    - 2 granular dimensions (file, session_chain)
-    - 3 granular facts (content_blocks, code_blocks, entity_mentions)
-    - 4 new facts (token_usage, turn_durations, diagnostics, stop_events)
-    - 3 agent/bridge/staging tables
-    - 2 optional tables (embeddings, tool_input_params)
-    - 1 prompt history table (dim_prompt from history.jsonl)
-    - 13 semantic views
+    Authoritative table inventory lives in CLAUDE.md ("Star Schema Tables")
+    and docs/STAR_SCHEMA.md; per-populator wiring in etl/orchestrator.py.
+    Highlights:
+    - Core dimensions: session, project, tool, model, file, session_chain,
+      prompt, facet_type. dim_time is seeded here (1440 rows); dim_date rows
+      are inserted during ETL for every staged calendar date.
+    - v0.15 facts: messages, tool_uses + tool_results, token_usage, the
+      entry-type facts (attachments/progress/system/meta/...), file
+      operations, plan revisions, agent delegations, errors, chain steps,
+      session facets, session summary.
+    - Staging: stg_log_entries (Tier 2 of the four-tier pipeline).
+    - 15 semantic views (semantic_*), created after _apply_column_migrations
+      so views can reference migrated columns on pre-existing warehouses.
 
     No hard PK/FK constraints - relies on soft business rules.
 
@@ -1479,7 +1482,7 @@ def create_star_schema(db_path):
     _apply_column_migrations(conn)
 
     # =========================================================================
-    # Semantic Views (10)
+    # Semantic Views (15)
     # =========================================================================
 
     # Updated for v0.15 fact_session_summary shape.

@@ -45,6 +45,34 @@ def history_jsonl(tmp_path):
     return path
 
 
+class TestDimPromptDates:
+    def test_import_inserts_dim_date_rows_for_prompt_dates(
+        self, conn, history_jsonl
+    ):
+        """history.jsonl carries dates no staged session covers; the
+        import must add their dim_date rows or semantic_prompt_history
+        returns NULL full_date."""
+        import_history(conn, history_jsonl)
+        row = conn.execute(
+            """
+            SELECT COUNT(*)
+            FROM dim_prompt dp
+            JOIN dim_date dd ON dp.date_key = dd.date_key
+            """
+        ).fetchone()
+        assert row[0] == 3
+
+    def test_semantic_prompt_history_full_date_not_null(
+        self, conn, history_jsonl
+    ):
+        import_history(conn, history_jsonl)
+        dates = [r[0] for r in conn.execute(
+            "SELECT full_date FROM semantic_prompt_history"
+        ).fetchall()]
+        assert len(dates) == 3
+        assert all(d is not None for d in dates)
+
+
 class TestDimPrompt:
     def test_one_row_per_history_entry(self, conn, history_jsonl):
         import_history(conn, history_jsonl)

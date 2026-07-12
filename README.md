@@ -289,7 +289,7 @@ tar czf - ./archive | age -r <recipient-key> > archive.tar.gz.age && rm -rf ./ar
 ## Development
 
 ```bash
-uv run pytest              # Run tests (~934 + 1 skipped live-API)
+uv run pytest              # Run tests (~1046, incl. 1 skipped live-API)
 uv run ccutils --help      # Run development version
 uv run pytest --cov=ccutils  # Coverage
 ```
