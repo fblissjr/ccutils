@@ -676,15 +676,26 @@ def test_t2_subagent_recursive_cte_handles_empty_dim_session(conn):
 
 
 def test_t2_subagent_recursive_cte_handles_deep_tree(conn):
-    """Test 35: Verify subagent depth propagation recursive CTE query logic handles arbitrary deep levels."""
+    """Test 35: Verify subagent depth propagation recursive CTE query logic handles arbitrary deep levels.
+
+    Propagation is scoped to the staged sessions' tree: staging only the
+    DEEPEST session must walk up to root A and recompute the whole chain.
+    """
     conn.execute("INSERT INTO dim_session (session_key, session_id, is_agent, parent_session_key) VALUES (md5('A'), 'A', FALSE, NULL)")
     conn.execute("INSERT INTO dim_session (session_key, session_id, is_agent, parent_session_key) VALUES (md5('B'), 'B', TRUE, md5('A'))")
     conn.execute("INSERT INTO dim_session (session_key, session_id, is_agent, parent_session_key) VALUES (md5('C'), 'C', TRUE, md5('B'))")
     conn.execute("INSERT INTO dim_session (session_key, session_id, is_agent, parent_session_key) VALUES (md5('D'), 'D', TRUE, md5('C'))")
-    
+    conn.execute(
+        """
+        INSERT INTO stg_log_entries (
+            etl_run_id, parsed_at, parser_version, record_source, entry_id, source_path, sequence_num, type, session_id
+        ) VALUES ('run-t35', current_timestamp, '1.0', 'test', 'entry-t35', '/path', 1, 'user', 'D')
+        """
+    )
+
     from ccutils.etl.subagent_enrichment import _propagate_depth_level
     _propagate_depth_level(conn)
-    
+
     depths = {r[0]: r[1] for r in conn.execute("SELECT session_id, depth_level FROM dim_session").fetchall()}
     assert depths["A"] == 0
     assert depths["B"] == 1
@@ -972,10 +983,19 @@ def test_t4_scenario_4_deep_subagent_depth_verification(conn, temp_dir):
     conn.execute("INSERT INTO dim_session (session_key, session_id, is_agent, parent_session_key) VALUES (md5('B'), 'B', TRUE, md5('A'))")
     conn.execute("INSERT INTO dim_session (session_key, session_id, is_agent, parent_session_key) VALUES (md5('C'), 'C', TRUE, md5('B'))")
     conn.execute("INSERT INTO dim_session (session_key, session_id, is_agent, parent_session_key) VALUES (md5('D'), 'D', TRUE, md5('C'))")
-    
+    # Scoped propagation: stage a mid-chain session; the up-walk finds
+    # root A, the down-walk recomputes B/C/D.
+    conn.execute(
+        """
+        INSERT INTO stg_log_entries (
+            etl_run_id, parsed_at, parser_version, record_source, entry_id, source_path, sequence_num, type, session_id
+        ) VALUES ('run-t48', current_timestamp, '1.0', 'test', 'entry-t48', '/path', 1, 'user', 'B')
+        """
+    )
+
     from ccutils.etl.subagent_enrichment import _propagate_depth_level
     _propagate_depth_level(conn)
-    
+
     depths = {r[0]: r[1] for r in conn.execute("SELECT session_id, depth_level FROM dim_session").fetchall()}
     assert depths["A"] == 0
     assert depths["B"] == 1

@@ -104,6 +104,84 @@ class TestDimSessionDepth:
         ).fetchone()
         assert row[0] == 2
 
+    def test_parent_arriving_after_child_fixes_child_depth(
+        self, conn, tmp_path
+    ):
+        """Child ETL'd before its parent starts at 0; when the parent
+        session lands later, the child's depth is recomputed to 1."""
+        sub = _subagent_layout(tmp_path, "late-parent", "agLate")
+        run_v15_etl(conn, sub, project_name="test",
+                    parquet_lake_root=tmp_path / "lake")
+        assert conn.execute(
+            "SELECT depth_level FROM dim_session "
+            "WHERE session_id = 'agent-agLate'"
+        ).fetchone()[0] == 0
+
+        root = tmp_path / "late_root.jsonl"
+        root.write_text(json.dumps({
+            "type": "user", "uuid": "ru9", "sessionId": "late-parent",
+            "timestamp": "2026-04-19T09:00:00Z",
+            "cwd": "/work", "gitBranch": "main", "version": "2.1.114",
+            "message": {"role": "user", "content": "root"}}))
+        run_v15_etl(conn, root, project_name="test",
+                    parquet_lake_root=tmp_path / "lake")
+
+        assert conn.execute(
+            "SELECT depth_level FROM dim_session "
+            "WHERE session_id = 'agent-agLate'"
+        ).fetchone()[0] == 1
+
+    def test_unrelated_tree_depth_untouched_by_new_session(
+        self, conn, tmp_path
+    ):
+        """Depth recompute is scoped to the current session's tree.
+
+        ETL-ing a session must not rewrite depth_level on sessions in
+        unrelated trees (the persistent warehouse may hold thousands of
+        them; a global recompute per ETL call is O(N^2) across a batch).
+        Proven by corrupting an unrelated row and checking the recompute
+        leaves it alone.
+        """
+        root = tmp_path / "root.jsonl"
+        root.write_text(json.dumps({
+            "type": "user", "uuid": "ru1", "sessionId": "parent-root",
+            "timestamp": "2026-04-19T09:00:00Z",
+            "cwd": "/work", "gitBranch": "main", "version": "2.1.114",
+            "message": {"role": "user", "content": "root"}}))
+        run_v15_etl(conn, root, project_name="test",
+                    parquet_lake_root=tmp_path / "lake")
+        sub = _subagent_layout(tmp_path, "parent-root", "agA")
+        run_v15_etl(conn, sub, project_name="test",
+                    parquet_lake_root=tmp_path / "lake")
+
+        # Corrupt the settled tree; a scoped recompute must not heal it.
+        conn.execute(
+            "UPDATE dim_session SET depth_level = 42 "
+            "WHERE session_id = 'agent-agA'"
+        )
+
+        unrelated = tmp_path / "unrelated.jsonl"
+        unrelated.write_text(json.dumps({
+            "type": "user", "uuid": "uu1", "sessionId": "other-root",
+            "timestamp": "2026-04-19T11:00:00Z",
+            "cwd": "/elsewhere", "gitBranch": "main", "version": "2.1.114",
+            "message": {"role": "user", "content": "hi"}}))
+        run_v15_etl(conn, unrelated, project_name="test",
+                    parquet_lake_root=tmp_path / "lake")
+        # A subagent in the unrelated tree guarantees the depth pass runs.
+        other_sub = _subagent_layout(tmp_path, "other-root", "agB")
+        run_v15_etl(conn, other_sub, project_name="test",
+                    parquet_lake_root=tmp_path / "lake")
+
+        assert conn.execute(
+            "SELECT depth_level FROM dim_session "
+            "WHERE session_id = 'agent-agB'"
+        ).fetchone()[0] == 1
+        assert conn.execute(
+            "SELECT depth_level FROM dim_session "
+            "WHERE session_id = 'agent-agA'"
+        ).fetchone()[0] == 42
+
     def test_subagent_with_unresolved_parent_stays_at_zero(
         self, conn, tmp_path
     ):
