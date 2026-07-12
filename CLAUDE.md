@@ -233,7 +233,7 @@ Pipeline entry: `run_v15_etl()` in `src/ccutils/etl/orchestrator.py`. DDL: `crea
 
 **Not yet populated (DDL only):** `fact_content_blocks`, `fact_code_blocks`, `fact_entity_mentions`, `fact_session_embeddings`, `fact_tool_input_params`. Some redundant-with-v0.15 facts also remain as DDL stubs (`fact_turn_durations` / `fact_stop_events` are subsumed by `fact_system_events`; `fact_tool_calls` is subsumed by `fact_tool_uses` + `fact_tool_results`).
 
-**Semantic views:** `semantic_sessions`, `semantic_messages`, `semantic_tool_calls` (UNION over uses+results), `semantic_token_usage`, `semantic_cost_analysis` (R11-corrected hit-rate denominator), `semantic_prompt_history`, `semantic_session_chains`, `semantic_project_context`, plus per-fact analytics views.
+**Semantic views:** `semantic_sessions`, `semantic_messages`, `semantic_tool_calls` (UNION over uses+results), `semantic_token_usage`, `semantic_cost_analysis` (R11-corrected hit-rate denominator), `semantic_prompt_history`, `semantic_session_chains`, `semantic_project_context`, `semantic_decisions` (decision timeline UNION over plan revisions + permission-mode changes + stop/api_error/compact system events), plus per-fact analytics views.
 
 ### 4. Token Tracking (v0.15)
 

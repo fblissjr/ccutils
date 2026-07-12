@@ -1705,6 +1705,78 @@ def create_star_schema(db_path):
     """
     )
 
+    # One unified decision timeline over already-populated facts (the
+    # "fact_decisions backbone" of the ETL-rethink proposal, reduced to a
+    # projection: every structural signal it wanted already lands in a
+    # v0.15 fact, so no new ETL or physical table is needed).
+    conn.execute(
+        """
+        CREATE OR REPLACE VIEW semantic_decisions AS
+        SELECT
+            session_id,
+            session_key,
+            'plan_revision' AS decision_type,
+            outcome AS decision_value,
+            outcome_signal AS decision_signal,
+            user_feedback_text AS decision_detail,
+            plan_timestamp AS timestamp,
+            CAST(plan_timestamp AS DATE) AS decision_date,
+            revision_key AS source_key,
+            'fact_plan_revisions' AS source_table
+        FROM fact_plan_revisions
+        WHERE is_deleted = FALSE
+
+        UNION ALL
+
+        SELECT
+            session_id,
+            session_key,
+            'permission_mode_change' AS decision_type,
+            meta_value AS decision_value,
+            NULL AS decision_signal,
+            NULL AS decision_detail,
+            timestamp,
+            CAST(timestamp AS DATE) AS decision_date,
+            entry_id AS source_key,
+            'fact_meta_events' AS source_table
+        FROM fact_meta_events
+        WHERE meta_type = 'permission-mode' AND is_deleted = FALSE
+
+        UNION ALL
+
+        SELECT
+            session_id,
+            session_key,
+            CASE subtype
+                WHEN 'stop_hook_summary' THEN 'stop_event'
+                ELSE subtype
+            END AS decision_type,
+            CASE subtype
+                WHEN 'stop_hook_summary' THEN stop_reason
+                WHEN 'api_error' THEN error_type
+                WHEN 'compact_boundary' THEN compact_trigger
+            END AS decision_value,
+            NULL AS decision_signal,
+            CASE subtype
+                WHEN 'stop_hook_summary'
+                    THEN 'prevented_continuation='
+                         || COALESCE(CAST(prevented_continuation AS VARCHAR), 'NULL')
+                WHEN 'api_error'
+                    THEN 'status=' || COALESCE(CAST(error_status AS VARCHAR), 'NULL')
+                WHEN 'compact_boundary'
+                    THEN 'pre_tokens='
+                         || COALESCE(CAST(compact_pre_tokens AS VARCHAR), 'NULL')
+            END AS decision_detail,
+            timestamp,
+            CAST(timestamp AS DATE) AS decision_date,
+            entry_id AS source_key,
+            'fact_system_events' AS source_table
+        FROM fact_system_events
+        WHERE subtype IN ('stop_hook_summary', 'api_error', 'compact_boundary')
+          AND is_deleted = FALSE
+    """
+    )
+
     conn.execute(
         """
         CREATE OR REPLACE VIEW semantic_file_evolution AS

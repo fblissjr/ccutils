@@ -1,7 +1,7 @@
 <!-- path-privacy: skip-file -- references universal Claude Code data paths (not personal) -->
 # Star Schema DuckDB Implementation
 
-Last updated: 2026-07-10
+Last updated: 2026-07-12
 
 A dimensional data model for Claude Code transcript analytics, built on a four-tier ETL pipeline with full lineage tracking. The star schema is now the only schema (the legacy 4-table simple schema was removed when v0.15 stabilized).
 
@@ -467,6 +467,7 @@ All views use the `semantic_` prefix and join facts with dimensions for easy que
 - `semantic_session_chains` -- chain aggregates across all member sessions
 - `semantic_agent_delegations` -- delegations with parent/agent session details
 - `semantic_plan_revisions` -- plan revision chain with outcomes, feedback, resolution timing
+- `semantic_decisions` -- unified decision timeline UNIONing plan revisions, permission-mode changes, stop events, API errors, and compact boundaries from their source facts (the "fact_decisions backbone" as a pure projection; `source_key`/`source_table` link back to the underlying row)
 - `semantic_file_evolution` -- cross-session file activity (files touched in 2+ sessions)
 - `semantic_tool_patterns` -- common tool sequences with frequency and error rates
 - `semantic_project_context` -- sessions enriched with first/last messages for catching up on a project
