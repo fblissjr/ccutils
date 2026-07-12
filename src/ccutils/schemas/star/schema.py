@@ -236,20 +236,27 @@ def create_star_schema(db_path):
     # present (per-minute anti-join, NOT a whole-table emptiness guard --
     # a legacy warehouse with a PARTIALLY populated dim_time would else
     # never be completed). time_of_day comes from get_time_of_day, the
-    # single source of truth, so SQL and Python labels can't drift.
-    existing_time_keys = {
-        r[0] for r in conn.execute("SELECT time_key FROM dim_time").fetchall()
-    }
-    missing_time_rows = [
-        (h * 100 + m, h, m, get_time_of_day(h))
-        for h in range(24)
-        for m in range(60)
-        if h * 100 + m not in existing_time_keys
-    ]
-    if missing_time_rows:
-        conn.executemany(
-            "INSERT INTO dim_time VALUES (?, ?, ?, ?)", missing_time_rows
-        )
+    # single source of truth, so SQL and Python labels can't drift. The
+    # COUNT fast-path keeps the common fully-seeded case a single query
+    # (this runs on every create_star_schema, i.e. every CLI invocation).
+    from ccutils.etl.utils import fetch_scalar
+
+    if fetch_scalar(conn, "SELECT COUNT(*) FROM dim_time") < 1440:
+        existing_time_keys = {
+            r[0] for r in conn.execute(
+                "SELECT time_key FROM dim_time"
+            ).fetchall()
+        }
+        missing_time_rows = [
+            (h * 100 + m, h, m, get_time_of_day(h))
+            for h in range(24)
+            for m in range(60)
+            if h * 100 + m not in existing_time_keys
+        ]
+        if missing_time_rows:
+            conn.executemany(
+                "INSERT INTO dim_time VALUES (?, ?, ?, ?)", missing_time_rows
+            )
 
     # =========================================================================
     # Core Fact Tables (6)
