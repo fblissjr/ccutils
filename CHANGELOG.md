@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed (code review)
+- **`ccutils web --private` and `ccutils import --private` no longer silently no-op.** Both call `generate_html(loglines=..., private=True)` with no `json_path`, so the post-0.17.0 cwd fix (which only covered the `json_path` branch) skipped them and shipped unsanitized HTML with exit 0 -- the third instance of the silent-privacy-no-op class. cwd resolution is now a shared `_resolve_private_cwd` (session-file scan, then logline cwd) used by both HTML and markdown export, and when it returns nothing the exporter prints a loud `_warn_private_unresolved` stderr warning instead of no-opping. The CLI also prints a one-time best-effort notice whenever `--private` is set.
+- **`--private` export no longer crashes on a bare-scalar JSONL/JSON line.** `extract_header_fields` / `extract_session_metadata` called `.get()` on `json.loads` output without an `isinstance(obj, dict)` guard, so a `.json` (or hand-edited) file containing a bare scalar line raised `AttributeError`. All header scanners now share a guarded `iter_jsonl_dicts`.
+- **`extract_session_metadata` no longer disagrees with the export scanners on the same file.** Its 25-line scan cap returned `sessionId=None` for sessions with a long headerless prefix (accumulated compaction summaries) while the unbounded export scanner found the id -- split-brain identity that dropped subagent linkage in the picker. Cap removed; a `"sessionId"` substring pre-filter keeps the picker hot path cheap.
+- **`extract_rich_metadata` header capture corrected.** The `got_header` latch froze `gitBranch`/`version` at `None` once `sessionId`+`cwd` were seen (missing them when they trail on a later line) and overwrote `slug` last-wins; every header field is now captured on first truthy occurrence independently.
+
+### Known limitation
+- **`--private` is best-effort, not a sharing guarantee.** It masks cwd/home-prefixed paths only in `tool_use` inputs and string `tool_result`s; message text, thinking blocks, `_raw` non-message entries (e.g. `file-history-snapshot` paths), the `ccutils all` search index, project directory names, and foreign/pasted absolute paths are NOT sanitized. Comprehensive channel-walking is a tracked follow-up (`internal/plans/private_hardening.md`).
+
 ### Added
 - **`fact_plan_revisions.plan_file_path`** -- captures `input.planFilePath` from `ExitPlanMode` (newer Claude Code writes the plan to a file and passes its path alongside the plan text). NULL for sessions predating the field. Exposed on `semantic_plan_revisions`.
 - **Column-migration mechanism for the persistent warehouse.** `create_star_schema()` now applies an append-only `_COLUMN_MIGRATIONS` list (`ALTER TABLE ... ADD COLUMN IF NOT EXISTS ...`) after the CREATE TABLEs and before the views: `CREATE TABLE IF NOT EXISTS` never widens an existing table, so any column added after a table shipped needs a migration entry or pre-existing warehouses break on the populator's INSERT. `plan_file_path` is the first entry.

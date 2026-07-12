@@ -38,6 +38,7 @@ from .utils import (
     build_facet_extractor_or_exit,
     maybe_open_browser,
     run_embedding_pipeline,
+    warn_private_best_effort,
 )
 
 
@@ -156,6 +157,8 @@ def local_cmd(
             "affects the render formats (html, markdown). Either drop "
             "--private or use --format html / --format markdown."
         )
+    if private:
+        warn_private_best_effort()
 
     # Build the Tier 2 facet extractor at the CLI boundary -- credential
     # failures exit cleanly here rather than as a stack trace from inside

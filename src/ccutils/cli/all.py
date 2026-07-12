@@ -18,6 +18,7 @@ from .utils import (
     build_facet_extractor_or_exit,
     maybe_open_browser,
     run_embedding_pipeline,
+    warn_private_best_effort,
 )
 
 
@@ -170,6 +171,8 @@ def all_cmd(
             "affects the render formats (html, markdown). Either drop "
             "--private or use --format html / --format markdown."
         )
+    if private:
+        warn_private_best_effort()
     if embed and output_format == "json":
         raise click.UsageError(
             "--embed cannot combine with --format json: the JSON archive is "

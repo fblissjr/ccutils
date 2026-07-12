@@ -18,8 +18,12 @@ from ..parsers import (
     get_session_summary,
     parse_session_file,
 )
-from ..parsers.session import extract_header_fields
-from .html import _sanitize_loglines, is_tool_result_message
+from .html import (
+    _resolve_private_cwd,
+    _sanitize_loglines,
+    _warn_private_unresolved,
+    is_tool_result_message,
+)
 
 # Tool results longer than this are truncated inside the details block.
 TOOL_RESULT_MAX_CHARS = 1500
@@ -239,16 +243,14 @@ def generate_markdown(
     loglines = data.get("loglines", [])
 
     # JSONL-normalized loglines carry only type/timestamp/message; session id
-    # and cwd come from the metadata extractor, with the shared header scan
-    # as fallback for non-JSONL inputs it doesn't cover.
+    # comes from the metadata extractor (which scans past a headerless prefix).
     meta = extract_rich_metadata(session_path, session_path.parent.name)
-    session_id, cwd = meta.session_id, meta.cwd
-    if session_id is None or cwd is None:
-        scanned_id, scanned_cwd = extract_header_fields(session_path)
-        session_id = session_id or scanned_id
-        cwd = cwd or scanned_cwd
+    session_id = meta.session_id
 
     if private:
+        cwd = _resolve_private_cwd(session_path, loglines)
+        if cwd is None:
+            _warn_private_unresolved(str(session_path))
         loglines = _sanitize_loglines(loglines, cwd=cwd)
 
     summary = get_session_summary(session_path)

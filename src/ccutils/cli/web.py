@@ -15,7 +15,11 @@ from ..api import (
     filter_sessions_by_repo,
 )
 from ..export import generate_html
-from .utils import resolve_credentials, maybe_open_browser
+from .utils import (
+    maybe_open_browser,
+    resolve_credentials,
+    warn_private_best_effort,
+)
 
 
 @click.command("web")
@@ -154,6 +158,8 @@ def web_cmd(
         output = Path(tempfile.gettempdir()) / f"claude-session-{session_id}"
 
     output = Path(output)
+    if private:
+        warn_private_best_effort()
     click.echo(f"Generating HTML in {output}/...")
     generate_html(
         output_dir=output,

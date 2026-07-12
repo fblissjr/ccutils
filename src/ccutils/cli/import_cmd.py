@@ -15,7 +15,7 @@ import click
 
 from ..parsers.claude_ai import parse_claude_ai_export, load_export_files
 from ..export import generate_html
-from .utils import maybe_open_browser
+from .utils import maybe_open_browser, warn_private_best_effort
 
 
 @click.command("import")
@@ -141,6 +141,8 @@ def import_cmd(
         f"Found {len(loglines)} messages across {len(session_ids)} conversations"
     )
 
+    if private:
+        warn_private_best_effort()
     _export_to_html(parsed, output, open_browser, private=private)
 
 

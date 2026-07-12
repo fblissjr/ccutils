@@ -2247,3 +2247,43 @@ class TestPrivateModeSanitizesJsonl:
         jsonl, cwd = self._session(tmp_path)
         html_out = self._rendered(tmp_path, jsonl, private=False)
         assert cwd in html_out
+
+
+class TestPrivateFailsLoudWhenCwdUnresolvable:
+    """--private must warn loudly (not silently no-op) when it cannot
+    resolve a working directory to sanitize against."""
+
+    def _loglines_no_cwd(self):
+        # Normalized loglines carry no cwd -- the web/import shape.
+        return [{
+            "type": "user", "timestamp": "2026-04-19T10:00:00Z",
+            "message": {"role": "user",
+                        "content": "see /Users/dev/x/secret.txt"},
+        }]
+
+    def test_loglines_path_warns_when_no_cwd(self, tmp_path, capsys):
+        generate_html(
+            loglines=self._loglines_no_cwd(),
+            output_dir=tmp_path / "out", private=True,
+        )
+        err = capsys.readouterr().err
+        assert "private" in err.lower()
+        assert "not sanitized" in err.lower() or "not be sanitized" in err.lower()
+
+    def test_no_warning_when_not_private(self, tmp_path, capsys):
+        generate_html(
+            loglines=self._loglines_no_cwd(),
+            output_dir=tmp_path / "out", private=False,
+        )
+        assert "not sanitized" not in capsys.readouterr().err.lower()
+
+    def test_no_warning_when_cwd_resolves(self, tmp_path, capsys):
+        jsonl = tmp_path / "s.jsonl"
+        jsonl.write_text(json.dumps({
+            "type": "user", "sessionId": "s1",
+            "cwd": "/Users/dev/workspace/p",  # path-privacy: ignore
+            "timestamp": "2026-04-19T10:00:00Z",
+            "message": {"role": "user", "content": "hi"},
+        }))
+        generate_html(jsonl, tmp_path / "out", private=True)
+        assert "not sanitized" not in capsys.readouterr().err.lower()

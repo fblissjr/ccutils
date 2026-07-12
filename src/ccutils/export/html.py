@@ -8,6 +8,7 @@ import html
 import json
 import re
 import subprocess
+import sys
 from datetime import datetime
 from pathlib import Path
 
@@ -855,12 +856,53 @@ def generate_multi_session_index(
     return index_path
 
 
+def _resolve_private_cwd(source_path, loglines):
+    """Resolve the working directory to sanitize --private paths against.
+
+    Prefers a scan of the session file (normalized loglines drop cwd), then
+    falls back to any cwd carried on a logline (dict-format .json inputs).
+    Returns None when neither yields one -- the caller must then fail loud,
+    NOT silently ship unsanitized output.
+    """
+    if source_path is not None:
+        from ..parsers.session import extract_header_fields
+
+        _, cwd = extract_header_fields(source_path)
+        if cwd:
+            return cwd
+    for entry in loglines or []:
+        cwd = entry.get("cwd")
+        if cwd:
+            return cwd
+    return None
+
+
+def _warn_private_unresolved(label):
+    """Loud stderr warning: --private was requested but could not sanitize.
+
+    The privacy contract has failed silently twice; a cwd-less session
+    (agent transcripts, .json/claude.ai exports, hand-assembled loglines)
+    would otherwise no-op with exit 0. Fail loud instead.
+    """
+    print(
+        f"WARNING: --private could not determine a working directory for "
+        f"{label}; file paths were NOT sanitized in the output. "
+        f"Review the output before sharing.",
+        file=sys.stderr,
+    )
+
+
 def _sanitize_loglines(loglines, cwd=None):
     """Sanitize paths in loglines for private mode.
 
     Extracts cwd from the first logline's raw data (unless passed
     explicitly), creates a PathSanitizer, then deep-walks all loglines to
     sanitize tool_use input dicts and tool_result content strings.
+
+    NOTE: best-effort. Only a subset of channels is walked (tool_use input
+    file_path/command/content/path and string tool_result content); message
+    text, thinking blocks, and non-message entries are NOT sanitized. See
+    the --private known-limitations note in README / CHANGELOG.
     """
     from ..sanitize import PathSanitizer
 
@@ -956,13 +998,12 @@ def generate_html(
 
     # Sanitize paths in loglines if private mode. Normalized JSONL loglines
     # carry only type/timestamp/message -- no cwd -- so resolve cwd from the
-    # session file itself; without it the sanitizer silently no-ops.
+    # session file (or a dict-format logline). Fail loud if unresolvable
+    # rather than shipping unsanitized output with exit 0.
     if private:
-        cwd = None
-        if json_path is not None:
-            from ..parsers.session import extract_header_fields
-
-            _, cwd = extract_header_fields(json_path)
+        cwd = _resolve_private_cwd(json_path, loglines)
+        if cwd is None:
+            _warn_private_unresolved(str(json_path) if json_path else "session")
         loglines = _sanitize_loglines(loglines, cwd=cwd)
 
     # Auto-detect GitHub repo if not provided

@@ -236,7 +236,7 @@ hdiutil detach /Volumes/CCArchive
 
 The encrypted volume covers both the DuckDB file and the parquet lake (they're just files on it). Two caveats for a full-system export:
 
-- **`--private` is not wired through the v0.15 ETL** (the flag is rejected on `duckdb`/`json`). Raw home paths, working directories, and tool inputs land in the database unsanitized. That's fine inside an encrypted volume that never leaves the machine; it's a problem if the archive is meant to be shared.
+- **`--private` is best-effort and not wired through the v0.15 ETL** (the flag is rejected on `duckdb`/`json`). On the render formats (html, markdown) it only masks cwd/home-prefixed paths in a subset of channels -- `tool_use` inputs (`file_path`/`command`/`content`/`path`) and string `tool_result` content. It does **not** sanitize message text, thinking blocks, non-message entries (e.g. `file-history-snapshot` paths), the batch `ccutils all` search index, project directory names, or absolute paths from another machine/user pasted into content. When it can't resolve a working directory (agent transcripts, `.json`/claude.ai exports) it now prints a loud warning rather than silently no-opping. Treat `--private` as a convenience for local encrypted archives, not a guarantee for public sharing; review output before sharing. (Comprehensive channel-walking is a tracked follow-up.)
 - **Tier 2 LLM facets cost real money at full-system scale.** `--with-llm-facets` runs one Haiku call per session -- pennies on a handful of sessions, but potentially dollars across hundreds. Omit it for a bulk archive run, or run it separately on a filtered subset.
 
 Portable alternative (any OS), encrypting the export as a single artifact with [age](https://github.com/FiloSottile/age):

@@ -41,6 +41,23 @@ def build_facet_extractor_or_exit(with_llm_facets: bool):
     return AnthropicFacetExtractor(api_key=api_key)
 
 
+def warn_private_best_effort():
+    """One-time notice that --private sanitization is best-effort.
+
+    PathSanitizer only rewrites cwd/home-prefixed paths in a subset of
+    channels (tool_use inputs + string tool_results); message text,
+    thinking blocks, non-message entries, the batch search index, and
+    foreign/pasted paths are NOT sanitized. Callers should review output
+    before sharing. See the --private known-limitations note in README.
+    """
+    click.echo(
+        "Note: --private is best-effort -- it masks cwd/home paths in a "
+        "subset of fields, not message text, thinking, or the batch search "
+        "index. Review the output before sharing.",
+        err=True,
+    )
+
+
 def is_url(path):
     """Check if a path is a URL (starts with http:// or https://)."""
     return path.startswith("http://") or path.startswith("https://")
