@@ -156,6 +156,7 @@ ccutils/
 │   ├── export/                # Export format handlers
 │   │   ├── __init__.py
 │   │   ├── html.py           # HTML generation
+│   │   ├── markdown.py       # Markdown generation (render-only, one .md per session)
 │   │   └── duckdb_archive.py # DuckDB / JSON batch export (drives run_v15_etl)
 │   ├── tui/                   # Terminal UI components
 │   │   ├── __init__.py
@@ -195,9 +196,10 @@ ccutils/
 
 ### 2. Export Formats
 
-Three output formats; only one schema:
+Four output formats; only one schema:
 
 - `--format html` - Browsable transcript pages (interactive use).
+- `--format markdown` - One `.md` per session (render-only, like html: no ETL, no warehouse). Messages as headings, tool uses as fenced blocks in `<details>`, thinking as blockquotes. Honors `--no-thinking` and `--private`.
 - `--format duckdb` - DuckDB database file. Writes the v0.15 star schema.
 - `--format json` - Directory with `meta.json` + `dimensions/*.json` + `facts/*.json`. Same star schema as `duckdb`, serialized to JSON.
 - `ccutils all` also accepts `--format both` (HTML + DuckDB).

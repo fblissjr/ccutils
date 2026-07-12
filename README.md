@@ -51,6 +51,7 @@ Thinking blocks and subagent sessions are included by default.
 ccutils                                          # Interactive picker
 ccutils session.jsonl                            # Convert file, open in browser
 ccutils session.jsonl --format duckdb -o .       # v0.15 star schema DuckDB
+ccutils session.jsonl --format markdown -o .     # One .md per session (quick sharing)
 ccutils --format duckdb -o ./analytics           # Pick sessions, star schema
 ccutils -p myproject                             # Filter by project name
 ccutils --flat                                   # Legacy single-list mode
@@ -69,6 +70,7 @@ Batch convert every session. Agents and thinking blocks included by default.
 
 ```bash
 ccutils all -o ./archive                         # HTML archive with search index
+ccutils all --format markdown -o ./md-archive    # One .md per session, per-project tree
 ccutils all --format duckdb -o ./analytics       # v0.15 star schema for all sessions
 ccutils all --format duckdb --embed -o ./out     # With ColBERT embeddings
 ccutils all --format duckdb --batch-llm-facets -o ./out  # + Tier 2 LLM facets

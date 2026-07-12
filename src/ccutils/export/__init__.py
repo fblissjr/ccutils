@@ -41,6 +41,10 @@ from .html import (
     render_write_tool,
     set_github_repo,
 )
+from .markdown import (
+    generate_batch_markdown,
+    generate_markdown,
+)
 
 __all__ = [
     # DuckDB archive
@@ -77,4 +81,7 @@ __all__ = [
     "render_user_message_content",
     "render_write_tool",
     "set_github_repo",
+    # Markdown generation
+    "generate_batch_markdown",
+    "generate_markdown",
 ]

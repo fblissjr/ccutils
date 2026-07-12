@@ -31,6 +31,7 @@ from ..schemas.star import (
 from ..etl.orchestrator import run_v15_etl
 from ..export import (
     generate_html,
+    generate_markdown,
     generate_multi_session_index,
 )
 from .utils import (
@@ -52,9 +53,9 @@ from .utils import (
 @optgroup.option(
     "--format",
     "output_format",
-    type=click.Choice(["html", "duckdb", "json"]),
+    type=click.Choice(["html", "markdown", "duckdb", "json"]),
     default="html",
-    help="Output format: html (default), duckdb, or json. Both duckdb and json write the v0.15 star schema.",
+    help="Output format: html (default), markdown, duckdb, or json. Both duckdb and json write the v0.15 star schema.",
 )
 @optgroup.option(
     "--open",
@@ -128,7 +129,7 @@ def local_cmd(
     embed,
     with_llm_facets,
 ):
-    """Convert Claude Code sessions to HTML, DuckDB, or JSON.
+    """Convert Claude Code sessions to HTML, Markdown, DuckDB, or JSON.
 
     With no arguments, launches an interactive picker for local sessions.
     Pass a session file to convert it directly.
@@ -145,13 +146,15 @@ def local_cmd(
 
     # Honesty guard: v0.15 has no PathSanitizer wiring yet, so --private
     # would silently produce a non-sanitized database on the duckdb/json
-    # paths. Fail loud rather than ship the regression. --no-thinking IS
-    # wired (truncates stg_log_entries; fact_messages.content_text already
-    # excludes thinking by SQL projection).
+    # paths. Fail loud rather than ship the regression. Render-only formats
+    # (html, markdown) sanitize on the render path and are exempt.
+    # --no-thinking IS wired (truncates stg_log_entries;
+    # fact_messages.content_text already excludes thinking by SQL projection).
     if output_format in ("duckdb", "json") and private:
         raise click.UsageError(
             "--private is not yet wired through the v0.15 ETL; it only "
-            "affects --format html. Either drop --private or use --format html."
+            "affects the render formats (html, markdown). Either drop "
+            "--private or use --format html / --format markdown."
         )
 
     # Build the Tier 2 facet extractor at the CLI boundary -- credential
@@ -317,9 +320,10 @@ def _run_export_pipeline(
     Args:
         session_files: List of Path objects to session JSONL files.
         output: Output path (directory for HTML/JSON, file for DuckDB).
-        output_format: One of html, duckdb, json. The simple 4-table
-            schema is gone; duckdb/json now always write the v0.15 star
-            schema (DDL in schemas/star, ETL in etl/orchestrator).
+        output_format: One of html, markdown, duckdb, json. The simple
+            4-table schema is gone; duckdb/json now always write the v0.15
+            star schema (DDL in schemas/star, ETL in etl/orchestrator).
+            markdown is render-only like html (no ETL, no warehouse).
         include_thinking: Whether to include thinking blocks.
         private: Whether to sanitize file paths.
         open_browser: Open result in browser after HTML export.
@@ -355,6 +359,27 @@ def _run_export_pipeline(
         click.echo(f"Output: {output.resolve()}")
         if open_browser:
             maybe_open_browser(output)
+
+    elif output_format == "markdown":
+        # Render-only format like html: no ETL, no warehouse. Single file
+        # with an explicit .md output path writes that file; everything
+        # else writes one <session-stem>.md per session into the output
+        # directory (no index pages).
+        if len(session_files) == 1 and output.suffix == ".md":
+            md_path = generate_markdown(
+                session_files[0], output,
+                include_thinking=include_thinking, private=private,
+            )
+            click.echo(f"Output: {md_path.resolve()}")
+        else:
+            output.mkdir(parents=True, exist_ok=True)
+            for idx, session_file in enumerate(session_files, 1):
+                click.echo(f"[{idx}/{len(session_files)}] {session_file.name}")
+                generate_markdown(
+                    session_file, output,
+                    include_thinking=include_thinking, private=private,
+                )
+            click.echo(f"Output: {output.resolve()}")
 
     elif output_format == "duckdb":
         db_path = (

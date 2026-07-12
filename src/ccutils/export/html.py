@@ -855,24 +855,24 @@ def generate_multi_session_index(
     return index_path
 
 
-def _sanitize_loglines(loglines):
+def _sanitize_loglines(loglines, cwd=None):
     """Sanitize paths in loglines for private mode.
 
-    Extracts cwd from the first logline's raw data, creates a PathSanitizer,
-    then deep-walks all loglines to sanitize tool_use input dicts and
-    tool_result content strings.
+    Extracts cwd from the first logline's raw data (unless passed
+    explicitly), creates a PathSanitizer, then deep-walks all loglines to
+    sanitize tool_use input dicts and tool_result content strings.
     """
     from ..sanitize import PathSanitizer
 
     if not loglines:
         return loglines
 
-    # Extract cwd from first logline
-    cwd = None
-    for entry in loglines:
-        cwd = entry.get("cwd")
-        if cwd:
-            break
+    # Extract cwd from first logline unless the caller provided one
+    if not cwd:
+        for entry in loglines:
+            cwd = entry.get("cwd")
+            if cwd:
+                break
 
     if not cwd:
         return loglines

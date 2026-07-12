@@ -10,6 +10,7 @@ from click_option_group import optgroup
 from ..parsers import find_all_sessions
 from ..export import (
     generate_batch_html,
+    generate_batch_markdown,
     generate_duckdb_archive,
     generate_json_archive,
 )
@@ -38,9 +39,9 @@ from .utils import (
 @optgroup.option(
     "--format",
     "output_format",
-    type=click.Choice(["html", "duckdb", "json", "both"]),
+    type=click.Choice(["html", "markdown", "duckdb", "json", "both"]),
     default="html",
-    help="Output format: html (default), duckdb, json, or both (html+duckdb). duckdb/json write the v0.15 star schema.",
+    help="Output format: html (default), markdown, duckdb, json, or both (html+duckdb). duckdb/json write the v0.15 star schema.",
 )
 @optgroup.option(
     "--open",
@@ -144,6 +145,7 @@ def all_cmd(
 
     \b
     - html: Browsable HTML archive with master index and per-project pages
+    - markdown: One .md transcript per session in per-project directories
     - duckdb: DuckDB database with the v0.15 star schema
     - json: JSON directory with the v0.15 star schema (dimensions/ + facts/)
     - both: Generate both HTML archive and DuckDB database
@@ -156,15 +158,17 @@ def all_cmd(
 
     # Honesty guards (mirror cli/local.py): v0.15 has no PathSanitizer wiring
     # yet, so --private would silently produce a non-sanitized database on
-    # duckdb/json. Fail loud rather than ship the regression. --no-thinking
-    # IS wired (truncates stg_log_entries; fact_messages.content_text already
-    # excludes thinking by SQL projection). --embed against --format json
-    # discards the embeddings (DB is built in a tempdir and thrown away
-    # after export).
+    # duckdb/json. Fail loud rather than ship the regression. Render-only
+    # formats (html, markdown) sanitize on the render path and are exempt.
+    # --no-thinking IS wired (truncates stg_log_entries;
+    # fact_messages.content_text already excludes thinking by SQL projection).
+    # --embed against --format json discards the embeddings (DB is built in
+    # a tempdir and thrown away after export).
     if output_format in ("duckdb", "json", "both") and private:
         raise click.UsageError(
             "--private is not yet wired through the v0.15 ETL; it only "
-            "affects --format html. Either drop --private or use --format html."
+            "affects the render formats (html, markdown). Either drop "
+            "--private or use --format html / --format markdown."
         )
     if embed and output_format == "json":
         raise click.UsageError(
@@ -265,6 +269,22 @@ def all_cmd(
             progress_callback=html_progress,
             no_search_index=no_search_index,
             private=private,
+        )
+
+    # Generate markdown if requested (render-only: one .md per session in
+    # per-project directories, no index pages, no ETL)
+    if output_format == "markdown":
+
+        def markdown_progress(proj, sess, cur, tot):
+            on_progress(proj, sess, cur, tot, None)
+
+        stats = generate_batch_markdown(
+            source,
+            output,
+            include_agents=include_agents,
+            include_thinking=include_thinking,
+            private=private,
+            progress_callback=markdown_progress,
         )
 
     # Generate DuckDB if requested (always v0.15 star schema)
