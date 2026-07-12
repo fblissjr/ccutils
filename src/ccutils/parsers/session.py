@@ -235,7 +235,11 @@ def _get_jsonl_summary(filepath, max_length=200):
 
 
 def extract_session_metadata(session_path):
-    """Extract metadata from first line of a session file.
+    """Extract session identity metadata from a session file.
+
+    Scans the first few lines rather than only line 1: sessions can open
+    with headerless entries (summary, queue-operation, ...) that carry no
+    sessionId, and latching on line 1 mislabelled those sessions.
 
     Returns dict with:
         - sessionId: The session's unique ID
@@ -245,19 +249,63 @@ def extract_session_metadata(session_path):
     Returns empty dict if file is empty or unreadable.
     """
     session_path = Path(session_path)
+    parsed_any = False
     try:
         with open(session_path, "r", encoding="utf-8") as f:
-            first_line = f.readline().strip()
-            if not first_line:
-                return {}
-            data = json.loads(first_line)
-            return {
-                "sessionId": data.get("sessionId"),
-                "agentId": data.get("agentId"),
-                "isSidechain": data.get("isSidechain", False),
-            }
-    except (json.JSONDecodeError, OSError):
-        return {}
+            for line_num, line in enumerate(f):
+                if line_num >= 25:  # headerless prefixes are short
+                    break
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    data = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                parsed_any = True
+                if data.get("sessionId") is None:
+                    continue
+                return {
+                    "sessionId": data.get("sessionId"),
+                    "agentId": data.get("agentId"),
+                    "isSidechain": data.get("isSidechain", False),
+                }
+    except OSError:
+        pass
+    if parsed_any:
+        # Readable session with no sessionId anywhere in the scanned
+        # window: keep the legacy Nones-shaped dict (empty dict is
+        # reserved for empty/unreadable files).
+        return {"sessionId": None, "agentId": None, "isSidechain": False}
+    return {}
+
+
+def extract_header_fields(session_path):
+    """Scan a JSONL session for its header identity: (session_id, cwd).
+
+    First occurrence of each field wins (cwd can change mid-session; the
+    header keeps the starting one). Tolerates headerless leading lines.
+    Returns (None, None) on unreadable files.
+    """
+    session_id = None
+    cwd = None
+    try:
+        with open(session_path, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    obj = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                session_id = session_id or obj.get("sessionId")
+                cwd = cwd or obj.get("cwd")
+                if session_id and cwd:
+                    break
+    except OSError:
+        pass
+    return session_id, cwd
 
 
 def extract_session_slug(session_path):

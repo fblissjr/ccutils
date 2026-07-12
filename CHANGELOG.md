@@ -3,6 +3,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+### Fixed
+- **`--private` was a silent no-op for HTML export of JSONL sessions.** Normalized JSONL loglines carry only `type`/`timestamp`/`message` -- never `cwd` -- so `_sanitize_loglines`'s fallback scan could not find a cwd and returned the loglines untouched; the only test was exit-code-only (the exact anti-pattern CLAUDE.md warns about). `generate_html` now resolves cwd from the session file via a shared `extract_header_fields()` scan and passes it to the sanitizer. Effect-asserting regression tests render a session and assert the cwd prefix is absent (`TestPrivateModeSanitizesJsonl`).
+- **Header fields survive a leading `summary` line.** `extract_rich_metadata` latched header fields (sessionId, cwd, gitBranch, version) from the FIRST line only, so sessions opening with a headerless entry lost them; `extract_session_metadata` (agent/sidechain detection) had the same first-line fragility. Both now scan past headerless lines to the first occurrence of each field (cwd keeps the session's STARTING value; mid-session `cd` doesn't overwrite). The markdown exporter's private `_scan_header_fields` workaround is replaced by the shared `extract_header_fields`.
+
 ## 0.17.0
 
 The star schema becomes a persistent, incrementally-updatable warehouse (tables accumulate across CLI runs instead of being wiped), HTML export goes CSP-strict with externalized assets, a render-only `--format markdown` lands on `local` and `all`, and the ETL-rethink proposal's Layer 6 decision backbone ships as the `semantic_decisions` view. Post-review fixes close a Tier 2 facet data-loss path and a `local` export crash; subagent depth propagation is scoped and no longer misses parents that arrive after their children.

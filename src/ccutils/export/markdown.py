@@ -18,6 +18,7 @@ from ..parsers import (
     get_session_summary,
     parse_session_file,
 )
+from ..parsers.session import extract_header_fields
 from .html import _sanitize_loglines, is_tool_result_message
 
 # Tool results longer than this are truncated inside the details block.
@@ -137,33 +138,6 @@ def _collect_tool_results(loglines):
     return results
 
 
-def _scan_header_fields(session_path):
-    """Fallback scan for sessionId/cwd when metadata extraction misses them.
-
-    extract_rich_metadata reads header fields from the first entry only;
-    sessions that start with a summary line carry them further down.
-    """
-    session_id = None
-    cwd = None
-    try:
-        with open(session_path, "r", encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    obj = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                session_id = session_id or obj.get("sessionId")
-                cwd = cwd or obj.get("cwd")
-                if session_id and cwd:
-                    break
-    except OSError:
-        pass
-    return session_id, cwd
-
-
 def _render_header(loglines, title, session_id=None):
     """Render the session header: title plus session id / date if present."""
     lines = [f"# {title}", ""]
@@ -265,12 +239,12 @@ def generate_markdown(
     loglines = data.get("loglines", [])
 
     # JSONL-normalized loglines carry only type/timestamp/message; session id
-    # and cwd come from the metadata extractor, with a raw scan as fallback
-    # for sessions whose first line is a summary entry.
+    # and cwd come from the metadata extractor, with the shared header scan
+    # as fallback for non-JSONL inputs it doesn't cover.
     meta = extract_rich_metadata(session_path, session_path.parent.name)
     session_id, cwd = meta.session_id, meta.cwd
     if session_id is None or cwd is None:
-        scanned_id, scanned_cwd = _scan_header_fields(session_path)
+        scanned_id, scanned_cwd = extract_header_fields(session_path)
         session_id = session_id or scanned_id
         cwd = cwd or scanned_cwd
 

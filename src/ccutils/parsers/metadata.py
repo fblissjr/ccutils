@@ -237,15 +237,19 @@ def extract_rich_metadata(filepath: Path, folder_name: str) -> SessionMetadata:
                         first_ts = ts
                     last_ts = ts
 
-                # Extract header fields from first entry
+                # Header fields: first OCCURRENCE of each, not first entry.
+                # Sessions can open with headerless lines (summary, ...);
+                # latching on line 1 lost sessionId/cwd and silently
+                # disabled --private downstream.
                 if not got_header:
-                    meta.session_id = obj.get("sessionId")
-                    meta.cwd = obj.get("cwd")
-                    meta.git_branch = obj.get("gitBranch")
-                    meta.version = obj.get("version")
+                    meta.session_id = meta.session_id or obj.get("sessionId")
+                    meta.cwd = meta.cwd or obj.get("cwd")
+                    meta.git_branch = meta.git_branch or obj.get("gitBranch")
+                    meta.version = meta.version or obj.get("version")
                     if obj.get("slug"):
                         meta.slug = obj["slug"]
-                    got_header = True
+                    if meta.session_id and meta.cwd:
+                        got_header = True
 
                 # Slug can appear on any line
                 if not meta.slug and obj.get("slug"):

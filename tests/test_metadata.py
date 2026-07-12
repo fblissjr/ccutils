@@ -444,3 +444,57 @@ class TestExtractRichMetadata:
 
         meta = extract_rich_metadata(path, "folder")
         assert meta.slug == "fancy-slug-here"
+
+    def test_header_fields_found_past_leading_summary_line(self, tmp_path):
+        """A session whose FIRST line is a summary entry (no sessionId/cwd)
+        must not lose its header fields -- the first-entry-only latch
+        silently disabled --private downstream."""
+        cwd = "/Users/dev/workspace/myproject"  # path-privacy: ignore
+        path = self._make_session(
+            tmp_path,
+            [
+                {"type": "summary", "summary": "Earlier work recap"},
+                {
+                    "type": "user",
+                    "cwd": cwd,
+                    "sessionId": "abc-123",
+                    "gitBranch": "main",
+                    "version": "2.1.17",
+                    "message": {"content": "Hello"},
+                    "timestamp": "2026-01-01T10:00:00.000Z",
+                },
+            ],
+        )
+
+        meta = extract_rich_metadata(path, "folder")
+        assert meta.session_id == "abc-123"
+        assert meta.cwd == cwd
+        assert meta.git_branch == "main"
+        assert meta.version == "2.1.17"
+
+    def test_header_fields_take_first_occurrence(self, tmp_path):
+        """cwd can change mid-session (cd); the header keeps the FIRST one."""
+        first_cwd = "/Users/dev/workspace/first"  # path-privacy: ignore
+        second_cwd = "/Users/dev/workspace/second"  # path-privacy: ignore
+        path = self._make_session(
+            tmp_path,
+            [
+                {
+                    "type": "user",
+                    "cwd": first_cwd,
+                    "sessionId": "abc-123",
+                    "message": {"content": "Hello"},
+                    "timestamp": "2026-01-01T10:00:00.000Z",
+                },
+                {
+                    "type": "user",
+                    "cwd": second_cwd,
+                    "sessionId": "abc-123",
+                    "message": {"content": "Again"},
+                    "timestamp": "2026-01-01T10:01:00.000Z",
+                },
+            ],
+        )
+
+        meta = extract_rich_metadata(path, "folder")
+        assert meta.cwd == first_cwd

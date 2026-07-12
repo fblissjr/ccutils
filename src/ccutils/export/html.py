@@ -954,9 +954,16 @@ def generate_html(
         data = parse_session_file(json_path)
         loglines = data.get("loglines", [])
 
-    # Sanitize paths in loglines if private mode
+    # Sanitize paths in loglines if private mode. Normalized JSONL loglines
+    # carry only type/timestamp/message -- no cwd -- so resolve cwd from the
+    # session file itself; without it the sanitizer silently no-ops.
     if private:
-        loglines = _sanitize_loglines(loglines)
+        cwd = None
+        if json_path is not None:
+            from ..parsers.session import extract_header_fields
+
+            _, cwd = extract_header_fields(json_path)
+        loglines = _sanitize_loglines(loglines, cwd=cwd)
 
     # Auto-detect GitHub repo if not provided
     if github_repo is None:

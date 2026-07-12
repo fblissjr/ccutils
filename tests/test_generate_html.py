@@ -2183,3 +2183,67 @@ class TestMasterIndex:
 
         # Should contain session count
         assert "2 sessions" in html_content
+
+
+class TestPrivateModeSanitizesJsonl:
+    """--private must actually sanitize JSONL sessions, not just exit 0.
+
+    Normalized JSONL loglines carry only type/timestamp/message -- no cwd --
+    so generate_html must resolve cwd from the session file itself before
+    calling the sanitizer. Effect-asserting per project convention.
+    """
+
+    def _session(self, tmp_path, leading_entries=()):
+        cwd = "/Users/dev/workspace/secretproj"  # path-privacy: ignore
+        entries = list(leading_entries) + [
+            {
+                "type": "user",
+                "cwd": cwd,
+                "sessionId": "priv-1",
+                "timestamp": "2026-04-19T10:00:00Z",
+                "message": {"role": "user", "content": "edit the file"},
+            },
+            {
+                "type": "assistant",
+                "timestamp": "2026-04-19T10:00:05Z",
+                "message": {
+                    "role": "assistant",
+                    "content": [
+                        {
+                            "type": "tool_use",
+                            "id": "tu-1",
+                            "name": "Read",
+                            "input": {"file_path": cwd + "/src/main.py"},
+                        }
+                    ],
+                },
+            },
+        ]
+        jsonl = tmp_path / "session.jsonl"
+        jsonl.write_text("\n".join(json.dumps(e) for e in entries))
+        return jsonl, cwd
+
+    def _rendered(self, tmp_path, jsonl, private):
+        out_dir = tmp_path / ("out-private" if private else "out-plain")
+        generate_html(jsonl, out_dir, private=private)
+        return (out_dir / "page-001.html").read_text(encoding="utf-8")
+
+    def test_private_strips_cwd_prefix(self, tmp_path):
+        jsonl, cwd = self._session(tmp_path)
+        html_out = self._rendered(tmp_path, jsonl, private=True)
+        assert cwd not in html_out
+        assert "src/main.py" in html_out
+
+    def test_private_works_with_leading_summary_line(self, tmp_path):
+        jsonl, cwd = self._session(
+            tmp_path,
+            leading_entries=[{"type": "summary", "summary": "recap"}],
+        )
+        html_out = self._rendered(tmp_path, jsonl, private=True)
+        assert cwd not in html_out
+        assert "src/main.py" in html_out
+
+    def test_non_private_keeps_paths(self, tmp_path):
+        jsonl, cwd = self._session(tmp_path)
+        html_out = self._rendered(tmp_path, jsonl, private=False)
+        assert cwd in html_out
