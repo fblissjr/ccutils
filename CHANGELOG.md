@@ -5,6 +5,10 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+- **`fact_plan_revisions.plan_file_path`** -- captures `input.planFilePath` from `ExitPlanMode` (newer Claude Code writes the plan to a file and passes its path alongside the plan text). NULL for sessions predating the field. Exposed on `semantic_plan_revisions`.
+- **Column-migration mechanism for the persistent warehouse.** `create_star_schema()` now applies an append-only `_COLUMN_MIGRATIONS` list (`ALTER TABLE ... ADD COLUMN IF NOT EXISTS ...`) after the CREATE TABLEs and before the views: `CREATE TABLE IF NOT EXISTS` never widens an existing table, so any column added after a table shipped needs a migration entry or pre-existing warehouses break on the populator's INSERT. `plan_file_path` is the first entry.
+
 ### Fixed
 - **`--private` was a silent no-op for HTML export of JSONL sessions.** Normalized JSONL loglines carry only `type`/`timestamp`/`message` -- never `cwd` -- so `_sanitize_loglines`'s fallback scan could not find a cwd and returned the loglines untouched; the only test was exit-code-only (the exact anti-pattern CLAUDE.md warns about). `generate_html` now resolves cwd from the session file via a shared `extract_header_fields()` scan and passes it to the sanitizer. Effect-asserting regression tests render a session and assert the cwd prefix is absent (`TestPrivateModeSanitizesJsonl`).
 - **Header fields survive a leading `summary` line.** `extract_rich_metadata` latched header fields (sessionId, cwd, gitBranch, version) from the FIRST line only, so sessions opening with a headerless entry lost them; `extract_session_metadata` (agent/sidechain detection) had the same first-line fragility. Both now scan past headerless lines to the first occurrence of each field (cwd keeps the session's STARTING value; mid-session `cd` doesn't overwrite). The markdown exporter's private `_scan_header_fields` workaround is replaced by the shared `extract_header_fields`.

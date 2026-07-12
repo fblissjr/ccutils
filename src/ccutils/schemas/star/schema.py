@@ -1026,6 +1026,7 @@ def create_star_schema(db_path):
 
             -- Plan content + timing
             plan_text TEXT,
+            plan_file_path VARCHAR,
             plan_char_count INTEGER,
             plan_timestamp TIMESTAMP,
             resolved_timestamp TIMESTAMP,
@@ -1451,6 +1452,11 @@ def create_star_schema(db_path):
         """
     )
 
+    # Column migrations must run after every CREATE TABLE and before the
+    # views: a view can reference a migrated column, and on a pre-existing
+    # warehouse the CREATE TABLE IF NOT EXISTS above did not add it.
+    _apply_column_migrations(conn)
+
     # =========================================================================
     # Semantic Views (10)
     # =========================================================================
@@ -1683,6 +1689,7 @@ def create_star_schema(db_path):
             fpr.revision_number,
             fpr.parent_revision_key,
             fpr.plan_text,
+            fpr.plan_file_path,
             fpr.plan_char_count,
             fpr.outcome,
             fpr.outcome_signal,
@@ -1990,3 +1997,19 @@ def create_star_schema(db_path):
     )
 
     return conn
+
+
+# Columns added AFTER a table first shipped in the persistent warehouse
+# (0.17.0+). CREATE TABLE IF NOT EXISTS never widens an existing table,
+# so every later column addition needs an entry here or old warehouses
+# break on the populator's INSERT. Append-only.
+_COLUMN_MIGRATIONS = [
+    ("fact_plan_revisions", "plan_file_path", "VARCHAR"),
+]
+
+
+def _apply_column_migrations(conn) -> None:
+    for table, column, col_type in _COLUMN_MIGRATIONS:
+        conn.execute(
+            f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {column} {col_type}"
+        )

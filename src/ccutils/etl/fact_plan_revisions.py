@@ -42,14 +42,14 @@ _PAYLOAD_COLS = [
     "tool_use_id", "timestamp", "plan_timestamp", "resolved_timestamp",
     "seconds_to_resolution",
     "revision_number", "parent_revision_key",
-    "plan_text", "plan_char_count",
+    "plan_text", "plan_file_path", "plan_char_count",
     "outcome", "outcome_signal",
     "user_feedback_message_id", "user_feedback_text",
 ]
 _HASH_COLS = [
     "tool_use_id", "plan_timestamp", "resolved_timestamp",
     "revision_number", "parent_revision_key",
-    "plan_text", "outcome", "outcome_signal",
+    "plan_text", "plan_file_path", "outcome", "outcome_signal",
     "user_feedback_message_id", "user_feedback_text",
 ]
 
@@ -69,6 +69,8 @@ def populate_fact_plan_revisions(conn, *, run: EtlRun) -> None:
                 ftu.timestamp AS plan_timestamp,
                 ftu.message_id AS invoke_message_id,
                 json_extract_string(ftu.input_json, '$.plan') AS plan_text,
+                json_extract_string(ftu.input_json, '$.planFilePath')
+                    AS plan_file_path,
                 ROW_NUMBER() OVER (
                     PARTITION BY ftu.session_id ORDER BY ftu.timestamp
                 ) AS revision_number,
@@ -178,6 +180,7 @@ def populate_fact_plan_revisions(conn, *, run: EtlRun) -> None:
                  )
             END AS parent_revision_key,
             wo.plan_text,
+            wo.plan_file_path,
             length(wo.plan_text) AS plan_char_count,
             wo.outcome,
             wo.outcome_signal,

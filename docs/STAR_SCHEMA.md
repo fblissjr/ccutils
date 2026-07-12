@@ -374,6 +374,7 @@ One row per `ExitPlanMode` tool invocation, linked into a per-session revision c
 | revision_number | INTEGER | 1 = first plan in session, 2 = second, ... |
 | parent_revision_key | VARCHAR | FK self; NULL for first plan in session |
 | plan_text | TEXT | Full plan text from `input_json.plan` |
+| plan_file_path | VARCHAR | `input_json.planFilePath` -- the plan file Claude Code writes (newer sessions; NULL before the field existed) |
 | plan_char_count | INTEGER | Character count of plan_text |
 | outcome | VARCHAR | 'accepted', 'rejected', 'superseded', or 'pending' |
 | outcome_signal | VARCHAR | How the outcome was detected |

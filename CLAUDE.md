@@ -55,6 +55,7 @@ Three-tier facet system on top of v0.15 facts. Writes one row per (session × fa
 
 - After changing fact column names: grep `semantic_` views in `schemas/star/schema.py` for the old name and update.
 - After renaming `tool_call_id` → `tool_use_id` (or similar): grep the column-list assertions in `tests/test_star_schema_ddl.py` too.
+- **Adding a column to a table that already shipped (0.17.0+): append it to `_COLUMN_MIGRATIONS` in `schemas/star/schema.py`.** The warehouse is persistent and `CREATE TABLE IF NOT EXISTS` never widens an existing table -- without the migration entry, old warehouses break on the populator's INSERT (or on a view that references the new column). Migrations run after the CREATE TABLEs and BEFORE the views. Canonical test: `TestFactPlanRevisionsMigration`.
 
 ## Subagent JSONL layout
 

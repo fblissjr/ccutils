@@ -53,14 +53,18 @@ def _user(uid, parent_uid, session, ts, text):
     }
 
 
-def _plan_call(uid, parent_uid, session, ts, tool_use_id, plan_text, request_id="r"):
+def _plan_call(uid, parent_uid, session, ts, tool_use_id, plan_text,
+               request_id="r", plan_file_path=None):
+    tool_input = {"plan": plan_text}
+    if plan_file_path is not None:
+        tool_input["planFilePath"] = plan_file_path
     return {
         "type": "assistant", "uuid": uid, "parentUuid": parent_uid,
         "sessionId": session, "timestamp": ts, "requestId": request_id,
         "message": {"role": "assistant", "model": "claude-opus-4-7",
                     "content": [{"type": "tool_use", "id": tool_use_id,
                                  "name": "ExitPlanMode",
-                                 "input": {"plan": plan_text}}]},
+                                 "input": tool_input}]},
     }
 
 
@@ -245,6 +249,57 @@ class TestFactPlanRevisionsOutcome:
             "SELECT outcome, outcome_signal FROM fact_plan_revisions"
         ).fetchone()
         assert row == ("accepted", "approval_signature")
+
+
+class TestFactPlanRevisionsPlanFilePath:
+    """Claude Code emits input.planFilePath alongside the plan text."""
+
+    def test_plan_file_path_captured(self, conn, tmp_path):
+        jsonl = tmp_path / "planfile.jsonl"
+        pfp = "<HOME>/.claude/plans/resilient-wiggling-meteor.md"
+        lines = [
+            _user("u1", None, "pf-s", "2026-04-19T10:00:00Z", "plan it"),
+            _plan_call("a1", "u1", "pf-s", "2026-04-19T10:00:01Z",
+                       "tu_pf_1", "Step 1", plan_file_path=pfp),
+            _plan_result("u2", "a1", "pf-s", "2026-04-19T10:00:30Z",
+                         "tu_pf_1", is_error=False),
+        ]
+        jsonl.write_text("\n".join(json.dumps(d) for d in lines))
+        _populate(conn, jsonl, tmp_path)
+        row = conn.execute(
+            "SELECT plan_file_path FROM fact_plan_revisions"
+        ).fetchone()
+        assert row[0] == pfp
+
+    def test_plan_file_path_null_when_absent(self, conn, accepted_session,
+                                             tmp_path):
+        """Older sessions predate planFilePath -- NULL, not error."""
+        _populate(conn, accepted_session, tmp_path)
+        row = conn.execute(
+            "SELECT plan_file_path FROM fact_plan_revisions"
+        ).fetchone()
+        assert row[0] is None
+
+
+class TestFactPlanRevisionsMigration:
+    def test_existing_warehouse_gains_plan_file_path(self, tmp_path):
+        """The warehouse is persistent: CREATE TABLE IF NOT EXISTS never
+        widens an existing table, so create_star_schema must carry an
+        explicit ADD COLUMN migration for columns added after 0.17.0."""
+        db = tmp_path / "old.duckdb"
+        conn = create_star_schema(db)
+        # Simulate a pre-plan_file_path warehouse.
+        conn.execute("ALTER TABLE fact_plan_revisions DROP COLUMN plan_file_path")
+        conn.close()
+
+        conn = create_star_schema(db)
+        cols = {
+            r[0] for r in conn.execute(
+                "SELECT column_name FROM information_schema.columns "
+                "WHERE table_name = 'fact_plan_revisions'"
+            ).fetchall()
+        }
+        assert "plan_file_path" in cols
 
 
 class TestFactPlanRevisionsChain:
