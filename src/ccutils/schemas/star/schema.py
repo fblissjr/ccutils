@@ -226,6 +226,27 @@ def create_star_schema(db_path):
     """
     )
 
+    # Fixed-cardinality dimension: seed all 1440 minutes once. Guarded by
+    # the emptiness check (not CREATE OR REPLACE) because the warehouse is
+    # persistent. time_of_day buckets mirror utils.get_time_of_day.
+    conn.execute(
+        """
+        INSERT INTO dim_time
+        SELECT
+            h.range * 100 + m.range AS time_key,
+            h.range AS hour,
+            m.range AS minute,
+            CASE
+                WHEN h.range < 6 THEN 'night'
+                WHEN h.range < 12 THEN 'morning'
+                WHEN h.range < 18 THEN 'afternoon'
+                ELSE 'evening'
+            END AS time_of_day
+        FROM range(0, 24) h, range(0, 60) m
+        WHERE NOT EXISTS (SELECT 1 FROM dim_time)
+    """
+    )
+
     # =========================================================================
     # Core Fact Tables (6)
     # =========================================================================

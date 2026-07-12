@@ -202,7 +202,7 @@ Conventional natural-key dimensions. Each has a hash-based surrogate key (`*_key
 - `dim_file`: `file_path`, `file_name`, `file_extension`, `directory_path`, `language`
 
 #### dim_date / dim_time
-Conventional date and time dimensions (date_key = YYYYMMDD, time_key = HHMM). DDL exists; v0.15 facts derive their `date_key`/`time_key` columns directly from row timestamps via `ensure_dim_date`.
+Conventional date and time dimensions (date_key = YYYYMMDD, time_key = HHMM). `dim_time` is fully seeded at DDL time (1440 minute rows with `time_of_day` buckets); `dim_date` rows are inserted during ETL for every calendar date seen in staging. Facts derive their `date_key`/`time_key` integers inline from row timestamps; the semantic views join these dims for `full_date`, `day_name`, and `time_of_day`.
 
 #### dim_session_chain
 One row per chain (sessions sharing a slug). Populated by `populate_dim_session_chain`. Columns: `chain_key` (PK, md5 of slug), `slug`, `project_key`, `first_session_key`, `last_session_key`, `session_count`, `first_timestamp`, `last_timestamp`, `total_duration_seconds`.

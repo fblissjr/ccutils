@@ -217,7 +217,7 @@ Pipeline entry: `run_v15_etl()` in `src/ccutils/etl/orchestrator.py`. DDL: `crea
 
 **Lineage / Meta:** `dim_etl_version`, `fact_etl_runs`, `meta_schema_version`.
 
-**Dimensions:** `dim_session` (enriched with intent/complexity/outcome/domain + subagent linkage via `populate_dim_session_heuristics` + `populate_subagent_dim_session`), `dim_project`, `dim_tool`, `dim_model`, `dim_file`, `dim_session_chain`, `dim_prompt`, `dim_facet_type` (facet registry, seeded). `dim_date` / `dim_time` DDL exist but are not wired by v0.15 facts (date_key / time_key are integer surrogates derived inline).
+**Dimensions:** `dim_session` (enriched with intent/complexity/outcome/domain + subagent linkage via `populate_dim_session_heuristics` + `populate_subagent_dim_session`), `dim_project`, `dim_tool`, `dim_model`, `dim_file`, `dim_session_chain`, `dim_prompt`, `dim_facet_type` (facet registry, seeded). `dim_time` (seeded at DDL time, 1440 rows), `dim_date` (rows inserted during ETL for every date seen in staging; date_key / time_key integer surrogates on facts are derived inline and join these dims).
 
 **Staging:** `stg_log_entries` (one row per JSONL line, Tier 2 of the four-tier pipeline).
 

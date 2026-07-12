@@ -210,6 +210,38 @@ def _upsert_minimal_dimensions(conn) -> None:
         """
     )
 
+    # dim_date: one row per calendar date seen in staging. date_key matches
+    # the YYYYMMDD integers lineage_upsert derives on every fact; without
+    # these rows all nine dim_date-joining semantic views return NULL dates.
+    # day_of_week mirrors Python's weekday() (Monday=0), like
+    # schemas/star/utils.ensure_dim_date.
+    conn.execute(
+        """
+        INSERT INTO dim_date
+        SELECT
+            CAST(strftime(d.day, '%Y%m%d') AS INTEGER) AS date_key,
+            d.day AS full_date,
+            EXTRACT(year FROM d.day) AS year,
+            EXTRACT(month FROM d.day) AS month,
+            EXTRACT(day FROM d.day) AS day,
+            EXTRACT(isodow FROM d.day) - 1 AS day_of_week,
+            dayname(d.day) AS day_name,
+            monthname(d.day) AS month_name,
+            EXTRACT(quarter FROM d.day) AS quarter,
+            EXTRACT(isodow FROM d.day) >= 6 AS is_weekend,
+            EXTRACT(week FROM d.day) AS week_of_year
+        FROM (
+            SELECT DISTINCT CAST(TRY_CAST(timestamp AS TIMESTAMP) AS DATE) AS day
+            FROM stg_log_entries
+            WHERE TRY_CAST(timestamp AS TIMESTAMP) IS NOT NULL
+        ) d
+        WHERE NOT EXISTS (
+            SELECT 1 FROM dim_date dd
+            WHERE dd.date_key = CAST(strftime(d.day, '%Y%m%d') AS INTEGER)
+        )
+        """
+    )
+
 
 @contextmanager
 def staging_scope(conn):
