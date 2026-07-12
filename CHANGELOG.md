@@ -3,7 +3,9 @@
 
 All notable changes to this project will be documented in this file.
 
-## [Unreleased]
+## 0.17.0
+
+The star schema becomes a persistent, incrementally-updatable warehouse (tables accumulate across CLI runs instead of being wiped), HTML export goes CSP-strict with externalized assets, a render-only `--format markdown` lands on `local` and `all`, and the ETL-rethink proposal's Layer 6 decision backbone ships as the `semantic_decisions` view. Post-review fixes close a Tier 2 facet data-loss path and a `local` export crash; subagent depth propagation is scoped and no longer misses parents that arrive after their children.
 
 ### Added
 - **`--format markdown`** on `ccutils local` and `ccutils all` -- one `.md` file per session, render-only (no ETL, no warehouse, no templates). Messages render as headings, tool uses as fenced code blocks inside `<details>` (results mapped to their tool call and truncated at 1500 chars; fences grow past embedded backtick runs), thinking as blockquoted subsections. Honors `--no-thinking` and `--private` (same PathSanitizer treatment as HTML; covered by effect-asserting CLI tests, not exit-code-only). `ccutils all --format markdown` writes a per-project directory tree without index pages. Also hardened header extraction: sessions whose first line is a non-message entry (e.g. `summary`) get a raw-line fallback scan so `--private` can still resolve `cwd` (the shared extractor keeps its first-entry-only behavior; upstreaming is a known follow-up).
