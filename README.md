@@ -55,7 +55,7 @@ ccutils session.jsonl --format markdown -o .     # One .md per session (quick sh
 ccutils --format duckdb -o ./analytics           # Pick sessions, star schema
 ccutils -p myproject                             # Filter by project name
 ccutils --flat                                   # Legacy single-list mode
-ccutils --no-thinking --no-subagents             # Exclude thinking (all formats) / agents (HTML only)
+ccutils --no-thinking --no-subagents             # Exclude thinking blocks / related agent sessions
 ccutils --format duckdb --embed -o .             # With ColBERT embeddings
 ccutils --format duckdb --with-llm-facets -o .   # + Tier 2 LLM facets (F20 via Haiku)
 ```
@@ -141,8 +141,8 @@ v0.15 rebuilds the ETL as a four-tier pipeline:
 
 1. **Tier 0** -- raw JSONL on disk (Claude Code writes).
 2. **Tier 1** -- Parquet lake under `<output>/parquet_lake/projects/<project>/<session>/`. Typed-columnar cache of every parsed JSONL entry. Persistent and re-derivable; the DuckDB warehouse can be torn down and rebuilt from Parquet without re-parsing JSONL.
-3. **Tier 2** -- DuckDB staging tables (`stg_log_entries`, `stg_task_agent_map`) loaded from Parquet via `read_parquet()`.
-4. **Tier 3** -- DuckDB warehouse: dimensions, facts, and semantic views consumers query.
+3. **Tier 2** -- DuckDB staging table (`stg_log_entries`) loaded from Parquet via `read_parquet()`, cleared at the end of every run.
+4. **Tier 3** -- DuckDB warehouse: dimensions, facts, and semantic views consumers query. The warehouse is persistent and incremental: re-running the CLI against the same database file accumulates new sessions instead of wiping and rebuilding.
 
 Every fact carries the v0.15 lineage convention: `created_at`, `last_updated_at`, `created_by_version_key`, `last_updated_by_version_key`, `etl_run_id`, `record_source`, `hash_diff`, plus soft-delete (`is_deleted`, `deleted_at`). Re-running ETL on unchanged source is a no-op (the `hash_diff` gate prevents spurious UPDATEs). Mutations are tracked via `dim_etl_version` + `fact_etl_runs`; DDL migrations are tracked via `meta_schema_version`.
 
@@ -262,7 +262,7 @@ tar czf - ./archive | age -r <recipient-key> > archive.tar.gz.age && rm -rf ./ar
                            unaffected -- delete it post-run if needed.
 --no-subagents             Exclude related agent sessions (local)
 --no-agents                Exclude agent-* session files (all)
---private                  Sanitize file paths for sharing (HTML only; v0.15 sanitization not yet wired)
+--private                  Sanitize file paths for sharing (html/markdown only; not wired through the v0.15 ETL)
 
 # Selection
 --flat                     Flat single-list mode (local)

@@ -477,7 +477,7 @@ All views use the `semantic_` prefix and join facts with dimensions for easy que
 - `semantic_cost_analysis` -- session-level cost aggregation. R11-corrected: `cache_hit_rate_pct` denominator includes cache_creation
 - `semantic_prompt_history` -- prompts from history JSONL linked to session metadata
 
-Some legacy views still reference dropped v0.14 columns and need rewrites; rely on the raw v0.15 facts for now if a view returns errors.
+All 15 views bind against the current DDL (view creation validates column references on every `create_star_schema()` call).
 
 ### Sample view queries
 
