@@ -9,7 +9,7 @@ import json
 from dataclasses import dataclass
 from pathlib import Path
 
-from .session import extract_text_from_content
+from .session import extract_text_from_content, iter_jsonl_dicts
 
 # Messages to skip when looking for a meaningful summary
 SKIP_SUMMARY_PATTERNS = [
@@ -211,92 +211,73 @@ def extract_rich_metadata(filepath: Path, folder_name: str) -> SessionMetadata:
         size=stat.st_size,
     )
 
-    try:
-        with open(filepath, "r", encoding="utf-8") as f:
-            got_header = False
-            got_model = False
-            got_summary = False
-            first_ts = None
-            last_ts = None
-            user_count = 0
-            assistant_count = 0
+    got_model = False
+    got_summary = False
+    first_ts = None
+    last_ts = None
+    user_count = 0
+    assistant_count = 0
 
-            for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    obj = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
+    # iter_jsonl_dicts is the shared tolerant scanner: skips blank /
+    # unparseable / non-dict lines (a bare scalar would otherwise crash
+    # .get()), unbounded so a long headerless prefix doesn't hide the header.
+    for obj in iter_jsonl_dicts(filepath):
+        entry_type = obj.get("type")
+        ts = obj.get("timestamp")
+        if ts:
+            if first_ts is None:
+                first_ts = ts
+            last_ts = ts
 
-                entry_type = obj.get("type")
-                ts = obj.get("timestamp")
-                if ts:
-                    if first_ts is None:
-                        first_ts = ts
-                    last_ts = ts
+        # Header identity: first (truthy) occurrence of each field wins,
+        # independently -- gitBranch/version may trail sessionId+cwd, and
+        # slug keeps its first value even when sessionId/cwd never appear.
+        meta.session_id = meta.session_id or obj.get("sessionId")
+        meta.cwd = meta.cwd or obj.get("cwd")
+        meta.git_branch = meta.git_branch or obj.get("gitBranch")
+        meta.version = meta.version or obj.get("version")
+        if not meta.slug and obj.get("slug"):
+            meta.slug = obj["slug"]
 
-                # Header fields: first OCCURRENCE of each, not first entry.
-                # Sessions can open with headerless lines (summary, ...);
-                # latching on line 1 lost sessionId/cwd and silently
-                # disabled --private downstream.
-                if not got_header:
-                    meta.session_id = meta.session_id or obj.get("sessionId")
-                    meta.cwd = meta.cwd or obj.get("cwd")
-                    meta.git_branch = meta.git_branch or obj.get("gitBranch")
-                    meta.version = meta.version or obj.get("version")
-                    if obj.get("slug"):
-                        meta.slug = obj["slug"]
-                    if meta.session_id and meta.cwd:
-                        got_header = True
+        # Extract model from first assistant message
+        if not got_model and entry_type == "assistant":
+            msg = obj.get("message", {})
+            if isinstance(msg, dict) and msg.get("model"):
+                meta.model = msg["model"]
+                meta.model_short = shorten_model_name(meta.model)
+                got_model = True
 
-                # Slug can appear on any line
-                if not meta.slug and obj.get("slug"):
-                    meta.slug = obj["slug"]
+        # Count messages
+        if entry_type == "user" and not obj.get("isMeta"):
+            user_count += 1
+            # Extract summary from first meaningful user message
+            if not got_summary:
+                content = obj.get("message", {}).get("content", "")
+                text = extract_text_from_content(content)
+                if text and not _is_skip_summary(text):
+                    if len(text) > 120:
+                        meta.summary = text[:117] + "..."
+                    else:
+                        meta.summary = text
+                    got_summary = True
 
-                # Extract model from first assistant message
-                if not got_model and entry_type == "assistant":
-                    msg = obj.get("message", {})
-                    if isinstance(msg, dict) and msg.get("model"):
-                        meta.model = msg["model"]
-                        meta.model_short = shorten_model_name(meta.model)
-                        got_model = True
+        elif entry_type == "assistant":
+            assistant_count += 1
 
-                # Count messages
-                if entry_type == "user" and not obj.get("isMeta"):
-                    user_count += 1
-                    # Extract summary from first meaningful user message
-                    if not got_summary:
-                        content = obj.get("message", {}).get("content", "")
-                        text = extract_text_from_content(content)
-                        if text and not _is_skip_summary(text):
-                            if len(text) > 120:
-                                meta.summary = text[:117] + "..."
-                            else:
-                                meta.summary = text
-                            got_summary = True
+        # Also check for summary type entries
+        if not got_summary and entry_type == "summary" and obj.get("summary"):
+            summary_text = obj["summary"]
+            if not _is_skip_summary(summary_text):
+                if len(summary_text) > 120:
+                    meta.summary = summary_text[:117] + "..."
+                else:
+                    meta.summary = summary_text
+                got_summary = True
 
-                elif entry_type == "assistant":
-                    assistant_count += 1
-
-                # Also check for summary type entries
-                if not got_summary and entry_type == "summary" and obj.get("summary"):
-                    summary_text = obj["summary"]
-                    if not _is_skip_summary(summary_text):
-                        if len(summary_text) > 120:
-                            meta.summary = summary_text[:117] + "..."
-                        else:
-                            meta.summary = summary_text
-                        got_summary = True
-
-            meta.user_msg_count = user_count
-            meta.assistant_msg_count = assistant_count
-            meta.first_timestamp = first_ts
-            meta.last_timestamp = last_ts
-
-    except OSError:
-        pass
+    meta.user_msg_count = user_count
+    meta.assistant_msg_count = assistant_count
+    meta.first_timestamp = first_ts
+    meta.last_timestamp = last_ts
 
     # Derive project name from cwd or folder
     meta.project_name = derive_project_name(meta.cwd, folder_name)

@@ -498,3 +498,81 @@ class TestExtractRichMetadata:
 
         meta = extract_rich_metadata(path, "folder")
         assert meta.cwd == first_cwd
+
+    def test_slug_keeps_first_occurrence_in_header_window(self, tmp_path):
+        """slug follows the same first-occurrence rule as other header
+        fields, even when sessionId/cwd never appear to close the window."""
+        path = self._make_session(
+            tmp_path,
+            [
+                {"type": "user", "slug": "first-slug",
+                 "message": {"content": "a"},
+                 "timestamp": "2026-01-01T10:00:00.000Z"},
+                {"type": "user", "slug": "second-slug",
+                 "message": {"content": "b"},
+                 "timestamp": "2026-01-01T10:01:00.000Z"},
+            ],
+        )
+        meta = extract_rich_metadata(path, "folder")
+        assert meta.slug == "first-slug"
+
+    def test_git_branch_recovered_when_it_trails_session_id(self, tmp_path):
+        """gitBranch/version arriving on a later line than sessionId+cwd
+        are still captured (not frozen None by an early latch)."""
+        path = self._make_session(
+            tmp_path,
+            [
+                {"type": "user", "sessionId": "s1",
+                 "cwd": "/Users/dev/workspace/p",  # path-privacy: ignore
+                 "message": {"content": "a"},
+                 "timestamp": "2026-01-01T10:00:00.000Z"},
+                {"type": "assistant", "gitBranch": "feature-x",
+                 "version": "2.1.200",
+                 "message": {"model": "claude-opus-4-6",
+                             "content": [{"type": "text", "text": "hi"}]},
+                 "timestamp": "2026-01-01T10:01:00.000Z"},
+            ],
+        )
+        meta = extract_rich_metadata(path, "folder")
+        assert meta.git_branch == "feature-x"
+        assert meta.version == "2.1.200"
+
+    def test_bare_scalar_line_does_not_crash(self, tmp_path):
+        path = self._make_session(
+            tmp_path,
+            [
+                {"type": "user", "sessionId": "s1",
+                 "message": {"content": "a"},
+                 "timestamp": "2026-01-01T10:00:00.000Z"},
+            ],
+        )
+        # Prepend bare-scalar lines that json.loads to non-dicts.
+        path.write_text('null\n42\n"str"\n' + path.read_text())
+        meta = extract_rich_metadata(path, "folder")
+        assert meta.session_id == "s1"
+
+
+class TestExtractHeaderFields:
+    def test_returns_first_session_id_and_cwd(self, tmp_path):
+        from ccutils.parsers.session import extract_header_fields
+        f = tmp_path / "s.jsonl"
+        cwd = "/Users/dev/workspace/proj"  # path-privacy: ignore
+        f.write_text("\n".join([
+            json.dumps({"type": "summary", "summary": "recap"}),
+            json.dumps({"type": "user", "sessionId": "s1", "cwd": cwd,
+                        "message": {"content": "hi"}}),
+        ]))
+        assert extract_header_fields(f) == ("s1", cwd)
+
+    def test_bare_scalar_lines_do_not_crash(self, tmp_path):
+        from ccutils.parsers.session import extract_header_fields
+        f = tmp_path / "s.jsonl"
+        cwd = "/Users/dev/workspace/proj"  # path-privacy: ignore
+        f.write_text('null\n"x"\n3.14\n' + json.dumps(
+            {"type": "user", "sessionId": "s1", "cwd": cwd,
+             "message": {"content": "hi"}}))
+        assert extract_header_fields(f) == ("s1", cwd)
+
+    def test_missing_file_returns_none_none(self, tmp_path):
+        from ccutils.parsers.session import extract_header_fields
+        assert extract_header_fields(tmp_path / "nope.jsonl") == (None, None)

@@ -183,6 +183,32 @@ class TestExtractSessionMetadata:
         assert meta["agentId"] is None
         assert meta["isSidechain"] is False
 
+    def test_bare_scalar_lines_do_not_crash(self, tmp_path):
+        """A line that parses to a non-dict (bare scalar) must be skipped,
+        not crash with AttributeError on .get()."""
+        f = tmp_path / "scalar.jsonl"
+        f.write_text('"just a string"\n42\nnull\n'
+                     + json.dumps({"type": "user", "sessionId": "s1",
+                                   "message": {"content": "hi"}}) + "\n")
+        meta = extract_session_metadata(f)
+        assert meta["sessionId"] == "s1"
+
+    def test_session_id_found_past_long_headerless_prefix(self, tmp_path):
+        """No arbitrary line cap: sessionId after 25+ headerless summary
+        lines is still found (matches extract_header_fields, which is
+        unbounded -- the two must agree on the same file)."""
+        lines = [json.dumps({"type": "summary", "summary": f"recap {i}"})
+                 for i in range(40)]
+        lines.append(json.dumps({"type": "user", "sessionId": "deep-s",
+                                 "agentId": "a1", "isSidechain": True,
+                                 "message": {"content": "hi"}}))
+        f = tmp_path / "deep.jsonl"
+        f.write_text("\n".join(lines) + "\n")
+        meta = extract_session_metadata(f)
+        assert meta["sessionId"] == "deep-s"
+        assert meta["agentId"] == "a1"
+        assert meta["isSidechain"] is True
+
     def test_empty_file_returns_empty_dict(self, tmp_path):
         """Empty file returns empty metadata."""
         empty = tmp_path / "empty.jsonl"
