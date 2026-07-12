@@ -213,14 +213,7 @@ def _upsert_minimal_dimensions(conn) -> None:
 
     # dim_date: one row per calendar date seen in staging. Without these
     # rows all nine dim_date-joining semantic views return NULL dates.
-    insert_missing_dim_dates(
-        conn,
-        """
-        SELECT DISTINCT CAST(TRY_CAST(timestamp AS TIMESTAMP) AS DATE) AS day
-        FROM stg_log_entries
-        WHERE TRY_CAST(timestamp AS TIMESTAMP) IS NOT NULL
-        """,
-    )
+    insert_missing_dim_dates(conn, "stg_log_entries", "timestamp")
 
 
 @contextmanager

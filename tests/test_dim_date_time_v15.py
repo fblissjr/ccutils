@@ -89,3 +89,72 @@ class TestSemanticViewsGetDates:
         assert row is not None
         assert str(row[0]) == "2026-04-18"
         assert row[1] == "afternoon"
+
+
+class TestInsertMissingDimDatesApi:
+    """The typed (table, *timestamp_cols) signature -- no raw SQL string."""
+
+    def test_inserts_distinct_dates_from_multiple_columns(self, conn):
+        from ccutils.etl.utils import insert_missing_dim_dates
+        conn.execute("CREATE TABLE t (a TIMESTAMP, b TIMESTAMP)")
+        conn.execute(
+            "INSERT INTO t VALUES "
+            "(TIMESTAMP '2026-01-02 09:00', TIMESTAMP '2026-03-04 10:00'), "
+            "(TIMESTAMP '2026-01-02 11:00', NULL)"  # dup date + a NULL
+        )
+        insert_missing_dim_dates(conn, "t", "a", "b")
+        keys = sorted(r[0] for r in conn.execute(
+            "SELECT date_key FROM dim_date").fetchall())
+        assert keys == [20260102, 20260304]
+
+    def test_varchar_timestamps_are_cast(self, conn):
+        from ccutils.etl.utils import insert_missing_dim_dates
+        conn.execute("CREATE TABLE t (ts VARCHAR)")
+        conn.execute("INSERT INTO t VALUES ('2026-05-06T12:00:00Z'), ('bad')")
+        insert_missing_dim_dates(conn, "t", "ts")
+        keys = [r[0] for r in conn.execute(
+            "SELECT date_key FROM dim_date").fetchall()]
+        assert keys == [20260506]
+
+
+class TestDimTimePartialPopulation:
+    def test_partial_dim_time_gets_completed(self, tmp_path):
+        """A legacy warehouse with an incomplete dim_time (older ETL
+        inserted only observed minutes) must be filled to 1440, not left
+        partial by a whole-table emptiness guard."""
+        db = tmp_path / "partial.duckdb"
+        conn = create_star_schema(db)
+        conn.execute("DELETE FROM dim_time WHERE time_key <> 900")  # keep 1
+        assert conn.execute("SELECT COUNT(*) FROM dim_time").fetchone()[0] == 1
+        conn.close()
+        conn = create_star_schema(db)
+        assert conn.execute(
+            "SELECT COUNT(*) FROM dim_time").fetchone()[0] == 1440
+
+    def test_time_of_day_matches_get_time_of_day_for_all_hours(self, conn):
+        from ccutils.schemas.star.utils import get_time_of_day
+        rows = conn.execute(
+            "SELECT hour, time_of_day FROM dim_time").fetchall()
+        for hour, tod in rows:
+            assert tod == get_time_of_day(hour)
+
+
+class TestDimDateReconcileFromSessions:
+    def test_existing_sessions_get_dim_date_without_reetl(self, tmp_path):
+        """A warehouse whose facts/sessions predate the dim_date fix (or
+        whose JSONL was pruned) gets dim_date backfilled from dim_session
+        timestamps on the next create_star_schema, no re-ETL needed."""
+        db = tmp_path / "old.duckdb"
+        conn = create_star_schema(db)
+        conn.execute(
+            "INSERT INTO dim_session (session_key, session_id, "
+            "first_timestamp, last_timestamp) VALUES "
+            "(md5('s'), 's', TIMESTAMP '2026-02-03 08:00', "
+            "TIMESTAMP '2026-02-05 09:00')"
+        )
+        conn.execute("DELETE FROM dim_date")  # simulate pre-fix warehouse
+        conn.close()
+        conn = create_star_schema(db)
+        keys = sorted(r[0] for r in conn.execute(
+            "SELECT date_key FROM dim_date").fetchall())
+        assert 20260203 in keys and 20260205 in keys

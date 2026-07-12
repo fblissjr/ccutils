@@ -27,15 +27,27 @@ def fetch_scalar(conn, sql: str, params=None):
     return row[0]
 
 
-def insert_missing_dim_dates(conn, day_source_sql: str) -> None:
-    """Insert dim_date rows for calendar dates the warehouse hasn't seen.
+def insert_missing_dim_dates(conn, table: str, *timestamp_cols: str) -> None:
+    """Insert dim_date rows for calendar dates a table references.
 
-    ``day_source_sql`` must be a SELECT yielding one DATE column named
-    ``day``. date_key matches the YYYYMMDD integers lineage_upsert derives
+    Derives the set of dates from ``timestamp_cols`` on ``table`` (each
+    ``TRY_CAST`` to TIMESTAMP, so VARCHAR and TIMESTAMP columns both work,
+    and unparseable values drop out), then inserts any not already in
+    dim_date. date_key matches the YYYYMMDD integers lineage_upsert derives
     on every fact; day_of_week mirrors Python's weekday() (Monday=0).
-    Callers: _upsert_minimal_dimensions (staging dates) and import_history
-    (dim_prompt dates, which staging never covers).
+
+    Typed rather than raw-SQL so the "one DATE column named day" contract
+    can't be broken by a caller and no runtime value can be interpolated
+    into the INSERT. Callers: _upsert_minimal_dimensions (staging dates +
+    dim_session reconcile) and import_history (dim_prompt dates).
     """
+    if not timestamp_cols:
+        return
+    union = " UNION ALL ".join(
+        f"SELECT CAST(TRY_CAST({col} AS TIMESTAMP) AS DATE) AS day "
+        f"FROM {table} WHERE TRY_CAST({col} AS TIMESTAMP) IS NOT NULL"
+        for col in timestamp_cols
+    )
     conn.execute(
         f"""
         INSERT INTO dim_date
@@ -51,7 +63,7 @@ def insert_missing_dim_dates(conn, day_source_sql: str) -> None:
             EXTRACT(quarter FROM d.day) AS quarter,
             EXTRACT(isodow FROM d.day) >= 6 AS is_weekend,
             EXTRACT(week FROM d.day) AS week_of_year
-        FROM ({day_source_sql}) d
+        FROM (SELECT DISTINCT day FROM ({union})) d
         WHERE d.day IS NOT NULL
           AND NOT EXISTS (
               SELECT 1 FROM dim_date dd

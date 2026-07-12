@@ -9,6 +9,8 @@ heuristic classification columns on dim_session.
 
 import duckdb
 
+from ccutils.schemas.star.utils import get_time_of_day
+
 
 def create_star_schema(db_path):
     """Create DuckDB database with star schema for transcript analytics.
@@ -229,26 +231,24 @@ def create_star_schema(db_path):
     """
     )
 
-    # Fixed-cardinality dimension: seed all 1440 minutes once. Guarded by
-    # the emptiness check (not CREATE OR REPLACE) because the warehouse is
-    # persistent. time_of_day buckets mirror utils.get_time_of_day.
-    conn.execute(
-        """
-        INSERT INTO dim_time
-        SELECT
-            h.range * 100 + m.range AS time_key,
-            h.range AS hour,
-            m.range AS minute,
-            CASE
-                WHEN h.range < 6 THEN 'night'
-                WHEN h.range < 12 THEN 'morning'
-                WHEN h.range < 18 THEN 'afternoon'
-                ELSE 'evening'
-            END AS time_of_day
-        FROM range(0, 24) h, range(0, 60) m
-        WHERE NOT EXISTS (SELECT 1 FROM dim_time)
-    """
-    )
+    # Fixed-cardinality dimension: seed the 1440 minutes not already
+    # present (per-minute anti-join, NOT a whole-table emptiness guard --
+    # a legacy warehouse with a PARTIALLY populated dim_time would else
+    # never be completed). time_of_day comes from get_time_of_day, the
+    # single source of truth, so SQL and Python labels can't drift.
+    existing_time_keys = {
+        r[0] for r in conn.execute("SELECT time_key FROM dim_time").fetchall()
+    }
+    missing_time_rows = [
+        (h * 100 + m, h, m, get_time_of_day(h))
+        for h in range(24)
+        for m in range(60)
+        if h * 100 + m not in existing_time_keys
+    ]
+    if missing_time_rows:
+        conn.executemany(
+            "INSERT INTO dim_time VALUES (?, ?, ?, ?)", missing_time_rows
+        )
 
     # =========================================================================
     # Core Fact Tables (6)
@@ -1480,6 +1480,17 @@ def create_star_schema(db_path):
     # views: a view can reference a migrated column, and on a pre-existing
     # warehouse the CREATE TABLE IF NOT EXISTS above did not add it.
     _apply_column_migrations(conn)
+
+    # Reconcile dim_date from every session already in the warehouse.
+    # Per-session ETL only inserts dim_date for the sessions it re-stages;
+    # this repairs a pre-0.17 warehouse (and sessions whose JSONL Claude
+    # Code has since pruned, which can never be re-staged) so their
+    # semantic views stop returning NULL dates. No-op on a fresh DB.
+    from ccutils.etl.utils import insert_missing_dim_dates
+
+    insert_missing_dim_dates(
+        conn, "dim_session", "first_timestamp", "last_timestamp"
+    )
 
     # =========================================================================
     # Semantic Views (15)

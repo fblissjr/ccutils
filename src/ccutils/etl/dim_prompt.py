@@ -26,6 +26,10 @@ def import_history(conn, history_path: str | Path) -> int:
     """
     history_path = Path(history_path)
     if not history_path.exists():
+        # Still reconcile dim_date for any dim_prompt rows a prior import
+        # left behind (an existing warehouse whose history.jsonl has since
+        # been rotated/deleted must not keep NULL prompt dates forever).
+        _backfill_prompt_dates(conn)
         return 0
 
     rows = []
@@ -47,6 +51,7 @@ def import_history(conn, history_path: str | Path) -> int:
         )
 
     if not rows:
+        _backfill_prompt_dates(conn)
         return 0
 
     conn.execute("DROP TABLE IF EXISTS _inbound_prompts")
@@ -99,16 +104,17 @@ def import_history(conn, history_path: str | Path) -> int:
     ).rowcount
 
     conn.execute("DROP TABLE IF EXISTS _inbound_prompts")
-
-    # history.jsonl carries dates no staged session covers; without their
-    # dim_date rows semantic_prompt_history returns NULL full_date.
-    insert_missing_dim_dates(
-        conn,
-        """
-        SELECT DISTINCT CAST(timestamp AS DATE) AS day
-        FROM dim_prompt
-        WHERE timestamp IS NOT NULL
-        """,
-    )
-
+    _backfill_prompt_dates(conn)
     return inserted or 0
+
+
+def _backfill_prompt_dates(conn) -> None:
+    """Ensure dim_date has a row for every dim_prompt date.
+
+    history.jsonl carries dates no staged session covers; without their
+    dim_date rows semantic_prompt_history returns NULL full_date. Scans
+    the whole dim_prompt table (a small, once-per-archive dimension, not a
+    per-session fact -- the populator-scoping rule targets facts), so it
+    also repairs prompt rows loaded by an older ccutils.
+    """
+    insert_missing_dim_dates(conn, "dim_prompt", "timestamp")

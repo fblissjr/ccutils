@@ -11,6 +11,12 @@ All notable changes to this project will be documented in this file.
 - **`extract_session_metadata` no longer disagrees with the export scanners on the same file.** Its 25-line scan cap returned `sessionId=None` for sessions with a long headerless prefix (accumulated compaction summaries) while the unbounded export scanner found the id -- split-brain identity that dropped subagent linkage in the picker. Cap removed; a `"sessionId"` substring pre-filter keeps the picker hot path cheap.
 - **`extract_rich_metadata` header capture corrected.** The `got_header` latch froze `gitBranch`/`version` at `None` once `sessionId`+`cwd` were seen (missing them when they trail on a later line) and overwrote `slug` last-wins; every header field is now captured on first truthy occurrence independently.
 
+### Fixed (code review, dimensions)
+- **`dim_time` completes a partially-populated legacy table.** The seed guarded on whole-table emptiness, so a warehouse whose `dim_time` held only observed minutes (older ETL) was never filled to 1440 and its views returned NULL `time_of_day` for missing minutes. Now a per-minute anti-join, seeded from `get_time_of_day` (single source of truth -- the SQL `CASE` that duplicated it is gone).
+- **`dim_date` is reconciled from `dim_session` on every `create_star_schema`.** Previously only re-staged sessions got dim_date rows, so a pre-0.17 warehouse (and sessions whose JSONL Claude Code has since pruned, which can never be re-staged) kept NULL dates permanently. The reconcile backfills from `dim_session.first_timestamp`/`last_timestamp` (no-op on a fresh DB).
+- **`import_history` backfills prompt dates on every run,** including when zero new prompts are imported, so an existing warehouse whose `history.jsonl` was rotated/deleted still gets its `dim_prompt` dates into `dim_date`.
+- **`insert_missing_dim_dates` is now typed** `(conn, table, *timestamp_cols)` instead of taking a raw SQL string -- no runtime value can be interpolated into the INSERT, and the "one DATE column named day" contract can't be broken by a caller.
+
 ### Known limitation
 - **`--private` is best-effort, not a sharing guarantee.** It masks cwd/home-prefixed paths only in `tool_use` inputs and string `tool_result`s; message text, thinking blocks, `_raw` non-message entries (e.g. `file-history-snapshot` paths), the `ccutils all` search index, project directory names, and foreign/pasted absolute paths are NOT sanitized. Comprehensive channel-walking is a tracked follow-up (`internal/plans/private_hardening.md`).
 
