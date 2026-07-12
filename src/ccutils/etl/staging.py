@@ -14,6 +14,7 @@ from pathlib import Path
 
 import pyarrow as pa
 
+from ccutils.etl.utils import fetch_scalar
 from ccutils.parsers.parquet_writer import _LOG_ENTRY_SCHEMA
 
 
@@ -66,10 +67,11 @@ def load_session_to_staging(
         """
     )
 
-    return conn.execute(
+    return fetch_scalar(
+        conn,
         "SELECT COUNT(*) FROM stg_log_entries WHERE source_path = ANY (?)",
         [source_paths],
-    ).fetchone()[0] if source_paths else 0
+    ) if source_paths else 0
 
 
 def load_archive_to_staging(

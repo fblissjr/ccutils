@@ -11,6 +11,22 @@ from __future__ import annotations
 import json
 
 
+def fetch_scalar(conn, sql: str, params=None):
+    """Run a query expected to return at least one row; return row[0].
+
+    Replaces the bare ``conn.execute(...).fetchone()[0]`` pattern:
+    ``fetchone()`` is Optional, so subscripting it is unsound when a
+    query can return zero rows. Raises RuntimeError (with the SQL) on
+    zero rows instead of an opaque ``NoneType`` subscript error. A NULL
+    value inside an existing row is returned as None, not raised.
+    """
+    cursor = conn.execute(sql, params) if params is not None else conn.execute(sql)
+    row = cursor.fetchone()
+    if row is None:
+        raise RuntimeError(f"Query returned no rows: {sql!r}")
+    return row[0]
+
+
 def extract_text_from_content_json(
     content_json_raw: str | None,
     *,

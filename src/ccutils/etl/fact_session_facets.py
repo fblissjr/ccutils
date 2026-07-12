@@ -45,6 +45,7 @@ from __future__ import annotations
 from ccutils.etl.facets.catalog import facet_tier_scope_sql
 from ccutils.etl.lineage import EtlRun
 from ccutils.etl.upsert import lineage_upsert
+from ccutils.etl.utils import fetch_scalar
 
 
 _INBOUND = "_inbound_tier1_facets"
@@ -148,7 +149,7 @@ def populate_tier1_facets(conn, *, run: EtlRun) -> None:
 
     # Empty staging => empty scope => no work. Skip the 19 INSERTs +
     # lineage_upsert ALTER/UPDATE sequence entirely.
-    if conn.execute(f"SELECT COUNT(*) FROM {_SCOPE}").fetchone()[0] == 0:
+    if fetch_scalar(conn, f"SELECT COUNT(*) FROM {_SCOPE}") == 0:
         conn.execute(f"DROP TABLE IF EXISTS {_SCOPE}")
         return
 
