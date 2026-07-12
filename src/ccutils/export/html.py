@@ -24,7 +24,7 @@ from ..parsers import (
     parse_session_file,
     PROMPTS_PER_PAGE,
 )
-from ..parsers.session import RENDERED_NON_MESSAGE_TYPES
+from ..parsers.session import RENDERED_NON_MESSAGE_TYPES, extract_header_fields
 
 # Display labels for the non-message entry types. Keys must match
 # RENDERED_NON_MESSAGE_TYPES (validated below); the renderer falls back
@@ -865,8 +865,6 @@ def _resolve_private_cwd(source_path, loglines):
     NOT silently ship unsanitized output.
     """
     if source_path is not None:
-        from ..parsers.session import extract_header_fields
-
         _, cwd = extract_header_fields(source_path)
         if cwd:
             return cwd

@@ -844,3 +844,34 @@ class TestFactPlanRevisions:
         ).fetchone()
         assert result is not None
         conn.close()
+
+
+class TestColumnMigrations:
+    """Every entry in _COLUMN_MIGRATIONS must actually re-add its column.
+
+    The warehouse is persistent and all tables are CREATE TABLE IF NOT
+    EXISTS, so a column added to a table that already shipped only reaches
+    existing warehouses via _COLUMN_MIGRATIONS. A forgotten/typo'd entry is
+    invisible on fresh-DB tests otherwise; this drops each registered
+    column and asserts create_star_schema restores it.
+    """
+
+    def test_every_migration_readds_its_column(self, output_dir):
+        from ccutils.schemas.star.schema import _COLUMN_MIGRATIONS
+
+        db_path = output_dir / "mig.duckdb"
+        conn = create_star_schema(db_path)
+        for table, column, _type in _COLUMN_MIGRATIONS:
+            conn.execute(f"ALTER TABLE {table} DROP COLUMN {column}")
+        conn.close()
+
+        conn = create_star_schema(db_path)
+        for table, column, _type in _COLUMN_MIGRATIONS:
+            cols = {
+                r[0] for r in conn.execute(
+                    "SELECT column_name FROM information_schema.columns "
+                    "WHERE table_name = ?", [table]
+                ).fetchall()
+            }
+            assert column in cols, f"{table}.{column} not re-added by migration"
+        conn.close()

@@ -1,10 +1,11 @@
 # path-privacy: skip-file -- references universal Claude Code data paths (not personal)
 """Star schema DDL - creates the dimensional model tables.
 
-42 tables + 15 views. Tiny lookup dimensions (message_type, content_block_type,
-error_type, entity_type, programming_language) replaced by degenerate VARCHAR
-columns on fact tables. LLM enrichment tables removed entirely -- replaced by
-heuristic classification columns on dim_session.
+Authoritative table/view inventory: CLAUDE.md ("Star Schema Tables") and
+docs/STAR_SCHEMA.md. Tiny lookup dimensions (message_type,
+content_block_type, error_type, entity_type, programming_language) are
+degenerate VARCHAR columns on fact tables. LLM enrichment tables removed
+entirely -- replaced by heuristic classification columns on dim_session.
 """
 
 import duckdb
