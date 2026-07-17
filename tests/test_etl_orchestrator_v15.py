@@ -14,6 +14,7 @@ Idempotent end-to-end: rerunning on unchanged source produces no UPDATEs.
 import json
 
 import pytest
+from conftest import write_minimal_session
 
 from ccutils import create_star_schema
 from ccutils.etl.facets import CannedFacetExtractor
@@ -239,16 +240,7 @@ class TestSubagentProjectAttribution:
     attribute dim_project / project_key to <project>, not the subagents dir."""
 
     def _write_minimal(self, path, session_id):
-        lines = [
-            {"type": "user", "uuid": "u1", "sessionId": session_id,
-             "timestamp": "2026-04-19T10:00:00Z", "cwd": "/p",
-             "message": {"role": "user", "content": "go"}},
-            {"type": "assistant", "uuid": "a1", "parentUuid": "u1",
-             "sessionId": session_id, "timestamp": "2026-04-19T10:00:01Z",
-             "message": {"role": "assistant", "model": "claude-opus-4-7",
-                         "content": [{"type": "text", "text": "ok"}]}},
-        ]
-        path.write_text("\n".join(json.dumps(d) for d in lines))
+        write_minimal_session(path, session_id)
 
     def test_subagent_session_attributed_to_project_dir(self, conn, tmp_path):
         proj = tmp_path / "-home-user-projects-proj"

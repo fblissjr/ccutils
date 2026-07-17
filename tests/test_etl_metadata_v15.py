@@ -15,6 +15,7 @@ semantic_etl_runs joins the three for run-level observability.
 import json
 
 import pytest
+from conftest import write_minimal_session
 
 from ccutils import create_star_schema
 from ccutils.etl.lineage import BatchRun, EtlRun
@@ -27,18 +28,7 @@ def conn(tmp_path):
 
 
 def _write_session(path, session_id, ts_base="2026-04-19T10:00"):
-    lines = [
-        {"type": "user", "uuid": f"{session_id}-u1", "sessionId": session_id,
-         "timestamp": f"{ts_base}:00Z", "cwd": "/p",
-         "message": {"role": "user", "content": "go"}},
-        {"type": "assistant", "uuid": f"{session_id}-a1",
-         "parentUuid": f"{session_id}-u1",
-         "sessionId": session_id, "timestamp": f"{ts_base}:05Z",
-         "message": {"role": "assistant", "model": "claude-opus-4-7",
-                     "content": [{"type": "text", "text": "ok"}]}},
-    ]
-    path.write_text("\n".join(json.dumps(d) for d in lines))
-    return path
+    return write_minimal_session(path, session_id, ts_base=ts_base)
 
 
 class TestEtlMetadataDdl:
@@ -66,8 +56,8 @@ class TestEtlMetadataDdl:
         }
         assert {
             "step_id", "etl_run_id", "batch_run_id", "step_name",
-            "step_order", "started_at", "completed_at", "status",
-            "rows_read", "rows_inserted", "rows_updated",
+            "step_kind", "step_order", "started_at", "completed_at",
+            "status", "rows_read", "rows_inserted", "rows_updated",
             "rows_soft_deleted", "error_message",
         } <= cols
 

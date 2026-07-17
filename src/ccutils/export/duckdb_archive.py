@@ -117,128 +117,124 @@ def generate_duckdb_archive(
 
     conn = create_star_schema(db_path)
 
-    # One orchestration row for this whole invocation; every per-session
-    # EtlRun (and its steps) links back via batch_run_id, and complete()
-    # rolls the children's counts + CDC window up onto it.
-    batch = BatchRun.start(
-        conn, source_root=str(source_folder), output_format=output_format
-    )
-
-    # Per-session ETL closure. include_thinking forwards through; the other
-    # legacy back-compat kwargs (truncate_output, private) are explicitly
-    # named at the closure boundary rather than absorbed by **kwargs (CLAUDE.md
-    # closure rule -- the **_legacy_kwargs shim once hid a --private silent
-    # drop). Naming what we discard makes signature drift fail loud.
-    def _etl(
-        conn, session_path, project_name,
-        include_thinking=True,
-        truncate_output=None, private=None,
-    ):
-        _ = truncate_output, private  # explicitly discarded; v0.15 doesn't use
-        return run_v15_etl(
-            conn,
-            session_path,
-            project_name=project_name,
-            parquet_lake_root=parquet_lake,
-            facet_extractor=facet_extractor,
-            include_thinking=include_thinking,
-            batch_run_id=batch.batch_run_id,
-        )
-
     # Warehouse runs want complete coverage: no summary-based curation.
     if projects is None:
         projects = find_all_sessions(
             source_folder, include_agents=include_agents,
             include_unsummarized=True,
         )
-
     total_session_count = sum(len(p["sessions"]) for p in projects)
     processed_count = 0
     successful_sessions = 0
     failed_sessions = []
     start_time = time.time()
 
-    session_tasks = []
-    for project in projects:
-        project_name = project["name"]
-        for session in project["sessions"]:
-            session_tasks.append((project_name, session["path"]))
+    # One orchestration row for this whole invocation; every per-session
+    # EtlRun (and its steps) links back via batch_run_id, and complete()
+    # rolls the children's counts + CDC window up onto it. BatchRun's
+    # __exit__ marks the row failed on any escaping exception (including
+    # KeyboardInterrupt / complete() itself erroring), so the batch can
+    # never stick at 'running'.
+    with BatchRun.start(
+        conn, source_root=str(source_folder), output_format=output_format
+    ) as batch:
+        # Per-session ETL closure. include_thinking forwards through; the
+        # other legacy back-compat kwargs (truncate_output, private) are
+        # explicitly named at the closure boundary rather than absorbed by
+        # **kwargs (CLAUDE.md closure rule -- the **_legacy_kwargs shim once
+        # hid a --private silent drop). Naming what we discard makes
+        # signature drift fail loud.
+        def _etl(
+            conn, session_path, project_name,
+            include_thinking=True,
+            truncate_output=None, private=None,
+        ):
+            _ = truncate_output, private  # explicitly discarded; v0.15 doesn't use
+            return run_v15_etl(
+                conn,
+                session_path,
+                project_name=project_name,
+                parquet_lake_root=parquet_lake,
+                facet_extractor=facet_extractor,
+                include_thinking=include_thinking,
+                batch_run_id=batch.batch_run_id,
+            )
 
-    if max_workers > 1 and len(session_tasks) > 1:
-        _process_parallel(
-            conn,
-            session_tasks,
-            _etl,
-            include_thinking,
-            truncate_output,
-            batch_size,
-            progress_callback,
-            db_path,
-            start_time,
-            failed_sessions,
-            private,
-        )
-        successful_sessions = len(session_tasks) - len(failed_sessions)
-    else:
-        for project_name, session_path in session_tasks:
-            try:
-                _etl(
-                    conn,
-                    session_path,
-                    project_name,
-                    include_thinking=include_thinking,
-                    truncate_output=truncate_output,
-                    private=private,
-                )
-                successful_sessions += 1
-            except Exception as e:
-                failed_sessions.append(
-                    {
-                        "project": project_name,
-                        "session": session_path.stem,
-                        "error": str(e),
+        session_tasks = []
+        for project in projects:
+            project_name = project["name"]
+            for session in project["sessions"]:
+                session_tasks.append((project_name, session["path"]))
+
+        if max_workers > 1 and len(session_tasks) > 1:
+            _process_parallel(
+                conn,
+                session_tasks,
+                _etl,
+                include_thinking,
+                truncate_output,
+                batch_size,
+                progress_callback,
+                db_path,
+                start_time,
+                failed_sessions,
+                private,
+            )
+            successful_sessions = len(session_tasks) - len(failed_sessions)
+        else:
+            for project_name, session_path in session_tasks:
+                try:
+                    _etl(
+                        conn,
+                        session_path,
+                        project_name,
+                        include_thinking=include_thinking,
+                        truncate_output=truncate_output,
+                        private=private,
+                    )
+                    successful_sessions += 1
+                except Exception as e:
+                    failed_sessions.append(
+                        {
+                            "project": project_name,
+                            "session": session_path.stem,
+                            "error": str(e),
+                        }
+                    )
+
+                processed_count += 1
+                if progress_callback:
+                    elapsed = time.time() - start_time
+                    rate = processed_count / elapsed if elapsed > 0 else 0
+                    db_size = _get_db_size_mb(db_path)
+                    stats = {
+                        "rows_inserted": _count_rows(conn),
+                        "db_size_mb": db_size,
+                        "rate": rate,
                     }
-                )
+                    progress_callback(
+                        project_name,
+                        session_path.stem,
+                        processed_count,
+                        total_session_count,
+                        stats,
+                    )
 
-            processed_count += 1
-            if progress_callback:
-                elapsed = time.time() - start_time
-                rate = processed_count / elapsed if elapsed > 0 else 0
-                db_size = _get_db_size_mb(db_path)
-                stats = {
-                    "rows_inserted": _count_rows(conn),
-                    "db_size_mb": db_size,
-                    "rate": rate,
-                }
-                progress_callback(
-                    project_name,
-                    session_path.stem,
-                    processed_count,
-                    total_session_count,
-                    stats,
-                )
+        # history.jsonl is a global file (not per-session) so we ingest it
+        # once after the per-session loop, best-effort.
+        try:
+            from ..etl.dim_prompt import import_history
 
-    # history.jsonl is a global file (not per-session) so we ingest it
-    # once after the per-session loop, best-effort.
-    try:
-        from ..etl.dim_prompt import import_history
+            history_path = Path.home() / ".claude" / "history.jsonl"
+            import_history(conn, history_path)
+        except Exception:
+            # history ingestion is optional -- never fail the archive build
+            # because of it.
+            pass
 
-        history_path = Path.home() / ".claude" / "history.jsonl"
-        import_history(conn, history_path)
-    except Exception:
-        # history ingestion is optional -- never fail the archive build
-        # because of it.
-        pass
-
-    # Roll the children up onto the orchestration row. Per-session failures
-    # were isolated above (they land as failed fact_etl_runs children and
-    # make the batch 'partial'); complete() itself failing is a real bug we
-    # surface via fail() before re-raising.
-    try:
+        # Per-session failures were isolated above (they land as failed
+        # fact_etl_runs children and make the batch 'partial').
         batch.complete(expected_sessions=total_session_count)
-    except Exception as e:
-        batch.fail(str(e))
-        raise
 
     final_row_count = _count_rows(conn)
     final_db_size = _get_db_size_mb(db_path)

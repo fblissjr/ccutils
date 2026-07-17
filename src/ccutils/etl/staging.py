@@ -11,10 +11,10 @@ its existing staging rows. No append-with-duplicates.
 from __future__ import annotations
 
 from pathlib import Path
+from typing import NamedTuple
 
 import pyarrow as pa
 
-from ccutils.etl.utils import fetch_scalar
 from ccutils.parsers.parquet_writer import _LOG_ENTRY_SCHEMA
 
 
@@ -23,15 +23,25 @@ from ccutils.parsers.parquet_writer import _LOG_ENTRY_SCHEMA
 STG_LOG_ENTRIES_SCHEMA: pa.Schema = _LOG_ENTRY_SCHEMA
 
 
+class StagingLoad(NamedTuple):
+    """What one staging load did: row count + the session's CDC window
+    (min/max parseable entry timestamp), all from a single scan."""
+
+    rows: int
+    data_start_ts: object  # datetime | None
+    data_end_ts: object    # datetime | None
+
+
 def load_session_to_staging(
     conn,
     log_entries_parquet: str | Path,
-) -> int:
+) -> StagingLoad:
     """Load one session's log_entries.parquet into stg_log_entries.
 
-    Returns the row count loaded. Idempotent by source_path: existing rows
-    for the same source are DELETEd before INSERT, so re-running the same
-    session against staging never doubles up.
+    Returns a StagingLoad (row count + CDC data window). Idempotent by
+    source_path: existing rows for the same source are DELETEd before
+    INSERT, so re-running the same session against staging never doubles
+    up.
     """
     log_entries_parquet = Path(log_entries_parquet)
     parquet_path_str = str(log_entries_parquet)
@@ -55,39 +65,42 @@ def load_session_to_staging(
         f"INSERT INTO stg_log_entries SELECT * FROM read_parquet('{parquet_path_str}')"
     )
 
-    # Backfill session_id for entry types that don't carry it at the JSONL
-    # top level (file-history-snapshot, queue-operation, summary, ai-title,
-    # ...). For per-session JSONL files the session_id is the filename stem;
-    # using regexp_extract keeps this SQL-only.
+    # One pass fixes session_id for two cases, in precedence order:
+    # 1. Subagent identity override (REAL Claude Code contract): agent
+    #    transcript entries carry the PARENT's sessionId on every line.
+    #    The transcript's true identity is the file itself, so agent files
+    #    get session_id from the filename stem ('agent-<id>'). Without
+    #    this, all of a parent's agents collapse into the parent's
+    #    dim_session row, subagent enrichment mislabels the parent
+    #    is_agent with a SELF-referencing parent_session_key, and
+    #    depth_level flattens to 0. (The parquet writer now stamps agent
+    #    rows correctly at Tier 1; this override also repairs lakes
+    #    written before that.)
+    # 2. NULL backfill for entry types that don't carry sessionId at the
+    #    JSONL top level (file-history-snapshot, queue-operation, summary,
+    #    ai-title, ...): the filename stem.
     conn.execute(
         """
         UPDATE stg_log_entries
-        SET session_id = regexp_extract(source_path, '([^/]+)\\.jsonl$', 1)
+        SET session_id = CASE
+            WHEN regexp_matches(source_path, '/subagents/agent-[^/]+\\.jsonl$')
+                THEN regexp_extract(source_path, '/subagents/(agent-[^/]+)\\.jsonl$', 1)
+            ELSE regexp_extract(source_path, '([^/]+)\\.jsonl$', 1)
+        END
         WHERE session_id IS NULL
+           OR regexp_matches(source_path, '/subagents/agent-[^/]+\\.jsonl$')
         """
     )
 
-    # Subagent identity override (REAL Claude Code contract, verified on
-    # the full corpus 2026-07-17): agent transcript entries carry the
-    # PARENT's sessionId -- every line, every file. The transcript's true
-    # identity is the file itself, so agent files get session_id from the
-    # filename stem ('agent-<id>'). Without this, all of a parent's agents
-    # collapse into the parent's dim_session row, subagent enrichment
-    # mislabels the parent is_agent with a SELF-referencing
-    # parent_session_key, and depth_level flattens to 0 corpus-wide.
-    conn.execute(
-        """
-        UPDATE stg_log_entries
-        SET session_id = regexp_extract(source_path, '/subagents/(agent-[^/]+)\\.jsonl$', 1)
-        WHERE regexp_matches(source_path, '/subagents/agent-[^/]+\\.jsonl$')
-        """
-    )
-
-    return fetch_scalar(
-        conn,
-        "SELECT COUNT(*) FROM stg_log_entries WHERE source_path = ANY (?)",
+    if not source_paths:
+        return StagingLoad(0, None, None)
+    row = conn.execute(
+        "SELECT COUNT(*), MIN(TRY_CAST(timestamp AS TIMESTAMP)), "
+        "       MAX(TRY_CAST(timestamp AS TIMESTAMP)) "
+        "FROM stg_log_entries WHERE source_path = ANY (?)",
         [source_paths],
-    ) if source_paths else 0
+    ).fetchone()
+    return StagingLoad(*row)
 
 
 def load_archive_to_staging(

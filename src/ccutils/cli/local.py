@@ -295,11 +295,13 @@ def _etl_session_files(
         os.path.commonpath([str(f.parent) for f in session_files])
         if session_files else ""
     )
-    batch = BatchRun.start(
-        conn, source_root=source_root, output_format=output_format,
-    )
     failures = []
-    try:
+    # BatchRun's __exit__ marks the row failed on ANY escaping exception
+    # (including KeyboardInterrupt / complete() itself erroring), so the
+    # batch can never stick at 'running'.
+    with BatchRun.start(
+        conn, source_root=source_root, output_format=output_format,
+    ) as batch:
         for idx, session_file in enumerate(session_files, 1):
             click.echo(f"[{idx}/{len(session_files)}] {session_file.name}")
             try:
@@ -316,9 +318,6 @@ def _etl_session_files(
                 failures.append((session_file, exc))
                 click.echo(f"  skipped {session_file.name}: {exc}", err=True)
         batch.complete(expected_sessions=len(session_files))
-    except BaseException as exc:
-        batch.fail(str(exc) or type(exc).__name__)
-        raise
     if failures:
         click.echo(
             f"{len(failures)} of {len(session_files)} session(s) failed "

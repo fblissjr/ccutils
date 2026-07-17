@@ -98,6 +98,42 @@ class StepCounts:
     rows_soft_deleted: int | None = None
 
 
+def _mark_failed(conn, *, table: str, id_col: str, id_val: str, error: str) -> None:
+    """Shared failure-marking for the three audit tables (steps/runs/batches):
+    status='failed' + completed_at + error_message, matched on the id column."""
+    conn.execute(
+        f"""
+        UPDATE {table}
+        SET status = 'failed',
+            completed_at = current_timestamp,
+            error_message = ?
+        WHERE {id_col} = ?
+        """,
+        [error, id_val],
+    )
+
+
+def _sum_upsert_steps(conn, *, scope_col: str, scope_id: str):
+    """Rollup of fact-populating steps (step_kind='upsert') for one run or
+    batch: (rows_read, rows_inserted, rows_updated, rows_soft_deleted).
+    Stage steps (load_staging etc.) report real counts at step grain but
+    are not facts, so they are excluded here -- the single definition all
+    three consumers (EtlRun.complete, BatchRun.complete, and mirrored in
+    the semantic_etl_runs view) agree on."""
+    return conn.execute(
+        f"""
+        SELECT
+            COALESCE(SUM(rows_read), 0),
+            COALESCE(SUM(rows_inserted), 0),
+            COALESCE(SUM(rows_updated), 0),
+            COALESCE(SUM(rows_soft_deleted), 0)
+        FROM fact_etl_steps
+        WHERE {scope_col} = ? AND step_kind = 'upsert'
+        """,
+        [scope_id],
+    ).fetchone()
+
+
 @dataclass
 class EtlRun:
     """Handle for the lifecycle of one per-session ETL run.
@@ -152,38 +188,37 @@ class EtlRun:
         )
 
     @contextmanager
-    def step(self, step_name: str):
+    def step(self, step_name: str, *, kind: str = "stage"):
         """Record one DAG node in fact_etl_steps around the wrapped body.
 
         Yields a StepCounts whose slots the body may fill (lineage_upsert
         fills all four; stage wrappers set what they cheaply know). On an
         exception the step row is marked failed with the error, and the
         exception propagates.
+
+        kind is the scoping key for fact rollups: 'upsert' steps (fact
+        populators via lineage_upsert) count toward facts_inserted /
+        rows_* totals; 'stage' steps (default) are recorded but excluded.
         """
         self._step_seq += 1
         step_id = uuid.uuid4().hex
         self.conn.execute(
             """
             INSERT INTO fact_etl_steps
-                (step_id, etl_run_id, batch_run_id, step_name, step_order, status)
-            VALUES (?, ?, ?, ?, ?, 'running')
+                (step_id, etl_run_id, batch_run_id, step_name, step_kind,
+                 step_order, status)
+            VALUES (?, ?, ?, ?, ?, ?, 'running')
             """,
-            [step_id, self.etl_run_id, self.batch_run_id, step_name,
+            [step_id, self.etl_run_id, self.batch_run_id, step_name, kind,
              self._step_seq],
         )
         counts = StepCounts()
         try:
             yield counts
         except Exception as e:
-            self.conn.execute(
-                """
-                UPDATE fact_etl_steps
-                SET status = 'failed',
-                    completed_at = current_timestamp,
-                    error_message = ?
-                WHERE step_id = ?
-                """,
-                [str(e), step_id],
+            _mark_failed(
+                self.conn, table="fact_etl_steps", id_col="step_id",
+                id_val=step_id, error=str(e),
             )
             raise
         self.conn.execute(
@@ -215,23 +250,17 @@ class EtlRun:
         """Close the run out as success.
 
         facts_inserted / facts_updated are derived from this run's
-        `upsert:%` steps only -- stage steps (load_staging etc.) record
-        real row counts at step grain but are NOT facts, so they are
-        excluded from the run-level fact totals.
+        step_kind='upsert' steps only -- stage steps (load_staging etc.)
+        record real row counts at step grain but are NOT facts, so they
+        are excluded from the run-level fact totals.
 
         data_start_ts / data_end_ts must be supplied by the caller (the
-        orchestrator reads them from staging before staging_scope clears
-        it); omitting them stores a NULL CDC window.
+        orchestrator gets them from the staging load); omitting them
+        stores a NULL CDC window.
         """
-        facts_inserted, facts_updated = self.conn.execute(
-            """
-            SELECT COALESCE(SUM(rows_inserted), 0),
-                   COALESCE(SUM(rows_updated), 0)
-            FROM fact_etl_steps
-            WHERE etl_run_id = ? AND step_name LIKE 'upsert:%'
-            """,
-            [self.etl_run_id],
-        ).fetchone()
+        _, facts_inserted, facts_updated, _ = _sum_upsert_steps(
+            self.conn, scope_col="etl_run_id", scope_id=self.etl_run_id
+        )
         self.conn.execute(
             """
             UPDATE fact_etl_runs
@@ -258,15 +287,9 @@ class EtlRun:
         )
 
     def fail(self, error_message: str) -> None:
-        self.conn.execute(
-            """
-            UPDATE fact_etl_runs
-            SET status = 'failed',
-                completed_at = current_timestamp,
-                error_message = ?
-            WHERE etl_run_id = ?
-            """,
-            [error_message, self.etl_run_id],
+        _mark_failed(
+            self.conn, table="fact_etl_runs", id_col="etl_run_id",
+            id_val=self.etl_run_id, error=error_message,
         )
 
 
@@ -274,12 +297,18 @@ class EtlRun:
 class BatchRun:
     """Handle for one CLI orchestration over many sessions.
 
-    Start before the per-session loop, pass ``batch_run_id`` into every
-    ``run_v15_etl`` call, then ``complete()`` -- which derives every count
-    (sessions seen/succeeded/failed, row totals, CDC data window) from the
-    child fact_etl_runs / fact_etl_steps rows rather than trusting the
-    caller to tally. Status lands 'success' when no child failed, else
-    'partial'; ``fail()`` is for the orchestration itself dying.
+    Use as a context manager:
+
+        with BatchRun.start(conn, source_root=..., output_format=...) as batch:
+            ... per-session loop passing batch.batch_run_id ...
+            batch.complete(expected_sessions=N)
+
+    ``__exit__`` marks the batch row failed on ANY escaping exception
+    (including KeyboardInterrupt) so it can never stick at 'running';
+    ``complete()`` derives every count (sessions seen/succeeded/failed,
+    row totals, CDC data window) from the child fact_etl_runs /
+    fact_etl_steps rows rather than trusting the caller to tally. Status
+    lands 'success' when no child failed, else 'partial'.
     """
 
     conn: Any
@@ -334,18 +363,9 @@ class BatchRun:
             [self.batch_run_id],
         ).fetchone()
         rows_read, rows_inserted, rows_updated, rows_soft_deleted = (
-            self.conn.execute(
-                """
-                SELECT
-                    COALESCE(SUM(rows_read), 0),
-                    COALESCE(SUM(rows_inserted), 0),
-                    COALESCE(SUM(rows_updated), 0),
-                    COALESCE(SUM(rows_soft_deleted), 0)
-                FROM fact_etl_steps
-                WHERE batch_run_id = ? AND step_name LIKE 'upsert:%'
-                """,
-                [self.batch_run_id],
-            ).fetchone()
+            _sum_upsert_steps(
+                self.conn, scope_col="batch_run_id", scope_id=self.batch_run_id
+            )
         )
         seen = max(child_count, expected_sessions or 0)
         failed = seen - succeeded
@@ -375,13 +395,18 @@ class BatchRun:
         )
 
     def fail(self, error_message: str) -> None:
-        self.conn.execute(
-            """
-            UPDATE fact_etl_batch_runs
-            SET status = 'failed',
-                completed_at = current_timestamp,
-                error_message = ?
-            WHERE batch_run_id = ?
-            """,
-            [error_message, self.batch_run_id],
+        _mark_failed(
+            self.conn, table="fact_etl_batch_runs", id_col="batch_run_id",
+            id_val=self.batch_run_id, error=error_message,
         )
+
+    def __enter__(self) -> "BatchRun":
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> bool:
+        # Any escaping exception -- including complete() itself failing or
+        # a KeyboardInterrupt mid-loop -- marks the batch failed instead of
+        # leaving the row stuck at 'running'. Never suppresses.
+        if exc is not None:
+            self.fail(str(exc) or exc_type.__name__)
+        return False

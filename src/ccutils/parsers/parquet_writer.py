@@ -23,6 +23,7 @@ JSONL is the immutable audit log; Parquet is a typed-columnar cache.
 from __future__ import annotations
 
 import json
+import re
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -277,6 +278,16 @@ def write_session_to_parquet(
 
     if not rows:
         raise ValueError(f"No valid JSON log entries found in {jsonl_path}")
+
+    # Subagent identity (real Claude Code contract): agent transcript
+    # entries carry the PARENT's sessionId on every line, so raw capture
+    # would leave log_entries.parquet disagreeing with session_meta.parquet
+    # (whose session_id is the filename stem). Stamp rows with the file's
+    # identity at Tier 1 so the lake is internally consistent; staging
+    # keeps an equivalent override to repair lakes written before this.
+    if re.search(r"/subagents/agent-[^/]+\.jsonl$", str(jsonl_path)):
+        for row in rows:
+            row["session_id"] = session_id
 
     # Write log_entries.parquet
     table = pa.Table.from_pylist(rows, schema=_LOG_ENTRY_SCHEMA)

@@ -108,7 +108,7 @@ def lineage_upsert(
     for c in hash_cols:
         _validate_ident(c)
 
-    with run.step(f"upsert:{table}") as st:
+    with run.step(f"upsert:{table}", kind="upsert") as st:
         st.rows_read = fetch_scalar(
             conn, f"SELECT COUNT(*) FROM {inbound_table}"
         )

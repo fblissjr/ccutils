@@ -296,6 +296,52 @@ class TestSubagentProjectAttribution:
         assert nested_agent in [s["path"] for s in result[0]["sessions"]]
 
 
+class TestProjectRuleEquivalence:
+    """find_all_sessions' Python walk-up and the warehouse's project_dir_sql
+    are two implementations of ONE project-boundary rule. Drifted copies of
+    this rule already shipped one mis-attribution bug; this test makes any
+    future drift fail loud instead of silently splitting the taxonomy."""
+
+    LAYOUTS = [
+        "projA/sess1.jsonl",
+        "projA/parent-uuid-1/subagents/agent-x1.jsonl",
+        "projB/parent-uuid-2/subagents/agent-x2/subagents/agent-x3.jsonl",
+        "projC/archive/old-session.jsonl",
+        "subagents/coincidental.jsonl",
+    ]
+
+    def test_python_walkup_matches_project_dir_sql(self, tmp_path):
+        import duckdb
+
+        from ccutils.etl.utils import project_dir_sql
+
+        for rel in self.LAYOUTS:
+            f = tmp_path / rel
+            f.parent.mkdir(parents=True, exist_ok=True)
+            f.write_text(
+                '{"type": "user", "timestamp": "2025-01-01T10:00:00.000Z", "message": {"role": "user", "content": "x"}}\n'
+            )
+
+        conn = duckdb.connect()
+        sql_dirs = {
+            rel: conn.execute(
+                f"SELECT {project_dir_sql('?')}", [str(tmp_path / rel)]
+            ).fetchone()[0]
+            for rel in self.LAYOUTS
+        }
+        conn.close()
+
+        result = find_all_sessions(
+            tmp_path, include_agents=True, include_unsummarized=True
+        )
+        py_dirs = {
+            str(s["path"]): str(p["path"]) for p in result for s in p["sessions"]
+        }
+        for rel in self.LAYOUTS:
+            abs_path = str(tmp_path / rel)
+            assert py_dirs[abs_path] == sql_dirs[rel], rel
+
+
 class TestIncludeUnsummarized:
     """include_unsummarized=True disables the warmup/(no summary) skip so
     batch warehouse runs see every session on disk."""

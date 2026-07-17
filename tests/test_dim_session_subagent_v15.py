@@ -17,6 +17,7 @@ from __future__ import annotations
 import json
 
 import pytest
+from conftest import write_minimal_session
 
 from ccutils import create_star_schema
 from ccutils.etl.orchestrator import run_v15_etl
@@ -153,41 +154,20 @@ class TestRealContractParentSessionId:
 
     def _real_layout(self, tmp_path, parent_session_id, agent_id):
         proj = tmp_path / "-home-user-projects-proj"
-        parent_file = proj / f"{parent_session_id}.jsonl"
         proj.mkdir(parents=True, exist_ok=True)
-        parent_lines = [
-            {"type": "user", "uuid": f"{parent_session_id}-u1",
-             "sessionId": parent_session_id,
-             "timestamp": "2026-04-19T10:00:00Z", "cwd": "/p",
-             "message": {"role": "user", "content": "parent asks"}},
-            {"type": "assistant", "uuid": f"{parent_session_id}-a1",
-             "parentUuid": f"{parent_session_id}-u1",
-             "sessionId": parent_session_id,
-             "timestamp": "2026-04-19T10:00:01Z",
-             "message": {"role": "assistant", "model": "claude-opus-4-7",
-                         "content": [{"type": "text", "text": "delegating"}]}},
-        ]
-        parent_file.write_text(
-            "\n".join(json.dumps(d) for d in parent_lines)
+        parent_file = write_minimal_session(
+            proj / f"{parent_session_id}.jsonl", parent_session_id
         )
 
         sub_dir = proj / parent_session_id / "subagents"
         sub_dir.mkdir(parents=True, exist_ok=True)
-        agent_file = sub_dir / f"agent-{agent_id}.jsonl"
-        # REAL contract: entries carry the PARENT session id.
-        agent_lines = [
-            {"type": "user", "uuid": f"{agent_id}-u1",
-             "sessionId": parent_session_id,
-             "timestamp": "2026-04-19T10:01:00Z", "cwd": "/p",
-             "message": {"role": "user", "content": "agent task"}},
-            {"type": "assistant", "uuid": f"{agent_id}-a1",
-             "parentUuid": f"{agent_id}-u1",
-             "sessionId": parent_session_id,
-             "timestamp": "2026-04-19T10:01:01Z",
-             "message": {"role": "assistant", "model": "claude-haiku-4-5",
-                         "content": [{"type": "text", "text": "done"}]}},
-        ]
-        agent_file.write_text("\n".join(json.dumps(d) for d in agent_lines))
+        # REAL contract: the agent file's entries carry the PARENT id.
+        agent_file = write_minimal_session(
+            sub_dir / f"agent-{agent_id}.jsonl", f"agent-{agent_id}",
+            ts_base="2026-04-19T10:01",
+            model="claude-haiku-4-5",
+            entry_session_id=parent_session_id,
+        )
         return parent_file, agent_file
 
     def test_agent_transcript_gets_own_session_row(self, conn, tmp_path):

@@ -153,20 +153,23 @@ def _upsert_minimal_dimensions(conn) -> int:
     )
 
     # dim_project: surrogate from the session's project directory (walks up
-    # past <uuid>/subagents layers -- see project_dir_sql).
+    # past <uuid>/subagents layers -- see project_dir_sql). The dir is
+    # computed once in the inner SELECT and reused everywhere.
     conn.execute(
         f"""
         INSERT INTO dim_project (project_key, project_path, project_name)
         SELECT
-            {project_key_sql("sle.source_path")} AS project_key,
-            {project_dir_sql("sle.source_path")} AS project_path,
+            md5(sle.project_dir) AS project_key,
+            sle.project_dir AS project_path,
             -- project_name is the last path segment of project_path
-            regexp_extract({project_dir_sql("sle.source_path")},
-                           '([^/]+)$', 1) AS project_name
-        FROM (SELECT DISTINCT source_path FROM stg_log_entries) sle
+            regexp_extract(sle.project_dir, '([^/]+)$', 1) AS project_name
+        FROM (
+            SELECT DISTINCT {project_dir_sql("source_path")} AS project_dir
+            FROM stg_log_entries
+        ) sle
         WHERE NOT EXISTS (
             SELECT 1 FROM dim_project dp
-            WHERE dp.project_key = {project_key_sql("sle.source_path")}
+            WHERE dp.project_key = md5(sle.project_dir)
         )
         """
     )
@@ -295,10 +298,11 @@ def run_v15_etl(
 
             # Tier 2: load staging. rows_* here are STAGING rows -- real at
             # step grain, excluded from run-level fact totals (complete()
-            # only sums upsert:% steps).
+            # only sums step_kind='upsert' steps). The load also returns
+            # the session's CDC window so nothing rescans staging for it.
             with run.step("load_staging") as st:
-                staged_rows = load_session_to_staging(conn, log_path)
-                st.rows_read = st.rows_inserted = staged_rows
+                staged = load_session_to_staging(conn, log_path)
+                st.rows_read = st.rows_inserted = staged.rows
 
             # Stub dimensions so fact FKs resolve
             with run.step("upsert_dimensions") as st:
@@ -371,19 +375,14 @@ def run_v15_etl(
             # the FACTS (dim_session.last_assistant_message, Tier 2 inputs,
             # fact_messages.content_text projection).
 
-            # CDC data window: read from staging BEFORE staging_scope clears
-            # it. complete() also derives facts_inserted/updated from steps.
-            data_start_ts, data_end_ts = conn.execute(
-                "SELECT MIN(TRY_CAST(timestamp AS TIMESTAMP)), "
-                "       MAX(TRY_CAST(timestamp AS TIMESTAMP)) "
-                "FROM stg_log_entries"
-            ).fetchone()
+            # complete() derives facts_inserted/updated from steps; the CDC
+            # window came back from the staging load.
             run.complete(
                 sessions_seen=1,
                 sessions_inserted=new_sessions,
                 sessions_updated=1 - new_sessions,
-                data_start_ts=data_start_ts,
-                data_end_ts=data_end_ts,
+                data_start_ts=staged.data_start_ts,
+                data_end_ts=staged.data_end_ts,
             )
         except Exception as e:
             run.fail(str(e))

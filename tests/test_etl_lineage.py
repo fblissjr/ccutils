@@ -86,7 +86,7 @@ class TestFactEtlRunsInsert:
 
     def test_complete_derives_fact_counts_from_steps(self, conn):
         r = EtlRun.start(conn, source_path="x")
-        with r.step("upsert:fact_demo") as st:
+        with r.step("upsert:fact_demo", kind="upsert") as st:
             st.rows_inserted = 7
             st.rows_updated = 2
         r.complete(sessions_inserted=1)

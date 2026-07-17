@@ -125,7 +125,8 @@ def create_star_schema(db_path):
             step_id VARCHAR NOT NULL,           -- UUID4 hex
             etl_run_id VARCHAR NOT NULL,        -- FK fact_etl_runs
             batch_run_id VARCHAR,               -- denormalized for direct batch rollup
-            step_name VARCHAR NOT NULL,         -- 'upsert:<table>' or stage name
+            step_name VARCHAR NOT NULL,         -- 'upsert:<table>' or stage name (display)
+            step_kind VARCHAR NOT NULL DEFAULT 'stage',  -- 'upsert' (facts) | 'stage'; rollup scoping key
             step_order INTEGER NOT NULL,        -- 1-based position within the run
             started_at TIMESTAMP NOT NULL DEFAULT current_timestamp,
             completed_at TIMESTAMP,
@@ -2130,16 +2131,16 @@ def create_star_schema(db_path):
         LEFT JOIN dim_etl_version v ON r.version_key = v.version_key
         LEFT JOIN (
             -- step_count covers every DAG node; the rows_* rollups scope
-            -- to upsert:% steps ONLY, matching how EtlRun/BatchRun
-            -- complete() derive their totals (stage steps like
-            -- load_staging report staging rows, which are not facts).
+            -- to step_kind='upsert' ONLY, matching _sum_upsert_steps in
+            -- etl/lineage.py (stage steps like load_staging report
+            -- staging rows, which are not facts).
             SELECT
                 etl_run_id,
                 COUNT(*) AS step_count,
-                SUM(rows_read) FILTER (WHERE step_name LIKE 'upsert:%') AS rows_read,
-                SUM(rows_inserted) FILTER (WHERE step_name LIKE 'upsert:%') AS rows_inserted,
-                SUM(rows_updated) FILTER (WHERE step_name LIKE 'upsert:%') AS rows_updated,
-                SUM(rows_soft_deleted) FILTER (WHERE step_name LIKE 'upsert:%') AS rows_soft_deleted
+                SUM(rows_read) FILTER (WHERE step_kind = 'upsert') AS rows_read,
+                SUM(rows_inserted) FILTER (WHERE step_kind = 'upsert') AS rows_inserted,
+                SUM(rows_updated) FILTER (WHERE step_kind = 'upsert') AS rows_updated,
+                SUM(rows_soft_deleted) FILTER (WHERE step_kind = 'upsert') AS rows_soft_deleted
             FROM fact_etl_steps
             GROUP BY etl_run_id
         ) s ON r.etl_run_id = s.etl_run_id
@@ -2158,6 +2159,9 @@ _COLUMN_MIGRATIONS = [
     ("fact_etl_runs", "batch_run_id", "VARCHAR"),
     ("fact_etl_runs", "data_start_ts", "TIMESTAMP"),
     ("fact_etl_runs", "data_end_ts", "TIMESTAMP"),
+    # step_kind predates any release of fact_etl_steps, but pre-release
+    # warehouses built from this branch exist; widening is free.
+    ("fact_etl_steps", "step_kind", "VARCHAR"),
 ]
 
 

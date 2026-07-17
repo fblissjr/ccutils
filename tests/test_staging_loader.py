@@ -86,8 +86,8 @@ class TestLoadSessionToStaging:
             etl_run_id=run.etl_run_id, project_slug="stg-project",
         )
         # Then Parquet -> DuckDB staging
-        rows_loaded = load_session_to_staging(conn, log_path)
-        assert rows_loaded == 8  # all 8 lines (including summary)
+        loaded = load_session_to_staging(conn, log_path)
+        assert loaded.rows == 8  # all 8 lines (including summary)
 
         # Every staged row carries the etl_run_id from this run
         stamped = conn.execute(
