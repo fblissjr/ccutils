@@ -232,3 +232,50 @@ class TestFacetExtractorWiring:
             facet_extractor=extractor,
         )
         assert result["etl_run_id"] is not None
+
+
+class TestSubagentProjectAttribution:
+    """Subagent JSONL at <project>/<parent-uuid>/subagents/agent-*.jsonl must
+    attribute dim_project / project_key to <project>, not the subagents dir."""
+
+    def _write_minimal(self, path, session_id):
+        lines = [
+            {"type": "user", "uuid": "u1", "sessionId": session_id,
+             "timestamp": "2026-04-19T10:00:00Z", "cwd": "/p",
+             "message": {"role": "user", "content": "go"}},
+            {"type": "assistant", "uuid": "a1", "parentUuid": "u1",
+             "sessionId": session_id, "timestamp": "2026-04-19T10:00:01Z",
+             "message": {"role": "assistant", "model": "claude-opus-4-7",
+                         "content": [{"type": "text", "text": "ok"}]}},
+        ]
+        path.write_text("\n".join(json.dumps(d) for d in lines))
+
+    def test_subagent_session_attributed_to_project_dir(self, conn, tmp_path):
+        proj = tmp_path / "-home-user-projects-proj"
+        proj.mkdir()
+        top = proj / "aaaa-parent.jsonl"
+        self._write_minimal(top, "parent-s")
+
+        sub_dir = proj / "aaaa-parent" / "subagents"
+        sub_dir.mkdir(parents=True)
+        agent = sub_dir / "agent-abc.jsonl"
+        self._write_minimal(agent, "agent-s")
+
+        lake = tmp_path / "lake"
+        run_v15_etl(conn, top, parquet_lake_root=lake)
+        run_v15_etl(conn, agent, parquet_lake_root=lake)
+
+        rows = conn.execute(
+            "SELECT project_name, project_path FROM dim_project"
+        ).fetchall()
+        assert rows == [("-home-user-projects-proj", str(proj))]
+
+        keys = conn.execute(
+            "SELECT DISTINCT project_key FROM dim_session"
+        ).fetchall()
+        assert len(keys) == 1
+
+        fact_keys = conn.execute(
+            "SELECT DISTINCT project_key FROM fact_messages"
+        ).fetchall()
+        assert fact_keys == keys

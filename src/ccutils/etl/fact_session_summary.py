@@ -26,6 +26,7 @@ from __future__ import annotations
 
 from ccutils.etl.lineage import EtlRun
 from ccutils.etl.upsert import lineage_upsert
+from ccutils.etl.utils import project_key_sql
 
 
 _PAYLOAD_COLS = [
@@ -261,7 +262,7 @@ def populate_fact_session_summary(conn, *, run: EtlRun) -> None:
     conn.execute("ALTER TABLE _inbound_session_summary ADD COLUMN project_key VARCHAR")
     conn.execute(
         "UPDATE _inbound_session_summary "
-        "SET project_key = md5(regexp_replace(source_path, '/[^/]+$', ''))"
+        f"SET project_key = {project_key_sql('source_path')}"
     )
 
     lineage_upsert(
