@@ -9,6 +9,31 @@ by at least two populators."
 from __future__ import annotations
 
 import json
+import re
+
+
+# Single source for the subagent-file layout rule. Every consumer builds
+# from these (drifted copies of path rules are how the "subagents"
+# mis-attribution shipped): SUBAGENT_PATH_RE for Python matching (match on
+# Path(...).as_posix() so separators are uniform), the *_sql builders for
+# DuckDB. Layout: .../<parent-uuid>/subagents/agent-<id>.jsonl
+_SUBAGENT_TAIL = r"/subagents/agent-[^/]+\.jsonl$"
+_SUBAGENT_SESSION_ID_TAIL = r"/subagents/(agent-[^/]+)\.jsonl$"
+
+SUBAGENT_PATH_RE = re.compile(
+    r"/(?P<parent>[^/]+)/subagents/agent-(?P<agent_id>[^/]+)\.jsonl$"
+)
+
+
+def subagent_match_sql(col: str) -> str:
+    """SQL predicate: does ``col`` look like a subagent transcript path?"""
+    return f"regexp_matches({col}, '{_SUBAGENT_TAIL}')"
+
+
+def subagent_session_id_sql(col: str) -> str:
+    """SQL expression: the file-identity session id ('agent-<id>') for a
+    subagent transcript path."""
+    return f"regexp_extract({col}, '{_SUBAGENT_SESSION_ID_TAIL}', 1)"
 
 
 def project_dir_sql(col: str) -> str:
@@ -27,9 +52,16 @@ def project_dir_sql(col: str) -> str:
     return f"regexp_replace({col}, '(/[^/]+/subagents)*/[^/]+$', '')"
 
 
+def project_key_from_dir_sql(col: str) -> str:
+    """md5 over an ALREADY-computed project dir. Same key material as
+    :func:`project_key_sql`; use when the dir was computed once in a
+    subquery to avoid re-running the regexp."""
+    return f"md5({col})"
+
+
 def project_key_sql(col: str) -> str:
     """SQL expression: md5 surrogate key of :func:`project_dir_sql`."""
-    return f"md5({project_dir_sql(col)})"
+    return project_key_from_dir_sql(project_dir_sql(col))
 
 
 def fetch_scalar(conn, sql: str, params=None):

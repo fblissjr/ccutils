@@ -10,11 +10,13 @@ its existing staging rows. No append-with-duplicates.
 
 from __future__ import annotations
 
+from datetime import datetime
 from pathlib import Path
 from typing import NamedTuple
 
 import pyarrow as pa
 
+from ccutils.etl.utils import subagent_match_sql, subagent_session_id_sql
 from ccutils.parsers.parquet_writer import _LOG_ENTRY_SCHEMA
 
 
@@ -28,8 +30,8 @@ class StagingLoad(NamedTuple):
     (min/max parseable entry timestamp), all from a single scan."""
 
     rows: int
-    data_start_ts: object  # datetime | None
-    data_end_ts: object    # datetime | None
+    data_start_ts: datetime | None
+    data_end_ts: datetime | None
 
 
 def load_session_to_staging(
@@ -65,7 +67,12 @@ def load_session_to_staging(
         f"INSERT INTO stg_log_entries SELECT * FROM read_parquet('{parquet_path_str}')"
     )
 
-    # One pass fixes session_id for two cases, in precedence order:
+    if not source_paths:
+        return StagingLoad(0, None, None)
+
+    # One pass fixes session_id for two cases, scoped to the just-loaded
+    # source_paths (unscoped, an archive-restage loop would rewrite every
+    # previously loaded agent row on each call -- O(N^2) across a lake):
     # 1. Subagent identity override (REAL Claude Code contract): agent
     #    transcript entries carry the PARENT's sessionId on every line.
     #    The transcript's true identity is the file itself, so agent files
@@ -80,20 +87,19 @@ def load_session_to_staging(
     #    JSONL top level (file-history-snapshot, queue-operation, summary,
     #    ai-title, ...): the filename stem.
     conn.execute(
-        """
+        f"""
         UPDATE stg_log_entries
         SET session_id = CASE
-            WHEN regexp_matches(source_path, '/subagents/agent-[^/]+\\.jsonl$')
-                THEN regexp_extract(source_path, '/subagents/(agent-[^/]+)\\.jsonl$', 1)
+            WHEN {subagent_match_sql("source_path")}
+                THEN {subagent_session_id_sql("source_path")}
             ELSE regexp_extract(source_path, '([^/]+)\\.jsonl$', 1)
         END
-        WHERE session_id IS NULL
-           OR regexp_matches(source_path, '/subagents/agent-[^/]+\\.jsonl$')
-        """
+        WHERE source_path = ANY (?)
+          AND (session_id IS NULL OR {subagent_match_sql("source_path")})
+        """,
+        [source_paths],
     )
 
-    if not source_paths:
-        return StagingLoad(0, None, None)
     row = conn.execute(
         "SELECT COUNT(*), MIN(TRY_CAST(timestamp AS TIMESTAMP)), "
         "       MAX(TRY_CAST(timestamp AS TIMESTAMP)) "

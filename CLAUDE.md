@@ -27,6 +27,9 @@ Four tiers: Claude Code JSONL -> Parquet lake (`parsers/parquet_writer.py`, re-d
 - **Facet catalog is the single source of truth** (`etl/facets/catalog.py::FACET_SPECS`); `schemas/star` imports FROM it at DDL seed time, never the reverse (import cycle at CLI startup). `dim_facet_type` uses `CREATE TABLE IF NOT EXISTS` + `INSERT ... ON CONFLICT DO NOTHING` so historical prompt_version rows survive -- same pattern for any future history-retaining dim. Tier 2 credentials resolve only via `cli/utils.py::build_facet_extractor_or_exit`.
 - **`--private` is best-effort on render formats (html/markdown), NOT a sharing guarantee, and NOT wired into the duckdb/json ETL** (loud `UsageError` there). It fails loud when cwd is unresolvable instead of no-opping -- the silent-privacy-no-op class shipped three times; never reintroduce it. Comprehensive channel-walking: `internal/plans/private_hardening.md`. `--no-thinking` IS wired through the facts; raw `message_json` never survives staging regardless; the Parquet lake intentionally retains everything (delete post-run if unwanted).
 - **Exit-code-only CLI flag tests are insufficient** -- assert the flag's actual effect (sanitized paths, absent thinking), not just acceptance.
+- **HTML export security is load-bearing -- do NOT remove without understanding the XSS implications.** `render_markdown_text` sanitizes via `nh3.clean(raw, attributes={"code": {"class"}})` (the carve-out keeps fenced-code highlighting); Jinja2 runs `autoescape=True` and every `|safe` in the macros is safe ONLY because content is pre-sanitized (nh3) or pre-escaped (`html.escape`); `base.html` ships a CSP meta tag blocking external scripts/iframes. Transcript content is untrusted input.
+- `search.js` / `global_search.js` are Jinja2 TEMPLATES rendered via `_jinja_env`, not static files.
+- **Never derive identity from `$.sessionId` in `raw_json`** -- raw payloads stay byte-faithful, so agent files' raw entries carry the PARENT's sessionId. Identity is the `session_id` COLUMN (stamped at Tier 1).
 
 ## Testing
 
@@ -50,4 +53,4 @@ Four tiers: Claude Code JSONL -> Parquet lake (`parsers/parquet_writer.py`, re-d
 
 - **New fact table**: failing tests (DDL + lineage cols + behavior + idempotency) -> DDL with the standard lineage block -> `populate_fact_<x>` delegating to `lineage_upsert` -> wire into `run_v15_etl` in dependency order (`fact_session_summary` stays LAST) -> add to `_PROGRESS_TABLES` -> CHANGELOG + STAR_SCHEMA.md.
 - **Removing a feature**: grep imports/`__all__`/CLI registrations/tests; delete; update CHANGELOG, README, `_PROGRESS_TABLES`; grep help text for stale counts.
-- **Versioning**: version in `pyproject.toml`, sync with `CHANGELOG.md` (`[Unreleased]` promotes on release); tag `v0.X.0`. Semver, no major bumps without permission.
+- **Versioning**: version in `pyproject.toml`, sync with `CHANGELOG.md` (`[Unreleased]` promotes on release) AND `PARSER_VERSION` in `src/ccutils/_version.py` (it stamps every lineage row -- a stale value makes rows from different contracts indistinguishable); tag `v0.X.0`. Semver, no major bumps without permission.

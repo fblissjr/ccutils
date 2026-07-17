@@ -28,7 +28,7 @@ from typing import Any
 from ccutils.schemas.star.utils import generate_dimension_key
 
 
-PARSER_VERSION = "0.15.0-dev"
+from ccutils._version import PARSER_VERSION
 DEFAULT_BUSINESS_RULES_VERSION = "1"
 
 
@@ -200,6 +200,11 @@ class EtlRun:
         populators via lineage_upsert) count toward facts_inserted /
         rows_* totals; 'stage' steps (default) are recorded but excluded.
         """
+        if kind not in ("stage", "upsert"):
+            raise ValueError(
+                f"step kind must be 'stage' or 'upsert', got {kind!r} -- "
+                "a typo here silently zeroes every fact rollup"
+            )
         self._step_seq += 1
         step_id = uuid.uuid4().hex
         self.conn.execute(
@@ -215,10 +220,12 @@ class EtlRun:
         counts = StepCounts()
         try:
             yield counts
-        except Exception as e:
+        except BaseException as e:
+            # BaseException so a KeyboardInterrupt mid-step doesn't leave
+            # the step row stuck 'running' (mirrors BatchRun.__exit__).
             _mark_failed(
                 self.conn, table="fact_etl_steps", id_col="step_id",
-                id_val=step_id, error=str(e),
+                id_val=step_id, error=str(e) or type(e).__name__,
             )
             raise
         self.conn.execute(
@@ -406,7 +413,15 @@ class BatchRun:
     def __exit__(self, exc_type, exc, tb) -> bool:
         # Any escaping exception -- including complete() itself failing or
         # a KeyboardInterrupt mid-loop -- marks the batch failed instead of
-        # leaving the row stuck at 'running'. Never suppresses.
+        # leaving the row stuck at 'running'. Guarded on the row still
+        # being 'running' so an exception AFTER a successful complete()
+        # cannot clobber a truthful success/partial status. Never
+        # suppresses.
         if exc is not None:
-            self.fail(str(exc) or exc_type.__name__)
+            status = self.conn.execute(
+                "SELECT status FROM fact_etl_batch_runs WHERE batch_run_id = ?",
+                [self.batch_run_id],
+            ).fetchone()
+            if status is not None and status[0] == "running":
+                self.fail(str(exc) or exc_type.__name__)
         return False

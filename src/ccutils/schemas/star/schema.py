@@ -2137,10 +2137,10 @@ def create_star_schema(db_path):
             SELECT
                 etl_run_id,
                 COUNT(*) AS step_count,
-                SUM(rows_read) FILTER (WHERE step_kind = 'upsert') AS rows_read,
-                SUM(rows_inserted) FILTER (WHERE step_kind = 'upsert') AS rows_inserted,
-                SUM(rows_updated) FILTER (WHERE step_kind = 'upsert') AS rows_updated,
-                SUM(rows_soft_deleted) FILTER (WHERE step_kind = 'upsert') AS rows_soft_deleted
+                COALESCE(SUM(rows_read) FILTER (WHERE step_kind = 'upsert'), 0) AS rows_read,
+                COALESCE(SUM(rows_inserted) FILTER (WHERE step_kind = 'upsert'), 0) AS rows_inserted,
+                COALESCE(SUM(rows_updated) FILTER (WHERE step_kind = 'upsert'), 0) AS rows_updated,
+                COALESCE(SUM(rows_soft_deleted) FILTER (WHERE step_kind = 'upsert'), 0) AS rows_soft_deleted
             FROM fact_etl_steps
             GROUP BY etl_run_id
         ) s ON r.etl_run_id = s.etl_run_id
@@ -2170,3 +2170,37 @@ def _apply_column_migrations(conn) -> None:
         conn.execute(
             f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {column} {col_type}"
         )
+
+    # Backfills for migrated columns whose value is derivable from existing
+    # data. ALTER ADD COLUMN leaves pre-existing rows NULL -- without this,
+    # historical upsert steps silently vanish from every step_kind-scoped
+    # rollup while the stored fact_etl_runs counts still show them.
+    conn.execute(
+        """
+        UPDATE fact_etl_steps
+        SET step_kind = CASE
+            WHEN step_name LIKE 'upsert:%' THEN 'upsert'
+            ELSE 'stage'
+        END
+        WHERE step_kind IS NULL
+        """
+    )
+
+    # Reconcile pre-0.18 subagent-collapse corruption: the old contract
+    # keyed agent transcripts on their embedded (parent) sessionId, which
+    # mislabeled PARENT rows is_agent=TRUE with a SELF-referencing
+    # parent_session_key. Self-parenting is impossible under the current
+    # contract, so it is a reliable corruption signature; re-ETL never
+    # touches these columns on the parent (its path doesn't match the
+    # subagent layout), hence the one-time repair here.
+    conn.execute(
+        """
+        UPDATE dim_session
+        SET is_agent = FALSE,
+            agent_id = NULL,
+            parent_session_key = NULL,
+            agent_type = NULL,
+            agent_description = NULL
+        WHERE parent_session_key = session_key
+        """
+    )

@@ -324,7 +324,7 @@ compute_cluster_metrics      (T07)   — fact_cluster_metrics
 
 ## 7. Use cases — derived from the data we'd have
 
-This is the *honest* mapping. For each use case, what facets it requires and what queries it implies. Use cases that need facets not in the catalog above are flagged as "out of scope" so we don't pretend to enable them.
+For each use case, what facets it requires and what queries it implies. Use cases that need facets not in the catalog above are flagged as "out of scope" so we don't pretend to enable them.
 
 | # | Use case | Required facets | Required clustering? | Query shape |
 |---|---|---|---|---|

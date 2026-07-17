@@ -23,7 +23,6 @@ JSONL is the immutable audit log; Parquet is a typed-columnar cache.
 from __future__ import annotations
 
 import json
-import re
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -43,10 +42,11 @@ from ccutils.parsers.models import (
     UserEntry,
     parse_log_entry,
 )
+from ccutils.etl.utils import SUBAGENT_PATH_RE
 from ccutils.schemas.star.utils import generate_dimension_key
 
 
-PARSER_VERSION = "0.15.0-dev"
+from ccutils._version import PARSER_VERSION
 RECORD_SOURCE_CLAUDE_CODE_JSONL = "claude_code_jsonl"
 
 
@@ -282,10 +282,13 @@ def write_session_to_parquet(
     # Subagent identity (real Claude Code contract): agent transcript
     # entries carry the PARENT's sessionId on every line, so raw capture
     # would leave log_entries.parquet disagreeing with session_meta.parquet
-    # (whose session_id is the filename stem). Stamp rows with the file's
-    # identity at Tier 1 so the lake is internally consistent; staging
-    # keeps an equivalent override to repair lakes written before this.
-    if re.search(r"/subagents/agent-[^/]+\.jsonl$", str(jsonl_path)):
+    # (whose session_id is the filename stem). Stamp the session_id COLUMN
+    # with the file's identity at Tier 1 so the lake is internally
+    # consistent; staging keeps an equivalent override to repair lakes
+    # written before this. raw_json intentionally stays byte-faithful --
+    # never derive identity from $.sessionId in raw payloads. as_posix()
+    # keeps the match separator-uniform.
+    if SUBAGENT_PATH_RE.search(Path(jsonl_path).resolve().as_posix()):
         for row in rows:
             row["session_id"] = session_id
 

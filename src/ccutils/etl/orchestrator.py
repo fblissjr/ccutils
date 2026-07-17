@@ -73,6 +73,7 @@ from ccutils.etl.staging import load_session_to_staging
 from ccutils.etl.utils import (
     insert_missing_dim_dates,
     project_dir_sql,
+    project_key_from_dir_sql,
     project_key_sql,
 )
 from ccutils.parsers.parquet_writer import write_session_to_parquet
@@ -159,7 +160,7 @@ def _upsert_minimal_dimensions(conn) -> int:
         f"""
         INSERT INTO dim_project (project_key, project_path, project_name)
         SELECT
-            md5(sle.project_dir) AS project_key,
+            {project_key_from_dir_sql("sle.project_dir")} AS project_key,
             sle.project_dir AS project_path,
             -- project_name is the last path segment of project_path
             regexp_extract(sle.project_dir, '([^/]+)$', 1) AS project_name
@@ -169,7 +170,7 @@ def _upsert_minimal_dimensions(conn) -> int:
         ) sle
         WHERE NOT EXISTS (
             SELECT 1 FROM dim_project dp
-            WHERE dp.project_key = md5(sle.project_dir)
+            WHERE dp.project_key = {project_key_from_dir_sql("sle.project_dir")}
         )
         """
     )
@@ -277,7 +278,12 @@ def run_v15_etl(
     Returns:
         dict with 'etl_run_id' and 'sessions_inserted' for caller use.
     """
-    session_path = Path(session_path)
+    # resolve() so the subagent-layout matchers (Tier-1 stamp, staging
+    # override, enrichment) see the full path even when the CLI is invoked
+    # with a relative path from inside the project/subagents directory --
+    # otherwise the identity override silently skips and the agent
+    # collapses into its parent.
+    session_path = Path(session_path).resolve()
     if parquet_lake_root is None:
         parquet_lake_root = session_path.parent / "parquet_lake"
     parquet_lake_root = Path(parquet_lake_root)
@@ -384,8 +390,10 @@ def run_v15_etl(
                 data_start_ts=staged.data_start_ts,
                 data_end_ts=staged.data_end_ts,
             )
-        except Exception as e:
-            run.fail(str(e))
+        except BaseException as e:
+            # BaseException so a KeyboardInterrupt doesn't leave the run
+            # row stuck 'running' (batch + step grains already do this).
+            run.fail(str(e) or type(e).__name__)
             raise
 
     return {"etl_run_id": run.etl_run_id, "sessions_inserted": new_sessions}

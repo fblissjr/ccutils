@@ -14,7 +14,7 @@ Idempotent end-to-end: rerunning on unchanged source produces no UPDATEs.
 import json
 
 import pytest
-from conftest import write_minimal_session
+from helpers_ccutils import write_minimal_session
 
 from ccutils import create_star_schema
 from ccutils.etl.facets import CannedFacetExtractor

@@ -17,7 +17,7 @@ from __future__ import annotations
 import json
 
 import pytest
-from conftest import write_minimal_session
+from helpers_ccutils import write_minimal_session
 
 from ccutils import create_star_schema
 from ccutils.etl.orchestrator import run_v15_etl
@@ -144,8 +144,8 @@ class TestSubagentDimSessionEnrichment:
 
 
 class TestRealContractParentSessionId:
-    """The REAL Claude Code contract (verified against the on-disk corpus,
-    across the entire on-disk corpus): subagent JSONL entries carry
+    """The REAL Claude Code contract (verified across the entire on-disk
+    corpus): subagent JSONL entries carry
     the PARENT's sessionId, not their own. The transcript's identity comes
     from the file (agent-<id>), derived at staging load -- otherwise every
     agent collapses into its parent's dim_session row, the parent gets

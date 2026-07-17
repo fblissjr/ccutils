@@ -17,16 +17,14 @@ rows in the first place).
 from __future__ import annotations
 
 import json
-import re
 from pathlib import Path
 
 from ccutils.etl.lineage import EtlRun
-from ccutils.etl.utils import fetch_scalar
+from ccutils.etl.utils import SUBAGENT_PATH_RE, fetch_scalar
 
 
-_SUBAGENT_PATH_RE = re.compile(
-    r"/(?P<parent>[^/]+)/subagents/agent-(?P<agent_id>[^/]+)\.jsonl$"
-)
+# Single source in etl/utils.py -- see the layout-rule block there.
+_SUBAGENT_PATH_RE = SUBAGENT_PATH_RE
 
 
 def populate_subagent_dim_session(conn, *, run: EtlRun) -> None:

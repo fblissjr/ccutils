@@ -117,27 +117,27 @@ def generate_duckdb_archive(
 
     conn = create_star_schema(db_path)
 
-    # Warehouse runs want complete coverage: no summary-based curation.
-    if projects is None:
-        projects = find_all_sessions(
-            source_folder, include_agents=include_agents,
-            include_unsummarized=True,
-        )
-    total_session_count = sum(len(p["sessions"]) for p in projects)
     processed_count = 0
     successful_sessions = 0
     failed_sessions = []
     start_time = time.time()
 
-    # One orchestration row for this whole invocation; every per-session
-    # EtlRun (and its steps) links back via batch_run_id, and complete()
-    # rolls the children's counts + CDC window up onto it. BatchRun's
-    # __exit__ marks the row failed on any escaping exception (including
+    # One orchestration row per CLI invocation, started BEFORE session
+    # discovery so even a crash during the scan is captured as a failed
+    # batch (the invariant the README advertises). BatchRun's __exit__
+    # marks the row failed on any escaping exception (including
     # KeyboardInterrupt / complete() itself erroring), so the batch can
     # never stick at 'running'.
     with BatchRun.start(
         conn, source_root=str(source_folder), output_format=output_format
     ) as batch:
+        # Warehouse runs want complete coverage: no summary-based curation.
+        if projects is None:
+            projects = find_all_sessions(
+                source_folder, include_agents=include_agents,
+                include_unsummarized=True,
+            )
+        total_session_count = sum(len(p["sessions"]) for p in projects)
         # Per-session ETL closure. include_thinking forwards through; the
         # other legacy back-compat kwargs (truncate_output, private) are
         # explicitly named at the closure boundary rather than absorbed by
