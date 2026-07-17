@@ -70,7 +70,11 @@ from ccutils.etl.fact_tool_calls import (
 )
 from ccutils.etl.lineage import EtlRun
 from ccutils.etl.staging import load_session_to_staging
-from ccutils.etl.utils import insert_missing_dim_dates
+from ccutils.etl.utils import (
+    insert_missing_dim_dates,
+    project_dir_sql,
+    project_key_sql,
+)
 from ccutils.parsers.parquet_writer import write_session_to_parquet
 
 
@@ -92,7 +96,7 @@ def _upsert_minimal_dimensions(conn) -> None:
     # min/max so date-range filtering on dim_session works immediately
     # (without waiting on Phase D enrichment).
     conn.execute(
-        """
+        f"""
         INSERT INTO dim_session (
             session_key, session_id, project_key,
             cwd, git_branch, version, slug, entrypoint,
@@ -101,7 +105,7 @@ def _upsert_minimal_dimensions(conn) -> None:
         SELECT
             md5(sle.session_id) AS session_key,
             sle.session_id,
-            md5(regexp_replace(ANY_VALUE(sle.source_path), '/[^/]+$', '')) AS project_key,
+            {project_key_sql("ANY_VALUE(sle.source_path)")} AS project_key,
             ANY_VALUE(sle.cwd) AS cwd,
             ANY_VALUE(sle.git_branch) AS git_branch,
             ANY_VALUE(sle.version) AS version,
@@ -122,7 +126,7 @@ def _upsert_minimal_dimensions(conn) -> None:
     # Idempotent backfill: if a session already exists from a prior ETL run
     # but lacks project_key / timestamps (legacy minimal-dim path), set them.
     conn.execute(
-        """
+        f"""
         UPDATE dim_session ds
         SET project_key = COALESCE(ds.project_key, sub.project_key),
             first_timestamp = COALESCE(ds.first_timestamp, sub.first_timestamp),
@@ -130,7 +134,7 @@ def _upsert_minimal_dimensions(conn) -> None:
         FROM (
             SELECT
                 md5(sle.session_id) AS session_key,
-                md5(regexp_replace(ANY_VALUE(sle.source_path), '/[^/]+$', '')) AS project_key,
+                {project_key_sql("ANY_VALUE(sle.source_path)")} AS project_key,
                 MIN(TRY_CAST(sle.timestamp AS TIMESTAMP)) AS first_timestamp,
                 MAX(TRY_CAST(sle.timestamp AS TIMESTAMP)) AS last_timestamp
             FROM stg_log_entries sle
@@ -144,20 +148,21 @@ def _upsert_minimal_dimensions(conn) -> None:
         """
     )
 
-    # dim_project: surrogate from staging.source_path's parent dir
+    # dim_project: surrogate from the session's project directory (walks up
+    # past <uuid>/subagents layers -- see project_dir_sql).
     conn.execute(
-        """
+        f"""
         INSERT INTO dim_project (project_key, project_path, project_name)
         SELECT
-            md5(regexp_replace(sle.source_path, '/[^/]+$', '')) AS project_key,
-            regexp_replace(sle.source_path, '/[^/]+$', '') AS project_path,
+            {project_key_sql("sle.source_path")} AS project_key,
+            {project_dir_sql("sle.source_path")} AS project_path,
             -- project_name is the last path segment of project_path
-            regexp_extract(regexp_replace(sle.source_path, '/[^/]+$', ''),
+            regexp_extract({project_dir_sql("sle.source_path")},
                            '([^/]+)$', 1) AS project_name
         FROM (SELECT DISTINCT source_path FROM stg_log_entries) sle
         WHERE NOT EXISTS (
             SELECT 1 FROM dim_project dp
-            WHERE dp.project_key = md5(regexp_replace(sle.source_path, '/[^/]+$', ''))
+            WHERE dp.project_key = {project_key_sql("sle.source_path")}
         )
         """
     )

@@ -316,7 +316,9 @@ def group_by_project(sessions):
     return {k: groups[k] for k in sorted_keys}
 
 
-def find_all_sessions(folder, include_agents=False, project_filter=None):
+def find_all_sessions(
+    folder, include_agents=False, project_filter=None, include_unsummarized=False
+):
     """Find all sessions in a Claude projects folder, grouped by project.
 
     Returns a list of project dicts, each containing:
@@ -327,10 +329,19 @@ def find_all_sessions(folder, include_agents=False, project_filter=None):
     Sessions are sorted by modification time (most recent first) within each project.
     Projects are sorted by their most recent session.
 
+    The project is the TOP-LEVEL directory under ``folder``, not the file's
+    immediate parent: subagent files live at
+    ``<project>/<parent-uuid>/subagents/agent-*.jsonl`` and grouping by
+    parent dir would lump every subagent across all projects into a
+    synthetic "subagents" project (and hide them from ``project_filter``).
+
     Args:
         folder: Path to the projects folder
         include_agents: Whether to include agent-* session files
         project_filter: Optional filter for project names (partial, case-insensitive)
+        include_unsummarized: When True, keep sessions whose summary is
+            "warmup" or "(no summary)". The curated default suits browsable
+            exports; warehouse batch runs pass True so coverage is complete.
     """
     folder = Path(folder)
     if not folder.exists():
@@ -343,20 +354,29 @@ def find_all_sessions(folder, include_agents=False, project_filter=None):
         if not include_agents and session_file.name.startswith("agent-"):
             continue
 
+        # Project = first path component below the scanned folder. A .jsonl
+        # directly in the scanned folder (no project dir) keeps the old
+        # parent-dir attribution.
+        rel_parts = session_file.relative_to(folder).parts
+        if len(rel_parts) > 1:
+            project_key = rel_parts[0]
+            project_folder = folder / project_key
+        else:
+            project_folder = session_file.parent
+            project_key = project_folder.name
+
         # Skip projects that don't match filter
         if project_filter and not matches_project_filter(
-            session_file.parent.name, project_filter
+            project_key, project_filter
         ):
             continue
 
-        # Get summary and skip boring sessions
+        # Get summary and (by default) skip boring sessions
         summary = get_session_summary(session_file)
-        if summary.lower() == "warmup" or summary == "(no summary)":
+        if not include_unsummarized and (
+            summary.lower() == "warmup" or summary == "(no summary)"
+        ):
             continue
-
-        # Get project folder
-        project_folder = session_file.parent
-        project_key = project_folder.name
 
         if project_key not in projects:
             projects[project_key] = {

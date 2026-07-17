@@ -247,6 +247,80 @@ class TestFindAllSessions:
         assert len(result) == 2
 
 
+class TestSubagentProjectAttribution:
+    """Subagent files live at <project>/<parent-uuid>/subagents/agent-*.jsonl
+    and must be attributed to <project>, not a synthetic 'subagents' project."""
+
+    @pytest.fixture
+    def nested_agent(self, mock_projects_dir):
+        sub_dir = (
+            mock_projects_dir
+            / "-home-user-projects-project-a"
+            / "3f2a1b4c-parent"
+            / "subagents"
+        )
+        sub_dir.mkdir(parents=True)
+        agent = sub_dir / "agent-nested01.jsonl"
+        agent.write_text(
+            '{"type": "user", "timestamp": "2025-01-06T10:00:00.000Z", "message": {"role": "user", "content": "Nested agent session"}}\n'
+        )
+        return agent
+
+    def test_nested_agent_groups_under_parent_project(
+        self, mock_projects_dir, nested_agent
+    ):
+        result = find_all_sessions(mock_projects_dir, include_agents=True)
+
+        names = [p["name"] for p in result]
+        assert "subagents" not in names
+
+        project_a = next(p for p in result if p["name"] == "project-a")
+        assert nested_agent in [s["path"] for s in project_a["sessions"]]
+
+    def test_project_path_is_top_level_dir(self, mock_projects_dir, nested_agent):
+        result = find_all_sessions(mock_projects_dir, include_agents=True)
+
+        project_a = next(p for p in result if p["name"] == "project-a")
+        assert project_a["path"] == (
+            mock_projects_dir / "-home-user-projects-project-a"
+        )
+
+    def test_project_filter_includes_nested_agents(
+        self, mock_projects_dir, nested_agent
+    ):
+        result = find_all_sessions(
+            mock_projects_dir, include_agents=True, project_filter="project-a"
+        )
+
+        assert len(result) == 1
+        assert nested_agent in [s["path"] for s in result[0]["sessions"]]
+
+
+class TestIncludeUnsummarized:
+    """include_unsummarized=True disables the warmup/(no summary) skip so
+    batch warehouse runs see every session on disk."""
+
+    def test_warmup_included_when_requested(self, mock_projects_dir):
+        result = find_all_sessions(mock_projects_dir, include_unsummarized=True)
+
+        project_b = next(p for p in result if p["name"] == "project-b")
+        assert len(project_b["sessions"]) == 2
+
+    def test_no_summary_included_when_requested(self, mock_projects_dir):
+        blank = mock_projects_dir / "-home-user-projects-project-b" / "empty1.jsonl"
+        blank.write_text(
+            '{"type": "system", "timestamp": "2025-01-07T10:00:00.000Z"}\n'
+        )
+
+        result = find_all_sessions(mock_projects_dir, include_unsummarized=True)
+        project_b = next(p for p in result if p["name"] == "project-b")
+        assert len(project_b["sessions"]) == 3
+
+        default = find_all_sessions(mock_projects_dir)
+        project_b_default = next(p for p in default if p["name"] == "project-b")
+        assert len(project_b_default["sessions"]) == 1
+
+
 class TestGenerateBatchHtml:
     """Tests for generate_batch_html function."""
 

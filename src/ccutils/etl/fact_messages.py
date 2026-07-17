@@ -13,6 +13,7 @@ from __future__ import annotations
 
 from ccutils.etl.lineage import EtlRun
 from ccutils.etl.upsert import lineage_upsert
+from ccutils.etl.utils import project_key_sql
 
 
 # Mutable-content columns hashed for change detection. Lineage cols, IDs,
@@ -207,9 +208,9 @@ def populate_fact_messages(conn, *, run: EtlRun) -> None:
     conn.execute("ALTER TABLE _inbound_messages ADD COLUMN project_key VARCHAR")
     conn.execute("ALTER TABLE _inbound_messages ADD COLUMN model_key VARCHAR")
     conn.execute(
-        """
+        f"""
         UPDATE _inbound_messages im
-        SET project_key = md5(regexp_replace(sle.source_path, '/[^/]+$', ''))
+        SET project_key = {project_key_sql("sle.source_path")}
         FROM stg_log_entries sle
         WHERE sle.entry_id = im.entry_id
         """

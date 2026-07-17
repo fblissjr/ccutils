@@ -11,6 +11,27 @@ from __future__ import annotations
 import json
 
 
+def project_dir_sql(col: str) -> str:
+    """SQL expression: the project directory for a session source_path.
+
+    For a top-level session (``.../projects/<project>/<uuid>.jsonl``) that is
+    the parent directory. Subagent files live at
+    ``.../projects/<project>/<parent-uuid>/subagents/agent-<id>.jsonl`` --
+    stripping only the filename would attribute every subagent to a synthetic
+    "subagents" project, so the pattern also strips any number of trailing
+    ``/<uuid>/subagents`` layers (nested delegation nests the layout).
+
+    Every populator that derives ``project_key`` MUST use this expression;
+    drifted copies were how the "subagents" mis-attribution shipped.
+    """
+    return f"regexp_replace({col}, '(/[^/]+/subagents)*/[^/]+$', '')"
+
+
+def project_key_sql(col: str) -> str:
+    """SQL expression: md5 surrogate key of :func:`project_dir_sql`."""
+    return f"md5({project_dir_sql(col)})"
+
+
 def fetch_scalar(conn, sql: str, params=None):
     """Run a query expected to return at least one row; return row[0].
 

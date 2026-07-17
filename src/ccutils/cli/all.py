@@ -205,8 +205,14 @@ def all_cmd(
     if not quiet:
         click.echo(f"Scanning {source}...")
 
+    # Warehouse formats ingest everything; html/markdown keep the curated
+    # skip of warmup / no-summary sessions. Mirror that here so the count
+    # and --dry-run listing match what the selected format will process.
     projects = find_all_sessions(
-        source, include_agents=include_agents, project_filter=project_filter
+        source,
+        include_agents=include_agents,
+        project_filter=project_filter,
+        include_unsummarized=output_format in ("duckdb", "json", "both"),
     )
 
     if not projects:

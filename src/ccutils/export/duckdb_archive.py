@@ -127,7 +127,10 @@ def generate_duckdb_archive(
             include_thinking=include_thinking,
         )
 
-    projects = find_all_sessions(source_folder, include_agents=include_agents)
+    # Warehouse runs want complete coverage: no summary-based curation.
+    projects = find_all_sessions(
+        source_folder, include_agents=include_agents, include_unsummarized=True
+    )
 
     total_session_count = sum(len(p["sessions"]) for p in projects)
     processed_count = 0
