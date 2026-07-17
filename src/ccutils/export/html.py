@@ -24,6 +24,7 @@ from ..parsers import (
     parse_session_file,
     PROMPTS_PER_PAGE,
 )
+from ..parsers.discovery import curate_projects
 from ..parsers.session import RENDERED_NON_MESSAGE_TYPES, extract_header_fields
 
 # Display labels for the non-message entry types. Keys must match
@@ -620,6 +621,7 @@ def generate_batch_html(
     progress_callback=None,
     no_search_index=False,
     private=False,
+    projects=None,
 ):
     """Generate HTML archive for all sessions in a Claude projects folder.
 
@@ -646,8 +648,13 @@ def generate_batch_html(
     (output_dir / "transcript.css").write_text(CSS, encoding="utf-8")
     (output_dir / "transcript.js").write_text(JS, encoding="utf-8")
 
-    # Find all sessions
-    projects = find_all_sessions(source_folder, include_agents=include_agents)
+    # Find all sessions. A pre-scanned list (already project-filtered by
+    # the CLI) skips the rescan; either way the render-format curation
+    # rule applies -- html never renders warmup/no-summary sessions.
+    if projects is None:
+        projects = find_all_sessions(source_folder, include_agents=include_agents)
+    else:
+        projects = curate_projects(projects)
 
     # Calculate total for progress tracking
     total_session_count = sum(len(p["sessions"]) for p in projects)

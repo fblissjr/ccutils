@@ -22,6 +22,7 @@ from __future__ import annotations
 import re
 
 from ccutils.etl.lineage import EtlRun
+from ccutils.etl.utils import fetch_scalar
 
 
 # Identifier names that pass into SQL identifier positions are validated
@@ -108,9 +109,9 @@ def lineage_upsert(
         _validate_ident(c)
 
     with run.step(f"upsert:{table}") as st:
-        st.rows_read = conn.execute(
-            f"SELECT COUNT(*) FROM {inbound_table}"
-        ).fetchone()[0]
+        st.rows_read = fetch_scalar(
+            conn, f"SELECT COUNT(*) FROM {inbound_table}"
+        )
 
         if derive_session_keys:
             for ddl in (
@@ -138,7 +139,8 @@ def lineage_upsert(
         set_clause = ",\n            ".join(
             f"{c} = im.{c}" for c in (*payload_cols, *extra_keys)
         )
-        st.rows_updated = conn.execute(
+        st.rows_updated = fetch_scalar(
+            conn,
             f"""
             UPDATE {table} tgt
             SET
@@ -154,7 +156,7 @@ def lineage_upsert(
               AND tgt.hash_diff IS DISTINCT FROM im.hash_diff
             """,
             [run.version_key, run.etl_run_id],
-        ).fetchone()[0]
+        )
 
         all_cols = [natural_key]
         if natural_key != "session_id":
@@ -162,7 +164,8 @@ def lineage_upsert(
         all_cols.extend(["session_key", "date_key", "time_key", *payload_cols])
         insert_col_list = ", ".join(all_cols)
         select_col_list = ", ".join(f"im.{c}" for c in all_cols)
-        st.rows_inserted = conn.execute(
+        st.rows_inserted = fetch_scalar(
+            conn,
             f"""
             INSERT INTO {table} (
                 created_by_version_key, last_updated_by_version_key,
@@ -178,12 +181,13 @@ def lineage_upsert(
             )
             """,
             [run.version_key, run.version_key, run.etl_run_id, record_source],
-        ).fetchone()[0]
+        )
 
         extra_scope = (
             f" AND ({soft_delete_scope_sql})" if soft_delete_scope_sql else ""
         )
-        st.rows_soft_deleted = conn.execute(
+        st.rows_soft_deleted = fetch_scalar(
+            conn,
             f"""
             UPDATE {table} tgt
             SET is_deleted = TRUE,
@@ -203,6 +207,6 @@ def lineage_upsert(
               {extra_scope}
             """,
             [run.version_key, run.etl_run_id],
-        ).fetchone()[0]
+        )
 
         conn.execute(f"DROP TABLE {inbound_table}")

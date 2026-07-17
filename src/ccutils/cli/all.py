@@ -8,6 +8,7 @@ import click
 from click_option_group import optgroup
 
 from ..parsers import find_all_sessions
+from ..parsers.discovery import curate_projects
 from ..export import (
     generate_batch_html,
     generate_batch_markdown,
@@ -205,9 +206,12 @@ def all_cmd(
     if not quiet:
         click.echo(f"Scanning {source}...")
 
-    # Warehouse formats ingest everything; html/markdown keep the curated
-    # skip of warmup / no-summary sessions. Mirror that here so the count
-    # and --dry-run listing match what the selected format will process.
+    # One scan, passed through to every exporter below (also the only way
+    # -p reaches them). Warehouse formats ingest everything; html/markdown
+    # apply the curated skip of warmup / no-summary sessions themselves
+    # (curate_projects inside the exporters), so for --format both the
+    # two halves intentionally cover different session sets -- the count
+    # line reports both numbers.
     projects = find_all_sessions(
         source,
         include_agents=include_agents,
@@ -224,7 +228,19 @@ def all_cmd(
     total_sessions = sum(len(p["sessions"]) for p in projects)
 
     if not quiet:
-        click.echo(f"Found {len(projects)} projects with {total_sessions} sessions")
+        if output_format == "both":
+            curated_sessions = sum(
+                len(p["sessions"]) for p in curate_projects(projects)
+            )
+            click.echo(
+                f"Found {len(projects)} projects with {total_sessions} sessions "
+                f"({curated_sessions} eligible for the HTML half; warehouse "
+                f"ingests all {total_sessions})"
+            )
+        else:
+            click.echo(
+                f"Found {len(projects)} projects with {total_sessions} sessions"
+            )
 
     if dry_run:
         # Dry-run always outputs (it's the point of dry-run), but respects --quiet
@@ -278,6 +294,7 @@ def all_cmd(
             progress_callback=html_progress,
             no_search_index=no_search_index,
             private=private,
+            projects=projects,
         )
 
     # Generate markdown if requested (render-only: one .md per session in
@@ -294,6 +311,7 @@ def all_cmd(
             include_thinking=include_thinking,
             private=private,
             progress_callback=markdown_progress,
+            projects=projects,
         )
 
     # Generate DuckDB if requested (always v0.15 star schema)
@@ -311,6 +329,7 @@ def all_cmd(
             batch_size=batch_size,
             private=private,
             facet_extractor=facet_extractor,
+            projects=projects,
         )
         if stats is None:
             stats = duckdb_stats
@@ -337,6 +356,7 @@ def all_cmd(
             batch_size=batch_size,
             private=private,
             facet_extractor=facet_extractor,
+            projects=projects,
         )
         if stats is None:
             stats = duckdb_stats

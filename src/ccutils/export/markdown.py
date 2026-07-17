@@ -18,6 +18,7 @@ from ..parsers import (
     get_session_summary,
     parse_session_file,
 )
+from ..parsers.discovery import curate_projects
 from .html import (
     _resolve_private_cwd,
     _sanitize_loglines,
@@ -279,6 +280,7 @@ def generate_batch_markdown(
     include_thinking=True,
     private=False,
     progress_callback=None,
+    projects=None,
 ):
     """Generate a markdown archive for all sessions in a projects folder.
 
@@ -292,7 +294,12 @@ def generate_batch_markdown(
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    projects = find_all_sessions(source_folder, include_agents=include_agents)
+    # Pre-scanned list (already project-filtered by the CLI) skips the
+    # rescan; the render-format curation rule applies either way.
+    if projects is None:
+        projects = find_all_sessions(source_folder, include_agents=include_agents)
+    else:
+        projects = curate_projects(projects)
 
     total_session_count = sum(len(p["sessions"]) for p in projects)
     processed_count = 0

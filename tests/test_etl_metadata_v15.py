@@ -321,3 +321,148 @@ class TestArchiveWiring:
             assert orphans == 0
         finally:
             conn.close()
+
+
+class TestReviewFixes:
+    """Regression tests for the post-review fixes to the metadata layer."""
+
+    def test_facts_inserted_excludes_staging_rows(self, conn, tmp_path):
+        session = _write_session(tmp_path / "s1.jsonl", "fix-s1")
+        result = run_v15_etl(conn, session, parquet_lake_root=tmp_path / "lake")
+        facts_inserted, upsert_sum, staging_rows = conn.execute(
+            """
+            SELECT
+                (SELECT facts_inserted FROM fact_etl_runs WHERE etl_run_id = ?),
+                (SELECT COALESCE(SUM(rows_inserted), 0) FROM fact_etl_steps
+                 WHERE etl_run_id = ? AND step_name LIKE 'upsert:%'),
+                (SELECT rows_inserted FROM fact_etl_steps
+                 WHERE etl_run_id = ? AND step_name = 'load_staging')
+            """,
+            [result["etl_run_id"]] * 3,
+        ).fetchone()
+        assert staging_rows == 2          # step-grain truth is still recorded
+        assert facts_inserted == upsert_sum
+        assert facts_inserted > 0
+
+    def test_batch_rollup_excludes_staging_rows(self, conn, tmp_path):
+        batch = BatchRun.start(conn, source_root=str(tmp_path), output_format="duckdb")
+        session = _write_session(tmp_path / "s1.jsonl", "fix-s2")
+        run_v15_etl(
+            conn, session, parquet_lake_root=tmp_path / "lake",
+            batch_run_id=batch.batch_run_id,
+        )
+        batch.complete(expected_sessions=1)
+        batch_inserted, upsert_sum = conn.execute(
+            """
+            SELECT
+                (SELECT rows_inserted FROM fact_etl_batch_runs WHERE batch_run_id = ?),
+                (SELECT COALESCE(SUM(rows_inserted), 0) FROM fact_etl_steps
+                 WHERE batch_run_id = ? AND step_name LIKE 'upsert:%')
+            """,
+            [batch.batch_run_id] * 2,
+        ).fetchone()
+        assert batch_inserted == upsert_sum
+
+    def test_expected_sessions_counts_missing_children_as_failed(self, conn, tmp_path):
+        batch = BatchRun.start(conn, source_root=str(tmp_path), output_format="duckdb")
+        session = _write_session(tmp_path / "s1.jsonl", "fix-s3")
+        run_v15_etl(
+            conn, session, parquet_lake_root=tmp_path / "lake",
+            batch_run_id=batch.batch_run_id,
+        )
+        # 3 sessions were attempted; 2 died before EtlRun.start wrote a row.
+        batch.complete(expected_sessions=3)
+        row = conn.execute(
+            "SELECT status, sessions_seen, sessions_succeeded, sessions_failed "
+            "FROM fact_etl_batch_runs WHERE batch_run_id = ?",
+            [batch.batch_run_id],
+        ).fetchone()
+        assert row == ("partial", 3, 1, 2)
+
+    def test_stuck_running_child_counts_as_failed(self, conn):
+        batch = BatchRun.start(conn, source_root="/src", output_format="duckdb")
+        EtlRun.start(conn, source_path="/dead", batch_run_id=batch.batch_run_id)
+        # child never completes nor fails (hard crash simulation)
+        batch.complete(expected_sessions=1)
+        row = conn.execute(
+            "SELECT status, sessions_seen, sessions_succeeded, sessions_failed "
+            "FROM fact_etl_batch_runs WHERE batch_run_id = ?",
+            [batch.batch_run_id],
+        ).fetchone()
+        assert row == ("partial", 1, 0, 1)
+
+    def test_sessions_inserted_honest_on_rerun(self, conn, tmp_path):
+        session = _write_session(tmp_path / "s1.jsonl", "fix-s4")
+        first = run_v15_etl(conn, session, parquet_lake_root=tmp_path / "lake")
+        second = run_v15_etl(conn, session, parquet_lake_root=tmp_path / "lake")
+        rows = {
+            run_id: conn.execute(
+                "SELECT sessions_inserted, sessions_updated FROM fact_etl_runs "
+                "WHERE etl_run_id = ?", [run_id]
+            ).fetchone()
+            for run_id in (first["etl_run_id"], second["etl_run_id"])
+        }
+        assert rows[first["etl_run_id"]] == (1, 0)
+        assert rows[second["etl_run_id"]] == (0, 1)
+
+    def test_local_etl_session_files_marks_batch_failed_on_complete_error(
+        self, conn, tmp_path, monkeypatch
+    ):
+        from ccutils.cli.local import _etl_session_files
+        from ccutils.etl import lineage as lineage_mod
+
+        session = _write_session(tmp_path / "s1.jsonl", "fix-s5")
+
+        real_complete = lineage_mod.BatchRun.complete
+
+        def boom(self, **kwargs):
+            raise RuntimeError("rollup exploded")
+
+        monkeypatch.setattr(lineage_mod.BatchRun, "complete", boom)
+        with pytest.raises(RuntimeError):
+            _etl_session_files(
+                conn, [session],
+                project_name="p", parquet_lake=tmp_path / "lake",
+                facet_extractor=None, include_thinking=True,
+                output_format="duckdb",
+            )
+        monkeypatch.setattr(lineage_mod.BatchRun, "complete", real_complete)
+        status, err = conn.execute(
+            "SELECT status, error_message FROM fact_etl_batch_runs"
+        ).fetchone()
+        assert status == "failed"
+        assert "rollup exploded" in err
+
+
+class TestJsonExportCompleteness:
+    def test_json_archive_exports_populated_facts_and_run_metadata(self, tmp_path):
+        from ccutils.export.duckdb_archive import generate_json_archive
+
+        projects_dir = tmp_path / "projects"
+        proj = projects_dir / "-home-user-projects-proj"
+        proj.mkdir(parents=True)
+        _write_session(proj / "aaa.jsonl", "json-s1")
+
+        out = tmp_path / "json_out"
+        generate_json_archive(projects_dir, out)
+
+        facts = {p.name for p in (out / "facts").glob("*.json")}
+        for required in (
+            "fact_messages.json",
+            "fact_tool_uses.json",
+            "fact_tool_results.json",
+            "fact_attachments.json",
+            "fact_session_facets.json",
+            "fact_etl_runs.json",
+            "fact_etl_batch_runs.json",
+            "fact_etl_steps.json",
+        ):
+            assert required in facts, f"missing {required}"
+        assert "fact_tool_calls.json" not in facts  # nonexistent table
+        assert "stg_log_entries.json" not in facts  # staging never exported
+
+        batch_rows = json.loads(
+            (out / "facts" / "fact_etl_batch_runs.json").read_text()
+        )
+        assert len(batch_rows) == 1
+        assert batch_rows[0]["output_format"] == "json"

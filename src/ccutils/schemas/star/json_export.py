@@ -4,38 +4,29 @@ import json
 from datetime import datetime
 from pathlib import Path
 
-# Tables organized by type (22 total)
-DIMENSION_TABLES = [
-    "dim_tool",
-    "dim_model",
-    "dim_project",
-    "dim_session",
-    "dim_session_chain",
-    "dim_date",
-    "dim_time",
-    "dim_file",
-    "dim_prompt",
-]
+# Exported tables are discovered from the live database at export time
+# (see _star_tables) rather than a hardcoded list -- the old FACT_TABLES
+# literal drifted badly (it exported [] for tables that no longer existed
+# and silently omitted most populated v0.15 facts).
 
-FACT_TABLES = [
-    "fact_messages",
-    "fact_content_blocks",
-    "fact_tool_calls",
-    "fact_session_summary",
-    "fact_file_operations",
-    "fact_code_blocks",
-    "fact_errors",
-    "fact_entity_mentions",
-    "fact_tool_chain_steps",
-    "fact_tool_input_params",
-    "fact_agent_delegations",
-    "fact_session_embeddings",
-    "fact_token_usage",
-    "fact_turn_durations",
-    "fact_diagnostics",
-    "fact_stop_events",
-    "bridge_session_file",
-]
+
+def _star_tables(conn):
+    """Return (dimension_tables, fact_tables) present in the connection.
+
+    Dimensions are dim_*; facts are fact_* plus bridge_*. stg_* (per-run
+    scratch, always cleared) and meta_* (DDL bookkeeping) are not star
+    data and are excluded.
+    """
+    tables = sorted(
+        r[0]
+        for r in conn.execute(
+            "SELECT table_name FROM information_schema.tables "
+            "WHERE table_type = 'BASE TABLE'"
+        ).fetchall()
+    )
+    dims = [t for t in tables if t.startswith("dim_")]
+    facts = [t for t in tables if t.startswith(("fact_", "bridge_"))]
+    return dims, facts
 
 # Key relationships for the star schema
 RELATIONSHIPS = [
@@ -147,9 +138,10 @@ def export_star_schema_to_json(conn, output_dir):
     facts_dir.mkdir(parents=True, exist_ok=True)
 
     table_manifest = {"dimensions": [], "facts": []}
+    dimension_tables, fact_tables = _star_tables(conn)
 
     # Export dimension tables
-    for table_name in DIMENSION_TABLES:
+    for table_name in dimension_tables:
         rows = _export_table(conn, table_name, dimensions_dir)
         table_manifest["dimensions"].append(
             {
@@ -160,7 +152,7 @@ def export_star_schema_to_json(conn, output_dir):
         )
 
     # Export fact tables
-    for table_name in FACT_TABLES:
+    for table_name in fact_tables:
         rows = _export_table(conn, table_name, facts_dir)
         table_manifest["facts"].append(
             {

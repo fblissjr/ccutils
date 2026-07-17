@@ -48,7 +48,6 @@ _PROGRESS_TABLES = (
     "fact_errors",
     "fact_tool_chain_steps",
     "fact_session_facets",
-    "fact_etl_steps",
 )
 
 
@@ -63,6 +62,8 @@ def generate_duckdb_archive(
     batch_size=10,
     private=False,
     facet_extractor=None,
+    output_format="duckdb",
+    projects=None,
 ):
     """Generate a DuckDB archive for all sessions under ``source_folder``.
 
@@ -96,6 +97,13 @@ def generate_duckdb_archive(
             this function programmatically with private=True, you will NOT
             get sanitized paths.
         facet_extractor: Optional Tier 2 facet extractor; None disables.
+        output_format: label recorded on the fact_etl_batch_runs row --
+            "duckdb" for a direct archive, "json" when driven by
+            generate_json_archive.
+        projects: optional pre-scanned project list (find_all_sessions
+            output). Passing it avoids a second full tree walk AND is how
+            the CLI's -p project filter reaches this path; None rescans
+            unfiltered with complete (unsummarized-inclusive) coverage.
 
     Returns:
         dict with statistics including row counts.
@@ -113,7 +121,7 @@ def generate_duckdb_archive(
     # EtlRun (and its steps) links back via batch_run_id, and complete()
     # rolls the children's counts + CDC window up onto it.
     batch = BatchRun.start(
-        conn, source_root=str(source_folder), output_format="duckdb"
+        conn, source_root=str(source_folder), output_format=output_format
     )
 
     # Per-session ETL closure. include_thinking forwards through; the other
@@ -138,9 +146,11 @@ def generate_duckdb_archive(
         )
 
     # Warehouse runs want complete coverage: no summary-based curation.
-    projects = find_all_sessions(
-        source_folder, include_agents=include_agents, include_unsummarized=True
-    )
+    if projects is None:
+        projects = find_all_sessions(
+            source_folder, include_agents=include_agents,
+            include_unsummarized=True,
+        )
 
     total_session_count = sum(len(p["sessions"]) for p in projects)
     processed_count = 0
@@ -225,7 +235,7 @@ def generate_duckdb_archive(
     # make the batch 'partial'); complete() itself failing is a real bug we
     # surface via fail() before re-raising.
     try:
-        batch.complete()
+        batch.complete(expected_sessions=total_session_count)
     except Exception as e:
         batch.fail(str(e))
         raise
@@ -347,6 +357,7 @@ def generate_json_archive(
     batch_size=10,
     private=False,
     facet_extractor=None,
+    projects=None,
 ):
     """Generate a JSON archive for all sessions under ``source_folder``.
 
@@ -377,6 +388,8 @@ def generate_json_archive(
             batch_size=batch_size,
             private=private,
             facet_extractor=facet_extractor,
+            output_format="json",
+            projects=projects,
         )
 
         db_path = tmp_path / "archive.duckdb"

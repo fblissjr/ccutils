@@ -316,6 +316,30 @@ def group_by_project(sessions):
     return {k: groups[k] for k in sorted_keys}
 
 
+def is_curated_out(summary):
+    """The render-format curation rule: warmup / no-summary sessions are
+    skipped by browsable exports (html/markdown). Warehouse batch paths
+    ingest everything. Single source of truth for both sides."""
+    return summary.lower() == "warmup" or summary == "(no summary)"
+
+
+def curate_projects(projects):
+    """Apply the render-format curation rule to a find_all_sessions list.
+
+    Returns a new list with curated-out sessions removed and projects
+    left empty by the filter dropped. Used by the html/markdown batch
+    exporters when handed a pre-scanned (possibly complete) list.
+    """
+    curated = []
+    for project in projects:
+        sessions = [
+            s for s in project["sessions"] if not is_curated_out(s["summary"])
+        ]
+        if sessions:
+            curated.append({**project, "sessions": sessions})
+    return curated
+
+
 def find_all_sessions(
     folder, include_agents=False, project_filter=None, include_unsummarized=False
 ):
@@ -329,11 +353,14 @@ def find_all_sessions(
     Sessions are sorted by modification time (most recent first) within each project.
     Projects are sorted by their most recent session.
 
-    The project is the TOP-LEVEL directory under ``folder``, not the file's
-    immediate parent: subagent files live at
-    ``<project>/<parent-uuid>/subagents/agent-*.jsonl`` and grouping by
-    parent dir would lump every subagent across all projects into a
+    Project attribution mirrors the warehouse's ``project_dir_sql``
+    (etl/utils.py): the file's parent directory, walking up past any
+    ``<seg>/subagents`` layers. Subagent files live at
+    ``<project>/<parent-uuid>/subagents/agent-*.jsonl`` -- grouping by
+    bare parent dir would lump every subagent across all projects into a
     synthetic "subagents" project (and hide them from ``project_filter``).
+    Keeping the two rules identical means the picker/-p taxonomy and
+    ``dim_project`` cannot disagree, whatever layout is scanned.
 
     Args:
         folder: Path to the projects folder
@@ -354,16 +381,11 @@ def find_all_sessions(
         if not include_agents and session_file.name.startswith("agent-"):
             continue
 
-        # Project = first path component below the scanned folder. A .jsonl
-        # directly in the scanned folder (no project dir) keeps the old
-        # parent-dir attribution.
-        rel_parts = session_file.relative_to(folder).parts
-        if len(rel_parts) > 1:
-            project_key = rel_parts[0]
-            project_folder = folder / project_key
-        else:
-            project_folder = session_file.parent
-            project_key = project_folder.name
+        # Python mirror of etl/utils.py::project_dir_sql -- keep in sync.
+        project_folder = session_file.parent
+        while project_folder.name == "subagents" and project_folder.parent != project_folder:
+            project_folder = project_folder.parent.parent
+        project_key = project_folder.name
 
         # Skip projects that don't match filter
         if project_filter and not matches_project_filter(
@@ -373,9 +395,7 @@ def find_all_sessions(
 
         # Get summary and (by default) skip boring sessions
         summary = get_session_summary(session_file)
-        if not include_unsummarized and (
-            summary.lower() == "warmup" or summary == "(no summary)"
-        ):
+        if not include_unsummarized and is_curated_out(summary):
             continue
 
         if project_key not in projects:

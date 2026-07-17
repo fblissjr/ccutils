@@ -19,7 +19,7 @@ Commit early and often. Commits should bundle the test, implementation, and docu
 - **Four tiers:** JSONL (Claude Code writes) → Parquet lake (Tier 1, `src/ccutils/parsers/parquet_writer.py`) → `stg_log_entries` staging (Tier 2) → fact tables (Tier 3).
 - **Every v0.15 fact** follows the lineage convention via `lineage_upsert(conn, *, run, table, inbound_table, natural_key, payload_cols, hash_cols)` in `src/ccutils/etl/upsert.py`. Lineage block on every row: `created_at`, `last_updated_at`, `created_by_version_key`, `last_updated_by_version_key`, `etl_run_id`, `record_source`, `hash_diff`, `is_deleted`, `deleted_at`.
 - **Closures wrapping `run_v15_etl` MUST list every swallowed kwarg explicitly, not `**kwargs`.** A `**_legacy_kwargs` shim silently drops args (the `--private` regression hid here for one commit). Name what you discard so signature drift fails loud.
-- **`_PROGRESS_TABLES` in `src/ccutils/export/duckdb_archive.py` MUST list every fact `run_v15_etl` populates.** Stale entries undercount the progress display by multiples (3-5× on real corpora). Update when adding a new populator.
+- **`_PROGRESS_TABLES` in `src/ccutils/export/duckdb_archive.py` MUST list every DATA fact `run_v15_etl` populates -- excluding the lineage/audit tables (`fact_etl_runs`, `fact_etl_batch_runs`, `fact_etl_steps`).** Stale entries undercount the progress display by multiples (3-5× on real corpora); audit tables would inflate it with ~26 bookkeeping rows per session that users read as extracted data. Update when adding a new populator.
 
 ## Facet pipeline (v0.15+)
 

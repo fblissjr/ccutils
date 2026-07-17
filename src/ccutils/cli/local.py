@@ -1,5 +1,6 @@
 """Session selection and conversion command."""
 
+import os
 import tempfile
 from pathlib import Path
 
@@ -286,29 +287,38 @@ def _etl_session_files(
 
     Records one fact_etl_batch_runs row for the invocation; each session's
     EtlRun links back via batch_run_id and complete() rolls the counts up.
+    Anything that escapes the per-file isolation (KeyboardInterrupt, a
+    failure inside complete() itself) marks the batch row failed instead
+    of leaving it stuck 'running'.
     """
+    source_root = (
+        os.path.commonpath([str(f.parent) for f in session_files])
+        if session_files else ""
+    )
     batch = BatchRun.start(
-        conn,
-        source_root=str(session_files[0].parent) if session_files else "",
-        output_format=output_format,
+        conn, source_root=source_root, output_format=output_format,
     )
     failures = []
-    for idx, session_file in enumerate(session_files, 1):
-        click.echo(f"[{idx}/{len(session_files)}] {session_file.name}")
-        try:
-            run_v15_etl(
-                conn,
-                session_file,
-                project_name=project_name or session_file.parent.name,
-                parquet_lake_root=parquet_lake,
-                facet_extractor=facet_extractor,
-                include_thinking=include_thinking,
-                batch_run_id=batch.batch_run_id,
-            )
-        except Exception as exc:  # noqa: BLE001 -- isolate one bad file
-            failures.append((session_file, exc))
-            click.echo(f"  skipped {session_file.name}: {exc}", err=True)
-    batch.complete()
+    try:
+        for idx, session_file in enumerate(session_files, 1):
+            click.echo(f"[{idx}/{len(session_files)}] {session_file.name}")
+            try:
+                run_v15_etl(
+                    conn,
+                    session_file,
+                    project_name=project_name or session_file.parent.name,
+                    parquet_lake_root=parquet_lake,
+                    facet_extractor=facet_extractor,
+                    include_thinking=include_thinking,
+                    batch_run_id=batch.batch_run_id,
+                )
+            except Exception as exc:  # noqa: BLE001 -- isolate one bad file
+                failures.append((session_file, exc))
+                click.echo(f"  skipped {session_file.name}: {exc}", err=True)
+        batch.complete(expected_sessions=len(session_files))
+    except BaseException as exc:
+        batch.fail(str(exc) or type(exc).__name__)
+        raise
     if failures:
         click.echo(
             f"{len(failures)} of {len(session_files)} session(s) failed "

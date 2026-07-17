@@ -212,6 +212,26 @@ class EtlRun:
         data_start_ts=None,
         data_end_ts=None,
     ) -> None:
+        """Close the run out as success.
+
+        facts_inserted / facts_updated are derived from this run's
+        `upsert:%` steps only -- stage steps (load_staging etc.) record
+        real row counts at step grain but are NOT facts, so they are
+        excluded from the run-level fact totals.
+
+        data_start_ts / data_end_ts must be supplied by the caller (the
+        orchestrator reads them from staging before staging_scope clears
+        it); omitting them stores a NULL CDC window.
+        """
+        facts_inserted, facts_updated = self.conn.execute(
+            """
+            SELECT COALESCE(SUM(rows_inserted), 0),
+                   COALESCE(SUM(rows_updated), 0)
+            FROM fact_etl_steps
+            WHERE etl_run_id = ? AND step_name LIKE 'upsert:%'
+            """,
+            [self.etl_run_id],
+        ).fetchone()
         self.conn.execute(
             """
             UPDATE fact_etl_runs
@@ -224,21 +244,16 @@ class EtlRun:
                 sessions_soft_deleted = ?,
                 data_start_ts = ?,
                 data_end_ts = ?,
-                facts_inserted = COALESCE((
-                    SELECT SUM(rows_inserted) FROM fact_etl_steps
-                    WHERE etl_run_id = ?
-                ), 0),
-                facts_updated = COALESCE((
-                    SELECT SUM(rows_updated) FROM fact_etl_steps
-                    WHERE etl_run_id = ?
-                ), 0)
+                facts_inserted = ?,
+                facts_updated = ?
             WHERE etl_run_id = ?
             """,
             [
                 sessions_seen, sessions_inserted, sessions_updated,
                 sessions_unchanged, sessions_soft_deleted,
                 data_start_ts, data_end_ts,
-                self.etl_run_id, self.etl_run_id, self.etl_run_id,
+                facts_inserted, facts_updated,
+                self.etl_run_id,
             ],
         )
 
@@ -296,45 +311,67 @@ class BatchRun:
         )
         return cls(conn=conn, batch_run_id=batch_run_id, version_key=version_key)
 
-    def complete(self) -> None:
+    def complete(self, *, expected_sessions: int | None = None) -> None:
+        """Roll children up onto the batch row and close it out.
+
+        expected_sessions is the number of sessions the caller ATTEMPTED.
+        A session that died before EtlRun.start wrote its child row, or a
+        child left 'running' by a hard crash, is invisible to the child
+        rollup -- sessions_seen = max(child count, expected_sessions)
+        counts every non-success as failed, so the batch cannot report a
+        clean 'success' while the CLI printed failures.
+        """
+        child_count, succeeded, data_start_ts, data_end_ts = self.conn.execute(
+            """
+            SELECT
+                COUNT(*),
+                COUNT(*) FILTER (WHERE status = 'success'),
+                MIN(data_start_ts),
+                MAX(data_end_ts)
+            FROM fact_etl_runs
+            WHERE batch_run_id = ?
+            """,
+            [self.batch_run_id],
+        ).fetchone()
+        rows_read, rows_inserted, rows_updated, rows_soft_deleted = (
+            self.conn.execute(
+                """
+                SELECT
+                    COALESCE(SUM(rows_read), 0),
+                    COALESCE(SUM(rows_inserted), 0),
+                    COALESCE(SUM(rows_updated), 0),
+                    COALESCE(SUM(rows_soft_deleted), 0)
+                FROM fact_etl_steps
+                WHERE batch_run_id = ? AND step_name LIKE 'upsert:%'
+                """,
+                [self.batch_run_id],
+            ).fetchone()
+        )
+        seen = max(child_count, expected_sessions or 0)
+        failed = seen - succeeded
+        status = "success" if failed == 0 else "partial"
         self.conn.execute(
             """
-            UPDATE fact_etl_batch_runs b
+            UPDATE fact_etl_batch_runs
             SET completed_at = current_timestamp,
-                sessions_seen = c.seen,
-                sessions_succeeded = c.succeeded,
-                sessions_failed = c.failed,
-                status = CASE
-                    WHEN c.failed > 0 THEN 'partial'
-                    ELSE 'success'
-                END,
-                data_start_ts = c.data_start_ts,
-                data_end_ts = c.data_end_ts,
-                rows_read = s.rows_read,
-                rows_inserted = s.rows_inserted,
-                rows_updated = s.rows_updated,
-                rows_soft_deleted = s.rows_soft_deleted
-            FROM (
-                SELECT
-                    COUNT(*) AS seen,
-                    COUNT(*) FILTER (WHERE status = 'success') AS succeeded,
-                    COUNT(*) FILTER (WHERE status = 'failed') AS failed,
-                    MIN(data_start_ts) AS data_start_ts,
-                    MAX(data_end_ts) AS data_end_ts
-                FROM fact_etl_runs
-                WHERE batch_run_id = ?
-            ) c, (
-                SELECT
-                    COALESCE(SUM(rows_read), 0) AS rows_read,
-                    COALESCE(SUM(rows_inserted), 0) AS rows_inserted,
-                    COALESCE(SUM(rows_updated), 0) AS rows_updated,
-                    COALESCE(SUM(rows_soft_deleted), 0) AS rows_soft_deleted
-                FROM fact_etl_steps
-                WHERE batch_run_id = ?
-            ) s
-            WHERE b.batch_run_id = ?
+                sessions_seen = ?,
+                sessions_succeeded = ?,
+                sessions_failed = ?,
+                status = ?,
+                data_start_ts = ?,
+                data_end_ts = ?,
+                rows_read = ?,
+                rows_inserted = ?,
+                rows_updated = ?,
+                rows_soft_deleted = ?
+            WHERE batch_run_id = ?
             """,
-            [self.batch_run_id, self.batch_run_id, self.batch_run_id],
+            [
+                seen, succeeded, failed, status,
+                data_start_ts, data_end_ts,
+                rows_read, rows_inserted, rows_updated, rows_soft_deleted,
+                self.batch_run_id,
+            ],
         )
 
     def fail(self, error_message: str) -> None:

@@ -78,7 +78,7 @@ from ccutils.etl.utils import (
 from ccutils.parsers.parquet_writer import write_session_to_parquet
 
 
-def _upsert_minimal_dimensions(conn) -> None:
+def _upsert_minimal_dimensions(conn) -> int:
     """Insert stub rows into dim_session / dim_project / dim_model / dim_tool
     for any surrogate key referenced by the staging table but not yet
     present in the dim. Skill anti-pattern note: dimensions are intended
@@ -86,6 +86,10 @@ def _upsert_minimal_dimensions(conn) -> None:
     etc.) -- but for query consumers that only need FK existence, the
     surrogate + natural key + minimal envelope is enough. Full enrichment
     is a follow-up.
+
+    Returns the number of NEW dim_session rows inserted (0 when every
+    staged session already existed) so the caller can report
+    sessions_inserted vs sessions_updated honestly.
     """
     # dim_session: surrogate from staging.session_id.
     #
@@ -95,7 +99,7 @@ def _upsert_minimal_dimensions(conn) -> None:
     # first_timestamp / last_timestamp come straight from the staging
     # min/max so date-range filtering on dim_session works immediately
     # (without waiting on Phase D enrichment).
-    conn.execute(
+    sessions_inserted = conn.execute(
         f"""
         INSERT INTO dim_session (
             session_key, session_id, project_key,
@@ -121,7 +125,7 @@ def _upsert_minimal_dimensions(conn) -> None:
           )
         GROUP BY sle.session_id
         """
-    )
+    ).fetchone()[0]
 
     # Idempotent backfill: if a session already exists from a prior ETL run
     # but lacks project_key / timestamps (legacy minimal-dim path), set them.
@@ -220,6 +224,8 @@ def _upsert_minimal_dimensions(conn) -> None:
     # rows all nine dim_date-joining semantic views return NULL dates.
     insert_missing_dim_dates(conn, "stg_log_entries", "timestamp")
 
+    return sessions_inserted
+
 
 @contextmanager
 def staging_scope(conn):
@@ -287,16 +293,17 @@ def run_v15_etl(
                     project_slug=project_name,
                 )
 
-            # Tier 2: load staging
+            # Tier 2: load staging. rows_* here are STAGING rows -- real at
+            # step grain, excluded from run-level fact totals (complete()
+            # only sums upsert:% steps).
             with run.step("load_staging") as st:
-                load_session_to_staging(conn, log_path)
-                st.rows_read = st.rows_inserted = conn.execute(
-                    "SELECT COUNT(*) FROM stg_log_entries"
-                ).fetchone()[0]
+                staged_rows = load_session_to_staging(conn, log_path)
+                st.rows_read = st.rows_inserted = staged_rows
 
             # Stub dimensions so fact FKs resolve
-            with run.step("upsert_dimensions"):
-                _upsert_minimal_dimensions(conn)
+            with run.step("upsert_dimensions") as st:
+                new_sessions = _upsert_minimal_dimensions(conn)
+                st.rows_inserted = new_sessions
             # Subagent enrichment looks at the JSONL source_path + sidecar
             # .meta.json to set is_agent / agent_id / parent_session_key /
             # agent_type / agent_description on dim_session.
@@ -373,7 +380,8 @@ def run_v15_etl(
             ).fetchone()
             run.complete(
                 sessions_seen=1,
-                sessions_inserted=1,
+                sessions_inserted=new_sessions,
+                sessions_updated=1 - new_sessions,
                 data_start_ts=data_start_ts,
                 data_end_ts=data_end_ts,
             )
@@ -381,4 +389,4 @@ def run_v15_etl(
             run.fail(str(e))
             raise
 
-    return {"etl_run_id": run.etl_run_id, "sessions_inserted": 1}
+    return {"etl_run_id": run.etl_run_id, "sessions_inserted": new_sessions}
