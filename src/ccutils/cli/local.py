@@ -28,6 +28,7 @@ from ..schemas.star import (
     create_star_schema,
     export_star_schema_to_json,
 )
+from ..etl.lineage import BatchRun
 from ..etl.orchestrator import run_v15_etl
 from ..export import (
     generate_html,
@@ -273,6 +274,7 @@ def _etl_session_files(
     parquet_lake,
     facet_extractor,
     include_thinking,
+    output_format=None,
 ):
     """Run run_v15_etl over each file, isolating per-file failures.
 
@@ -281,7 +283,15 @@ def _etl_session_files(
     it is reported and skipped, mirroring the per-session isolation in the
     batch path (export/duckdb_archive.py). Returns the list of
     (session_file, exception) failures.
+
+    Records one fact_etl_batch_runs row for the invocation; each session's
+    EtlRun links back via batch_run_id and complete() rolls the counts up.
     """
+    batch = BatchRun.start(
+        conn,
+        source_root=str(session_files[0].parent) if session_files else "",
+        output_format=output_format,
+    )
     failures = []
     for idx, session_file in enumerate(session_files, 1):
         click.echo(f"[{idx}/{len(session_files)}] {session_file.name}")
@@ -293,10 +303,12 @@ def _etl_session_files(
                 parquet_lake_root=parquet_lake,
                 facet_extractor=facet_extractor,
                 include_thinking=include_thinking,
+                batch_run_id=batch.batch_run_id,
             )
         except Exception as exc:  # noqa: BLE001 -- isolate one bad file
             failures.append((session_file, exc))
             click.echo(f"  skipped {session_file.name}: {exc}", err=True)
+    batch.complete()
     if failures:
         click.echo(
             f"{len(failures)} of {len(session_files)} session(s) failed "
@@ -398,6 +410,7 @@ def _run_export_pipeline(
             parquet_lake=parquet_lake,
             facet_extractor=facet_extractor,
             include_thinking=include_thinking,
+            output_format="duckdb",
         )
         if embed:
             run_embedding_pipeline(conn, embed_model)
@@ -424,6 +437,7 @@ def _run_export_pipeline(
             parquet_lake=parquet_lake,
             facet_extractor=facet_extractor,
             include_thinking=include_thinking,
+            output_format="json",
         )
         if embed:
             run_embedding_pipeline(conn, embed_model)

@@ -239,6 +239,7 @@ def run_v15_etl(
     parquet_lake_root: str | Path | None = None,
     facet_extractor: FacetExtractor | None = None,
     include_thinking: bool = True,
+    batch_run_id: str | None = None,
 ) -> dict[str, Any]:
     """End-to-end ETL for one session JSONL.
 
@@ -260,6 +261,9 @@ def run_v15_etl(
             staging JSON so no thinking text survives in the warehouse.
             The Parquet lake is unaffected -- it's the re-derivable cache
             and intentionally captures everything.
+        batch_run_id: optional fact_etl_batch_runs id linking this run to
+            the orchestration that spawned it (stamped on fact_etl_runs and
+            every fact_etl_steps row). None for standalone runs.
 
     Returns:
         dict with 'etl_run_id' and 'sessions_inserted' for caller use.
@@ -269,26 +273,35 @@ def run_v15_etl(
         parquet_lake_root = session_path.parent / "parquet_lake"
     parquet_lake_root = Path(parquet_lake_root)
 
-    run = EtlRun.start(conn, source_path=str(session_path))
+    run = EtlRun.start(
+        conn, source_path=str(session_path), batch_run_id=batch_run_id
+    )
     with staging_scope(conn):
         try:
             # Tier 1: parse + write Parquet
-            log_path, _ = write_session_to_parquet(
-                session_path,
-                parquet_lake_root,
-                etl_run_id=run.etl_run_id,
-                project_slug=project_name,
-            )
+            with run.step("write_parquet"):
+                log_path, _ = write_session_to_parquet(
+                    session_path,
+                    parquet_lake_root,
+                    etl_run_id=run.etl_run_id,
+                    project_slug=project_name,
+                )
 
             # Tier 2: load staging
-            load_session_to_staging(conn, log_path)
+            with run.step("load_staging") as st:
+                load_session_to_staging(conn, log_path)
+                st.rows_read = st.rows_inserted = conn.execute(
+                    "SELECT COUNT(*) FROM stg_log_entries"
+                ).fetchone()[0]
 
             # Stub dimensions so fact FKs resolve
-            _upsert_minimal_dimensions(conn)
+            with run.step("upsert_dimensions"):
+                _upsert_minimal_dimensions(conn)
             # Subagent enrichment looks at the JSONL source_path + sidecar
             # .meta.json to set is_agent / agent_id / parent_session_key /
             # agent_type / agent_description on dim_session.
-            populate_subagent_dim_session(conn, run=run)
+            with run.step("subagent_enrichment"):
+                populate_subagent_dim_session(conn, run=run)
 
             # Populate every v0.15 fact in order. fact_session_summary MUST be
             # last -- it aggregates over the others.
@@ -322,12 +335,14 @@ def run_v15_etl(
             populate_fact_tool_chain_steps(conn, run=run)
             # dim_session enrichment runs after all facts so the classifiers
             # see complete metrics + file-extension data
-            populate_dim_session_heuristics(
-                conn, run=run, include_thinking=include_thinking,
-            )
+            with run.step("dim_session_heuristics"):
+                populate_dim_session_heuristics(
+                    conn, run=run, include_thinking=include_thinking,
+                )
             # dim_session_chain groups sessions sharing a slug; rebuilt fresh
             # each run since adding a new session can re-aggregate the chain
-            populate_dim_session_chain(conn, run=run)
+            with run.step("dim_session_chain"):
+                populate_dim_session_chain(conn, run=run)
             # Tier 1 facets: 19 SQL-computed facets per session (F01..F19) into
             # fact_session_facets. Runs after every source fact / dim is in
             # place; runs before fact_session_summary so summary stays the
@@ -349,7 +364,19 @@ def run_v15_etl(
             # the FACTS (dim_session.last_assistant_message, Tier 2 inputs,
             # fact_messages.content_text projection).
 
-            run.complete(sessions_inserted=1)
+            # CDC data window: read from staging BEFORE staging_scope clears
+            # it. complete() also derives facts_inserted/updated from steps.
+            data_start_ts, data_end_ts = conn.execute(
+                "SELECT MIN(TRY_CAST(timestamp AS TIMESTAMP)), "
+                "       MAX(TRY_CAST(timestamp AS TIMESTAMP)) "
+                "FROM stg_log_entries"
+            ).fetchone()
+            run.complete(
+                sessions_seen=1,
+                sessions_inserted=1,
+                data_start_ts=data_start_ts,
+                data_end_ts=data_end_ts,
+            )
         except Exception as e:
             run.fail(str(e))
             raise

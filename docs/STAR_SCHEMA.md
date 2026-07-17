@@ -1,7 +1,7 @@
 <!-- path-privacy: skip-file -- references universal Claude Code data paths (not personal) -->
 # Star Schema DuckDB Implementation
 
-Last updated: 2026-07-12
+Last updated: 2026-07-17
 
 A dimensional data model for Claude Code transcript analytics, built on a four-tier ETL pipeline with full lineage tracking. The star schema is now the only schema (the legacy 4-table simple schema was removed when v0.15 stabilized).
 
@@ -46,7 +46,7 @@ Every v0.15 fact carries the same nine columns:
 |---|---|
 | `created_at` / `last_updated_at` | When the row first appeared / when the mutable payload last changed |
 | `created_by_version_key` / `last_updated_by_version_key` | FK into `dim_etl_version` -- which ccutils version wrote / mutated the row |
-| `etl_run_id` | FK into `fact_etl_runs` -- which batch wrote the row |
+| `etl_run_id` | FK into `fact_etl_runs` -- which run wrote the row |
 | `record_source` | Provenance string (`'claude_code_jsonl'`, `'history_jsonl'`, etc.) |
 | `hash_diff` | MD5 of the mutable-content columns. UPDATE only fires when content actually changed -- re-running ETL on unchanged source is a no-op |
 | `is_deleted` / `deleted_at` | Soft-delete only. We never `DELETE FROM`. |
@@ -54,6 +54,18 @@ Every v0.15 fact carries the same nine columns:
 `session_id` is also carried as a degenerate dimension on most facts so `SELECT * FROM fact_X WHERE session_id = '...'` works without a `dim_session` join.
 
 Schema-level DDL migrations are tracked in `meta_schema_version` (distinct from `dim_etl_version`, which tracks the business-rules / parser version).
+
+### Run metadata (three grains)
+
+ETL observability follows the same grain-first discipline as the data itself:
+
+| Table | Grain | Written by |
+|---|---|---|
+| `fact_etl_batch_runs` | One CLI orchestration (`ccutils all` / `ccutils local` invocation) | `BatchRun` handle (`etl/lineage.py`); `complete()` derives every count from its children |
+| `fact_etl_runs` | One session ETL | `EtlRun` handle; carries `batch_run_id`, a CDC data window (`data_start_ts`/`data_end_ts` = min/max staged entry timestamp), and fact counts derived from its steps |
+| `fact_etl_steps` | One DAG node within a run | `lineage_upsert` self-records an `upsert:<table>` step per fact populator with real DuckDB affected-row counts; `run_v15_etl` records the non-upsert stages (`write_parquet`, `load_staging`, `upsert_dimensions`, enrichment passes) |
+
+Why derived counts: the count columns on the parent rows are always computed from the child rows at `complete()` (SUM over steps, COUNT over runs) rather than tallied by the caller -- so the audit trail cannot drift from what the DML actually did. Batch status lands `success` when no child failed, `partial` when some did, `failed` only when the orchestration itself died. Query `semantic_etl_runs` for the joined run-grain picture.
 
 ### Populator order
 
@@ -476,8 +488,9 @@ All views use the `semantic_` prefix and join facts with dimensions for easy que
 - `semantic_token_usage` -- per-API-response token data with model/session/project context
 - `semantic_cost_analysis` -- session-level cost aggregation. R11-corrected: `cache_hit_rate_pct` denominator includes cache_creation
 - `semantic_prompt_history` -- prompts from history JSONL linked to session metadata
+- `semantic_etl_runs` -- run-grain ETL observability: per-session run status/duration, orchestration (batch) context, CDC data window, and step-count/row-count rollups from `fact_etl_steps`
 
-All 15 views bind against the current DDL (view creation validates column references on every `create_star_schema()` call).
+All 16 views bind against the current DDL (view creation validates column references on every `create_star_schema()` call).
 
 ### Sample view queries
 

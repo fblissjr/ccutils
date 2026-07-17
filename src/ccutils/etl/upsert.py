@@ -107,97 +107,102 @@ def lineage_upsert(
     for c in hash_cols:
         _validate_ident(c)
 
-    if derive_session_keys:
-        for ddl in (
-            f"ALTER TABLE {inbound_table} ADD COLUMN IF NOT EXISTS session_key VARCHAR",
-            f"ALTER TABLE {inbound_table} ADD COLUMN IF NOT EXISTS date_key INTEGER",
-            f"ALTER TABLE {inbound_table} ADD COLUMN IF NOT EXISTS time_key INTEGER",
-            f"ALTER TABLE {inbound_table} ADD COLUMN IF NOT EXISTS hash_diff VARCHAR",
-        ):
-            conn.execute(ddl)
-        conn.execute(f"UPDATE {inbound_table} SET session_key = md5(session_id)")
-        conn.execute(
-            f"UPDATE {inbound_table} "
-            f"SET date_key = CAST(strftime({timestamp_col}, '%Y%m%d') AS INTEGER), "
-            f"    time_key = CAST(strftime({timestamp_col}, '%H%M') AS INTEGER) "
-            f"WHERE {timestamp_col} IS NOT NULL"
-        )
-        conn.execute(
-            f"UPDATE {inbound_table} SET hash_diff = {hash_diff_sql(hash_cols)}"
-        )
+    with run.step(f"upsert:{table}") as st:
+        st.rows_read = conn.execute(
+            f"SELECT COUNT(*) FROM {inbound_table}"
+        ).fetchone()[0]
 
-    # When natural_key IS session_id, don't list it twice.
-    extra_keys = ["session_key", "date_key", "time_key"]
-    if natural_key != "session_id":
-        extra_keys.append("session_id")
-    set_clause = ",\n            ".join(
-        f"{c} = im.{c}" for c in (*payload_cols, *extra_keys)
-    )
-    conn.execute(
-        f"""
-        UPDATE {table} tgt
-        SET
-            last_updated_at = current_timestamp,
-            last_updated_by_version_key = ?,
-            etl_run_id = ?,
-            hash_diff = im.hash_diff,
-            {set_clause},
-            is_deleted = FALSE,
-            deleted_at = NULL
-        FROM {inbound_table} im
-        WHERE tgt.{natural_key} = im.{natural_key}
-          AND tgt.hash_diff IS DISTINCT FROM im.hash_diff
-        """,
-        [run.version_key, run.etl_run_id],
-    )
+        if derive_session_keys:
+            for ddl in (
+                f"ALTER TABLE {inbound_table} ADD COLUMN IF NOT EXISTS session_key VARCHAR",
+                f"ALTER TABLE {inbound_table} ADD COLUMN IF NOT EXISTS date_key INTEGER",
+                f"ALTER TABLE {inbound_table} ADD COLUMN IF NOT EXISTS time_key INTEGER",
+                f"ALTER TABLE {inbound_table} ADD COLUMN IF NOT EXISTS hash_diff VARCHAR",
+            ):
+                conn.execute(ddl)
+            conn.execute(f"UPDATE {inbound_table} SET session_key = md5(session_id)")
+            conn.execute(
+                f"UPDATE {inbound_table} "
+                f"SET date_key = CAST(strftime({timestamp_col}, '%Y%m%d') AS INTEGER), "
+                f"    time_key = CAST(strftime({timestamp_col}, '%H%M') AS INTEGER) "
+                f"WHERE {timestamp_col} IS NOT NULL"
+            )
+            conn.execute(
+                f"UPDATE {inbound_table} SET hash_diff = {hash_diff_sql(hash_cols)}"
+            )
 
-    all_cols = [natural_key]
-    if natural_key != "session_id":
-        all_cols.append("session_id")
-    all_cols.extend(["session_key", "date_key", "time_key", *payload_cols])
-    insert_col_list = ", ".join(all_cols)
-    select_col_list = ", ".join(f"im.{c}" for c in all_cols)
-    conn.execute(
-        f"""
-        INSERT INTO {table} (
-            created_by_version_key, last_updated_by_version_key,
-            etl_run_id, record_source, hash_diff,
-            {insert_col_list}
+        # When natural_key IS session_id, don't list it twice.
+        extra_keys = ["session_key", "date_key", "time_key"]
+        if natural_key != "session_id":
+            extra_keys.append("session_id")
+        set_clause = ",\n            ".join(
+            f"{c} = im.{c}" for c in (*payload_cols, *extra_keys)
         )
-        SELECT
-            ?, ?, ?, ?, im.hash_diff,
-            {select_col_list}
-        FROM {inbound_table} im
-        WHERE NOT EXISTS (
-            SELECT 1 FROM {table} tgt WHERE tgt.{natural_key} = im.{natural_key}
+        st.rows_updated = conn.execute(
+            f"""
+            UPDATE {table} tgt
+            SET
+                last_updated_at = current_timestamp,
+                last_updated_by_version_key = ?,
+                etl_run_id = ?,
+                hash_diff = im.hash_diff,
+                {set_clause},
+                is_deleted = FALSE,
+                deleted_at = NULL
+            FROM {inbound_table} im
+            WHERE tgt.{natural_key} = im.{natural_key}
+              AND tgt.hash_diff IS DISTINCT FROM im.hash_diff
+            """,
+            [run.version_key, run.etl_run_id],
+        ).fetchone()[0]
+
+        all_cols = [natural_key]
+        if natural_key != "session_id":
+            all_cols.append("session_id")
+        all_cols.extend(["session_key", "date_key", "time_key", *payload_cols])
+        insert_col_list = ", ".join(all_cols)
+        select_col_list = ", ".join(f"im.{c}" for c in all_cols)
+        st.rows_inserted = conn.execute(
+            f"""
+            INSERT INTO {table} (
+                created_by_version_key, last_updated_by_version_key,
+                etl_run_id, record_source, hash_diff,
+                {insert_col_list}
+            )
+            SELECT
+                ?, ?, ?, ?, im.hash_diff,
+                {select_col_list}
+            FROM {inbound_table} im
+            WHERE NOT EXISTS (
+                SELECT 1 FROM {table} tgt WHERE tgt.{natural_key} = im.{natural_key}
+            )
+            """,
+            [run.version_key, run.version_key, run.etl_run_id, record_source],
+        ).fetchone()[0]
+
+        extra_scope = (
+            f" AND ({soft_delete_scope_sql})" if soft_delete_scope_sql else ""
         )
-        """,
-        [run.version_key, run.version_key, run.etl_run_id, record_source],
-    )
+        st.rows_soft_deleted = conn.execute(
+            f"""
+            UPDATE {table} tgt
+            SET is_deleted = TRUE,
+                deleted_at = current_timestamp,
+                last_updated_at = current_timestamp,
+                last_updated_by_version_key = ?,
+                etl_run_id = ?
+            WHERE tgt.is_deleted = FALSE
+              AND tgt.session_id IN (
+                  SELECT DISTINCT session_id FROM stg_log_entries WHERE session_id IS NOT NULL
+                  UNION
+                  SELECT DISTINCT session_id FROM {inbound_table} WHERE session_id IS NOT NULL
+              )
+              AND tgt.{natural_key} NOT IN (
+                  SELECT {natural_key} FROM {inbound_table} WHERE {natural_key} IS NOT NULL
+              )
+              {extra_scope}
+            """,
+            [run.version_key, run.etl_run_id],
+        ).fetchone()[0]
 
-    extra_scope = (
-        f" AND ({soft_delete_scope_sql})" if soft_delete_scope_sql else ""
-    )
-    conn.execute(
-        f"""
-        UPDATE {table} tgt
-        SET is_deleted = TRUE,
-            deleted_at = current_timestamp,
-            last_updated_at = current_timestamp,
-            last_updated_by_version_key = ?,
-            etl_run_id = ?
-        WHERE tgt.is_deleted = FALSE
-          AND tgt.session_id IN (
-              SELECT DISTINCT session_id FROM stg_log_entries WHERE session_id IS NOT NULL
-              UNION
-              SELECT DISTINCT session_id FROM {inbound_table} WHERE session_id IS NOT NULL
-          )
-          AND tgt.{natural_key} NOT IN (
-              SELECT {natural_key} FROM {inbound_table} WHERE {natural_key} IS NOT NULL
-          )
-          {extra_scope}
-        """,
-        [run.version_key, run.etl_run_id],
-    )
-
-    conn.execute(f"DROP TABLE {inbound_table}")
+        conn.execute(f"DROP TABLE {inbound_table}")

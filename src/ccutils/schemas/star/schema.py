@@ -27,7 +27,7 @@ def create_star_schema(db_path):
       operations, plan revisions, agent delegations, errors, chain steps,
       session facets, session summary.
     - Staging: stg_log_entries (Tier 2 of the four-tier pipeline).
-    - 15 semantic views (semantic_*), created after _apply_column_migrations
+    - 16 semantic views (semantic_*), created after _apply_column_migrations
       so views can reference migrated columns on pre-existing warehouses.
 
     No hard PK/FK constraints - relies on soft business rules.
@@ -76,6 +76,64 @@ def create_star_schema(db_path):
             sessions_soft_deleted INTEGER DEFAULT 0,
             facts_inserted INTEGER DEFAULT 0,
             facts_updated INTEGER DEFAULT 0,
+            error_message VARCHAR,
+            batch_run_id VARCHAR,               -- FK fact_etl_batch_runs (NULL for standalone runs)
+            data_start_ts TIMESTAMP,            -- CDC window: min entry timestamp staged this run
+            data_end_ts TIMESTAMP               -- CDC window: max entry timestamp staged this run
+        )
+    """
+    )
+
+    # fact_etl_batch_runs: one row per CLI orchestration (a `ccutils all`
+    # or `ccutils local` invocation). Children in fact_etl_runs link back
+    # via batch_run_id; complete() rolls their counts + CDC window up here.
+    # Accumulating-snapshot audit table: rows are UPDATEd as the batch
+    # progresses (running -> success | partial | failed).
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS fact_etl_batch_runs (
+            batch_run_id VARCHAR NOT NULL,      -- UUID4 hex per orchestration
+            version_key VARCHAR,                -- FK dim_etl_version
+            started_at TIMESTAMP NOT NULL DEFAULT current_timestamp,
+            completed_at TIMESTAMP,
+            status VARCHAR NOT NULL DEFAULT 'running',  -- running | success | partial | failed
+            source_root VARCHAR,                -- projects folder (or file) driven
+            output_format VARCHAR,              -- duckdb | json | ...
+            sessions_seen INTEGER DEFAULT 0,
+            sessions_succeeded INTEGER DEFAULT 0,
+            sessions_failed INTEGER DEFAULT 0,
+            rows_read BIGINT DEFAULT 0,
+            rows_inserted BIGINT DEFAULT 0,
+            rows_updated BIGINT DEFAULT 0,
+            rows_soft_deleted BIGINT DEFAULT 0,
+            data_start_ts TIMESTAMP,            -- CDC window over all children
+            data_end_ts TIMESTAMP,
+            error_message VARCHAR
+        )
+    """
+    )
+
+    # fact_etl_steps: one row per DAG node per session run. lineage_upsert
+    # records an 'upsert:<fact_table>' step for every fact populator with
+    # real DuckDB affected-row counts; run_v15_etl records the non-upsert
+    # stages (write_parquet, load_staging, upsert_dimensions, enrichment
+    # passes). Append-only within a run; step timing is the upsert/stage
+    # body only, not the populator's inbound-projection prep.
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS fact_etl_steps (
+            step_id VARCHAR NOT NULL,           -- UUID4 hex
+            etl_run_id VARCHAR NOT NULL,        -- FK fact_etl_runs
+            batch_run_id VARCHAR,               -- denormalized for direct batch rollup
+            step_name VARCHAR NOT NULL,         -- 'upsert:<table>' or stage name
+            step_order INTEGER NOT NULL,        -- 1-based position within the run
+            started_at TIMESTAMP NOT NULL DEFAULT current_timestamp,
+            completed_at TIMESTAMP,
+            status VARCHAR NOT NULL DEFAULT 'running',  -- running | success | failed
+            rows_read BIGINT,                   -- inbound rows offered to the step
+            rows_inserted BIGINT,
+            rows_updated BIGINT,
+            rows_soft_deleted BIGINT,
             error_message VARCHAR
         )
     """
@@ -2039,6 +2097,51 @@ def create_star_schema(db_path):
     """
     )
 
+    # semantic_etl_runs: run-grain observability. One row per session ETL
+    # with its batch context (LEFT JOIN: standalone runs keep NULL batch
+    # attributes) and a rollup over its DAG steps.
+    conn.execute(
+        """
+        CREATE OR REPLACE VIEW semantic_etl_runs AS
+        SELECT
+            r.etl_run_id,
+            r.batch_run_id,
+            b.status AS batch_status,
+            b.source_root AS batch_source_root,
+            b.output_format AS batch_output_format,
+            r.source_path,
+            r.status,
+            r.started_at,
+            r.completed_at,
+            ROUND(EXTRACT(EPOCH FROM (r.completed_at - r.started_at)) * 1000)
+                AS duration_ms,
+            r.data_start_ts,
+            r.data_end_ts,
+            s.step_count,
+            s.rows_read,
+            s.rows_inserted,
+            s.rows_updated,
+            s.rows_soft_deleted,
+            r.error_message,
+            v.ccutils_version,
+            CAST(r.started_at AS DATE) AS run_date
+        FROM fact_etl_runs r
+        LEFT JOIN fact_etl_batch_runs b ON r.batch_run_id = b.batch_run_id
+        LEFT JOIN dim_etl_version v ON r.version_key = v.version_key
+        LEFT JOIN (
+            SELECT
+                etl_run_id,
+                COUNT(*) AS step_count,
+                SUM(rows_read) AS rows_read,
+                SUM(rows_inserted) AS rows_inserted,
+                SUM(rows_updated) AS rows_updated,
+                SUM(rows_soft_deleted) AS rows_soft_deleted
+            FROM fact_etl_steps
+            GROUP BY etl_run_id
+        ) s ON r.etl_run_id = s.etl_run_id
+    """
+    )
+
     return conn
 
 
@@ -2048,6 +2151,9 @@ def create_star_schema(db_path):
 # break on the populator's INSERT. Append-only.
 _COLUMN_MIGRATIONS = [
     ("fact_plan_revisions", "plan_file_path", "VARCHAR"),
+    ("fact_etl_runs", "batch_run_id", "VARCHAR"),
+    ("fact_etl_runs", "data_start_ts", "TIMESTAMP"),
+    ("fact_etl_runs", "data_end_ts", "TIMESTAMP"),
 ]
 
 

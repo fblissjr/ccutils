@@ -20,6 +20,7 @@ from ..schemas import (
     create_star_schema,
     export_star_schema_to_json,
 )
+from ..etl.lineage import BatchRun
 from ..etl.orchestrator import run_v15_etl
 
 
@@ -47,6 +48,7 @@ _PROGRESS_TABLES = (
     "fact_errors",
     "fact_tool_chain_steps",
     "fact_session_facets",
+    "fact_etl_steps",
 )
 
 
@@ -107,6 +109,13 @@ def generate_duckdb_archive(
 
     conn = create_star_schema(db_path)
 
+    # One orchestration row for this whole invocation; every per-session
+    # EtlRun (and its steps) links back via batch_run_id, and complete()
+    # rolls the children's counts + CDC window up onto it.
+    batch = BatchRun.start(
+        conn, source_root=str(source_folder), output_format="duckdb"
+    )
+
     # Per-session ETL closure. include_thinking forwards through; the other
     # legacy back-compat kwargs (truncate_output, private) are explicitly
     # named at the closure boundary rather than absorbed by **kwargs (CLAUDE.md
@@ -125,6 +134,7 @@ def generate_duckdb_archive(
             parquet_lake_root=parquet_lake,
             facet_extractor=facet_extractor,
             include_thinking=include_thinking,
+            batch_run_id=batch.batch_run_id,
         )
 
     # Warehouse runs want complete coverage: no summary-based curation.
@@ -209,6 +219,16 @@ def generate_duckdb_archive(
         # history ingestion is optional -- never fail the archive build
         # because of it.
         pass
+
+    # Roll the children up onto the orchestration row. Per-session failures
+    # were isolated above (they land as failed fact_etl_runs children and
+    # make the batch 'partial'); complete() itself failing is a real bug we
+    # surface via fail() before re-raising.
+    try:
+        batch.complete()
+    except Exception as e:
+        batch.fail(str(e))
+        raise
 
     final_row_count = _count_rows(conn)
     final_db_size = _get_db_size_mb(db_path)

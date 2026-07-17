@@ -73,7 +73,7 @@ class TestFactEtlRunsInsert:
 
     def test_complete_marks_success(self, conn):
         r = EtlRun.start(conn, source_path="x")
-        r.complete(sessions_inserted=5, facts_inserted=42)
+        r.complete(sessions_inserted=5)
         row = conn.execute(
             "SELECT status, completed_at, sessions_inserted, facts_inserted "
             "FROM fact_etl_runs WHERE etl_run_id = ?",
@@ -82,7 +82,20 @@ class TestFactEtlRunsInsert:
         assert row[0] == "success"
         assert row[1] is not None  # completed_at populated
         assert row[2] == 5
-        assert row[3] == 42
+        assert row[3] == 0  # derived from fact_etl_steps; no steps ran
+
+    def test_complete_derives_fact_counts_from_steps(self, conn):
+        r = EtlRun.start(conn, source_path="x")
+        with r.step("upsert:fact_demo") as st:
+            st.rows_inserted = 7
+            st.rows_updated = 2
+        r.complete(sessions_inserted=1)
+        row = conn.execute(
+            "SELECT facts_inserted, facts_updated FROM fact_etl_runs "
+            "WHERE etl_run_id = ?",
+            [r.etl_run_id],
+        ).fetchone()
+        assert row == (7, 2)
 
     def test_fail_marks_failed_with_error(self, conn):
         r = EtlRun.start(conn, source_path="x")

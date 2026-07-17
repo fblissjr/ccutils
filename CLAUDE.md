@@ -215,7 +215,7 @@ Pipeline entry: `run_v15_etl()` in `src/ccutils/etl/orchestrator.py`. DDL: `crea
 
 **Authoritative list:** every fact populated by `run_v15_etl` is also listed in `_PROGRESS_TABLES` in `src/ccutils/export/duckdb_archive.py`. Update both together.
 
-**Lineage / Meta:** `dim_etl_version`, `fact_etl_runs`, `meta_schema_version`.
+**Lineage / Meta:** `dim_etl_version`, `fact_etl_runs` (session grain; `batch_run_id` + CDC `data_start_ts`/`data_end_ts`; fact counts derived from steps), `fact_etl_batch_runs` (one row per CLI orchestration, `BatchRun` handle), `fact_etl_steps` (one row per DAG node per run; `lineage_upsert` self-records `upsert:<table>` steps with real affected-row counts), `meta_schema_version`.
 
 **Dimensions:** `dim_session` (enriched with intent/complexity/outcome/domain + subagent linkage via `populate_dim_session_heuristics` + `populate_subagent_dim_session`), `dim_project`, `dim_tool`, `dim_model`, `dim_file`, `dim_session_chain`, `dim_prompt`, `dim_facet_type` (facet registry, seeded). `dim_time` (seeded at DDL time, 1440 rows), `dim_date` (rows inserted during ETL for every date seen in staging; date_key / time_key integer surrogates on facts are derived inline and join these dims).
 
@@ -236,7 +236,7 @@ Pipeline entry: `run_v15_etl()` in `src/ccutils/etl/orchestrator.py`. DDL: `crea
 
 **Not yet populated (DDL only):** `fact_content_blocks`, `fact_code_blocks`, `fact_entity_mentions`, `fact_session_embeddings`, `fact_tool_input_params`. Some redundant-with-v0.15 facts also remain as DDL stubs (`fact_turn_durations` / `fact_stop_events` are subsumed by `fact_system_events`; `fact_tool_calls` is subsumed by `fact_tool_uses` + `fact_tool_results`).
 
-**Semantic views (15):** `semantic_sessions`, `semantic_messages`, `semantic_tool_calls` (UNION over uses+results), `semantic_token_usage`, `semantic_cost_analysis` (R11-corrected hit-rate denominator), `semantic_prompt_history`, `semantic_session_chains`, `semantic_project_context`, `semantic_decisions` (decision timeline UNION over plan revisions + permission-mode changes + stop/api_error/compact system events), `semantic_agent_delegations`, `semantic_file_evolution`, `semantic_file_operations`, `semantic_plan_revisions`, `semantic_project_files`, `semantic_tool_patterns`.
+**Semantic views (16):** `semantic_sessions`, `semantic_messages`, `semantic_tool_calls` (UNION over uses+results), `semantic_token_usage`, `semantic_cost_analysis` (R11-corrected hit-rate denominator), `semantic_prompt_history`, `semantic_session_chains`, `semantic_project_context`, `semantic_decisions` (decision timeline UNION over plan revisions + permission-mode changes + stop/api_error/compact system events), `semantic_agent_delegations`, `semantic_etl_runs` (run-grain ETL observability: batch context + step rollups + CDC window), `semantic_file_evolution`, `semantic_file_operations`, `semantic_plan_revisions`, `semantic_project_files`, `semantic_tool_patterns`.
 
 ### 4. Token Tracking (v0.15)
 
