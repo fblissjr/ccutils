@@ -63,17 +63,21 @@ ETL observability follows the same grain-first discipline as the data itself:
 |---|---|---|
 | `fact_etl_batch_runs` | One CLI orchestration (`ccutils all` / `ccutils local` invocation) | `BatchRun` handle (`etl/lineage.py`); `complete()` derives every count from its children |
 | `fact_etl_runs` | One session ETL | `EtlRun` handle; carries `batch_run_id`, a CDC data window (`data_start_ts`/`data_end_ts` = min/max staged entry timestamp), and fact counts derived from its steps |
-| `fact_etl_steps` | One DAG node within a run | `lineage_upsert` self-records an `upsert:<table>` step per fact populator with real DuckDB affected-row counts; `run_v15_etl` records the non-upsert stages (`write_parquet`, `load_staging`, `upsert_dimensions`, enrichment passes) |
+| `fact_etl_steps` | One DAG node within a run | `lineage_upsert` self-records an `upsert:<table>` step (`step_kind='upsert'`) per fact populator with real DuckDB affected-row counts; `run_v15_etl` records the non-upsert stages (`write_parquet`, `load_staging`, `upsert_dimensions`, enrichment passes) as `step_kind='stage'` |
 
-Why derived counts: the count columns on the parent rows are always computed from the child rows at `complete()` (SUM over steps, COUNT over runs) rather than tallied by the caller -- so the audit trail cannot drift from what the DML actually did. Batch status lands `success` when no child failed, `partial` when some did, `failed` only when the orchestration itself died. Query `semantic_etl_runs` for the joined run-grain picture.
+`step_kind` is the scoping key for every rollup: `EtlRun.complete()`, `BatchRun.complete()`, and `semantic_etl_runs` all sum only `step_kind='upsert'` steps into `facts_inserted` / `facts_updated` / `rows_*` totals (via the shared `_sum_upsert_steps` helper in `etl/lineage.py`). Stage steps report real row counts at step grain but are not facts, so they're excluded from the fact-level totals -- one definition, three consumers, no drift.
+
+Why derived counts: the count columns on the parent rows are always computed from the child rows at `complete()` (SUM over steps, COUNT over runs) rather than tallied by the caller -- so the audit trail cannot drift from what the DML actually did.
+
+`BatchRun` (`etl/lineage.py`) is a context manager: `__exit__` marks the batch row `failed` on any exception that escapes the `with` block (including a hard crash or `KeyboardInterrupt`), so a batch can never stick at `running`. `complete(expected_sessions=N)` compares the child `fact_etl_runs` row count against `N` -- a session that died before `EtlRun.start` even wrote its row, or one left `running` by a crash, is counted as failed rather than silently dropped from the tally. Batch status lands `success` when no child failed, `partial` when some did (including missing/stuck-running children), `failed` only when the orchestration itself died. Query `semantic_etl_runs` for the joined run-grain picture.
 
 ### Populator order
 
 The orchestrator at `src/ccutils/etl/orchestrator.py` (`run_v15_etl`) runs per session:
 
 1. Write Tier 1 Parquet from the typed parser.
-2. Load Tier 2 staging from Parquet (`load_session_to_staging`).
-3. Upsert stub dimensions (`dim_session`, `dim_project`, `dim_tool`, `dim_model`). Subagent enrichment fills `is_agent` / `agent_id` / `parent_session_key` / `agent_type` / `agent_description` on `dim_session` immediately after.
+2. Load Tier 2 staging from Parquet (`load_session_to_staging`, `etl/staging.py`). Returns a `StagingLoad` NamedTuple (`rows`, `data_start_ts`, `data_end_ts`) in one pass -- the row count feeds the `load_staging` step's counters and the CDC window feeds `EtlRun.complete()` without a second scan of staging.
+3. Upsert stub dimensions (`dim_session`, `dim_project`, `dim_tool`, `dim_model`). Subagent enrichment fills `is_agent` / `agent_id` / `parent_session_key` / `agent_type` / `agent_description` on `dim_session` immediately after (see "Subagent session identity" above).
 4. Run fact populators in dependency order:
    - `fact_messages`, `fact_tool_uses`, `fact_tool_results`
    - `fact_token_usage`
@@ -103,7 +107,7 @@ After the per-session loop, `dim_prompt` is best-effort populated from the Claud
 - **All 7 system subtypes** on `fact_system_events` (turn_duration, stop_hook_summary, api_error, compact_boundary, local_command, away_summary, bridge_status).
 - **All 6 progress variants** on `fact_progress_events` (hook, bash, agent, query update, search results, MCP).
 - **Permission-mode time series** on `fact_meta_events` (replaces the last-value-only column on `dim_session`).
-- **Message-level fields**: `stop_reason`, `permission_mode_at_send`, `prompt_id`, `request_id`, `is_api_error_message`, `context_management_json` on `fact_messages`.
+- **Message-level fields**: `stop_reason`, `permission_mode_at_send`, `prompt_id`, `request_id`, `is_api_error_message`, `api_error_text` on `fact_messages`.
 
 ### Parser
 
@@ -170,7 +174,7 @@ ORDER BY total_uncached_equivalent_tokens DESC
 LIMIT 20;
 ```
 
-See [DATA_EXPLORER.md](DATA_EXPLORER.md) for the visual interface.
+`ccutils explore <db>` opens the database in [harlequin](https://harlequin.sh) (requires the `ccutils[explore]` extra) for interactive browsing -- there is no separate visual-interface doc.
 
 ---
 
@@ -196,15 +200,34 @@ One row per Claude Code session. Stub fields populated during ETL; heuristic col
 | is_agent | BOOLEAN | Whether this is an agent (subagent) session |
 | agent_id | VARCHAR | Agent identifier suffix from JSONL filename |
 | parent_session_key | VARCHAR | FK to dim_session (parent) for subagents |
-| agent_type | VARCHAR | From .meta.json sidecar (Explore, Plan, etc.) |
-| agent_description | VARCHAR | From .meta.json sidecar |
 | depth_level | INTEGER | Nesting depth (0=root) |
+| chain_key | VARCHAR | FK to dim_session_chain (slug-grouped chain) |
 | intent | VARCHAR | Heuristic: bug_fix, feature, refactor, debug, test, docs, review, explore |
 | complexity | VARCHAR | Heuristic: trivial, simple, moderate, complex |
 | outcome | VARCHAR | Heuristic: success, failure, unknown |
 | domain | VARCHAR | Heuristic: web, backend, data, devops, docs, mixed, unknown |
 | first_user_message | VARCHAR | First user message text (truncated to 500 chars) |
 | last_assistant_message | VARCHAR | Last assistant message text (truncated to 500 chars) |
+| custom_title | VARCHAR | From the `custom-title` meta entry, when present |
+| permission_mode | VARCHAR | Last-known permission mode (see `fact_meta_events` for the full time series) |
+| agent_type | VARCHAR | From .meta.json sidecar (Explore, Plan, etc.) |
+| agent_description | VARCHAR | From .meta.json sidecar |
+
+#### Subagent session identity
+
+Agent transcript JSONL entries carry the **parent's** `sessionId` on every line -- Claude Code does not stamp the agent's own id into the line payload. The transcript's true identity is the file itself: `.../<parent-session-uuid>/subagents/agent-<id>.jsonl`. `dim_session.session_id` for an agent session is therefore `'agent-<id>'` (the filename stem), not any id found inside the JSONL content.
+
+This identity is stamped twice, redundantly:
+
+- **Tier 1** (`src/ccutils/parsers/parquet_writer.py`): `write_session_to_parquet` detects the `/subagents/agent-<id>.jsonl` path pattern and overwrites every row's `session_id` with the filename stem before writing Parquet, so the lake is internally consistent with `session_meta.parquet`.
+- **Tier 2** (`src/ccutils/etl/staging.py`): `load_session_to_staging` re-applies the same override after loading from Parquet, so lakes written before the Tier 1 fix still land correctly in staging.
+
+`parent_session_key = md5(parent-session-uuid)` comes from the same path regex (`etl/subagent_enrichment.py`), and `depth_level` is recomputed by walking the `parent_session_key` chain up to a root and back down.
+
+Known limitations:
+
+- Short, low-entropy agent ids from older Claude Code versions can collide across different parent sessions -- `session_id = 'agent-<id>'` has no parent-scoping salt, so two unrelated agents sharing an id land in the same `dim_session` row.
+- An agent whose parent transcript was never ETL'd (pruned, deleted, or simply not yet processed) is treated as a root: `_propagate_depth_level` walks up the `parent_session_key` chain, and a chain that terminates outside `dim_session` gets `depth_level = 0` rather than an error.
 
 #### dim_project / dim_tool / dim_model / dim_file
 Conventional natural-key dimensions. Each has a hash-based surrogate key (`*_key` = md5 of the natural key) plus its identifying attributes:
@@ -234,6 +257,7 @@ One row per user/assistant entry.
 
 | Column | Type | Description |
 |--------|------|-------------|
+| entry_id | VARCHAR | Degenerate dim: JSONL entry id |
 | message_id | VARCHAR | PK |
 | session_key | VARCHAR | FK to dim_session |
 | project_key | VARCHAR | FK to dim_project |
@@ -243,23 +267,34 @@ One row per user/assistant entry.
 | time_key | INTEGER | FK to dim_time |
 | parent_message_id | VARCHAR | Parent message UUID |
 | timestamp | TIMESTAMP | Message timestamp |
-| content_text | TEXT | Message text content |
-| content_json | JSON | Raw content block JSON |
-| content_length | INTEGER | Character count |
-| word_count | INTEGER | Word count |
+| sequence_num | INTEGER | Position within the source JSONL |
+| is_sidechain | BOOLEAN | Part of agent sidechain |
+| is_meta | BOOLEAN | Meta message flag |
+| is_compact_summary | BOOLEAN | Message is a compaction summary |
+| is_api_error_message | BOOLEAN | API error flag (R9) |
 | stop_reason | VARCHAR | end_turn, tool_use, etc. (R8) |
 | permission_mode_at_send | VARCHAR | acceptEdits, default, etc. (R12) |
 | prompt_id | VARCHAR | Anthropic prompt id (R9) |
 | request_id | VARCHAR | Anthropic request id (R9) |
-| is_api_error_message | BOOLEAN | API error flag (R9) |
-| context_management_json | JSON | Context-management payload (R10) |
+| api_error_text | VARCHAR | Error text when is_api_error_message=TRUE |
 | input_tokens | INTEGER | API-reported, post-last-cache-breakpoint (NOT total uncached) |
 | output_tokens | INTEGER | API-reported output tokens |
 | cache_creation_5m_tokens | INTEGER | 5-minute cache writes (R11) |
 | cache_creation_1h_tokens | INTEGER | 1-hour cache writes (R11) |
 | cache_read_tokens | INTEGER | Cache reads |
 | total_uncached_equivalent_tokens | INTEGER | input + creation_total + read |
-| is_sidechain | BOOLEAN | Part of agent sidechain |
+| content_length | INTEGER | Character count |
+| content_block_count | INTEGER | Number of content blocks in the message |
+| has_tool_use | BOOLEAN | Message contains a tool_use block |
+| has_tool_result | BOOLEAN | Message contains a tool_result block |
+| has_thinking | BOOLEAN | Message contains a thinking block |
+| word_count | INTEGER | Word count |
+| content_text | VARCHAR | Message text content (thinking excluded regardless of `--no-thinking`) |
+| estimated_tokens | INTEGER | DDL column, not currently populated (always NULL) -- token estimation was removed with the legacy schema; use `input_tokens`/`output_tokens` |
+| response_time_seconds | FLOAT | DDL column, not currently populated (always NULL) |
+| conversation_depth | INTEGER | DDL column, not currently populated (always NULL) |
+
+There is no `content_json` or `context_management_json` column on this table (raw content-block JSON lives on the unpopulated `fact_content_blocks` DDL stub, not here).
 
 #### fact_tool_uses
 One row per `tool_use` block emitted by the assistant.
@@ -267,15 +302,19 @@ One row per `tool_use` block emitted by the assistant.
 | Column | Type | Description |
 |--------|------|-------------|
 | tool_use_id | VARCHAR | PK (Anthropic's `id`) |
+| entry_id | VARCHAR | Degenerate dim: JSONL entry id |
 | session_key | VARCHAR | FK to dim_session |
+| project_key | VARCHAR | FK to dim_project |
 | tool_key | VARCHAR | FK to dim_tool |
 | message_id | VARCHAR | FK to fact_messages (assistant turn) |
 | date_key | INTEGER | FK to dim_date |
 | time_key | INTEGER | FK to dim_time |
 | timestamp | TIMESTAMP | Tool-use timestamp |
 | tool_name | VARCHAR | Denormalized tool name |
-| input_json | JSON | Raw input JSON |
-| input_char_count | INTEGER | Input size |
+| invoke_sequence_num | INTEGER | Position of this tool_use block within the assistant message |
+| caller_type | VARCHAR | `$.caller.type` from the block, when present |
+| input_json | VARCHAR | Raw input JSON (JSON-encoded string) |
+| input_summary | VARCHAR | First 200 chars of input_json, for quick scanning |
 
 #### fact_tool_results
 One row per `tool_use_id`. Combines the `tool_result` content with the entry-level `toolUseResult` structured payload (R1).
@@ -283,32 +322,51 @@ One row per `tool_use_id`. Combines the `tool_result` content with the entry-lev
 | Column | Type | Description |
 |--------|------|-------------|
 | tool_use_id | VARCHAR | PK (FK to fact_tool_uses) |
+| entry_id | VARCHAR | Degenerate dim: JSONL entry id carrying this result |
+| message_id | VARCHAR | Degenerate dim: user entry carrying the tool_result block |
 | session_key | VARCHAR | FK to dim_session |
+| project_key | VARCHAR | FK to dim_project |
 | tool_key | VARCHAR | FK to dim_tool |
 | date_key | INTEGER | FK to dim_date |
 | time_key | INTEGER | FK to dim_time |
+| tool_name | VARCHAR | Denormalized tool name |
 | timestamp | TIMESTAMP | Result timestamp |
 | is_error | BOOLEAN | Tri-state: TRUE / FALSE / NULL (R16) |
-| output_text | TEXT | Tool result text |
-| output_char_count | INTEGER | Output size |
-| tool_use_result_json | JSON | Raw entry-level `toolUseResult` payload |
+| result_content_text | VARCHAR | Tool result text |
+| result_payload_json | VARCHAR | Raw entry-level `toolUseResult` payload (JSON-encoded string) |
 | bash_exit_code | INTEGER | Bash-specific |
 | bash_interrupted | BOOLEAN | Bash-specific |
+| bash_stdout_bytes | INTEGER | Bash-specific |
+| bash_duration_ms | FLOAT | Bash-specific |
+| edit_user_modified | BOOLEAN | Edit-specific |
+| edit_replace_all | BOOLEAN | Edit-specific |
+| edit_structured_patch_json | VARCHAR | Edit-specific (JSON-encoded string) |
 | read_num_lines | INTEGER | Read-specific |
 | read_total_lines | INTEGER | Read-specific |
-| edit_structured_patch | JSON | Edit-specific |
-| agent_total_duration_ms | INTEGER | Task/Agent rollup |
+| read_file_path | VARCHAR | Read-specific |
+| write_type | VARCHAR | Write-specific |
+| glob_num_files | INTEGER | Glob-specific |
+| glob_truncated | BOOLEAN | Glob-specific |
+| grep_mode | VARCHAR | Grep-specific |
+| grep_num_files | INTEGER | Grep-specific |
+| webfetch_http_code | INTEGER | WebFetch-specific |
+| webfetch_bytes | INTEGER | WebFetch-specific |
+| agent_status | VARCHAR | Task/Agent rollup |
+| agent_total_duration_ms | FLOAT | Task/Agent rollup |
 | agent_total_tokens | INTEGER | Task/Agent rollup |
 | agent_total_tool_use_count | INTEGER | Task/Agent rollup |
+| agent_was_interrupted | BOOLEAN | Task/Agent rollup |
+| agent_subagent_type | VARCHAR | Task/Agent rollup |
+| agent_id | VARCHAR | Task/Agent rollup |
 
 #### fact_token_usage
 Per-API-response token data from assistant messages.
 
 | Column | Type | Description |
 |--------|------|-------------|
-| usage_id | VARCHAR | PK |
+| entry_id | VARCHAR | PK (JSONL entry id); no separate usage_id |
 | session_key | VARCHAR | FK to dim_session |
-| message_id | VARCHAR | FK to fact_messages |
+| project_key | VARCHAR | FK to dim_project |
 | model_key | VARCHAR | FK to dim_model |
 | date_key | INTEGER | FK to dim_date |
 | time_key | INTEGER | FK to dim_time |
@@ -321,35 +379,41 @@ Per-API-response token data from assistant messages.
 | cache_read_tokens | INTEGER | Cache reads |
 | total_uncached_equivalent_tokens | INTEGER | input + creation_total + read |
 | service_tier | VARCHAR | "standard", etc. |
+| speed | VARCHAR | Anthropic API `speed` field, when present |
+| inference_geo | VARCHAR | Anthropic API inference-region field, when present |
+| server_tool_use_web_search_requests | INTEGER | Server-side web_search tool invocations |
+| server_tool_use_web_fetch_requests | INTEGER | Server-side web_fetch tool invocations |
+
+Note: this table has no `message_id` column -- join to `fact_messages` via `session_key` + `timestamp` if needed, or use `entry_id`.
 
 #### fact_attachments
-One row per attachment, covering all 23 attachment subtypes (selected_lines_in_ide, opened_file_in_ide, diagnostics, hook_success, etc.). Standard columns: `attachment_id` (PK), `session_key`, `date_key`, `time_key`, `timestamp`, `attachment_type` (discriminator), `file_path` (when applicable), `payload_json` (full attachment).
+One row per attachment, covering all 23 attachment subtypes (selected_lines_in_ide, opened_file_in_ide, diagnostics, hook_success, etc.). Standard columns: `entry_id` (PK), `session_key`, `date_key`, `time_key`, `timestamp`, `attachment_type` (discriminator), `attachment_json` (full attachment, JSON-encoded string).
 
 #### fact_progress_events
-One row per progress event, covering all 6 variants (hook_progress, bash_progress, agent_progress, query_update, search_results, mcp). Columns: `progress_id` (PK), `session_key`, `date_key`, `time_key`, `timestamp`, `data_type` (discriminator), `tool_use_id` (when tool-emitted), `payload_json`.
+One row per progress event, covering all 6 variants (hook_progress, bash_progress, agent_progress, query_update, search_results, mcp). Columns: `entry_id` (PK), `session_key`, `date_key`, `time_key`, `timestamp`, `data_type` (discriminator), `tool_use_id` / `parent_tool_use_id` (when tool-emitted), `hook_name` / `hook_event` (hook-emitted), `agent_id`, `data_json` (full payload, JSON-encoded string).
 
 #### fact_system_events
-One row per system event, covering all 7 subtypes (turn_duration, stop_hook_summary, api_error, compact_boundary, local_command, away_summary, bridge_status). Subsumes the legacy `fact_turn_durations` and `fact_stop_events`. Columns: `system_event_id` (PK), `session_key`, `date_key`, `time_key`, `timestamp`, `subtype` (discriminator), `payload_json`, plus typed columns promoted from common subtypes -- `duration_ms` (turn_duration), `stop_reason` / `hook_count` / `prevented_continuation` (stop_hook_summary).
+One row per system event, covering all 7 subtypes (turn_duration, stop_hook_summary, api_error, compact_boundary, local_command, away_summary, bridge_status). Subsumes the legacy `fact_turn_durations` and `fact_stop_events`. Columns: `entry_id` (PK), `session_key`, `date_key`, `time_key`, `timestamp`, `subtype` (discriminator), `level`, `payload_json` (full JSON catch-all), plus typed columns promoted per subtype -- `duration_ms` / `message_count` (turn_duration); `hook_count` / `prevented_continuation` / `stop_reason` / `has_output` (stop_hook_summary); `error_status` / `error_type` / `retry_in_ms` / `retry_attempt` / `max_retries` (api_error); `compact_trigger` / `compact_pre_tokens` / `logical_parent_uuid` (compact_boundary); `content` (local_command / away_summary / bridge_status text); `bridge_url` (bridge_status).
 
 #### fact_meta_events
-Time-series for meta entries (permission-mode, custom-title, agent-name, last-prompt). Replaces v0.14's last-value-only columns on `dim_session`. Columns: `meta_event_id` (PK), `session_key`, `date_key`, `time_key`, `timestamp`, `meta_type` (discriminator), `meta_value` (current value at this timestamp), `payload_json`.
+Time-series for meta entries (permission-mode, custom-title, agent-name, last-prompt). Replaces v0.14's last-value-only columns on `dim_session`. Columns: `entry_id` (PK), `session_key`, `date_key`, `time_key`, `timestamp`, `meta_type` (discriminator), `meta_value` (current value at this timestamp). No JSON catch-all column on this table -- `meta_value` carries the full value.
 
 #### fact_file_history_snapshots / fact_queue_operations / fact_pr_links
-Thin per-entry-type facts. Each has a surrogate PK, `session_key`, a `timestamp`, a discriminator (`operation_type` / etc.), and a `payload_json` for the raw row. Use them to inspect rare entry types without re-parsing JSONL.
+Thin per-entry-type facts. Each has `entry_id` as its PK, `session_key`, a `timestamp`, a discriminator, and typed/JSON payload columns specific to the entry type. Use them to inspect rare entry types without re-parsing JSONL. See `src/ccutils/etl/entry_type_facts.py` for exact columns per table.
 
 #### fact_file_operations
 One row per file touch. Derived from `fact_tool_uses` + `fact_tool_results`.
 
 | Column | Type | Description |
 |--------|------|-------------|
-| file_operation_id | VARCHAR | PK |
-| tool_use_id | VARCHAR | FK to fact_tool_uses |
+| tool_use_id | VARCHAR | PK (FK to fact_tool_uses); no separate surrogate id |
 | session_key | VARCHAR | FK to dim_session |
 | file_key | VARCHAR | FK to dim_file |
 | tool_key | VARCHAR | FK to dim_tool |
 | date_key | INTEGER | FK to dim_date |
 | time_key | INTEGER | FK to dim_time |
 | operation_type | VARCHAR | read, write, edit |
+| file_path | VARCHAR | Denormalized path (also on dim_file via file_key) |
 | file_size_chars | INTEGER | Characters in file content |
 | timestamp | TIMESTAMP | Operation timestamp |
 
@@ -361,6 +425,8 @@ M:N aggregate per (session, file).
 | session_file_key | VARCHAR | PK |
 | session_key | VARCHAR | FK to dim_session |
 | file_key | VARCHAR | FK to dim_file |
+| date_key | INTEGER | FK to dim_date (derived from first_operation_timestamp) |
+| time_key | INTEGER | FK to dim_time (derived from first_operation_timestamp) |
 | first_operation_timestamp | TIMESTAMP | Earliest operation on this file |
 | last_operation_timestamp | TIMESTAMP | Latest operation on this file |
 | operation_count | INTEGER | Total operations |
@@ -370,7 +436,7 @@ M:N aggregate per (session, file).
 | total_chars_written | INTEGER | Total characters written |
 
 #### fact_diagnostics
-LSP diagnostics flattened from `fact_attachments` where `attachment_type='diagnostics'`. Columns: `diagnostic_id` (PK), `session_key`, `file_key`, `date_key`, `time_key`, `severity` (Error/Warning/Info/Hint), `source` (Pyright, typescript, etc.), `code`, `message`, `range_start_line` / `range_start_col` / `range_end_line` / `range_end_col`, `timestamp`.
+LSP diagnostics flattened from `fact_attachments` where `attachment_type='diagnostics'`. Columns: `diagnostic_id` (PK), `entry_id`, `session_key`, `file_key`, `date_key`, `time_key`, `file_path`, `severity` (Error/Warning/Info/Hint), `source` (Pyright, typescript, etc.), `code`, `message`, `range_start_line` / `range_start_col` / `range_end_line` / `range_end_col`, `timestamp`.
 
 #### fact_plan_revisions
 One row per `ExitPlanMode` tool invocation, linked into a per-session revision chain. Uses the structural `fact_tool_results.is_error` signal (R16 tri-state) with full-content approval-signature fallback when `is_error` is NULL.
@@ -388,14 +454,16 @@ One row per `ExitPlanMode` tool invocation, linked into a per-session revision c
 | plan_text | TEXT | Full plan text from `input_json.plan` |
 | plan_file_path | VARCHAR | `input_json.planFilePath` -- the plan file Claude Code writes (newer sessions; NULL before the field existed) |
 | plan_char_count | INTEGER | Character count of plan_text |
-| outcome | VARCHAR | 'accepted', 'rejected', 'superseded', or 'pending' |
+| outcome | VARCHAR | 'accepted', 'rejected', 'superseded', 'pending', or 'unknown' |
 | outcome_signal | VARCHAR | How the outcome was detected |
+| user_feedback_message_id | VARCHAR | FK to fact_messages -- the user reply that followed a rejection |
 | user_feedback_text | TEXT | Truncated user feedback for rejected/superseded plans |
 | plan_timestamp | TIMESTAMP | When ExitPlanMode was invoked |
 | resolved_timestamp | TIMESTAMP | tool_result timestamp; NULL if pending |
 | seconds_to_resolution | DOUBLE | resolved_timestamp - plan_timestamp |
+| timestamp | TIMESTAMP | Mirror of plan_timestamp, for query convenience |
 
-Outcome classification precedence (first match wins): `superseded` (later ExitPlanMode in same session), `accepted` (is_error=FALSE or approval signature), `rejected` (is_error=TRUE), `pending` (session ended with no follow-up).
+Outcome classification precedence (first match wins): `superseded` (later ExitPlanMode in same session), `accepted` (is_error=FALSE or approval signature), `rejected` (is_error=TRUE), `pending` (no tool_result yet), `unknown` (tool_result present but is_error is NULL).
 
 #### fact_agent_delegations
 Task tool spawns + agent rollup metrics from R1 structured `toolUseResult` capture. Cross-session linkage via `dim_session.agent_id`.
@@ -403,43 +471,52 @@ Task tool spawns + agent rollup metrics from R1 structured `toolUseResult` captu
 | Column | Type | Description |
 |--------|------|-------------|
 | delegation_key | VARCHAR | PK |
+| tool_use_id | VARCHAR | FK to fact_tool_uses (the Task tool_use that spawned the agent) |
+| session_key | VARCHAR | FK to dim_session (parent session) |
 | parent_session_key | VARCHAR | FK to dim_session (parent) |
 | agent_session_key | VARCHAR | FK to dim_session (agent) -- NULL if agent session not yet ETL'd |
-| task_tool_use_id | VARCHAR | FK to fact_tool_uses |
 | date_key | INTEGER | FK to dim_date |
 | time_key | INTEGER | FK to dim_time |
 | task_description | TEXT | From tool input |
 | task_prompt | TEXT | Task prompt text |
 | subagent_type | VARCHAR | "Explore", "Plan", etc. |
-| agent_output | TEXT | Agent result text |
-| delegation_timestamp | TIMESTAMP | When agent was invoked |
-| completion_timestamp | TIMESTAMP | When agent completed |
-| agent_total_duration_ms | INTEGER | From toolUseResult rollup |
+| agent_status | VARCHAR | From toolUseResult rollup |
+| agent_total_duration_ms | FLOAT | From toolUseResult rollup |
 | agent_total_tokens | INTEGER | From toolUseResult rollup |
 | agent_total_tool_use_count | INTEGER | From toolUseResult rollup |
+| agent_was_interrupted | BOOLEAN | From toolUseResult rollup |
+| agent_output_text | TEXT | Agent result text |
+| delegation_timestamp | TIMESTAMP | When agent was invoked |
+| completion_timestamp | TIMESTAMP | When agent completed |
+| seconds_to_completion | DOUBLE | completion_timestamp - delegation_timestamp |
 
 #### fact_errors
 One row per `fact_tool_results.is_error=TRUE`. Columns: `error_id` (PK), `tool_use_id` (FK), `session_key`, `tool_key`, `error_type` (one of `permission_denied` / `file_not_found` / `syntax_error` / `timeout` / `import_error` / `tool_error`, classified via DuckDB regex CASE), `date_key`, `time_key`, `error_message`, `timestamp`.
 
 #### fact_tool_chain_steps
-Per (session, tool_use, step_position) with prev/next tool keys for adjacency-pattern queries. Columns: `chain_step_id` (PK), `session_key`, `chain_id` (groups steps in the same chain, per assistant turn), `tool_use_id` (FK), `tool_key`, `step_position` (0-based), `prev_tool_key`, `next_tool_key`, `is_error`, `time_since_prev_seconds`.
+Per (session, tool_use, step_position) with prev/next tool keys for adjacency-pattern queries. Columns: `chain_step_id` (PK), `session_key`, `date_key`, `time_key`, `chain_id` (groups steps in the same chain, per assistant turn), `tool_use_id` (FK), `tool_key`, `step_position` (0-based), `prev_tool_key`, `next_tool_key`, `is_error`, `time_since_prev_seconds`, `timestamp`.
 
 #### fact_session_facets
 One row per (session_key, facet_type_key). Tier 1 facets (F01-F19) populated via SQL; Tier 2 facets (F20+) populated via the LLM extractor when injected.
 
 | Column | Type | Description |
 |--------|------|-------------|
-| facet_key | VARCHAR | PK (md5 of session_key + facet_type_key) |
+| facet_row_key | VARCHAR | PK (md5 of session_id + facet_id + prompt_version) |
 | session_key | VARCHAR | FK to dim_session |
+| session_id | VARCHAR | Degenerate dimension |
 | facet_type_key | VARCHAR | FK to dim_facet_type |
-| value_text | TEXT | Facet value (text form) |
-| value_numeric | DOUBLE | Facet value (numeric form, when applicable) |
+| prompt_version | VARCHAR | NULL for Tier 1 (SQL-computed); the FacetSpec's version for Tier 2 |
+| value_text | VARCHAR | Facet value (text / enum form) |
 | value_json | JSON | Facet value (structured form, when applicable) |
-| confidence | DOUBLE | Extractor confidence (Tier 2) |
-| source | VARCHAR | 'sql' (Tier 1) or 'llm' (Tier 2) |
+| value_numeric | DOUBLE | Facet value (numeric form, when applicable) |
+| value_bool | BOOLEAN | Facet value (boolean form, when applicable) |
+| is_fallback | BOOLEAN | Tier 2 QA aid: TRUE when the extractor couldn't produce a real value (distinct from a parse failure). FALSE/default for Tier 1 |
+| extraction_metadata_json | JSON | Tier 2 QA aid: raw model response + retry/cache bookkeeping. NULL for Tier 1 |
+| date_key | INTEGER | FK to dim_date |
+| time_key | INTEGER | FK to dim_time |
 | extracted_at | TIMESTAMP | When this facet was computed |
 
-See `src/ccutils/etl/facets/catalog.py` for the full facet registry.
+`value_text` / `value_json` / `value_numeric` / `value_bool` is an EAV shape: exactly one is populated per row, per `dim_facet_type.output_type` (`OUTPUT_TYPE_TO_COL` in `src/ccutils/etl/facets/extractor.py` is the routing table). See `src/ccutils/etl/facets/catalog.py` for the full facet registry.
 
 #### fact_session_summary
 One row per session. Aggregates over every fact above. Must populate last.
@@ -450,22 +527,43 @@ One row per session. Aggregates over every fact above. Must populate last.
 | project_key | VARCHAR | FK to dim_project |
 | date_key | INTEGER | FK to dim_date |
 | time_key | INTEGER | FK to dim_time |
+| first_timestamp | TIMESTAMP | First message time |
+| last_timestamp | TIMESTAMP | Last message time |
+| session_duration_seconds | DOUBLE | last_timestamp - first_timestamp |
 | total_messages | INTEGER | Total message count |
 | user_messages | INTEGER | User message count |
 | assistant_messages | INTEGER | Assistant message count |
+| total_thinking_blocks | INTEGER | Thinking blocks across assistant messages |
+| total_input_tokens | BIGINT | Sum of API input tokens |
+| total_output_tokens | BIGINT | Sum of API output tokens |
+| total_cache_creation_5m_tokens | BIGINT | R11 split |
+| total_cache_creation_1h_tokens | BIGINT | R11 split |
+| total_cache_creation_total_tokens | BIGINT | 5m + 1h |
+| total_cache_read_tokens | BIGINT | Sum of cache-read tokens |
+| total_uncached_equivalent_tokens | BIGINT | Sum, R11-correct |
+| api_response_count | INTEGER | Count of contributing fact_token_usage rows |
 | total_tool_uses | INTEGER | Tool use count |
-| total_errors | INTEGER | Error count |
 | unique_tools_used | INTEGER | Distinct tools used |
-| unique_files_touched | INTEGER | Distinct files touched |
-| total_input_tokens | INTEGER | Sum of API input tokens |
-| total_output_tokens | INTEGER | Sum of API output tokens |
-| total_cache_creation_5m_tokens | INTEGER | R11 split |
-| total_cache_creation_1h_tokens | INTEGER | R11 split |
-| total_cache_read_tokens | INTEGER | Sum of cache-read tokens |
-| total_uncached_equivalent_tokens | INTEGER | Sum, R11-correct |
-| session_duration_seconds | INTEGER | last_timestamp - first_timestamp |
-| first_timestamp | TIMESTAMP | First message time |
-| last_timestamp | TIMESTAMP | Last message time |
+| total_tool_results | INTEGER | Tool result count |
+| total_tool_errors | INTEGER | Error count (fact_tool_results.is_error=TRUE) |
+| total_bash_interrupted | INTEGER | Bash invocations interrupted |
+| total_api_errors | INTEGER | From fact_system_events |
+| total_compactions | INTEGER | From fact_system_events |
+| total_turn_durations_ms | BIGINT | Sum of turn durations, from fact_system_events |
+| turn_count | INTEGER | Count of turn_duration system events |
+| total_stop_events | INTEGER | From fact_system_events |
+| total_prevented_continuations | INTEGER | From fact_system_events |
+| total_progress_events | INTEGER | From fact_progress_events |
+| total_hook_progress_events | INTEGER | From fact_progress_events |
+| total_bash_progress_events | INTEGER | From fact_progress_events |
+| total_attachments | INTEGER | From fact_attachments |
+| total_diagnostics | INTEGER | From fact_diagnostics |
+| total_hook_successes | INTEGER | From fact_attachments |
+| permission_mode_transition_count | INTEGER | From fact_meta_events |
+| current_permission_mode | VARCHAR | Latest permission mode, from fact_meta_events |
+| total_file_history_snapshots | INTEGER | From fact_file_history_snapshots |
+
+Note: there is no `unique_files_touched` column on this table -- use `bridge_session_file` (grouped by `session_key`) or `semantic_project_files` for distinct-file counts.
 
 ---
 
@@ -496,11 +594,11 @@ All 16 views bind against the current DDL (view creation validates column refere
 
 ```sql
 -- Complex bug fixes with the most errors
-SELECT session_id, intent, complexity, total_tool_uses, total_errors,
+SELECT session_id, intent, complexity, total_tool_uses, total_tool_errors,
        session_duration_seconds
 FROM semantic_sessions
 WHERE intent = 'bug_fix' AND complexity = 'complex'
-ORDER BY total_errors DESC;
+ORDER BY total_tool_errors DESC;
 
 -- Token usage by model
 SELECT model_name, SUM(input_tokens) as total_in, SUM(output_tokens) as total_out,
@@ -518,7 +616,7 @@ ORDER BY plan_date DESC, revision_number;
 -- Catch up on a project
 SELECT session_id, project_name, intent, complexity, outcome,
        first_user_message, last_assistant_message,
-       total_messages, total_tool_uses, total_errors
+       total_messages, total_tool_uses, total_tool_errors
 FROM semantic_project_context
 WHERE project_name = 'my-project'
 ORDER BY created_at DESC

@@ -1,9 +1,10 @@
+<!-- path-privacy: skip-file -- references universal Claude Code data paths (not personal) -->
 # Facet & Cluster Pipeline — Data Architecture
 
 *Companion to `STAR_SCHEMA.md`. Defines the data, transforms, and pipeline layers that turn the v0.15 transcript archive into a queryable map of usage patterns. Use cases are derived from the data we capture, not the other way around.*
 
-**Status:** Steps 1-4.5 landed. DDL + Tier 1 registry, Tier 1 SQL populator (F01-F19), Tier 2 extractor protocol (`AnthropicFacetExtractor` + `CannedFacetExtractor`), F20 `task_description` populator end-to-end, CLI flags `--with-llm-facets` (local) / `--batch-llm-facets` (all). Step 5 (embedding + clustering) not yet started; awaiting first F20 sample run on a real corpus to inform the embedding-model choice.
-**Last updated:** 2026-05-28
+**Status:** Steps 1-4.5 landed. DDL + Tier 1 registry, Tier 1 SQL populator (F01-F19, `src/ccutils/etl/fact_session_facets.py`), Tier 2 extractor protocol (`AnthropicFacetExtractor` + `CannedFacetExtractor`, `src/ccutils/etl/facets/`), F20 `task_description` populator end-to-end, CLI flags `--with-llm-facets` (local) / `--batch-llm-facets` (all). `FACET_SPECS` in `etl/facets/catalog.py` still holds only F20 -- F21+ are cataloged below as design, not yet implemented. Step 5 (embedding + clustering) not yet started; the `fact_facet_embeddings` table exists as a DDL stub (unpopulated), and `fact_clustering_run` / `dim_cluster` / `bridge_cluster_session` / `fact_cluster_metrics` described in §4 don't exist in the DDL yet. Awaiting first F20 sample run on a real corpus to inform the embedding-model choice.
+**Last updated:** 2026-07-17
 
 ---
 
@@ -29,22 +30,21 @@ Inventory of the v0.15 facts and dimensions, with the fields relevant to facet e
 | Existing table | Fields relevant to facets |
 |---|---|
 | `fact_messages` | First user message text, last assistant message text, message counts, stop_reason, prompt_id |
-| `fact_tool_uses` | tool_name, timestamps, success, edit_decision, structured_patch (Edit), exit_code (Bash) |
-| `fact_tool_results` | tool result content, num_lines, total_lines (Read), Agent rollup |
+| `fact_tool_uses` | tool_name, timestamps, input_json |
+| `fact_tool_results` | tool result content, is_error (tri-state), num_lines/total_lines (Read), exit_code/interrupted (Bash), structured_patch (Edit), Agent rollup |
 | `fact_token_usage` | per-API-response token breakdown, cache hits, model name |
 | `fact_session_summary` | aggregate tokens/cost/duration/tool counts per session |
-| `fact_file_operations` | file paths, file extensions, operation counts, LOC added/removed |
+| `fact_file_operations` | file paths, file extensions, operation counts (no LOC-delta column yet -- see F08 note below) |
 | `fact_errors` | error messages, error types |
 | `fact_attachments` | attachment subtypes (23 variants) |
 | `fact_pr_links` | PR URLs referenced |
 | `fact_plan_revisions` | plan content over time |
 | `fact_agent_delegations` | subagent fan-out, agent types |
-| `dim_session` | session id, cwd, git_branch, agent_id, parent_session_key, first/last timestamp |
-| `dim_session_heuristics` | intent, complexity, outcome, domain, error_type (regex-based) |
-| `dim_project` | project name, repo slug |
-| `dim_model` | model id, family |
-| `dim_tool` | tool name, family |
-| `dim_prompt` | prompts from `~/.claude/history.jsonl` (cross-session) |
+| `dim_session` | session id, cwd, git_branch, agent_id, parent_session_key, first/last timestamp, intent/complexity/outcome/domain (heuristic columns, `etl/heuristics.py`) |
+| `dim_project` | project name, project path |
+| `dim_model` | model name, family |
+| `dim_tool` | tool name, tool_category |
+| `dim_prompt` | prompts from Claude Code's prompt-history JSONL (cross-session) |
 | `dim_file` | file path normalized, extension |
 | `dim_date` / `dim_time` | calendar attributes (dow, hour, etc.) |
 
@@ -71,14 +71,14 @@ These are cheap, deterministic, and run inline with the existing `run_v15_etl()`
 | F05 | `error_signature` | text[] | `fact_errors.error_type` | Ordered list — error progression within session |
 | F06 | `tool_mix` | json | `fact_tool_uses` histogram | Tool name → count; basis for "session shape" |
 | F07 | `tool_bigram_top3` | text[] | `fact_tool_chain_steps` | E.g. `["Read→Edit", "Edit→Bash", …]` — workflow signature |
-| F08 | `loc_delta` | int | `fact_file_operations` | Added minus removed |
+| F08 | `loc_delta` | int | `fact_file_operations` | Added minus removed. **Implemented as a proxy**: current populator emits a count of write/edit operations, not a true added-minus-removed delta -- that needs unpacking `fact_tool_results.edit_structured_patch_json`, tracked as a follow-up |
 | F09 | `file_extensions_touched` | text[] | `fact_file_operations` | Distinct extensions; finer than `session_domain` |
 | F10 | `repo_slug` | text | `dim_project` | Stable across sessions in same repo |
 | F11 | `model_mix` | json | `fact_token_usage` × `dim_model` | Tokens per model; catches model-switch sessions |
 | F12 | `duration_seconds` | int | `dim_session` first/last | — |
 | F13 | `agent_depth` | int | `dim_session` parent_session_key chain | 0 = primary; >0 = subagent |
 | F14 | `human_message_count` | int | `fact_messages` | — |
-| F15 | `tokens_in` / `tokens_out` / `cost_usd` | num | `fact_session_summary` | Already aggregated |
+| F15 | `tokens_in` / `tokens_out` / `cost_usd` | num | `fact_session_summary` | Already aggregated. **Implemented as a single value**: current populator emits only summed `input_tokens` from `fact_token_usage` (deliberately independent of `fact_session_summary`'s populator order); `tokens_out` and `cost_usd` are not computed anywhere in the codebase yet -- there is no USD pricing calculation at all |
 | F16 | `local_hour` / `local_dow` | enum | `dim_time` | For temporal patterns |
 | F17 | `had_subagents` | bool | `fact_agent_delegations` count | — |
 | F18 | `pr_referenced` | bool | `fact_pr_links` | Was a PR opened/referenced in-session |
@@ -118,7 +118,7 @@ These exist only after the clustering pipeline runs. They're the *output* of the
 
 ## 4. Schema additions
 
-The facet layer fits the existing star schema cleanly. Six new tables: one registry, one structured-fact table, one embedding fact, one clustering-run provenance, one cluster dim, one cluster-session bridge, plus a per-cluster metrics fact.
+The facet layer fits the existing star schema cleanly. Six new tables: one registry, one structured-fact table, one embedding fact, one clustering-run provenance, one cluster dim, one cluster-session bridge, plus a per-cluster metrics fact. Only the first two (`dim_facet_type`, `fact_session_facets`) plus the unpopulated `fact_facet_embeddings` stub exist in the DDL today; the pseudo-schemas below are the design as originally specified -- see `STAR_SCHEMA.md` for the exact, current column list on the tables that ship (implementation added a couple of Tier 2 QA columns not shown here, e.g. `is_fallback` / `extraction_metadata_json` on `fact_session_facets`).
 
 **Schema-split note (locked in during build step 1):** the original design proposed an inline `embedding BLOB` column on `fact_session_facets`. That was changed before implementation. Embeddings live in their own table (`fact_facet_embeddings`) for three reasons:
 
@@ -362,7 +362,7 @@ This is the *honest* mapping. For each use case, what facets it requires and wha
 1. **LLM provider for T02 / T05.** Anthropic API direct, or stay credential-free and read from a configured local model? Cost favors Haiku via API. Privacy favors local.
 2. **Embedding model.** ColBERT (already an optional dep, good for retrieval) vs. a general sentence-transformer (better for k-means clustering). Probably both, behind a config flag.
 3. **Clustering algorithm.** k-means (need to pick k, simpler) vs. HDBSCAN (auto-k, handles outliers natively, more compute). Lean HDBSCAN given the typical corpus shape.
-4. **Where to store embeddings.** DuckDB BLOB column (simple, one source of truth) vs. separate Parquet shard (faster k-NN). Start with DuckDB; revisit if query latency suffers.
+4. ~~**Where to store embeddings.** DuckDB BLOB column (simple, one source of truth) vs. separate Parquet shard (faster k-NN).~~ **Resolved during build step 1** (see the schema-split note in §4): neither BLOB nor Parquet -- `fact_facet_embeddings.embedding FLOAT[384]` in DuckDB, so `array_cosine_similarity` / `array_inner_product` work natively in SQL. The table exists as a DDL stub; T03 (the populator) is still unbuilt.
 5. **Incremental re-clustering.** Full recompute nightly is simplest. Incremental (assign new sessions to existing clusters, rebuild quarterly) is cheaper. Start simple.
 6. **Privacy audit cadence.** Always-on, or only when exporting? Always-on adds cost; export-time is sufficient for personal use.
 
@@ -372,7 +372,7 @@ This is the *honest* mapping. For each use case, what facets it requires and wha
 
 Minimum viable path that yields "so what" at every step:
 
-1. **T01 + Tier 1 facets only.** Already mostly there — extend `dim_session_heuristics` populator to write into `fact_session_facets` against `dim_facet_type`. No new use cases, but lays the foundation. (½ day)
+1. **T01 + Tier 1 facets only.** Done -- `populate_tier1_facets` (`src/ccutils/etl/fact_session_facets.py`) writes all 19 Tier 1 facets into `fact_session_facets` against `dim_facet_type`, reusing the heuristic columns `populate_dim_session_heuristics` already writes onto `dim_session`. No new use cases, but lays the foundation. (½ day)
 2. **T02 with one Tier 2 facet: F20 task_description.** Single Haiku call per session. Unlocks use cases 1, 5, 6, 7 once embeddings + clustering are added. (1 day)
 3. **T03 + T04 + T05.** Embedding, clustering, description. The "first map" appears. Unlocks use cases 1, 2, 7. (2 days)
 4. **T07 cluster metrics.** Joins clusters to existing facts. Unlocks use cases 3, 4, 12. (½ day)

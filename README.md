@@ -1,7 +1,7 @@
 <!-- path-privacy: skip-file -- references universal ~/.claude data paths (not personal) -->
 # ccutils
 
-Claude utilities for session transcripts, star schema analytics, and probably more as it comes up as a use case in my day to day.
+Claude Code transcript analytics: browsable HTML/markdown transcripts and a DuckDB star-schema warehouse with full ETL lineage, built from the session JSONL Claude Code already writes.
 
 > **Origin:** This project began as a fork of Simon Willison's [claude-code-transcripts](https://github.com/simonw/claude-code-transcripts). It has since diverged significantly with star schema analytics, modular architecture, and as a broader Claude utility.
 
@@ -120,7 +120,7 @@ ccutils schema ./export --json > schema.json     # Machine-readable output
 
 ## Export Formats
 
-Three formats: `html`, `duckdb`, `json`. All three are first-class; `duckdb` and `json` both write the v0.15 star schema.
+Four formats: `html`, `markdown`, `duckdb`, `json` (plus `both` = html+duckdb on `all`). `html` and `markdown` are render-only transcripts; `duckdb` and `json` both write the v0.15 star schema. Coverage differs on purpose: the warehouse formats ingest **every** session on disk (including ones with no summary line), while html/markdown skip warmup/no-summary sessions for a curated browsing archive.
 
 ### HTML Transcripts
 
@@ -144,11 +144,15 @@ v0.15 rebuilds the ETL as a four-tier pipeline:
 3. **Tier 2** -- DuckDB staging table (`stg_log_entries`) loaded from Parquet via `read_parquet()`, cleared at the end of every run.
 4. **Tier 3** -- DuckDB warehouse: dimensions, facts, and semantic views consumers query. The warehouse is persistent and incremental: re-running the CLI against the same database file accumulates new sessions instead of wiping and rebuilding.
 
-Every fact carries the v0.15 lineage convention: `created_at`, `last_updated_at`, `created_by_version_key`, `last_updated_by_version_key`, `etl_run_id`, `record_source`, `hash_diff`, plus soft-delete (`is_deleted`, `deleted_at`). Re-running ETL on unchanged source is a no-op (the `hash_diff` gate prevents spurious UPDATEs). Mutations are tracked via `dim_etl_version` + `fact_etl_runs`; DDL migrations are tracked via `meta_schema_version`.
+Every fact carries the v0.15 lineage convention: `created_at`, `last_updated_at`, `created_by_version_key`, `last_updated_by_version_key`, `etl_run_id`, `record_source`, `hash_diff`, plus soft-delete (`is_deleted`, `deleted_at`). Re-running ETL on unchanged source is a no-op (the `hash_diff` gate prevents spurious UPDATEs). DDL migrations are tracked via `meta_schema_version`.
+
+**Run metadata (three grains):** every CLI invocation writes one `fact_etl_batch_runs` row; every session ETL writes one `fact_etl_runs` row (linked via `batch_run_id`, carrying a CDC data window of min/max entry timestamps); every pipeline node writes one `fact_etl_steps` row with real affected-row counts. Counts on the parent rows are derived from the children at completion -- the audit trail cannot drift from what the DML actually did. Query `semantic_etl_runs` for the joined picture.
+
+Subagent transcripts are first-class sessions: agent files carry their parent's `sessionId` internally, so ccutils keys them by file identity (`agent-<id>`), links them to their parent session, and computes delegation depth -- your agents don't silently merge into their parents.
 
 **Tables populated by `run_v15_etl`:**
 
-- **Lineage / Meta:** `dim_etl_version`, `fact_etl_runs`, `meta_schema_version`.
+- **Lineage / Meta:** `dim_etl_version`, `fact_etl_batch_runs`, `fact_etl_runs`, `fact_etl_steps`, `meta_schema_version`.
 - **Dimensions:** `dim_session` (with intent/complexity/outcome/domain enrichment + subagent linkage), `dim_project`, `dim_tool`, `dim_model`, `dim_file`, `dim_session_chain`, `dim_prompt`, `dim_facet_type` (facet registry).
 - **Core facts:** `fact_messages`, `fact_tool_uses`, `fact_tool_results` (R1 structured `toolUseResult` payloads: Edit `structured_patch`, Bash `exit_code` / `interrupted`, Read `num_lines`, Agent rollups), `fact_token_usage` (R11 cache split: `cache_creation_5m_tokens` + `cache_creation_1h_tokens`), `fact_session_summary`.
 - **Entry-type facts:** `fact_attachments`, `fact_progress_events`, `fact_system_events`, `fact_meta_events` (permission-mode time series), `fact_file_history_snapshots`, `fact_queue_operations`, `fact_pr_links`.
@@ -193,19 +197,30 @@ WHERE ftu.tool_name = 'Bash'
 ORDER BY ftr.timestamp DESC
 LIMIT 20;
 
--- ETL lineage: when did each batch run, what version produced it, what was touched
+-- ETL observability: per-session run status, duration, batch context,
+-- CDC window, and step rollups in one view
 SELECT
-  fer.etl_run_id,
-  fer.started_at,
-  dev.ccutils_version,
-  fer.sessions_seen,
-  fer.facts_inserted,
-  fer.facts_updated,
-  fer.status
-FROM fact_etl_runs fer
-LEFT JOIN dim_etl_version dev USING (version_key)
-ORDER BY fer.started_at DESC
+  etl_run_id,
+  batch_run_id,
+  status,
+  duration_ms,
+  data_start_ts,
+  data_end_ts,
+  step_count,
+  rows_inserted,
+  rows_updated,
+  ccutils_version
+FROM semantic_etl_runs
+ORDER BY started_at DESC
 LIMIT 10;
+
+-- Orchestration-level scorecard: what did each CLI invocation do
+SELECT
+  status, sessions_seen, sessions_succeeded, sessions_failed,
+  rows_inserted, data_start_ts, data_end_ts, output_format
+FROM fact_etl_batch_runs
+ORDER BY started_at DESC
+LIMIT 5;
 ```
 
 ### JSON Export
@@ -289,10 +304,12 @@ tar czf - ./archive | age -r <recipient-key> > archive.tar.gz.age && rm -rf ./ar
 ## Development
 
 ```bash
-uv run pytest              # Run tests (~1046, incl. 1 skipped live-API)
-uv run ccutils --help      # Run development version
-uv run pytest --cov=ccutils  # Coverage
+uv run pytest tests/ --confcutdir=tests   # Full suite (1 skipped test = live-API smoke, expected)
+uv run ccutils --help                     # Run development version
+uv run pytest --cov=ccutils               # Coverage
 ```
+
+Project conventions and hard-won pitfalls live in `CLAUDE.md`.
 
 ## License
 
