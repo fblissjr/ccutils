@@ -67,6 +67,22 @@ def load_session_to_staging(
         """
     )
 
+    # Subagent identity override (REAL Claude Code contract, verified on
+    # the full corpus 2026-07-17): agent transcript entries carry the
+    # PARENT's sessionId -- every line, every file. The transcript's true
+    # identity is the file itself, so agent files get session_id from the
+    # filename stem ('agent-<id>'). Without this, all of a parent's agents
+    # collapse into the parent's dim_session row, subagent enrichment
+    # mislabels the parent is_agent with a SELF-referencing
+    # parent_session_key, and depth_level flattens to 0 corpus-wide.
+    conn.execute(
+        """
+        UPDATE stg_log_entries
+        SET session_id = regexp_extract(source_path, '/subagents/(agent-[^/]+)\\.jsonl$', 1)
+        WHERE regexp_matches(source_path, '/subagents/agent-[^/]+\\.jsonl$')
+        """
+    )
+
     return fetch_scalar(
         conn,
         "SELECT COUNT(*) FROM stg_log_entries WHERE source_path = ANY (?)",

@@ -60,7 +60,8 @@ Three-tier facet system on top of v0.15 facts. Writes one row per (session × fa
 ## Subagent JSONL layout
 
 - Subagent sessions live at `.../projects/<project>/<parent-session-uuid>/subagents/agent-<id>.jsonl` with optional sibling `agent-<id>.meta.json` carrying `agentType` + `description`.
-- `dim_session.agent_id` is the `<id>` suffix; `parent_session_key = md5(parent-session-uuid)`; cross-session linkage on `fact_agent_delegations.agent_session_key` resolves via `dim_session.agent_id` when both sessions are ETL'd.
+- **REAL contract (verified corpus-wide 2026-07-17): agent transcript entries carry the PARENT's `sessionId` on every line.** The transcript's identity is the FILE: `load_session_to_staging` overrides `session_id` to the filename stem (`agent-<id>`) for subagent-layout paths. Do NOT key anything on an agent file's embedded sessionId -- fixtures that give agents unique embedded sessionIds are unrealistic and masked a corpus-wide collapse (all agents merging into their parent's dim_session row, self-referencing parent keys, depth 0 everywhere).
+- `dim_session.session_id` for an agent is `agent-<id>`; `dim_session.agent_id` is the `<id>` suffix; `parent_session_key = md5(parent-session-uuid)`; cross-session linkage on `fact_agent_delegations.agent_session_key` resolves via `dim_session.agent_id` when both sessions are ETL'd.
 
 ## DuckDB JSON extraction idioms
 

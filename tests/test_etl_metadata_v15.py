@@ -285,6 +285,14 @@ class TestSemanticEtlRunsView:
         assert rows_inserted > 0
         assert batch_run_id is None  # no batch: LEFT JOIN keeps the run
 
+        # The view's rows_* rollup matches the run row's derived totals
+        # (both scope to upsert:% steps; stage steps are excluded).
+        facts_inserted = conn.execute(
+            "SELECT facts_inserted FROM fact_etl_runs WHERE etl_run_id = ?",
+            [result["etl_run_id"]],
+        ).fetchone()[0]
+        assert rows_inserted == facts_inserted
+
 
 class TestArchiveWiring:
     def test_generate_duckdb_archive_records_one_batch(self, tmp_path):

@@ -140,3 +140,99 @@ class TestSubagentDimSessionEnrichment:
         assert row[0] is False
         assert row[1] is None
         assert row[2] is None
+
+
+class TestRealContractParentSessionId:
+    """The REAL Claude Code contract (verified against the on-disk corpus,
+    across the entire on-disk corpus): subagent JSONL entries carry
+    the PARENT's sessionId, not their own. The transcript's identity comes
+    from the file (agent-<id>), derived at staging load -- otherwise every
+    agent collapses into its parent's dim_session row, the parent gets
+    marked is_agent with a self-referencing parent_session_key, and depth
+    flattens to 0 corpus-wide."""
+
+    def _real_layout(self, tmp_path, parent_session_id, agent_id):
+        proj = tmp_path / "-home-user-projects-proj"
+        parent_file = proj / f"{parent_session_id}.jsonl"
+        proj.mkdir(parents=True, exist_ok=True)
+        parent_lines = [
+            {"type": "user", "uuid": f"{parent_session_id}-u1",
+             "sessionId": parent_session_id,
+             "timestamp": "2026-04-19T10:00:00Z", "cwd": "/p",
+             "message": {"role": "user", "content": "parent asks"}},
+            {"type": "assistant", "uuid": f"{parent_session_id}-a1",
+             "parentUuid": f"{parent_session_id}-u1",
+             "sessionId": parent_session_id,
+             "timestamp": "2026-04-19T10:00:01Z",
+             "message": {"role": "assistant", "model": "claude-opus-4-7",
+                         "content": [{"type": "text", "text": "delegating"}]}},
+        ]
+        parent_file.write_text(
+            "\n".join(json.dumps(d) for d in parent_lines)
+        )
+
+        sub_dir = proj / parent_session_id / "subagents"
+        sub_dir.mkdir(parents=True, exist_ok=True)
+        agent_file = sub_dir / f"agent-{agent_id}.jsonl"
+        # REAL contract: entries carry the PARENT session id.
+        agent_lines = [
+            {"type": "user", "uuid": f"{agent_id}-u1",
+             "sessionId": parent_session_id,
+             "timestamp": "2026-04-19T10:01:00Z", "cwd": "/p",
+             "message": {"role": "user", "content": "agent task"}},
+            {"type": "assistant", "uuid": f"{agent_id}-a1",
+             "parentUuid": f"{agent_id}-u1",
+             "sessionId": parent_session_id,
+             "timestamp": "2026-04-19T10:01:01Z",
+             "message": {"role": "assistant", "model": "claude-haiku-4-5",
+                         "content": [{"type": "text", "text": "done"}]}},
+        ]
+        agent_file.write_text("\n".join(json.dumps(d) for d in agent_lines))
+        return parent_file, agent_file
+
+    def test_agent_transcript_gets_own_session_row(self, conn, tmp_path):
+        parent_file, agent_file = self._real_layout(
+            tmp_path, "9f0e1d2c-real-parent", "abc123"
+        )
+        lake = tmp_path / "lake"
+        run_v15_etl(conn, parent_file, parquet_lake_root=lake)
+        run_v15_etl(conn, agent_file, parquet_lake_root=lake)
+
+        rows = conn.execute(
+            "SELECT session_id, is_agent, agent_id, parent_session_key, "
+            "depth_level FROM dim_session ORDER BY is_agent"
+        ).fetchall()
+        assert len(rows) == 2
+
+        parent_row, agent_row = rows
+        assert parent_row[0] == "9f0e1d2c-real-parent"
+        assert parent_row[1] is False          # parent NOT mislabeled
+        assert parent_row[4] == 0
+
+        assert agent_row[0] == "agent-abc123"  # identity from the file
+        assert agent_row[1] is True
+        assert agent_row[2] == "abc123"
+        assert agent_row[3] == conn.execute(
+            "SELECT md5('9f0e1d2c-real-parent')"
+        ).fetchone()[0]
+        assert agent_row[4] == 1               # real depth, not 0
+
+    def test_parent_metrics_not_inflated_by_agent_content(self, conn, tmp_path):
+        parent_file, agent_file = self._real_layout(
+            tmp_path, "8e9f0a1b-real-parent", "def456"
+        )
+        lake = tmp_path / "lake"
+        run_v15_etl(conn, parent_file, parquet_lake_root=lake)
+        run_v15_etl(conn, agent_file, parquet_lake_root=lake)
+
+        counts = dict(conn.execute(
+            "SELECT session_id, COUNT(*) FROM fact_messages GROUP BY 1"
+        ).fetchall())
+        assert counts == {"8e9f0a1b-real-parent": 2, "agent-def456": 2}
+
+        summary_msgs = conn.execute(
+            "SELECT total_messages FROM fact_session_summary fss "
+            "JOIN dim_session ds USING (session_key) "
+            "WHERE ds.session_id = '8e9f0a1b-real-parent'"
+        ).fetchone()[0]
+        assert summary_msgs == 2               # parent's own messages only

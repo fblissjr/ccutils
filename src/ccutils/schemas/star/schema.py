@@ -2129,13 +2129,17 @@ def create_star_schema(db_path):
         LEFT JOIN fact_etl_batch_runs b ON r.batch_run_id = b.batch_run_id
         LEFT JOIN dim_etl_version v ON r.version_key = v.version_key
         LEFT JOIN (
+            -- step_count covers every DAG node; the rows_* rollups scope
+            -- to upsert:% steps ONLY, matching how EtlRun/BatchRun
+            -- complete() derive their totals (stage steps like
+            -- load_staging report staging rows, which are not facts).
             SELECT
                 etl_run_id,
                 COUNT(*) AS step_count,
-                SUM(rows_read) AS rows_read,
-                SUM(rows_inserted) AS rows_inserted,
-                SUM(rows_updated) AS rows_updated,
-                SUM(rows_soft_deleted) AS rows_soft_deleted
+                SUM(rows_read) FILTER (WHERE step_name LIKE 'upsert:%') AS rows_read,
+                SUM(rows_inserted) FILTER (WHERE step_name LIKE 'upsert:%') AS rows_inserted,
+                SUM(rows_updated) FILTER (WHERE step_name LIKE 'upsert:%') AS rows_updated,
+                SUM(rows_soft_deleted) FILTER (WHERE step_name LIKE 'upsert:%') AS rows_soft_deleted
             FROM fact_etl_steps
             GROUP BY etl_run_id
         ) s ON r.etl_run_id = s.etl_run_id
