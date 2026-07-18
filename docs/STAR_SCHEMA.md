@@ -1,7 +1,7 @@
 <!-- path-privacy: skip-file -- references universal Claude Code data paths (not personal) -->
 # Star Schema DuckDB Implementation
 
-Last updated: 2026-07-17
+Last updated: 2026-07-18
 
 A dimensional data model for Claude Code transcript analytics, built on a four-tier ETL pipeline with full lineage tracking. The star schema is now the only schema (the legacy 4-table simple schema was removed when v0.15 stabilized).
 
@@ -121,8 +121,12 @@ The DDL still contains legacy tables that `run_v15_etl` does not populate (kept 
 
 - `fact_content_blocks`, `fact_code_blocks`, `fact_entity_mentions` -- granular content extracts, pending re-port.
 - `fact_turn_durations`, `fact_stop_events` -- subsumed by `fact_system_events` via its `subtype` discriminator.
-- `fact_session_embeddings`, `fact_tool_input_params` -- optional follow-ons.
+- `fact_tool_input_params` -- optional follow-on.
 - `fact_facet_embeddings` -- Tier 3 facet clustering (not yet built).
+
+`fact_session_embeddings` is NOT a stub: it is populated when the CLI runs
+with `--embed` (`schemas/star/embeddings.py`, wired via
+`cli/utils.py::run_embedding_pipeline`) and empty otherwise.
 
 ---
 

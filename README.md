@@ -159,7 +159,7 @@ Subagent transcripts are first-class sessions: agent files carry their parent's 
 - **Derived:** `fact_file_operations` + `bridge_session_file`, `fact_diagnostics`, `fact_plan_revisions` (structural outcome from `fact_tool_results.is_error`), `fact_agent_delegations` (cross-session linkage via `dim_session.agent_id`), `fact_errors`, `fact_tool_chain_steps`.
 - **Facets:** `fact_session_facets` Tier 1 (F01-F19, SQL-computed; always on). Tier 2 (F20+, LLM-extracted via Haiku) is opt-in via `--with-llm-facets` / `--batch-llm-facets`.
 
-**Not yet populated (DDL stubs only):** `fact_content_blocks`, `fact_code_blocks`, `fact_entity_mentions`, `fact_session_embeddings`, `fact_tool_input_params`. `fact_turn_durations` / `fact_stop_events` are subsumed by `fact_system_events`; `fact_tool_calls` by `fact_tool_uses` + `fact_tool_results`.
+**Not yet populated (DDL stubs only):** `fact_content_blocks`, `fact_code_blocks`, `fact_entity_mentions`, `fact_tool_input_params`. `fact_session_embeddings` is populated only by `--embed` runs (empty otherwise). `fact_turn_durations` / `fact_stop_events` are subsumed by `fact_system_events`; `fact_tool_calls` by `fact_tool_uses` + `fact_tool_results`.
 
 ```sql
 -- Sessions ranked by uncached-equivalent token cost

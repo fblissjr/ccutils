@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+- **JSON export `meta.json` relationships are derived from the live database** (`star_relationships` in `schemas/star/json_export.py`), replacing a hardcoded list that referenced the removed `fact_tool_calls`, pointed at the never-populated `fact_turn_durations`/`fact_stop_events` stubs, and omitted most populated v0.15 facts -- the same drift class the 0.18.0 table-manifest fix removed. Lineage columns (`etl_run_id`, `*_version_key`) are deliberately excluded from the list; they are uniform on every fact and documented in STAR_SCHEMA.md.
+- Docs: `fact_session_embeddings` was listed as an unpopulated DDL stub in README and STAR_SCHEMA.md; it is populated by `--embed` runs (`schemas/star/embeddings.py`).
+
+### Added
+- Behavior tests for `semantic_tool_patterns` -- the only semantic view that had no test coverage (frequency aggregation, error counts, and the `HAVING >= 2` threshold).
+- Project skills under `.claude/skills/` (`query-warehouse`, `etl-dev`, `render-exports`): a progressive-disclosure hierarchy of task-scoped guidance with on-demand reference files; `.gitignore` narrowed so the skills are tracked while the rest of `.claude/` stays local.
+
 ## 0.18.0
 
 Full-corpus validation release. ETL observability lands as three grains of run metadata (batch / run / step, with real affected-row counts and CDC windows); subagent transcripts become first-class sessions keyed by file identity instead of silently collapsing into their parents; batch coverage and project attribution are corrected everywhere (including `-p` filters, which previously never reached the exporters); and the JSON export now ships the actual warehouse instead of a drifted table list.
