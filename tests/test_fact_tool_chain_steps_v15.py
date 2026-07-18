@@ -238,3 +238,90 @@ class TestFactToolChainSteps:
             "SELECT last_updated_at FROM fact_tool_chain_steps ORDER BY chain_step_id"
         ).fetchall()
         assert first == second
+
+
+@pytest.fixture
+def repeated_pattern_session(tmp_path):
+    """Turn 1: Read, Edit, Bash. Turn 2: Read, Edit.
+
+    Read->Edit occurs twice (crosses the semantic_tool_patterns
+    HAVING COUNT(*) >= 2 threshold); Edit->Bash occurs once (stays below).
+    """
+    jsonl = tmp_path / "pattern.jsonl"
+    lines = [
+        {"type": "user", "uuid": "u1", "sessionId": "pattern-s",
+         "timestamp": "2026-04-19T11:00:00Z", "cwd": "/p",
+         "gitBranch": "main", "version": "2.1.114",
+         "message": {"role": "user", "content": "repeat a tool pattern"}},
+        {"type": "assistant", "uuid": "a1", "parentUuid": "u1",
+         "sessionId": "pattern-s", "timestamp": "2026-04-19T11:00:01Z",
+         "requestId": "r1",
+         "message": {"role": "assistant", "model": "claude-opus-4-7",
+                     "content": [
+                         {"type": "tool_use", "id": "tu_r1",
+                          "name": "Read",
+                          "input": {"file_path": "/p/a.py"}},
+                         {"type": "tool_use", "id": "tu_e1",
+                          "name": "Edit",
+                          "input": {"file_path": "/p/a.py",
+                                    "old_string": "x", "new_string": "y"}},
+                         {"type": "tool_use", "id": "tu_b1",
+                          "name": "Bash",
+                          "input": {"command": "pytest"}},
+                     ]}},
+        {"type": "user", "uuid": "u2", "parentUuid": "a1",
+         "sessionId": "pattern-s", "timestamp": "2026-04-19T11:00:02Z",
+         "message": {"role": "user", "content": [
+             {"type": "tool_result", "tool_use_id": "tu_r1", "content": "data"},
+             {"type": "tool_result", "tool_use_id": "tu_e1", "content": "ok"},
+             {"type": "tool_result", "tool_use_id": "tu_b1", "content": "ok"},
+         ]}},
+        {"type": "user", "uuid": "u3", "parentUuid": "u2",
+         "sessionId": "pattern-s", "timestamp": "2026-04-19T11:00:05Z",
+         "message": {"role": "user", "content": "again"}},
+        {"type": "assistant", "uuid": "a2", "parentUuid": "u3",
+         "sessionId": "pattern-s", "timestamp": "2026-04-19T11:00:06Z",
+         "requestId": "r2",
+         "message": {"role": "assistant", "model": "claude-opus-4-7",
+                     "content": [
+                         {"type": "tool_use", "id": "tu_r2",
+                          "name": "Read",
+                          "input": {"file_path": "/p/b.py"}},
+                         {"type": "tool_use", "id": "tu_e2",
+                          "name": "Edit",
+                          "input": {"file_path": "/p/b.py",
+                                    "old_string": "x", "new_string": "y"}},
+                     ]}},
+        {"type": "user", "uuid": "u4", "parentUuid": "a2",
+         "sessionId": "pattern-s", "timestamp": "2026-04-19T11:00:07Z",
+         "message": {"role": "user", "content": [
+             {"type": "tool_result", "tool_use_id": "tu_r2", "content": "data"},
+             {"type": "tool_result", "tool_use_id": "tu_e2", "content": "ok"},
+         ]}},
+    ]
+    jsonl.write_text("\n".join(json.dumps(d) for d in lines))
+    return jsonl
+
+
+class TestSemanticToolPatterns:
+    """Behavior coverage for the semantic_tool_patterns view (it had none --
+    DDL binding alone doesn't prove the aggregation is right)."""
+
+    def test_repeated_transition_visible_with_frequency(
+        self, conn, repeated_pattern_session, tmp_path
+    ):
+        _populate(conn, repeated_pattern_session, tmp_path)
+        rows = conn.execute(
+            "SELECT tool_name, next_tool_name, frequency, error_count "
+            "FROM semantic_tool_patterns"
+        ).fetchall()
+        assert ("Read", "Edit", 2, 0) in rows
+
+    def test_single_occurrence_excluded_by_threshold(
+        self, conn, repeated_pattern_session, tmp_path
+    ):
+        _populate(conn, repeated_pattern_session, tmp_path)
+        rows = conn.execute(
+            "SELECT tool_name, next_tool_name FROM semantic_tool_patterns"
+        ).fetchall()
+        assert ("Edit", "Bash") not in rows

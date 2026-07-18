@@ -10,6 +10,7 @@ Reference docs (read these instead of expanding this file):
 - `README.md` -- CLI commands, export formats, defaults.
 - `docs/STAR_SCHEMA.md` -- every table/view, lineage convention, run-metadata grains, populator order.
 - `docs/FACET_CLUSTER_PIPELINE.md` -- facet pipeline design + status.
+- `.claude/skills/` -- task-scoped skills (query-warehouse, etl-dev, render-exports) with on-demand reference files; they load the detail above progressively, so prefer triggering the matching skill over re-reading the docs wholesale.
 
 ## Architecture in one paragraph
 

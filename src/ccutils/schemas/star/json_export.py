@@ -28,93 +28,72 @@ def _star_tables(conn):
     facts = [t for t in tables if t.startswith(("fact_", "bridge_"))]
     return dims, facts
 
-# Key relationships for the star schema
-RELATIONSHIPS = [
-    {
-        "from_table": "fact_messages",
-        "from_column": "session_key",
-        "to_table": "dim_session",
-        "to_column": "session_key",
-    },
-    {
-        "from_table": "fact_messages",
-        "from_column": "model_key",
-        "to_table": "dim_model",
-        "to_column": "model_key",
-    },
-    {
-        "from_table": "fact_messages",
-        "from_column": "date_key",
-        "to_table": "dim_date",
-        "to_column": "date_key",
-    },
-    {
-        "from_table": "fact_messages",
-        "from_column": "time_key",
-        "to_table": "dim_time",
-        "to_column": "time_key",
-    },
-    {
-        "from_table": "fact_tool_calls",
-        "from_column": "session_key",
-        "to_table": "dim_session",
-        "to_column": "session_key",
-    },
-    {
-        "from_table": "fact_tool_calls",
-        "from_column": "tool_key",
-        "to_table": "dim_tool",
-        "to_column": "tool_key",
-    },
-    {
-        "from_table": "dim_session",
-        "from_column": "project_key",
-        "to_table": "dim_project",
-        "to_column": "project_key",
-    },
-    {
-        "from_table": "fact_file_operations",
-        "from_column": "file_key",
-        "to_table": "dim_file",
-        "to_column": "file_key",
-    },
-    {
-        "from_table": "fact_token_usage",
-        "from_column": "session_key",
-        "to_table": "dim_session",
-        "to_column": "session_key",
-    },
-    {
-        "from_table": "fact_token_usage",
-        "from_column": "model_key",
-        "to_table": "dim_model",
-        "to_column": "model_key",
-    },
-    {
-        "from_table": "fact_turn_durations",
-        "from_column": "session_key",
-        "to_table": "dim_session",
-        "to_column": "session_key",
-    },
-    {
-        "from_table": "fact_diagnostics",
-        "from_column": "session_key",
-        "to_table": "dim_session",
-        "to_column": "session_key",
-    },
-    {
-        "from_table": "fact_diagnostics",
-        "from_column": "file_key",
-        "to_table": "dim_file",
-        "to_column": "file_key",
-    },
-    {
-        "from_table": "fact_stop_events",
-        "from_column": "session_key",
-        "to_table": "dim_session",
-        "to_column": "session_key",
-    },
-]
+# FK-by-convention key columns -> the dimension they join to. Relationships
+# are DERIVED from the live database at export time (same discipline as
+# _star_tables) -- the old hardcoded RELATIONSHIPS literal drifted just like
+# the old FACT_TABLES list did (it referenced the removed fact_tool_calls and
+# omitted most populated v0.15 facts). The uniform lineage columns
+# (etl_run_id, *_version_key) are deliberately excluded: they appear on every
+# fact and are documented in docs/STAR_SCHEMA.md, so listing them per-table
+# would triple the list without adding signal.
+_KEY_TARGETS = {
+    "session_key": ("dim_session", "session_key"),
+    "parent_session_key": ("dim_session", "session_key"),
+    "agent_session_key": ("dim_session", "session_key"),
+    "first_session_key": ("dim_session", "session_key"),
+    "last_session_key": ("dim_session", "session_key"),
+    "project_key": ("dim_project", "project_key"),
+    "tool_key": ("dim_tool", "tool_key"),
+    "prev_tool_key": ("dim_tool", "tool_key"),
+    "next_tool_key": ("dim_tool", "tool_key"),
+    "model_key": ("dim_model", "model_key"),
+    "file_key": ("dim_file", "file_key"),
+    "date_key": ("dim_date", "date_key"),
+    "time_key": ("dim_time", "time_key"),
+    "chain_key": ("dim_session_chain", "chain_key"),
+    "facet_type_key": ("dim_facet_type", "facet_type_key"),
+    "prompt_key": ("dim_prompt", "prompt_key"),
+}
+
+
+def star_relationships(conn):
+    """Derive star-schema join relationships from the live database.
+
+    One entry per (table, FK-convention column) whose target dimension
+    exists. A dimension's own primary key is skipped (dim_session.session_key
+    is not a relationship to itself); self-referencing hierarchies via a
+    differently-named column (dim_session.parent_session_key) are kept.
+    """
+    dims, facts = _star_tables(conn)
+    dim_set = set(dims)
+    relationships = []
+    for table in dims + facts:
+        columns = [
+            r[0]
+            for r in conn.execute(
+                "SELECT column_name FROM information_schema.columns "
+                "WHERE table_name = ? ORDER BY ordinal_position",
+                [table],
+            ).fetchall()
+        ]
+        for column in columns:
+            target = _KEY_TARGETS.get(column)
+            if target is None:
+                continue
+            to_table, to_column = target
+            if to_table not in dim_set:
+                continue
+            if table == to_table and column == to_column:
+                continue
+            relationships.append(
+                {
+                    "from_table": table,
+                    "from_column": column,
+                    "to_table": to_table,
+                    "to_column": to_column,
+                }
+            )
+    return relationships
 
 
 def export_star_schema_to_json(conn, output_dir):
@@ -168,7 +147,7 @@ def export_star_schema_to_json(conn, output_dir):
         "schema_type": "star",
         "exported_at": datetime.now().astimezone().isoformat(),
         "tables": table_manifest,
-        "relationships": RELATIONSHIPS,
+        "relationships": star_relationships(conn),
     }
 
     meta_path = output_dir / "meta.json"

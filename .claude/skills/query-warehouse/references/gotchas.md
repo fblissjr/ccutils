@@ -6,11 +6,14 @@
 never "no activity":
 
 - `fact_content_blocks`, `fact_code_blocks`, `fact_entity_mentions`,
-  `fact_session_embeddings`, `fact_tool_input_params`, `fact_facet_embeddings`
+  `fact_tool_input_params`, `fact_facet_embeddings`
 - `fact_turn_durations`, `fact_stop_events` — subsumed by `fact_system_events`
   (`subtype = 'turn_duration'` / stop-hook subtypes)
 - `fact_tool_calls` — subsumed by `fact_tool_uses` + `fact_tool_results`
   (`semantic_tool_calls` view provides the legacy shape)
+
+Conditionally populated: `fact_session_embeddings` has rows only when the
+export ran with `--embed`; empty otherwise (that's "flag not used", not a stub).
 
 ## Unpopulated columns on populated tables
 
