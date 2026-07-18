@@ -5,7 +5,9 @@ uv.lock
 tests/__snapshots__/*
 tmp/
 claude-archive/
-.claude/
+# Keep .claude/ local (settings, caches) EXCEPT the checked-in project skills.
+.claude/*
+!.claude/skills/
 internal/
 coderef/
 .path-privacy.local.json
