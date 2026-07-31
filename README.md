@@ -277,6 +277,10 @@ tar czf - ./archive | age -r <recipient-key> > archive.tar.gz.age && rm -rf ./ar
                            unaffected -- delete it post-run if needed.
 --no-subagents             Exclude related agent sessions (local)
 --no-agents                Exclude agent-* session files (all)
+--include-temp-sessions    Include sessions whose cwd is under the OS temp
+                           directory (excluded by default -- typically
+                           sandboxed/ephemeral tooling like eval harnesses,
+                           not real projects)
 --private                  Sanitize file paths for sharing (html/markdown only; not wired through the v0.15 ETL)
 
 # Selection
