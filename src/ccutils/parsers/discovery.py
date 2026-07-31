@@ -238,7 +238,10 @@ def is_temp_dir_cwd(cwd: str | None) -> bool:
     if not cwd:
         return False
     normalized = cwd.rstrip("/") + "/"
-    prefixes = ["/tmp/", "/private/tmp/", "/var/folders/"]
+    prefixes = [
+        "/tmp/", "/private/tmp/",
+        "/var/folders/", "/private/var/folders/",
+    ]
     temp_dir = tempfile.gettempdir()
     if temp_dir:
         prefixes.append(temp_dir.rstrip("/") + "/")

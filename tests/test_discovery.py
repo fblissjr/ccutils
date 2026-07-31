@@ -30,6 +30,15 @@ class TestIsTempDirCwd:
     def test_var_folders_prefix_is_temp(self):
         assert is_temp_dir_cwd("/var/folders/y1/abc/T/foo") is True
 
+    def test_private_var_folders_prefix_is_temp(self):
+        """/var is itself a macOS symlink to /private/var (same pattern as
+        /tmp -> /private/tmp) -- the OS reports the fully-resolved form as
+        cwd, so a real session's temp path looks like
+        /private/var/folders/... not /var/folders/..."""
+        assert is_temp_dir_cwd(
+            "/private/var/folders/y1/abc/T/tmp.X8fVkhGU7w"
+        ) is True
+
     def test_path_merely_containing_tmp_substring_is_not_temp(self):
         """A project literally named .../my-tmp-experiments/thing must not
         false-positive -- only a real /tmp prefix counts."""
