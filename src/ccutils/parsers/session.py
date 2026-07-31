@@ -279,22 +279,40 @@ def extract_session_metadata(session_path):
         - sessionId: The session's unique ID
         - agentId: Agent ID if this is an agent session (None otherwise)
         - isSidechain: True if this is an agent/sidechain session
+        - cwd: The session's working directory
 
     Returns empty dict if file is empty or unreadable; the all-None dict
     if readable but no sessionId is present anywhere.
     """
+    identity = None
+    cwd = None
     for data in iter_jsonl_dicts(session_path, must_contain='"sessionId"'):
         if data.get("sessionId") is None:
             continue
-        return {
-            "sessionId": data.get("sessionId"),
-            "agentId": data.get("agentId"),
-            "isSidechain": data.get("isSidechain", False),
-        }
+        if identity is None:
+            identity = {
+                "sessionId": data.get("sessionId"),
+                "agentId": data.get("agentId"),
+                "isSidechain": data.get("isSidechain", False),
+            }
+        # cwd is captured independently, on first truthy occurrence -- some
+        # entry types (queue-operation, last-prompt) carry sessionId without
+        # cwd and can precede the user/attachment entries that do, so it
+        # must not be pinned to whichever line supplies the identity fields.
+        if cwd is None and data.get("cwd") is not None:
+            cwd = data.get("cwd")
+        if identity is not None and cwd is not None:
+            break
+
+    if identity is not None:
+        identity["cwd"] = cwd
+        return identity
     # Distinguish readable-but-headerless from empty/unreadable only if a
     # caller needs it; discovery uses .get(), which treats both alike.
     if Path(session_path).exists() and Path(session_path).stat().st_size > 0:
-        return {"sessionId": None, "agentId": None, "isSidechain": False}
+        return {
+            "sessionId": None, "agentId": None, "isSidechain": False, "cwd": None,
+        }
     return {}
 
 

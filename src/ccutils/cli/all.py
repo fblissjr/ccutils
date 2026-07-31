@@ -75,6 +75,15 @@ from .utils import (
     help="Exclude agent-* session files.",
 )
 @optgroup.option(
+    "--include-temp-sessions",
+    is_flag=True,
+    help=(
+        "Include sessions whose cwd is under the OS temp directory "
+        "(excluded by default -- typically sandboxed/ephemeral tooling "
+        "like eval harnesses, not real projects)."
+    ),
+)
+@optgroup.option(
     "--private",
     is_flag=True,
     help="Sanitize file paths for sharing.",
@@ -133,6 +142,7 @@ def all_cmd(
     dry_run,
     no_thinking,
     no_agents,
+    include_temp_sessions,
     private,
     jobs,
     batch_size,
@@ -217,6 +227,7 @@ def all_cmd(
         include_agents=include_agents,
         project_filter=project_filter,
         include_unsummarized=output_format in ("duckdb", "json", "both"),
+        include_temp_sessions=include_temp_sessions,
     )
 
     if not projects:

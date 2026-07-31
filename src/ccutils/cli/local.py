@@ -95,6 +95,15 @@ from .utils import (
     help="Exclude related agent sessions.",
 )
 @optgroup.option(
+    "--include-temp-sessions",
+    is_flag=True,
+    help=(
+        "Include sessions whose cwd is under the OS temp directory "
+        "(excluded by default -- typically sandboxed/ephemeral tooling "
+        "like eval harnesses, not real projects)."
+    ),
+)
+@optgroup.option(
     "--private",
     is_flag=True,
     help="Sanitize file paths for sharing.",
@@ -128,6 +137,7 @@ def local_cmd(
     project_filter,
     no_thinking,
     no_subagents,
+    include_temp_sessions,
     private,
     embed,
     with_llm_facets,
@@ -178,7 +188,7 @@ def local_cmd(
         _interactive_mode(
             output, output_format, open_browser, flat, expand_chains,
             project_filter, include_thinking, not no_subagents, private,
-            embed, facet_extractor,
+            embed, facet_extractor, include_temp_sessions,
         )
 
 
@@ -209,7 +219,8 @@ def _convert_file(input_file, output, output_format, open_browser,
 
 def _interactive_mode(output, output_format, open_browser, flat, expand_chains,
                       project_filter, include_thinking, include_subagents,
-                      private, embed, facet_extractor=None):
+                      private, embed, facet_extractor=None,
+                      include_temp_sessions=False):
     """Interactive session picker followed by export."""
     projects_folder = Path.home() / ".claude" / "projects"
 
@@ -224,10 +235,12 @@ def _interactive_mode(output, output_format, open_browser, flat, expand_chains,
     if flat:
         selected = _flat_mode_selection(
             projects_folder, 100, project_filter, expand_chains, style,
+            include_temp_sessions,
         )
     else:
         selected = _two_phase_selection(
             projects_folder, 100, project_filter, expand_chains, console, style,
+            include_temp_sessions,
         )
 
     if not selected:
@@ -456,11 +469,13 @@ def _run_export_pipeline(
         click.echo(f"Exported to {output_dir}/")
 
 
-def _flat_mode_selection(projects_folder, limit, project_filter, expand_chains, style):
+def _flat_mode_selection(projects_folder, limit, project_filter, expand_chains, style,
+                          include_temp_sessions=False):
     """Flat mode: single list of all sessions sorted by date with rich metadata."""
     click.echo("Scanning sessions...")
     sessions = find_local_sessions_rich(
-        projects_folder, limit=limit, project_filter=project_filter
+        projects_folder, limit=limit, project_filter=project_filter,
+        include_temp_sessions=include_temp_sessions,
     )
 
     if not sessions:
@@ -486,11 +501,13 @@ def _two_phase_selection(
     expand_chains,
     console,
     style,
+    include_temp_sessions=False,
 ):
     """Two-phase selection: pick projects, then pick sessions."""
     click.echo("Scanning sessions...")
     sessions = find_local_sessions_rich(
-        projects_folder, limit=limit, project_filter=project_filter
+        projects_folder, limit=limit, project_filter=project_filter,
+        include_temp_sessions=include_temp_sessions,
     )
 
     if not sessions:

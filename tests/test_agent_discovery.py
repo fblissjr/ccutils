@@ -217,6 +217,24 @@ class TestExtractSessionMetadata:
         meta = extract_session_metadata(empty)
         assert meta == {}
 
+    def test_cwd_trailing_a_later_line_is_still_found(self, tmp_path):
+        """Real data: queue-operation/last-prompt entries carry sessionId
+        but no cwd, and can precede the user/attachment entries that do --
+        cwd must not be pinned to whichever line supplies sessionId first."""
+        lines = [
+            json.dumps({"type": "queue-operation", "sessionId": "s1",
+                        "operation": "enqueue"}),
+            json.dumps({"type": "user", "sessionId": "s1",
+                        "cwd": "/private/tmp/sandbox/run-1",
+                        "message": {"content": "hi"}}),
+        ]
+        f = tmp_path / "queued.jsonl"
+        f.write_text("\n".join(lines) + "\n")
+
+        meta = extract_session_metadata(f)
+        assert meta["sessionId"] == "s1"
+        assert meta["cwd"] == "/private/tmp/sandbox/run-1"
+
 
 class TestFindAgentSessions:
     """Tests for find_agent_sessions function."""

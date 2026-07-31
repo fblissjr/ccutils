@@ -247,6 +247,50 @@ class TestFindAllSessions:
         assert len(result) == 2
 
 
+class TestFindAllSessionsTempDirExclusion:
+    """Sessions whose cwd resolves under the OS temp directory (sandboxed
+    eval harnesses, CI scratch dirs) are excluded by default -- they're
+    synthetic/ephemeral, not real usage, and pollute session counts and
+    facets if ingested."""
+
+    @pytest.fixture
+    def mixed_projects_dir(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            projects_dir = Path(tmpdir)
+
+            real = projects_dir / "-home-user-projects-real-project"
+            real.mkdir(parents=True)
+            (real / "abc123.jsonl").write_text(
+                '{"type": "user", "sessionId": "s1", '
+                '"cwd": "/home/user/projects/real-project", '
+                '"timestamp": "2025-01-01T10:00:00.000Z", '
+                '"message": {"role": "user", "content": "hello"}}\n'
+            )
+
+            sandbox = (
+                projects_dir
+                / "-private-tmp-claude-501-abc-scratchpad-evalroot--run-xyz"
+            )
+            sandbox.mkdir(parents=True)
+            (sandbox / "def456.jsonl").write_text(
+                '{"type": "user", "sessionId": "s2", '
+                '"cwd": "/private/tmp/claude-501/abc/scratchpad/evalroot/_run_xyz", '
+                '"timestamp": "2025-01-02T10:00:00.000Z", '
+                '"message": {"role": "user", "content": "synthetic eval prompt"}}\n'
+            )
+
+            yield projects_dir
+
+    def test_excludes_temp_dir_sessions_by_default(self, mixed_projects_dir):
+        result = find_all_sessions(mixed_projects_dir)
+        assert len(result) == 1
+        assert result[0]["name"] == "real-project"
+
+    def test_includes_temp_dir_sessions_when_requested(self, mixed_projects_dir):
+        result = find_all_sessions(mixed_projects_dir, include_temp_sessions=True)
+        assert len(result) == 2
+
+
 class TestSubagentProjectAttribution:
     """Subagent files live at <project>/<parent-uuid>/subagents/agent-*.jsonl
     and must be attributed to <project>, not a synthetic 'subagents' project."""

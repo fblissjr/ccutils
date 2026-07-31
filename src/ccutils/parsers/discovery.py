@@ -5,6 +5,7 @@ across project directories. Display and selection functions have been moved
 to the tui/ package; thin wrappers here maintain backward compatibility.
 """
 
+import tempfile
 from pathlib import Path
 
 from .metadata import (
@@ -225,6 +226,25 @@ def get_project_display_name(folder_name):
     return folder_name
 
 
+def is_temp_dir_cwd(cwd: str | None) -> bool:
+    """True when a session's cwd resolves under the OS temp directory.
+
+    Sessions run from a temp dir are sandboxed/ephemeral tooling (eval
+    harnesses, CI scratch runs) rather than real projects -- ingesting them
+    pollutes session counts, intent/domain classification, and facets with
+    synthetic, non-representative activity. Only a real prefix match counts
+    (a project literally named "my-tmp-experiments" must not false-positive).
+    """
+    if not cwd:
+        return False
+    normalized = cwd.rstrip("/") + "/"
+    prefixes = ["/tmp/", "/private/tmp/", "/var/folders/"]
+    temp_dir = tempfile.gettempdir()
+    if temp_dir:
+        prefixes.append(temp_dir.rstrip("/") + "/")
+    return any(normalized.startswith(p) for p in prefixes)
+
+
 def matches_project_filter(folder_name: str, project_filter: str | None) -> bool:
     """Check if project folder matches filter (partial, case-insensitive).
 
@@ -247,7 +267,9 @@ def matches_project_filter(folder_name: str, project_filter: str | None) -> bool
     return filter_lower in display_name.lower() or filter_lower in folder_name.lower()
 
 
-def find_local_sessions_rich(folder, limit=100, project_filter=None):
+def find_local_sessions_rich(
+    folder, limit=100, project_filter=None, include_temp_sessions=False
+):
     """Find recent JSONL sessions with rich metadata extraction.
 
     Returns a list of SessionMetadata objects sorted by modification time.
@@ -257,6 +279,10 @@ def find_local_sessions_rich(folder, limit=100, project_filter=None):
         folder: Path to the projects folder
         limit: Maximum number of sessions to return
         project_filter: Optional filter for project names (partial, case-insensitive)
+        include_temp_sessions: When False (default), sessions whose cwd is
+            under the OS temp directory are excluded -- see is_temp_dir_cwd.
+            Filtered before the limit is applied so real recent sessions
+            aren't crowded out of the top-N by sandboxed/ephemeral runs.
 
     Returns:
         List of SessionMetadata objects, sorted by mtime (most recent first).
@@ -275,6 +301,9 @@ def find_local_sessions_rich(folder, limit=100, project_filter=None):
             continue
 
         meta = extract_rich_metadata(f, f.parent.name)
+
+        if not include_temp_sessions and is_temp_dir_cwd(meta.cwd):
+            continue
 
         # Skip boring/empty sessions
         if meta.summary.lower() == "warmup" or meta.summary == "(no summary)":
@@ -341,7 +370,8 @@ def curate_projects(projects):
 
 
 def find_all_sessions(
-    folder, include_agents=False, project_filter=None, include_unsummarized=False
+    folder, include_agents=False, project_filter=None, include_unsummarized=False,
+    include_temp_sessions=False,
 ):
     """Find all sessions in a Claude projects folder, grouped by project.
 
@@ -369,6 +399,8 @@ def find_all_sessions(
         include_unsummarized: When True, keep sessions whose summary is
             "warmup" or "(no summary)". The curated default suits browsable
             exports; warehouse batch runs pass True so coverage is complete.
+        include_temp_sessions: When False (default), sessions whose cwd is
+            under the OS temp directory are excluded -- see is_temp_dir_cwd.
     """
     folder = Path(folder)
     if not folder.exists():
@@ -390,6 +422,11 @@ def find_all_sessions(
         # Skip projects that don't match filter
         if project_filter and not matches_project_filter(
             project_key, project_filter
+        ):
+            continue
+
+        if not include_temp_sessions and is_temp_dir_cwd(
+            extract_session_metadata(session_file).get("cwd")
         ):
             continue
 
