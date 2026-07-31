@@ -271,3 +271,42 @@ class TestSubagentProjectAttribution:
             "SELECT DISTINCT project_key FROM fact_messages"
         ).fetchall()
         assert fact_keys == keys
+
+
+class TestDimToolAccumulatesAcrossSessions:
+    """dim_tool's NOT EXISTS insert guard must correlate against the
+    candidate row's tool_name, not dim_tool's own tool_name column. A
+    second session introducing a tool never seen before must still land
+    in dim_tool even though the table is already non-empty."""
+
+    def _session_with_tool(self, path, session_id, tool_name, ts):
+        lines = [
+            {"type": "user", "uuid": f"{session_id}-u1", "sessionId": session_id,
+             "timestamp": ts, "cwd": "/p",
+             "message": {"role": "user", "content": "go"}},
+            {"type": "assistant", "uuid": f"{session_id}-a1",
+             "parentUuid": f"{session_id}-u1", "sessionId": session_id,
+             "timestamp": ts,
+             "message": {"role": "assistant", "model": "claude-opus-4-7",
+                         "content": [
+                             {"type": "tool_use", "id": f"{session_id}-tu1",
+                              "name": tool_name, "input": {}},
+                         ]}},
+        ]
+        path.write_text("\n".join(json.dumps(d) for d in lines))
+        return path
+
+    def test_second_session_new_tool_is_captured(self, conn, tmp_path):
+        session_a = self._session_with_tool(
+            tmp_path / "a.jsonl", "sess-a", "Bash", "2026-04-19T10:00:00Z",
+        )
+        session_b = self._session_with_tool(
+            tmp_path / "b.jsonl", "sess-b", "Grep", "2026-04-19T11:00:00Z",
+        )
+        lake = tmp_path / "lake"
+
+        run_v15_etl(conn, session_a, project_name="p", parquet_lake_root=lake)
+        run_v15_etl(conn, session_b, project_name="p", parquet_lake_root=lake)
+
+        tools = {r[0] for r in conn.execute("SELECT tool_name FROM dim_tool").fetchall()}
+        assert tools == {"Bash", "Grep"}

@@ -198,13 +198,20 @@ def _upsert_minimal_dimensions(conn) -> int:
         """
     )
 
-    # dim_tool: from every distinct tool_use.name across all assistant content
+    # dim_tool: from every distinct tool_use.name across all assistant content.
+    # `cand` (not `tool_name`) is referenced inside the correlated NOT EXISTS
+    # subquery deliberately: dim_tool has its own `tool_name` column, so an
+    # unqualified `tool_name` there binds to dim_tool.tool_name instead of the
+    # candidate row -- once dim_tool has any row that self-reference is
+    # trivially true (every existing row satisfies tool_key = md5(tool_name)
+    # by construction), so NOT EXISTS goes permanently false and every tool
+    # introduced after the first session silently fails to insert.
     conn.execute(
         """
         INSERT INTO dim_tool (tool_key, tool_name, tool_category)
         SELECT DISTINCT
-            md5(tool_name) AS tool_key,
-            tool_name,
+            md5(cand.tool_name) AS tool_key,
+            cand.tool_name,
             'unknown' AS tool_category  -- categorization left to a heuristic pass
         FROM (
             SELECT DISTINCT
@@ -216,10 +223,10 @@ def _upsert_minimal_dimensions(conn) -> int:
             WHERE sle.type = 'assistant'
               AND json_type(sle.message_json, '$.content') = 'ARRAY'
               AND json_extract_string(b.block, '$.type') = 'tool_use'
-        )
-        WHERE tool_name IS NOT NULL
+        ) cand
+        WHERE cand.tool_name IS NOT NULL
           AND NOT EXISTS (
-              SELECT 1 FROM dim_tool dt WHERE dt.tool_key = md5(tool_name)
+              SELECT 1 FROM dim_tool dt WHERE dt.tool_key = md5(cand.tool_name)
           )
         """
     )

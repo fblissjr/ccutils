@@ -391,7 +391,10 @@ class StopHookSummaryPayload(_SystemSubtypeBase):
     subtype: Literal["stop_hook_summary"] = "stop_hook_summary"
     hook_count: int = 0
     hook_infos: list[dict[str, Any]] = Field(default_factory=list)
-    hook_errors: list[dict[str, Any]] = Field(default_factory=list)
+    # Observed in real data as plain error-message strings (a hook script's
+    # stderr text), not structured dicts -- a full corpus scan found zero
+    # dict-shaped elements. Widened to tolerate both rather than assume.
+    hook_errors: list[dict[str, Any] | str] = Field(default_factory=list)
     prevented_continuation: bool = False
     stop_reason: str | None = None
     has_output: bool = False

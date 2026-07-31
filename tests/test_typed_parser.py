@@ -333,6 +333,25 @@ class TestSystemSubtypes:
         assert p.stop_reason == "end_turn"
         assert p.tool_use_id == "stop-001"
 
+    def test_stop_hook_summary_hook_errors_as_plain_strings(self):
+        """hookErrors elements are observed in real data as plain error-message
+        strings (e.g. a stop-hook script's stderr text), not structured dicts --
+        the field name/semantics only ever promised error text, and no session
+        anywhere in a full corpus scan produced a dict-shaped element."""
+        p = parse_system_payload({
+            "subtype": "stop_hook_summary",
+            "hookCount": 1,
+            "hookErrors": [
+                "[<claude-config>/stop-hook-example.sh]: There are untracked files.\n"
+            ],
+            "hookInfos": [{"command": "<claude-config>/stop-hook-example.sh"}],
+            "level": "suggestion",
+        })
+        assert isinstance(p, StopHookSummaryPayload)
+        assert p.hook_errors == [
+            "[<claude-config>/stop-hook-example.sh]: There are untracked files.\n"
+        ]
+
     def test_api_error(self):
         p = parse_system_payload({
             "subtype": "api_error",
