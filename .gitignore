@@ -11,6 +11,7 @@ claude-archive/
 internal/
 coderef/
 .path-privacy.local.json
+scratch/
 
 # Local virtualenv
 .venv/
