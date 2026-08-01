@@ -169,18 +169,23 @@ class EtlRun:
         ccutils_version: str = PARSER_VERSION,
         business_rules_version: str = DEFAULT_BUSINESS_RULES_VERSION,
         description: str | None = None,
+        run_kind: str = "session",
     ) -> "EtlRun":
         version_key = _resolve_version_key(
             conn, ccutils_version, business_rules_version, description
         )
         etl_run_id = uuid.uuid4().hex
+        # run_kind is stamped at INSERT, not at complete(), so a run that
+        # crashes before completing is still classified. BatchRun.complete
+        # relies on that to keep counting crashed sessions as failed ones.
         conn.execute(
             """
             INSERT INTO fact_etl_runs
-                (etl_run_id, version_key, source_path, status, batch_run_id)
-            VALUES (?, ?, ?, 'running', ?)
+                (etl_run_id, version_key, source_path, status, batch_run_id,
+                 run_kind)
+            VALUES (?, ?, ?, 'running', ?, ?)
             """,
-            [etl_run_id, version_key, source_path, batch_run_id],
+            [etl_run_id, version_key, source_path, batch_run_id, run_kind],
         )
         return cls(
             conn=conn, etl_run_id=etl_run_id, version_key=version_key,
@@ -366,6 +371,11 @@ class BatchRun:
                 MAX(data_end_ts)
             FROM fact_etl_runs
             WHERE batch_run_id = ?
+              -- Sessions only. Cross-session passes (the delegation
+              -- reconciliation) are child runs of this batch but are not
+              -- sessions; counting them reported one more session than the
+              -- CLI actually processed.
+              AND run_kind = 'session'
             """,
             [self.batch_run_id],
         ).fetchone()

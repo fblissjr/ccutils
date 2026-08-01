@@ -50,7 +50,10 @@ from ccutils.etl.facets.populator import populate_tier2_facets
 from ccutils.etl.bridge_session_file import populate_bridge_session_file
 from ccutils.etl.dim_session_chain import populate_dim_session_chain
 from ccutils.etl.dim_session_heuristics import populate_dim_session_heuristics
-from ccutils.etl.fact_agent_delegations import populate_fact_agent_delegations
+from ccutils.etl.fact_agent_delegations import (
+    populate_delegation_completion,
+    populate_fact_agent_delegations,
+)
 from ccutils.etl.fact_diagnostics import populate_fact_diagnostics
 from ccutils.etl.fact_errors import populate_fact_errors
 from ccutils.etl.fact_file_operations import (
@@ -438,3 +441,38 @@ def run_v15_etl(
             raise
 
     return {"etl_run_id": run.etl_run_id, "sessions_inserted": new_sessions}
+
+
+def run_post_session_reconciliation(conn, *, batch_run_id: str | None = None):
+    """Cross-session passes that cannot run inside the per-session ETL.
+
+    ``run_v15_etl`` handles one session at a time, in arbitrary order and
+    potentially in parallel, so anything needing rows from a DIFFERENT
+    session must run after the whole loop. Today that is the agent-delegation
+    completion pass: a parent is normally ETL'd before the agent it spawned,
+    so at per-session time the agent's tokens, duration and stop_reason do
+    not exist yet.
+
+    BOTH batch entry points must call this. ``local`` and ``all`` diverging
+    on post-ETL steps is a bug this project already shipped once -- `all`
+    ran the post-ETL functions and `local` did not, silently leaving derived
+    tables empty for anyone who used `local`. Adding a cross-session pass to
+    only one path recreates exactly that.
+
+    Idempotent: re-running recomputes from current warehouse state, and
+    ``lineage_upsert``'s hash_diff means unchanged rows are not rewritten.
+    """
+    run = EtlRun.start(
+        conn,
+        source_path="<post-session-reconciliation>",
+        batch_run_id=batch_run_id,
+        description="cross-session reconciliation",
+        run_kind="reconciliation",
+    )
+    try:
+        populate_delegation_completion(conn, run=run)
+        run.complete(sessions_seen=0, sessions_inserted=0, sessions_updated=0)
+    except BaseException as e:
+        run.fail(str(e) or type(e).__name__)
+        raise
+    return {"etl_run_id": run.etl_run_id}

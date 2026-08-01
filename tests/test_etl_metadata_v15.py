@@ -539,3 +539,53 @@ class TestSelfLoopRepair:
         ).fetchone()
         repaired.close()
         assert row == (False, None, None, None)
+
+
+class TestRunKindScoping:
+    """run_kind keeps the batch's session rollup honest.
+
+    Claim: fact_etl_runs used to be one-row-per-session by construction, so
+    BatchRun.complete counted child rows as sessions. The cross-session
+    reconciliation pass is a child run that is NOT a session. Delete
+    run_kind and every batch reports one more session than the CLI
+    processed -- silently, because the number still looks plausible.
+    """
+
+    def test_reconciliation_run_is_not_counted_as_a_session(self, tmp_path):
+        import duckdb
+
+        from ccutils.export.duckdb_archive import generate_duckdb_archive
+
+        projects_dir = tmp_path / "projects"
+        proj = projects_dir / "-home-user-projects-proj"
+        proj.mkdir(parents=True)
+        _write_session(proj / "aaa.jsonl", "rk-s1")
+        _write_session(proj / "bbb.jsonl", "rk-s2", "2026-04-21T09:00")
+
+        out = tmp_path / "out"
+        generate_duckdb_archive(projects_dir, out)
+
+        conn = duckdb.connect(str(out / "archive.duckdb"))
+        try:
+            seen, ok = conn.execute(
+                "SELECT sessions_seen, sessions_succeeded "
+                "FROM fact_etl_batch_runs"
+            ).fetchone()
+            assert (seen, ok) == (2, 2), "two sessions, not three"
+
+            # Non-vacuity: the reconciliation run must actually EXIST and be
+            # attached to the batch. Without this the test would still pass
+            # if the pass were never wired in at all.
+            kinds = dict(conn.execute(
+                "SELECT run_kind, COUNT(*) FROM fact_etl_runs GROUP BY 1"
+            ).fetchall())
+            assert kinds.get("session") == 2
+            assert kinds.get("reconciliation") == 1, (
+                "the post-loop pass must run, and must be labelled"
+            )
+            orphans = conn.execute(
+                "SELECT COUNT(*) FROM fact_etl_runs WHERE batch_run_id IS NULL"
+            ).fetchone()[0]
+            assert orphans == 0
+        finally:
+            conn.close()

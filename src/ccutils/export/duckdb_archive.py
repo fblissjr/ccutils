@@ -220,6 +220,17 @@ def generate_duckdb_archive(
                         stats,
                     )
 
+        # Cross-session reconciliation: a parent is normally ETL'd before the
+        # agent it spawned, so delegation rollups can only be derived once
+        # every session is in. NOT best-effort -- a silent failure here puts
+        # the warehouse back to reporting acknowledgment latencies as agent
+        # durations. cli/local.py calls the same function.
+        from ..etl.orchestrator import run_post_session_reconciliation
+
+        run_post_session_reconciliation(
+            conn, batch_run_id=batch.batch_run_id,
+        )
+
         # history.jsonl is a global file (not per-session) so we ingest it
         # once after the per-session loop, best-effort.
         try:

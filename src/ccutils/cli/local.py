@@ -30,7 +30,7 @@ from ..schemas.star import (
     export_star_schema_to_json,
 )
 from ..etl.lineage import BatchRun
-from ..etl.orchestrator import run_v15_etl
+from ..etl.orchestrator import run_post_session_reconciliation, run_v15_etl
 from ..export import (
     generate_html,
     generate_markdown,
@@ -330,6 +330,11 @@ def _etl_session_files(
             except Exception as exc:  # noqa: BLE001 -- isolate one bad file
                 failures.append((session_file, exc))
                 click.echo(f"  skipped {session_file.name}: {exc}", err=True)
+        # Cross-session passes, after every session is in. The batch path
+        # (export/duckdb_archive.py) calls the same function -- `local` and
+        # `all` diverging on post-ETL steps is a bug this project shipped
+        # once already, leaving derived tables empty on the `local` path.
+        run_post_session_reconciliation(conn, batch_run_id=batch.batch_run_id)
         batch.complete(expected_sessions=len(session_files))
     if failures:
         click.echo(

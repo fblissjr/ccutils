@@ -2302,6 +2302,29 @@ _COLUMN_MIGRATIONS = [
     ("fact_agent_delegations", "agent_resolved_model", "VARCHAR"),
     ("fact_tool_results", "agent_is_async", "BOOLEAN"),
     ("fact_agent_delegations", "agent_is_async", "BOOLEAN"),
+    # completion_state: which of the delegation's outcomes actually happened.
+    # Needed because the parent-side result for a background spawn is a launch
+    # acknowledgment, so "has no metrics" conflates four different situations:
+    #   completed           -- agent finished; rollups re-derived from its own
+    #                          transcript and trustworthy
+    #   in_flight_at_ingest -- agent had not finished when the ETL ran; rollups
+    #                          deliberately NULL (a partial sum is
+    #                          indistinguishable from a fast agent)
+    #   spawn_failed        -- the agent was never created (fork-inside-fork,
+    #                          depth limit, cancellation, validation error,
+    #                          user rejection). 29 of the 30 NULL-agent_status
+    #                          rows on the real corpus.
+    #   NULL                -- not yet reconciled
+    # `abandoned` is deliberately NOT emitted: deciding it needs a staleness
+    # threshold, and a wrong one silently reclassifies in-flight work. Every
+    # value above is decidable from a stated fact.
+    ("fact_agent_delegations", "completion_state", "VARCHAR"),
+    # run_kind scopes the batch rollup, exactly as step_kind scopes the fact
+    # rollup. fact_etl_runs used to be one-row-per-session by construction,
+    # so BatchRun.complete could count child rows as sessions. The
+    # cross-session reconciliation pass is a child run that is NOT a session;
+    # without this discriminator it inflated sessions_seen by one per batch.
+    ("fact_etl_runs", "run_kind", "VARCHAR"),
 ]
 
 
@@ -2324,6 +2347,14 @@ def _apply_column_migrations(conn) -> None:
         END
         WHERE step_kind IS NULL
         """
+    )
+
+    # Every run recorded before run_kind existed was a per-session run --
+    # the reconciliation grain did not exist yet. Without this backfill the
+    # batch rollup (which filters run_kind = 'session') would report zero
+    # sessions for every historical batch.
+    conn.execute(
+        "UPDATE fact_etl_runs SET run_kind = 'session' WHERE run_kind IS NULL"
     )
 
     # Reconcile pre-0.18 subagent-collapse corruption: the old contract

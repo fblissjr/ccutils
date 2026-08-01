@@ -151,3 +151,143 @@ def populate_fact_agent_delegations(conn, *, run: EtlRun) -> None:
         hash_cols=_HASH_COLS,
         timestamp_col="delegation_timestamp",
     )
+
+
+_COMPLETION_SQL = """
+CREATE TEMP TABLE _inbound_delegation_completion AS
+WITH agent_rollup AS (
+    -- One row per AGENT session, from that agent's OWN fact rows. The agent
+    -- transcript is ingested as its own session (session_id 'agent-<id>'),
+    -- so nothing is re-read from disk and the backfill is retroactive.
+    SELECT
+        fm.session_key AS agent_session_key,
+        SUM(COALESCE(fm.input_tokens, 0)
+            + COALESCE(fm.output_tokens, 0))          AS tokens,
+        MIN(fm.timestamp)                             AS first_ts,
+        MAX(fm.timestamp)                             AS last_ts,
+        -- Terminality is decided by comparing timestamps rather than with
+        -- arg_max(stop_reason, timestamp): arg_max skips NULL values, so an
+        -- unfinished agent whose EARLIER turn had a stop_reason would be
+        -- reported as terminal. These two maxima are equal only when the
+        -- last assistant record itself carries a stop_reason.
+        MAX(fm.timestamp) FILTER (
+            WHERE fm.message_type = 'assistant')      AS last_assistant_ts,
+        MAX(fm.timestamp) FILTER (
+            WHERE fm.message_type = 'assistant'
+              AND fm.stop_reason IS NOT NULL)         AS last_terminal_ts
+    FROM fact_messages fm
+    WHERE fm.is_deleted = FALSE
+    GROUP BY fm.session_key
+),
+agent_tools AS (
+    SELECT session_key AS agent_session_key, COUNT(*) AS tool_uses
+    FROM fact_tool_uses WHERE is_deleted = FALSE GROUP BY session_key
+),
+scored AS (
+    SELECT
+        -- EXCLUDE is load-bearing: the target already HAS a completion_state
+        -- column, so a bare d.* would put two columns of that name in this
+        -- CTE and the outer SELECT would silently read the stale NULL one
+        -- instead of the value computed below.
+        d.* EXCLUDE (completion_state),
+        ar.tokens              AS ar_tokens,
+        ar.last_assistant_ts   AS ar_last_ts,
+        ar.last_terminal_ts    AS ar_terminal_ts,
+        ar.first_ts            AS ar_first_ts,
+        agt.tool_uses          AS ar_tool_uses,
+        CASE
+            -- No agent id at all AND no status: the spawn was refused, so no
+            -- agent ever existed. 29 of the 30 NULL-status rows on the real
+            -- corpus (fork-inside-fork, depth limit 3 of 3, cancellation,
+            -- validation error, user rejection). Distinct from "finished but
+            -- unmeasured" -- collapsing them loses a real signal.
+            WHEN d.agent_status IS NULL AND d.agent_session_key IS NULL
+                THEN 'spawn_failed'
+            -- Synchronous: the parent genuinely saw the outcome, and those
+            -- rollups are already correct. Never recomputed.
+            WHEN d.agent_is_async IS NOT TRUE AND d.agent_status IS NOT NULL
+                THEN 'completed'
+            -- Async but the agent's transcript is not in the warehouse. We
+            -- cannot say what happened; NULL means "not reconciled", which
+            -- is different from having observed it unfinished.
+            WHEN ar.agent_session_key IS NULL THEN NULL
+            WHEN ar.last_terminal_ts IS NOT NULL
+             AND ar.last_terminal_ts = ar.last_assistant_ts THEN 'completed'
+            ELSE 'in_flight_at_ingest'
+        END AS completion_state
+    FROM fact_agent_delegations d
+    LEFT JOIN agent_rollup ar ON ar.agent_session_key = d.agent_session_key
+    LEFT JOIN agent_tools  agt ON agt.agent_session_key = d.agent_session_key
+    WHERE d.is_deleted = FALSE
+)
+SELECT
+    delegation_key, tool_use_id, session_id,
+    parent_session_key, agent_session_key,
+    timestamp, delegation_timestamp,
+    task_description, task_prompt, subagent_type,
+    agent_was_interrupted, agent_resolved_model, agent_is_async,
+    agent_status, agent_output_text,
+    completion_state,
+    -- Rollups are written ONLY for a completed delegation. For in_flight the
+    -- agent file holds a partial sum, which is indistinguishable from a fast
+    -- agent and poisons any aggregate silently; NULL is the honest value.
+    CASE WHEN completion_state = 'completed' AND agent_is_async IS TRUE
+              THEN ar_last_ts
+         WHEN completion_state = 'completed' THEN completion_timestamp
+    END AS completion_timestamp,
+    CASE WHEN completion_state = 'completed' AND agent_is_async IS TRUE
+              THEN EXTRACT(EPOCH FROM (ar_last_ts - delegation_timestamp))
+         WHEN completion_state = 'completed' THEN seconds_to_completion
+    END AS seconds_to_completion,
+    CASE WHEN completion_state = 'completed' AND agent_is_async IS TRUE
+              THEN ar_tokens
+         WHEN completion_state = 'completed' THEN agent_total_tokens
+    END AS agent_total_tokens,
+    CASE WHEN completion_state = 'completed' AND agent_is_async IS TRUE
+              THEN EXTRACT(EPOCH FROM (ar_last_ts - ar_first_ts)) * 1000
+         WHEN completion_state = 'completed' THEN agent_total_duration_ms
+    END AS agent_total_duration_ms,
+    CASE WHEN completion_state = 'completed' AND agent_is_async IS TRUE
+              THEN ar_tool_uses
+         WHEN completion_state = 'completed' THEN agent_total_tool_use_count
+    END AS agent_total_tool_use_count
+FROM scored
+"""
+
+
+def populate_delegation_completion(conn, *, run) -> None:
+    """Re-derive async delegation rollups from the AGENT's own transcript.
+
+    Roadmap 0e step 2. Since Claude Code v2.1.198+ subagents run in the
+    background by default, so the tool result the parent receives at spawn
+    time is a launch acknowledgment, not an outcome -- 721 of 943 delegations
+    on the real corpus carry no tokens and no duration. Everything needed to
+    repair that is already in the warehouse: the agent's transcript is
+    ingested as its own session and carries usage and stop_reason.
+
+    This is a POST-LOOP pass, not a per-session populator, and that is
+    load-bearing. ``run_v15_etl`` processes sessions in arbitrary order (and
+    in parallel), so when a parent is ETL'd its agent's rows usually do not
+    exist yet. Deriving these inside the per-session populator would rebuild
+    exactly the ordering dependency that left ``agent_session_key`` NULL on
+    941 of 941 rows. Call it once, after the session loop, from BOTH entry
+    points -- ``local`` and ``all`` diverging on post-ETL steps is a bug this
+    project has already shipped once.
+
+    Scope is every non-deleted delegation rather than the staged sessions:
+    staging is per-session and already cleared by the time this runs, and the
+    whole point is cross-session. Inbound therefore covers every row, which
+    also makes the soft-delete pass a no-op instead of deleting the rows a
+    narrower scope would have omitted.
+    """
+    conn.execute("DROP TABLE IF EXISTS _inbound_delegation_completion")
+    conn.execute(_COMPLETION_SQL)
+    lineage_upsert(
+        conn, run=run,
+        table="fact_agent_delegations",
+        inbound_table="_inbound_delegation_completion",
+        natural_key="delegation_key",
+        payload_cols=_PAYLOAD_COLS + ["completion_state"],
+        hash_cols=_HASH_COLS + ["completion_state"],
+        timestamp_col="delegation_timestamp",
+    )

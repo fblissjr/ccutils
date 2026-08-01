@@ -575,3 +575,230 @@ class TestAsyncLaunchIsNotACompletion:
             "SELECT COUNT(*) FROM fact_agent_delegations"
         ).fetchone()[0]
         assert n == 0
+
+
+class TestAsyncCompletionReconciliation:
+    """Roadmap 0e step 2: re-derive async rollups from the AGENT's transcript.
+
+    Claim each test encodes -- delete it and this breaks silently:
+
+    - Since Claude Code v2.1.198+ the parent's tool result for a background
+      spawn is a launch acknowledgment, so the parent side has no metrics at
+      all. 721 of 943 delegations on the real corpus. The honesty fix NULLed
+      the misleading values; these tests assert the values come BACK, derived
+      from the agent's own session rows, which already carry usage and
+      stop_reason.
+    - The agent session is normally ETL'd AFTER its parent, so a per-session
+      populator cannot see it. That ordering is what left agent_session_key
+      NULL on 941/941 rows before it was derived instead of joined. These
+      tests drive the parent FIRST and the agent SECOND on purpose: if the
+      reconciliation is ever moved back into the per-session populator, they
+      fail.
+    - completion_state must distinguish a refused spawn from a finished one.
+      29 of 30 NULL-agent_status rows on the real corpus never spawned an
+      agent at all (fork-inside-fork, depth limit 3 of 3, cancellation).
+    """
+
+    def _parent_with_async_spawn(self, tmp_path, agent_id="abc123def"):
+        """Parent session that background-launches one agent."""
+        proj = tmp_path / "projects" / "-Users-dev-myrepo"
+        parent_dir = proj / "parent-uuid"
+        parent_dir.mkdir(parents=True, exist_ok=True)
+        jsonl = proj / "parent-uuid.jsonl"
+        lines = [
+            {"type": "user", "uuid": "u1", "sessionId": "parent-uuid",
+             "timestamp": "2026-04-19T10:00:00Z", "cwd": "/work",
+             "gitBranch": "main", "version": "2.1.198",
+             "message": {"role": "user", "content": "delegate it"}},
+            {"type": "assistant", "uuid": "a1", "parentUuid": "u1",
+             "sessionId": "parent-uuid", "timestamp": "2026-04-19T10:00:01Z",
+             "requestId": "r1",
+             "message": {"role": "assistant", "model": "claude-opus-5",
+                         "content": [{"type": "tool_use", "id": "tu_async1",
+                                      "name": "Agent",
+                                      "input": {
+                                          "description": "Audit the docs",
+                                          "prompt": "audit",
+                                          "subagent_type": "general-purpose",
+                                      }}]}},
+            # The acknowledgment: lands 2s after the spawn, describes nothing
+            # about the agent. This is the shape 76% of the corpus has.
+            {"type": "user", "uuid": "u2", "parentUuid": "a1",
+             "sessionId": "parent-uuid", "timestamp": "2026-04-19T10:00:03Z",
+             "message": {"role": "user", "content": [
+                 {"type": "tool_result", "tool_use_id": "tu_async1",
+                  "content": "Async agent launched successfully."}]},
+             "toolUseResult": {"isAsync": True, "status": "async_launched",
+                               "agentId": agent_id,
+                               "description": "Audit the docs",
+                               "resolvedModel": "claude-sonnet-5"}},
+        ]
+        jsonl.write_text("\n".join(json.dumps(d) for d in lines))
+        return jsonl
+
+    def _agent_transcript(self, tmp_path, agent_id="abc123def",
+                          *, stop_reason: str | None = "end_turn"):
+        """The agent's OWN file. Entries carry the PARENT's sessionId --
+        that is the real contract (CLAUDE.md); identity is the filename."""
+        d = (tmp_path / "projects" / "-Users-dev-myrepo"
+             / "parent-uuid" / "subagents")
+        d.mkdir(parents=True, exist_ok=True)
+        agent_jsonl = d / f"agent-{agent_id}.jsonl"
+        lines = [
+            {"type": "user", "uuid": "au1", "sessionId": "parent-uuid",
+             "timestamp": "2026-04-19T10:02:11Z", "cwd": "/work",
+             "gitBranch": "main", "version": "2.1.198",
+             "message": {"role": "user", "content": "audit"}},
+            {"type": "assistant", "uuid": "aa1", "parentUuid": "au1",
+             "sessionId": "parent-uuid", "timestamp": "2026-04-19T10:03:57Z",
+             "requestId": "ar1",
+             "message": {"role": "assistant", "model": "claude-sonnet-5",
+                         "stop_reason": stop_reason,
+                         "usage": {"input_tokens": 20, "output_tokens": 9788},
+                         "content": [{"type": "text",
+                                      "text": "audit complete"}]}},
+        ]
+        agent_jsonl.write_text("\n".join(json.dumps(d) for d in lines))
+        return agent_jsonl
+
+    def _reconcile(self, conn):
+        from ccutils.etl.fact_agent_delegations import (
+            populate_delegation_completion,
+        )
+        run = EtlRun.start(conn, source_path="reconcile")
+        populate_delegation_completion(conn, run=run)
+
+    def test_async_rollup_rederived_from_agent_transcript(self, conn, tmp_path):
+        """The whole point: an async delegation gets REAL metrics back."""
+        from ccutils.etl.orchestrator import run_v15_etl
+
+        parent = self._parent_with_async_spawn(tmp_path)
+        agent = self._agent_transcript(tmp_path)
+        # Parent FIRST, agent SECOND -- the ordering that defeats a
+        # per-session populator.
+        run_v15_etl(conn, parent, project_name="p",
+                    parquet_lake_root=tmp_path / "lake")
+        run_v15_etl(conn, agent, project_name="p",
+                    parquet_lake_root=tmp_path / "lake")
+        self._reconcile(conn)
+
+        row = conn.execute("""
+            SELECT completion_state, agent_total_tokens,
+                   completion_timestamp, seconds_to_completion
+            FROM fact_agent_delegations WHERE tool_use_id = 'tu_async1'
+        """).fetchone()
+        assert row[0] == "completed", "terminal stop_reason => completed"
+        assert row[1] == 9808, "20 in + 9788 out, summed from the agent file"
+        # 10:03:57 is the agent's last timestamp, NOT 10:00:03 (the ack).
+        assert row[2].strftime("%H:%M:%S") == "10:03:57"
+        # 10:00:01 spawn -> 10:03:57 done = 236s, not the 2s ack latency.
+        assert row[3] == pytest.approx(236.0, abs=1.0)
+
+    def test_in_flight_agent_leaves_rollups_null(self, conn, tmp_path):
+        """No terminal stop_reason => in_flight, and a partial sum is NOT
+        written. A partial sum is indistinguishable from a fast agent."""
+        from ccutils.etl.orchestrator import run_v15_etl
+
+        parent = self._parent_with_async_spawn(tmp_path)
+        agent = self._agent_transcript(tmp_path, stop_reason=None)
+        run_v15_etl(conn, parent, project_name="p",
+                    parquet_lake_root=tmp_path / "lake")
+        run_v15_etl(conn, agent, project_name="p",
+                    parquet_lake_root=tmp_path / "lake")
+        self._reconcile(conn)
+
+        row = conn.execute("""
+            SELECT completion_state, agent_total_tokens, seconds_to_completion
+            FROM fact_agent_delegations WHERE tool_use_id = 'tu_async1'
+        """).fetchone()
+        assert row[0] == "in_flight_at_ingest"
+        assert row[1] is None, "no partial sums -- NULL is honest"
+        assert row[2] is None
+
+    def test_refused_spawn_is_spawn_failed_not_completed(self, conn, tmp_path):
+        """29 of 30 NULL-status rows on the real corpus: the agent was never
+        created. Distinct from completed, in_flight, and from plain NULL."""
+        from ccutils.etl.orchestrator import run_v15_etl
+
+        proj = tmp_path / "projects" / "-Users-dev-myrepo"
+        proj.mkdir(parents=True, exist_ok=True)
+        jsonl = proj / "refused.jsonl"
+        lines = [
+            {"type": "user", "uuid": "u1", "sessionId": "refused",
+             "timestamp": "2026-04-19T10:00:00Z", "cwd": "/work",
+             "gitBranch": "main", "version": "2.1.198",
+             "message": {"role": "user", "content": "delegate"}},
+            {"type": "assistant", "uuid": "a1", "parentUuid": "u1",
+             "sessionId": "refused", "timestamp": "2026-04-19T10:00:01Z",
+             "requestId": "r1",
+             "message": {"role": "assistant", "model": "claude-opus-5",
+                         "content": [{"type": "tool_use", "id": "tu_refused",
+                                      "name": "Agent",
+                                      "input": {"description": "nested",
+                                                "prompt": "go"}}]}},
+            {"type": "user", "uuid": "u2", "parentUuid": "a1",
+             "sessionId": "refused", "timestamp": "2026-04-19T10:00:02Z",
+             "message": {"role": "user", "content": [
+                 {"type": "tool_result", "tool_use_id": "tu_refused",
+                  "content": "Subagent nesting limit reached (depth 3 of 3). "
+                             "Complete this task directly using your tools.",
+                  "is_error": True}]}},
+        ]
+        jsonl.write_text("\n".join(json.dumps(d) for d in lines))
+        run_v15_etl(conn, jsonl, project_name="p",
+                    parquet_lake_root=tmp_path / "lake")
+        self._reconcile(conn)
+
+        row = conn.execute("""
+            SELECT completion_state, agent_session_key, agent_total_tokens
+            FROM fact_agent_delegations WHERE tool_use_id = 'tu_refused'
+        """).fetchone()
+        assert row[0] == "spawn_failed", (
+            "no agentId in the payload and an error result => never spawned"
+        )
+        assert row[1] is None, "no agent session to link to"
+        assert row[2] is None
+
+    def test_sync_delegation_keeps_its_parent_side_metrics(self, conn, tmp_path):
+        """Non-vacuity guard: the 222 synchronous rows already work. The
+        reconciliation must not overwrite or NULL them."""
+        from ccutils.etl.orchestrator import run_v15_etl
+
+        proj = tmp_path / "projects" / "-Users-dev-myrepo"
+        proj.mkdir(parents=True, exist_ok=True)
+        jsonl = proj / "sync.jsonl"
+        lines = [
+            {"type": "user", "uuid": "u1", "sessionId": "sync-s",
+             "timestamp": "2026-04-19T10:00:00Z", "cwd": "/work",
+             "gitBranch": "main", "version": "2.1.114",
+             "message": {"role": "user", "content": "delegate"}},
+            {"type": "assistant", "uuid": "a1", "parentUuid": "u1",
+             "sessionId": "sync-s", "timestamp": "2026-04-19T10:00:01Z",
+             "requestId": "r1",
+             "message": {"role": "assistant", "model": "claude-opus-5",
+                         "content": [{"type": "tool_use", "id": "tu_sync",
+                                      "name": "Agent",
+                                      "input": {"description": "quick",
+                                                "prompt": "go"}}]}},
+            {"type": "user", "uuid": "u2", "parentUuid": "a1",
+             "sessionId": "sync-s", "timestamp": "2026-04-19T10:01:43Z",
+             "message": {"role": "user", "content": [
+                 {"type": "tool_result", "tool_use_id": "tu_sync",
+                  "content": "done"}]},
+             "toolUseResult": {"status": "completed", "totalTokens": 4242,
+                               "totalDurationMs": 102450,
+                               "totalToolUseCount": 7,
+                               "agentId": "syncagent1"}},
+        ]
+        jsonl.write_text("\n".join(json.dumps(d) for d in lines))
+        run_v15_etl(conn, jsonl, project_name="p",
+                    parquet_lake_root=tmp_path / "lake")
+        self._reconcile(conn)
+
+        row = conn.execute("""
+            SELECT completion_state, agent_total_tokens, seconds_to_completion
+            FROM fact_agent_delegations WHERE tool_use_id = 'tu_sync'
+        """).fetchone()
+        assert row[0] == "completed"
+        assert row[1] == 4242, "parent-side metric preserved, not clobbered"
+        assert row[2] == pytest.approx(102.0, abs=1.0)
