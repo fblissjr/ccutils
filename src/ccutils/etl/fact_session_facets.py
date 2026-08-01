@@ -335,14 +335,14 @@ def populate_tier1_facets(conn, *, run: EtlRun) -> None:
         )""",
     )
 
-    # F21/F22 -- the behavioral pair. F15 (tokens_in) shipped without an
+    # F30/F31 -- the behavioral pair. F15 (tokens_in) shipped without an
     # output counterpart, and thinking depth was reachable only through
     # fact_session_summary, which Tier 1 must not depend on (it populates
     # last). Both are emitted as raw counts, deliberately unnormalized and
     # unbucketed: any archetype thresholds belong in the analysis layer,
     # derived from the corpus distribution, not frozen into ETL.
     _insert_facet(
-        conn, "F21", "value_numeric",
+        conn, "F30", "value_numeric",
         """COALESCE(
             (SELECT SUM(COALESCE(ftu.output_tokens, 0))::DOUBLE
              FROM fact_token_usage ftu
@@ -352,7 +352,7 @@ def populate_tier1_facets(conn, *, run: EtlRun) -> None:
         )""",
     )
     _insert_facet(
-        conn, "F22", "value_numeric",
+        conn, "F31", "value_numeric",
         """COALESCE(
             (SELECT COUNT(*)::DOUBLE
              FROM fact_messages fm

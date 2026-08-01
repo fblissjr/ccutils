@@ -1395,7 +1395,17 @@ def create_star_schema(db_path):
         """
     )
 
-    # Seed Tier 1 facets F01..F19. Names + output types mirror
+    # Facet id namespace -- keep these blocks disjoint or the same id means
+    # two different things depending on tier, and analyses silently mix them:
+    #   F01-F19  Tier 1, SQL-computed (this list)
+    #   F20-F29  Tier 2, LLM-extracted. RESERVED by FACET_CLUSTER_PIPELINE.md
+    #            §3 even where not yet implemented (F21 accomplishment,
+    #            F22 blocker_type, ...). Do NOT reuse for Tier 1.
+    #   F30+     Tier 1 additions made after the original F01-F19 block.
+    #   F40-F49  clustering outputs (design, not yet built).
+    #   F90+     hypothetical ids for test fixtures only.
+    #
+    # Seed Tier 1 facets. Names + output types mirror
     # FACET_CLUSTER_PIPELINE.md §3 "Tier 1" exactly. Tier 1 is computed by SQL
     # off existing facts so prompt_text / prompt_version stay NULL.
     # `notes` carries data-level caveats so future analytical queries can see
@@ -1423,10 +1433,10 @@ def create_star_schema(db_path):
         ("F17", "had_subagents", "bool", None),
         ("F18", "pr_referenced", "bool", None),
         ("F19", "had_plan_revision", "bool", None),
-        ("F21", "tokens_out", "int",
+        ("F30", "tokens_out", "int",
          "Counterpart to F15. Sums fact_token_usage.output_tokens; 0 for "
          "transcripts that predate typed usage blocks."),
-        ("F22", "thinking_blocks", "int",
+        ("F31", "thinking_blocks", "int",
          "Count of assistant entries carrying a thinking block. Claude Code "
          "writes one content block per entry, so entries == blocks. Sourced "
          "from fact_messages, not fact_session_summary, because the summary "

@@ -3,7 +3,7 @@
 Three new tables land in `create_star_schema()`:
 
     dim_facet_type        - registry of facet definitions; seeded with the
-                            21 Tier 1 facets (F01-F19, F21-F22) defined in
+                            21 Tier 1 facets (F01-F19, F30-F31) defined in
                             docs/FACET_CLUSTER_PIPELINE.md §3.
     fact_session_facets   - one row per (session, facet_type, prompt_version).
                             Structured values only (text/json/numeric/bool);
@@ -39,8 +39,8 @@ _LINEAGE_COLS = (
 
 # Tier 1 (method='computed') from FACET_CLUSTER_PIPELINE.md §3. F20 is the
 # Tier 2 LLM facet, so the Tier 1 range is NOT contiguous -- F01-F19 plus the
-# behavioral pair F21/F22.
-_TIER1_FACET_IDS = tuple(f"F{i:02d}" for i in range(1, 20)) + ("F21", "F22")
+# behavioral pair F30/F31.
+_TIER1_FACET_IDS = tuple(f"F{i:02d}" for i in range(1, 20)) + ("F30", "F31")
 
 
 @pytest.fixture

@@ -34,7 +34,7 @@ from ccutils.etl.orchestrator import run_v15_etl
 
 # Tier 1 facets seeded by create_star_schema(). F20 is the Tier 2 LLM facet,
 # so this range is deliberately non-contiguous.
-_TIER1_FACET_IDS = tuple(f"F{i:02d}" for i in range(1, 20)) + ("F21", "F22")
+_TIER1_FACET_IDS = tuple(f"F{i:02d}" for i in range(1, 20)) + ("F30", "F31")
 _BOOL_FACET_IDS = ("F17", "F18", "F19")  # had_subagents, pr_referenced, had_plan_revision
 
 
@@ -244,7 +244,7 @@ def _facet_numeric(conn, session_id, facet_id):
 
 
 class TestBehavioralFacets:
-    """F21/F22 carry the two behavioral signals nothing else exposes.
+    """F30/F31 carry the two behavioral signals nothing else exposes.
 
     Claim: delete these and the session feature vector loses output volume
     and deliberation depth. On the real corpus those two separate archetypes
@@ -259,20 +259,20 @@ class TestBehavioralFacets:
         self, conn, thinking_session, tmp_path
     ):
         _run_orchestrator_then_populator(conn, thinking_session, tmp_path / "lake")
-        assert _facet_numeric(conn, "think-s", "F21") == 105.0  # 40 + 60 + 5
+        assert _facet_numeric(conn, "think-s", "F30") == 105.0  # 40 + 60 + 5
 
     def test_f22_counts_thinking_blocks(
         self, conn, thinking_session, tmp_path
     ):
         _run_orchestrator_then_populator(conn, thinking_session, tmp_path / "lake")
-        assert _facet_numeric(conn, "think-s", "F22") == 2.0
+        assert _facet_numeric(conn, "think-s", "F31") == 2.0
 
     def test_f22_emits_zero_not_null_when_no_thinking(
         self, conn, shaped_session, tmp_path
     ):
         """Graceful absence: a zero, so downstream avoids NULL handling."""
         _run_orchestrator_then_populator(conn, shaped_session, tmp_path / "lake")
-        assert _facet_numeric(conn, "shape-s", "F22") == 0.0
+        assert _facet_numeric(conn, "shape-s", "F31") == 0.0
 
     def test_f21_emits_zero_not_null_when_no_usage(
         self, conn, chain_only_session, tmp_path
@@ -280,7 +280,7 @@ class TestBehavioralFacets:
         _run_orchestrator_then_populator(
             conn, chain_only_session, tmp_path / "lake"
         )
-        assert _facet_numeric(conn, "nousage-s", "F21") == 0.0
+        assert _facet_numeric(conn, "nousage-s", "F30") == 0.0
 
 
 @pytest.fixture
