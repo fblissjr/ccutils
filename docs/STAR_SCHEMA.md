@@ -595,8 +595,11 @@ All views use the `semantic_` prefix and join facts with dimensions for easy que
 - `semantic_cost_analysis` -- session-level cost aggregation. R11-corrected: `cache_hit_rate_pct` denominator includes cache_creation
 - `semantic_prompt_history` -- prompts from history JSONL linked to session metadata
 - `semantic_etl_runs` -- run-grain ETL observability: per-session run status/duration, orchestration (batch) context, CDC data window, and step-count/row-count rollups from `fact_etl_steps`
+- `semantic_session_behavior` -- per-session behavioral feature vector: tool-category counts and shares (`read`/`search`/`mutate`/`execute`/`web`/`delegate`), agentic-run shape (`agentic_runs`, `tools_per_run`, `median_gap_seconds`), tokens in/out, thinking blocks, error rate, plus a `*_pctile` corpus-relative rank for each discriminating feature
 
-All 16 views bind against the current DDL (view creation validates column references on every `create_star_schema()` call).
+All 17 views bind against the current DDL (view creation validates column references on every `create_star_schema()` call).
+
+**`semantic_session_behavior` is deliberately label-free.** It emits no archetype ("authoring", "research") and no threshold. Cutoffs that turn these features into a category belong in the analysis layer, derived from the corpus distribution -- the `*_pctile` columns exist so callers rank against the real distribution rather than hardcoding a number. The tool grouping comes from `dim_tool.tool_category`, whose single source of truth is `TOOL_CATEGORY_SQL` in `etl/utils.py`; never inline `tool_name IN (...)` lists in a query, or the groupings drift. `keyword_intent` is carried through for comparison only -- see `internal/plans/behavior_analytics.md` for why it disagrees with observed behavior.
 
 ### Sample view queries
 

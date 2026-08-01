@@ -175,3 +175,38 @@ def extract_text_from_content_json(
                 parts.append(block.get("thinking", ""))
         return " ".join(p for p in parts if p)
     return ""
+
+
+# One tool -> kind-of-work mapping for the whole warehouse.
+#
+# This is the single source of truth for `dim_tool.tool_category`. It is a
+# DEFINITIONAL grouping (what the tool does to the world), not a heuristic
+# classifier: Read reads, Edit mutates, Bash executes. Nothing here is a
+# threshold or an inferred label -- those belong in the analysis layer where
+# cutoffs can be derived from the corpus distribution.
+#
+# `{col}` is the tool-name column to categorize, so the same expression
+# serves both the INSERT of new tools and the backfill UPDATE of old rows.
+# MCP tools match on the `mcp__` naming convention rather than being
+# enumerated, so a new MCP server needs no code change here.
+#
+# Categories: read, search, mutate, execute, web, delegate, plan, interact,
+# mcp, other.
+TOOL_CATEGORY_SQL = """CASE
+    WHEN LOWER({col}) LIKE 'mcp\\_\\_%' ESCAPE '\\' THEN 'mcp'
+    WHEN LOWER({col}) IN ('read', 'notebookread') THEN 'read'
+    WHEN LOWER({col}) IN ('grep', 'glob') THEN 'search'
+    WHEN LOWER({col}) IN ('edit', 'write', 'notebookedit', 'multiedit')
+        THEN 'mutate'
+    WHEN LOWER({col}) IN ('bash', 'bashoutput', 'killshell') THEN 'execute'
+    WHEN LOWER({col}) IN ('webfetch', 'websearch') THEN 'web'
+    WHEN LOWER({col}) IN ('agent', 'task', 'skill') THEN 'delegate'
+    WHEN LOWER({col}) IN (
+        'exitplanmode', 'enterplanmode', 'todowrite', 'taskcreate',
+        'taskupdate', 'taskget', 'tasklist', 'taskoutput', 'taskstop'
+    ) THEN 'plan'
+    WHEN LOWER({col}) IN (
+        'askuserquestion', 'senduserfile', 'artifact', 'structuredoutput'
+    ) THEN 'interact'
+    ELSE 'other'
+END"""

@@ -1423,6 +1423,14 @@ def create_star_schema(db_path):
         ("F17", "had_subagents", "bool", None),
         ("F18", "pr_referenced", "bool", None),
         ("F19", "had_plan_revision", "bool", None),
+        ("F21", "tokens_out", "int",
+         "Counterpart to F15. Sums fact_token_usage.output_tokens; 0 for "
+         "transcripts that predate typed usage blocks."),
+        ("F22", "thinking_blocks", "int",
+         "Count of assistant entries carrying a thinking block. Claude Code "
+         "writes one content block per entry, so entries == blocks. Sourced "
+         "from fact_messages, not fact_session_summary, because the summary "
+         "populator runs last."),
     ]
     conn.executemany(
         """
@@ -1909,6 +1917,97 @@ def create_star_schema(db_path):
         JOIN dim_file df ON bsf.file_key = df.file_key
         GROUP BY df.file_path, df.file_name, df.file_extension, df.directory_path, df.language
         HAVING COUNT(DISTINCT bsf.session_key) > 1
+    """
+    )
+
+    # semantic_session_behavior -- the per-session behavioral feature vector.
+    #
+    # Descriptive only. It carries NO archetype label and NO threshold: every
+    # cutoff that would turn these features into a category ("edit-heavy",
+    # "research") belongs in the analysis layer, derived from the corpus
+    # distribution. The *_pctile columns exist precisely so a caller can rank
+    # against the real distribution instead of hardcoding a number.
+    #
+    # Tool grouping comes from dim_tool.tool_category (single source of truth
+    # in etl/utils.py::TOOL_CATEGORY_SQL), never from tool-name lists inlined
+    # here -- inlined lists are how behavioral queries drift apart.
+    conn.execute(
+        """
+        CREATE OR REPLACE VIEW semantic_session_behavior AS
+        WITH mix AS (
+            SELECT
+                ftu.session_id,
+                COUNT(*) AS tool_uses,
+                COUNT(DISTINCT ftu.tool_key) AS distinct_tools,
+                COUNT(*) FILTER (WHERE dt.tool_category = 'read')     AS read_ops,
+                COUNT(*) FILTER (WHERE dt.tool_category = 'search')   AS search_ops,
+                COUNT(*) FILTER (WHERE dt.tool_category = 'mutate')   AS mutate_ops,
+                COUNT(*) FILTER (WHERE dt.tool_category = 'execute')  AS execute_ops,
+                COUNT(*) FILTER (WHERE dt.tool_category = 'web')      AS web_ops,
+                COUNT(*) FILTER (WHERE dt.tool_category = 'delegate') AS delegate_ops,
+                COUNT(*) FILTER (WHERE dt.tool_category = 'plan')     AS plan_ops,
+                COUNT(*) FILTER (WHERE dt.tool_category = 'mcp')      AS mcp_ops
+            FROM fact_tool_uses ftu
+            JOIN dim_tool dt USING (tool_key)
+            WHERE ftu.is_deleted = FALSE
+            GROUP BY ftu.session_id
+        ),
+        runs AS (
+            SELECT session_id,
+                   COUNT(DISTINCT chain_id) AS agentic_runs,
+                   MEDIAN(time_since_prev_seconds) AS median_gap_seconds
+            FROM fact_tool_chain_steps
+            WHERE is_deleted = FALSE
+            GROUP BY session_id
+        ),
+        base AS (
+            SELECT
+                ds.session_id,
+                dp.project_name,
+                ds.is_agent,
+                ds.agent_type,
+                ds.intent AS keyword_intent,
+                CAST(ds.first_timestamp AS DATE) AS full_date,
+                m.tool_uses, m.distinct_tools,
+                m.read_ops, m.search_ops, m.mutate_ops, m.execute_ops,
+                m.web_ops, m.delegate_ops, m.plan_ops, m.mcp_ops,
+                m.read_ops     / NULLIF(m.tool_uses, 0)::DOUBLE AS read_share,
+                m.search_ops   / NULLIF(m.tool_uses, 0)::DOUBLE AS search_share,
+                m.mutate_ops   / NULLIF(m.tool_uses, 0)::DOUBLE AS mutate_share,
+                m.execute_ops  / NULLIF(m.tool_uses, 0)::DOUBLE AS execute_share,
+                m.web_ops      / NULLIF(m.tool_uses, 0)::DOUBLE AS web_share,
+                m.delegate_ops / NULLIF(m.tool_uses, 0)::DOUBLE AS delegate_share,
+                r.agentic_runs,
+                r.median_gap_seconds,
+                m.tool_uses / NULLIF(r.agentic_runs, 0)::DOUBLE AS tools_per_run,
+                fss.user_messages AS human_turns,
+                fss.total_thinking_blocks AS thinking_blocks,
+                fss.total_output_tokens AS tokens_out,
+                fss.total_uncached_equivalent_tokens AS tokens_in,
+                fss.total_tool_errors AS tool_errors,
+                fss.total_tool_errors / NULLIF(m.tool_uses, 0)::DOUBLE
+                    AS error_rate,
+                fss.session_duration_seconds
+            FROM dim_session ds
+            JOIN mix m ON m.session_id = ds.session_id
+            LEFT JOIN runs r ON r.session_id = ds.session_id
+            LEFT JOIN fact_session_summary fss
+                   ON fss.session_id = ds.session_id
+                  AND fss.is_deleted = FALSE
+            LEFT JOIN dim_project dp ON dp.project_key = ds.project_key
+        )
+        SELECT
+            base.*,
+            PERCENT_RANK() OVER (ORDER BY mutate_share)  AS mutate_share_pctile,
+            PERCENT_RANK() OVER (ORDER BY read_share)    AS read_share_pctile,
+            PERCENT_RANK() OVER (ORDER BY search_share)  AS search_share_pctile,
+            PERCENT_RANK() OVER (ORDER BY execute_share) AS execute_share_pctile,
+            PERCENT_RANK() OVER (ORDER BY web_share)     AS web_share_pctile,
+            PERCENT_RANK() OVER (ORDER BY tokens_out)    AS tokens_out_pctile,
+            PERCENT_RANK() OVER (ORDER BY thinking_blocks) AS thinking_pctile,
+            PERCENT_RANK() OVER (ORDER BY tool_uses)     AS tool_uses_pctile,
+            PERCENT_RANK() OVER (ORDER BY error_rate)    AS error_rate_pctile
+        FROM base
     """
     )
 

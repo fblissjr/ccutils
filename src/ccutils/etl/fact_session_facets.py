@@ -335,6 +335,34 @@ def populate_tier1_facets(conn, *, run: EtlRun) -> None:
         )""",
     )
 
+    # F21/F22 -- the behavioral pair. F15 (tokens_in) shipped without an
+    # output counterpart, and thinking depth was reachable only through
+    # fact_session_summary, which Tier 1 must not depend on (it populates
+    # last). Both are emitted as raw counts, deliberately unnormalized and
+    # unbucketed: any archetype thresholds belong in the analysis layer,
+    # derived from the corpus distribution, not frozen into ETL.
+    _insert_facet(
+        conn, "F21", "value_numeric",
+        """COALESCE(
+            (SELECT SUM(COALESCE(ftu.output_tokens, 0))::DOUBLE
+             FROM fact_token_usage ftu
+             WHERE ftu.is_deleted = FALSE
+               AND ftu.session_id = scope.session_id),
+            0.0
+        )""",
+    )
+    _insert_facet(
+        conn, "F22", "value_numeric",
+        """COALESCE(
+            (SELECT COUNT(*)::DOUBLE
+             FROM fact_messages fm
+             WHERE fm.is_deleted = FALSE
+               AND fm.has_thinking = TRUE
+               AND fm.session_id = scope.session_id),
+            0.0
+        )""",
+    )
+
     # Free scope before lineage_upsert mutates the inbound. If
     # lineage_upsert raises, we don't want the scope to leak across the
     # connection lifetime.

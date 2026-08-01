@@ -71,6 +71,7 @@ from ccutils.etl.fact_tool_calls import (
 from ccutils.etl.lineage import EtlRun
 from ccutils.etl.staging import load_session_to_staging
 from ccutils.etl.utils import (
+    TOOL_CATEGORY_SQL,
     insert_missing_dim_dates,
     project_dir_sql,
     project_key_from_dir_sql,
@@ -212,7 +213,9 @@ def _upsert_minimal_dimensions(conn) -> int:
         SELECT DISTINCT
             md5(cand.tool_name) AS tool_key,
             cand.tool_name,
-            'unknown' AS tool_category  -- categorization left to a heuristic pass
+            """
+        + TOOL_CATEGORY_SQL.format(col="cand.tool_name")
+        + """ AS tool_category
         FROM (
             SELECT DISTINCT
                 json_extract_string(b.block, '$.name') AS tool_name
@@ -228,6 +231,18 @@ def _upsert_minimal_dimensions(conn) -> int:
           AND NOT EXISTS (
               SELECT 1 FROM dim_tool dt WHERE dt.tool_key = md5(cand.tool_name)
           )
+        """
+    )
+
+    # Backfill categories on rows that predate the categorization pass (every
+    # warehouse built before it holds 'unknown'). Scoped to 'unknown' so a
+    # future manual override of a category is not stomped on every run.
+    conn.execute(
+        """
+        UPDATE dim_tool SET tool_category = """
+        + TOOL_CATEGORY_SQL.format(col="tool_name")
+        + """
+        WHERE tool_category IS NULL OR tool_category = 'unknown'
         """
     )
 

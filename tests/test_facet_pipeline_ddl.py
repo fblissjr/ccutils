@@ -3,7 +3,7 @@
 Three new tables land in `create_star_schema()`:
 
     dim_facet_type        - registry of facet definitions; seeded with the
-                            19 Tier 1 facets (F01-F19) defined in
+                            21 Tier 1 facets (F01-F19, F21-F22) defined in
                             docs/FACET_CLUSTER_PIPELINE.md §3.
     fact_session_facets   - one row per (session, facet_type, prompt_version).
                             Structured values only (text/json/numeric/bool);
@@ -37,8 +37,10 @@ _LINEAGE_COLS = (
     "deleted_at",
 )
 
-# F01-F19 from FACET_CLUSTER_PIPELINE.md §3 (Tier 1, method='computed').
-_TIER1_FACET_IDS = tuple(f"F{i:02d}" for i in range(1, 20))
+# Tier 1 (method='computed') from FACET_CLUSTER_PIPELINE.md §3. F20 is the
+# Tier 2 LLM facet, so the Tier 1 range is NOT contiguous -- F01-F19 plus the
+# behavioral pair F21/F22.
+_TIER1_FACET_IDS = tuple(f"F{i:02d}" for i in range(1, 20)) + ("F21", "F22")
 
 
 @pytest.fixture
@@ -133,7 +135,7 @@ class TestDimFacetType:
         n_tier1 = conn2.execute(
             "SELECT COUNT(*) FROM dim_facet_type WHERE tier = 1"
         ).fetchone()[0]
-        assert n_tier1 == 19
+        assert n_tier1 == len(_TIER1_FACET_IDS)
 
     def test_seeded_with_tier1_facets(self, conn):
         rows = conn.execute(
@@ -142,7 +144,7 @@ class TestDimFacetType:
         ).fetchall()
         ids = [r[0] for r in rows]
         assert set(ids) == set(_TIER1_FACET_IDS), (
-            f"Expected Tier 1 facets F01-F19, got {ids}"
+            f"Expected Tier 1 facets {_TIER1_FACET_IDS}, got {ids}"
         )
         # All Tier 1 facets are SQL aggregations -- no inference, no prompt.
         for facet_id, tier, method in rows:

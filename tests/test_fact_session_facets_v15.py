@@ -2,7 +2,7 @@
 
 populate_tier1_facets(conn, *, run) reads from the v0.15 fact tables that
 have already been populated for the current staging session, computes the
-19 Tier 1 facets defined in docs/FACET_CLUSTER_PIPELINE.md §3, and writes
+21 Tier 1 facets defined in docs/FACET_CLUSTER_PIPELINE.md §3, and writes
 one row per (session, facet) into fact_session_facets via the shared
 lineage_upsert helper.
 
@@ -32,8 +32,9 @@ from ccutils.etl.lineage import EtlRun
 from ccutils.etl.orchestrator import run_v15_etl
 
 
-# F01..F19 -- Tier 1 facets seeded by create_star_schema().
-_TIER1_FACET_IDS = tuple(f"F{i:02d}" for i in range(1, 20))
+# Tier 1 facets seeded by create_star_schema(). F20 is the Tier 2 LLM facet,
+# so this range is deliberately non-contiguous.
+_TIER1_FACET_IDS = tuple(f"F{i:02d}" for i in range(1, 20)) + ("F21", "F22")
 _BOOL_FACET_IDS = ("F17", "F18", "F19")  # had_subagents, pr_referenced, had_plan_revision
 
 
@@ -188,6 +189,117 @@ class TestTier1FacetCoverage:
                 f"has no value in its expected column "
                 f"(text={vt!r}, json={vj!r}, num={vn!r}, bool={vb!r})"
             )
+
+
+@pytest.fixture
+def thinking_session(tmp_path):
+    """Session with two thinking blocks and typed output tokens.
+
+    Claude Code writes one content block per assistant entry, so two
+    thinking blocks means two assistant entries -- the shape F22 counts.
+    """
+    jsonl = tmp_path / "thinking.jsonl"
+    lines = [
+        {"type": "user", "uuid": "u1", "sessionId": "think-s",
+         "timestamp": "2026-04-19T15:00:00Z", "cwd": "/p",
+         "gitBranch": "main", "version": "2.1.114",
+         "message": {"role": "user", "content": "think about this"}},
+        {"type": "assistant", "uuid": "a1", "parentUuid": "u1",
+         "sessionId": "think-s", "timestamp": "2026-04-19T15:00:01Z",
+         "requestId": "req_1",
+         "message": {"role": "assistant", "model": "claude-opus-4-7",
+                     "content": [{"type": "thinking",
+                                  "thinking": "first consideration"}],
+                     "usage": {"input_tokens": 10, "output_tokens": 40}}},
+        {"type": "assistant", "uuid": "a2", "parentUuid": "a1",
+         "sessionId": "think-s", "timestamp": "2026-04-19T15:00:02Z",
+         "requestId": "req_2",
+         "message": {"role": "assistant", "model": "claude-opus-4-7",
+                     "content": [{"type": "thinking",
+                                  "thinking": "second consideration"}],
+                     "usage": {"input_tokens": 10, "output_tokens": 60}}},
+        {"type": "assistant", "uuid": "a3", "parentUuid": "a2",
+         "sessionId": "think-s", "timestamp": "2026-04-19T15:00:03Z",
+         "requestId": "req_3",
+         "message": {"role": "assistant", "model": "claude-opus-4-7",
+                     "content": [{"type": "text", "text": "done"}],
+                     "usage": {"input_tokens": 10, "output_tokens": 5}}},
+    ]
+    jsonl.write_text("\n".join(json.dumps(d) for d in lines))
+    return jsonl
+
+
+def _facet_numeric(conn, session_id, facet_id):
+    row = conn.execute(
+        """
+        SELECT fsf.value_numeric
+        FROM fact_session_facets fsf
+        JOIN dim_facet_type dft USING (facet_type_key)
+        WHERE fsf.session_id = ? AND dft.facet_id = ?
+        """,
+        [session_id, facet_id],
+    ).fetchone()
+    assert row is not None, f"{facet_id} row missing for {session_id}"
+    return row[0]
+
+
+class TestBehavioralFacets:
+    """F21/F22 carry the two behavioral signals nothing else exposes.
+
+    Claim: delete these and the session feature vector loses output volume
+    and deliberation depth. On the real corpus those two separate archetypes
+    that tool mix alone cannot -- median output tokens 47,533 for edit-heavy
+    authoring vs 2,849 for reading, and median thinking blocks 24 vs 0.
+    F15 (tokens_in) had no output counterpart, and thinking was reachable
+    only via fact_session_summary, which Tier 1 must not depend on because
+    the summary populator runs last.
+    """
+
+    def test_f21_tokens_out_sums_reported_output_tokens(
+        self, conn, thinking_session, tmp_path
+    ):
+        _run_orchestrator_then_populator(conn, thinking_session, tmp_path / "lake")
+        assert _facet_numeric(conn, "think-s", "F21") == 105.0  # 40 + 60 + 5
+
+    def test_f22_counts_thinking_blocks(
+        self, conn, thinking_session, tmp_path
+    ):
+        _run_orchestrator_then_populator(conn, thinking_session, tmp_path / "lake")
+        assert _facet_numeric(conn, "think-s", "F22") == 2.0
+
+    def test_f22_emits_zero_not_null_when_no_thinking(
+        self, conn, shaped_session, tmp_path
+    ):
+        """Graceful absence: a zero, so downstream avoids NULL handling."""
+        _run_orchestrator_then_populator(conn, shaped_session, tmp_path / "lake")
+        assert _facet_numeric(conn, "shape-s", "F22") == 0.0
+
+    def test_f21_emits_zero_not_null_when_no_usage(
+        self, conn, chain_only_session, tmp_path
+    ):
+        _run_orchestrator_then_populator(
+            conn, chain_only_session, tmp_path / "lake"
+        )
+        assert _facet_numeric(conn, "nousage-s", "F21") == 0.0
+
+
+@pytest.fixture
+def chain_only_session(tmp_path):
+    """Assistant turn carrying no usage block at all (older transcripts)."""
+    jsonl = tmp_path / "nousage.jsonl"
+    lines = [
+        {"type": "user", "uuid": "u1", "sessionId": "nousage-s",
+         "timestamp": "2026-04-19T16:00:00Z", "cwd": "/p",
+         "gitBranch": "main", "version": "2.1.114",
+         "message": {"role": "user", "content": "no usage recorded"}},
+        {"type": "assistant", "uuid": "a1", "parentUuid": "u1",
+         "sessionId": "nousage-s", "timestamp": "2026-04-19T16:00:01Z",
+         "requestId": "req_1",
+         "message": {"role": "assistant", "model": "claude-opus-4-7",
+                     "content": [{"type": "text", "text": "ok"}]}},
+    ]
+    jsonl.write_text("\n".join(json.dumps(d) for d in lines))
+    return jsonl
 
 
 class TestTier1FacetLineage:
