@@ -599,6 +599,8 @@ All views use the `semantic_` prefix and join facts with dimensions for easy que
 
 All 17 views bind against the current DDL (view creation validates column references on every `create_star_schema()` call).
 
+Sessions with no tool uses are kept (283 of 2,250 on a real corpus -- pure conversation is a real behavioral case). Their `*_ops` counts are `0` while their `*_share` values stay `NULL`, because "used no tools" and "0% of tools used" are different statements.
+
 **`semantic_session_behavior` is deliberately label-free.** It emits no archetype ("authoring", "research") and no threshold. Cutoffs that turn these features into a category belong in the analysis layer, derived from the corpus distribution -- the `*_pctile` columns exist so callers rank against the real distribution rather than hardcoding a number. The tool grouping comes from `dim_tool.tool_category`, whose single source of truth is `TOOL_CATEGORY_SQL` in `etl/utils.py`; never inline `tool_name IN (...)` lists in a query, or the groupings drift. `keyword_intent` is carried through for comparison only -- see `internal/plans/behavior_analytics.md` for why it disagrees with observed behavior.
 
 ### Sample view queries

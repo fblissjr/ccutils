@@ -1968,9 +1968,22 @@ def create_star_schema(db_path):
                 ds.agent_type,
                 ds.intent AS keyword_intent,
                 CAST(ds.first_timestamp AS DATE) AS full_date,
-                m.tool_uses, m.distinct_tools,
-                m.read_ops, m.search_ops, m.mutate_ops, m.execute_ops,
-                m.web_ops, m.delegate_ops, m.plan_ops, m.mcp_ops,
+                -- LEFT JOIN + COALESCE: a session with no tool uses is a real
+                -- behavioral case (pure conversation) -- 283 of 2,250 on the
+                -- real corpus. Inner-joining the mix would drop 12.6% of the
+                -- population from every behavioral query with no indication
+                -- it had happened. Shares stay NULL (not 0) there, because
+                -- "no tools" and "0% of tools" are different statements.
+                COALESCE(m.tool_uses, 0)      AS tool_uses,
+                COALESCE(m.distinct_tools, 0) AS distinct_tools,
+                COALESCE(m.read_ops, 0)     AS read_ops,
+                COALESCE(m.search_ops, 0)   AS search_ops,
+                COALESCE(m.mutate_ops, 0)   AS mutate_ops,
+                COALESCE(m.execute_ops, 0)  AS execute_ops,
+                COALESCE(m.web_ops, 0)      AS web_ops,
+                COALESCE(m.delegate_ops, 0) AS delegate_ops,
+                COALESCE(m.plan_ops, 0)     AS plan_ops,
+                COALESCE(m.mcp_ops, 0)      AS mcp_ops,
                 m.read_ops     / NULLIF(m.tool_uses, 0)::DOUBLE AS read_share,
                 m.search_ops   / NULLIF(m.tool_uses, 0)::DOUBLE AS search_share,
                 m.mutate_ops   / NULLIF(m.tool_uses, 0)::DOUBLE AS mutate_share,
@@ -1989,7 +2002,7 @@ def create_star_schema(db_path):
                     AS error_rate,
                 fss.session_duration_seconds
             FROM dim_session ds
-            JOIN mix m ON m.session_id = ds.session_id
+            LEFT JOIN mix m ON m.session_id = ds.session_id
             LEFT JOIN runs r ON r.session_id = ds.session_id
             LEFT JOIN fact_session_summary fss
                    ON fss.session_id = ds.session_id

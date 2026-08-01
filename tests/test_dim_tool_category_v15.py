@@ -77,6 +77,26 @@ def mixed_tool_session(tmp_path):
     return jsonl
 
 
+@pytest.fixture
+def toolless_session(tmp_path):
+    """Pure conversation -- a question and a prose answer, no tool calls."""
+    jsonl = tmp_path / "talk.jsonl"
+    lines = [
+        {"type": "user", "uuid": "u1", "sessionId": "talk-s",
+         "timestamp": "2026-04-19T18:00:00Z", "cwd": "/p",
+         "gitBranch": "main", "version": "2.1.114",
+         "message": {"role": "user", "content": "explain the tradeoff"}},
+        {"type": "assistant", "uuid": "a1", "parentUuid": "u1",
+         "sessionId": "talk-s", "timestamp": "2026-04-19T18:00:05Z",
+         "requestId": "r1",
+         "message": {"role": "assistant", "model": "claude-opus-4-7",
+                     "content": [{"type": "text", "text": "here it is"}],
+                     "usage": {"input_tokens": 10, "output_tokens": 200}}},
+    ]
+    jsonl.write_text("\n".join(json.dumps(d) for d in lines))
+    return jsonl
+
+
 def _categories(conn):
     return dict(
         conn.execute(
@@ -176,6 +196,28 @@ class TestSemanticSessionBehavior:
         for rank in row:
             assert rank is not None
             assert 0.0 <= rank <= 1.0
+
+    def test_toolless_session_is_kept_with_null_shares(
+        self, conn, toolless_session, tmp_path
+    ):
+        """A session with no tool uses is a real behavioral case (pure
+        conversation) -- 283 of 2,250 on the real corpus. Claim: inner-joining
+        the tool mix drops 12.6% of the population from every behavioral query
+        with nothing to indicate it happened."""
+        run_v15_etl(conn, toolless_session, project_name="test-project",
+                    parquet_lake_root=tmp_path / "lake")
+        row = conn.execute(
+            """
+            SELECT tool_uses, read_ops, read_share
+            FROM semantic_session_behavior WHERE session_id = 'talk-s'
+            """
+        ).fetchone()
+        assert row is not None, "toolless session dropped from the view"
+        # Counts are 0; shares stay NULL -- "no tools" and "0% of tools" are
+        # different statements.
+        assert row[0] == 0
+        assert row[1] == 0
+        assert row[2] is None
 
     def test_view_carries_no_archetype_label(self, conn):
         """The view must stay descriptive. An archetype column here would be
