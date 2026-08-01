@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import time
 from dataclasses import dataclass
 from enum import Enum
@@ -29,6 +30,28 @@ from pydantic import (
 )
 
 from ccutils.etl.facets.extractor import FacetOutput, FacetSpec, SessionInputs
+
+# A markdown fence wrapping the ENTIRE response. Anchored at both ends on
+# purpose: a fence in the middle of prose is not a wrapped payload, and
+# stripping it would turn a genuine parse failure into a silent wrong answer.
+_FENCE_RE = re.compile(
+    r"^\s*```[A-Za-z0-9_+-]*[ \t]*\r?\n(.*?)\r?\n?[ \t]*```\s*$",
+    re.DOTALL,
+)
+
+
+def _strip_code_fence(text: str) -> str:
+    """Return `text` with a wrapping markdown code fence removed.
+
+    Models sometimes wrap JSON in ```json ... ``` despite being asked for a
+    bare object. Observed live against Haiku: a perfectly valid object inside
+    a fence hard-failed every facet, burned a retry that returned the
+    identical text, and fell back -- the JSON was sitting intact in
+    `raw_response` the whole time.
+    """
+    match = _FENCE_RE.match(text)
+    return match.group(1) if match else text
+
 
 
 _log = logging.getLogger(__name__)
@@ -327,7 +350,9 @@ class AnthropicFacetExtractor:
             input_tokens, output_tokens = self._extract_token_counts(api_response)
 
             try:
-                data = json.loads(raw_response)
+                # raw_response is kept verbatim for the metadata audit trail;
+                # only the parse sees the unfenced form.
+                data = json.loads(_strip_code_fence(raw_response))
                 if not isinstance(data, dict):
                     raise json.JSONDecodeError("not an object", raw_response, 0)
                 result = _validate_response(data, enabled_facets, response_model)

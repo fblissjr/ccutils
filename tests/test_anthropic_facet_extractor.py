@@ -111,6 +111,65 @@ def _api_response(json_text: str):
     }
 
 
+class TestFencedResponse:
+    """Models wrap JSON in a markdown code fence; the parser must survive it.
+
+    Claim: delete these and a fenced response hard-fails every facet, burns
+    a retry that returns the identical text, and falls back. Observed live
+    against Haiku -- the response was a valid object inside a ```json fence
+    and F20 came back as a fallback with the JSON sitting in raw_response.
+    """
+
+    def test_json_fence_is_stripped(
+        self, httpx_mock, extractor, session_inputs, f20_spec
+    ):
+        httpx_mock.add_response(
+            json=_api_response(
+                '```json\n{"F20": "fixed a flaky test"}\n```'
+            ),
+        )
+        out = extractor.extract(session_inputs, [f20_spec])
+        assert out["F20"].value == "fixed a flaky test"
+        assert out["F20"].is_fallback is False
+
+    def test_bare_fence_is_stripped(
+        self, httpx_mock, extractor, session_inputs, f20_spec
+    ):
+        httpx_mock.add_response(
+            json=_api_response('```\n{"F20": "did the thing"}\n```'),
+        )
+        out = extractor.extract(session_inputs, [f20_spec])
+        assert out["F20"].value == "did the thing"
+        assert out["F20"].is_fallback is False
+
+    def test_fenced_response_costs_no_retry(
+        self, httpx_mock, extractor, session_inputs, f20_spec
+    ):
+        """It parsed on the first attempt, so retry_count must stay 0."""
+        httpx_mock.add_response(
+            json=_api_response('```json\n{"F20": "no retry"}\n```'),
+        )
+        out = extractor.extract(session_inputs, [f20_spec])
+        assert json.loads(out["F20"].metadata_json)["retry_count"] == 0
+
+    def test_unfenced_response_still_parses(
+        self, httpx_mock, extractor, session_inputs, f20_spec
+    ):
+        """The strip must not disturb the normal path."""
+        httpx_mock.add_response(json=_api_response('{"F20": "plain"}'))
+        out = extractor.extract(session_inputs, [f20_spec])
+        assert out["F20"].value == "plain"
+
+    def test_genuine_garbage_still_hard_fails(
+        self, httpx_mock, extractor, session_inputs, f20_spec
+    ):
+        """Stripping fences must not turn a parse failure into a false pass."""
+        httpx_mock.add_response(json=_api_response("not json at all"))
+        httpx_mock.add_response(json=_api_response("still not json"))
+        out = extractor.extract(session_inputs, [f20_spec])
+        assert out["F20"].is_fallback is True
+
+
 class TestHappyPath:
     def test_single_facet(self, httpx_mock, extractor, session_inputs, f20_spec):
         httpx_mock.add_response(
