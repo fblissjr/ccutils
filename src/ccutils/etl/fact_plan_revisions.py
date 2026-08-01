@@ -108,21 +108,28 @@ def populate_fact_plan_revisions(conn, *, run: EtlRun) -> None:
                     WHEN wr.revision_number < wr.revisions_in_session
                         THEN 'superseded'
                     WHEN wr.resolved_timestamp IS NULL THEN 'pending'
-                    WHEN wr.is_error = FALSE THEN 'accepted'
                     WHEN wr.is_error = TRUE  THEN 'rejected'
-                    -- is_error IS NULL: fall back to content signature.
-                    WHEN wr.result_content_text LIKE ?
-                        THEN 'accepted'
-                    ELSE 'unknown'
+                    -- FALSE or NULL -> accepted. An omitted is_error means
+                    -- not-an-error per the API contract, and the corpus
+                    -- confirms it: across 71,635 tool results NO tool except
+                    -- Bash has ever written is_error=false, and ExitPlanMode
+                    -- specifically is 2 TRUE / 6 NULL / 0 FALSE. NULL is
+                    -- absence, not ambiguity -- treating it as 'unknown'
+                    -- mislabeled accepted plans whose result text happened
+                    -- not to carry the approval wording.
+                    ELSE 'accepted'
                 END AS outcome,
                 CASE
                     WHEN wr.revision_number < wr.revisions_in_session
                         THEN 'later_plan_exists'
                     WHEN wr.resolved_timestamp IS NULL THEN 'no_resolution'
-                    WHEN wr.is_error = FALSE THEN 'is_error=FALSE'
                     WHEN wr.is_error = TRUE  THEN 'is_error=TRUE'
+                    WHEN wr.is_error = FALSE THEN 'is_error=FALSE'
+                    -- The content signature no longer decides the outcome,
+                    -- but it still distinguishes "accepted and it said so"
+                    -- from "accepted by absence" -- keep the observability.
                     WHEN wr.result_content_text LIKE ?
-                        THEN 'approval_signature'
+                        THEN 'is_error_null+approval_signature'
                     ELSE 'is_error_null'
                 END AS outcome_signal
             FROM with_results wr
@@ -189,7 +196,9 @@ def populate_fact_plan_revisions(conn, *, run: EtlRun) -> None:
         FROM with_outcome wo
         LEFT JOIN with_feedback_text wft USING (tool_use_id)
         """,
-        [approval_pattern, approval_pattern],
+        # One placeholder now: the approval signature only labels the signal,
+        # it no longer decides the outcome.
+        [approval_pattern],
     )
     lineage_upsert(
         conn, run=run,

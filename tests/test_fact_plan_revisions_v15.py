@@ -248,7 +248,59 @@ class TestFactPlanRevisionsOutcome:
         row = conn.execute(
             "SELECT outcome, outcome_signal FROM fact_plan_revisions"
         ).fetchone()
-        assert row == ("accepted", "approval_signature")
+        assert row == ("accepted", "is_error_null+approval_signature")
+
+    def test_absent_is_error_is_accepted_without_approval_text(
+        self, conn, tmp_path
+    ):
+        """An omitted is_error means not-an-error, per the API contract.
+
+        Claim: delete this and an accepted plan whose tool_result happens not
+        to carry the approval wording falls through to 'unknown'. Measured on
+        the real corpus -- ExitPlanMode results are 2 TRUE / 6 NULL / 0 FALSE,
+        and no non-Bash tool has ever written is_error=false anywhere in
+        71,635 results. NULL is absence, not ambiguity.
+        """
+        jsonl = tmp_path / "noapproval.jsonl"
+        lines = [
+            _user("u1", None, "noap-s", "2026-04-19T10:00:00Z", "plan"),
+            _plan_call("a1", "u1", "noap-s", "2026-04-19T10:00:01Z",
+                       "tu_noap", "do x"),
+            # is_error absent AND no approval signature in the content.
+            {"type": "user", "uuid": "u2", "parentUuid": "a1",
+             "sessionId": "noap-s", "timestamp": "2026-04-19T10:00:30Z",
+             "message": {"role": "user", "content": [
+                 {"type": "tool_result", "tool_use_id": "tu_noap",
+                  "content": "ok, proceeding"},
+             ]}},
+        ]
+        jsonl.write_text("\n".join(json.dumps(d) for d in lines))
+        _populate(conn, jsonl, tmp_path)
+        row = conn.execute(
+            "SELECT outcome, outcome_signal FROM fact_plan_revisions"
+        ).fetchone()
+        assert row == ("accepted", "is_error_null")
+
+    def test_explicit_error_still_rejected(self, conn, tmp_path):
+        """Treating NULL as accepted must not swallow a real rejection."""
+        jsonl = tmp_path / "rejected.jsonl"
+        lines = [
+            _user("u1", None, "rej-s", "2026-04-19T10:00:00Z", "plan"),
+            _plan_call("a1", "u1", "rej-s", "2026-04-19T10:00:01Z",
+                       "tu_rej", "do x"),
+            {"type": "user", "uuid": "u2", "parentUuid": "a1",
+             "sessionId": "rej-s", "timestamp": "2026-04-19T10:00:30Z",
+             "message": {"role": "user", "content": [
+                 {"type": "tool_result", "tool_use_id": "tu_rej",
+                  "content": "no", "is_error": True},
+             ]}},
+        ]
+        jsonl.write_text("\n".join(json.dumps(d) for d in lines))
+        _populate(conn, jsonl, tmp_path)
+        row = conn.execute(
+            "SELECT outcome, outcome_signal FROM fact_plan_revisions"
+        ).fetchone()
+        assert row == ("rejected", "is_error=TRUE")
 
 
 class TestFactPlanRevisionsPlanFilePath:

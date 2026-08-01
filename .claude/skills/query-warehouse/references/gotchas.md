@@ -35,9 +35,18 @@ filter: `semantic_sessions`, `semantic_tool_calls`, `semantic_decisions`,
   `entry_id`, or `session_key` + `timestamp`.
 - `fact_session_summary` has **no `unique_files_touched`** — count distinct
   files via `bridge_session_file` grouped by `session_key`.
-- `fact_tool_results.is_error` is **tri-state** (TRUE/FALSE/NULL). NULL means
-  "unknown", not "no error" — `is_error = FALSE` and `is_error IS NOT TRUE`
-  answer different questions.
+- `fact_tool_results.is_error` is stored **tri-state** (TRUE/FALSE/NULL), but
+  NULL means **not an error**, not "unknown". Claude Code writes
+  `is_error: true` on failure and encodes success either as `false` or by
+  omitting the field; the API defines an absent `is_error` as false. Measured
+  across 71,635 results: 2,331 TRUE / 31,269 FALSE / 38,035 NULL, and the
+  per-tool split is bimodal — Bash writes the field on every result, most
+  other tools write it only on failure. So **`is_error IS NOT TRUE` is the
+  correct "succeeded" test**, and `is_error = FALSE` silently drops the 38,035
+  succeeded-by-omission rows. Count errors with
+  `SUM(CASE WHEN is_error THEN 1 ELSE 0 END)`, which routes NULL correctly.
+  (Do not rely on "only Bash writes FALSE" — a `Workflow` result writes it too,
+  which is harmless since FALSE and absent are equivalent.)
 - Most facts carry `session_id` as a degenerate dimension — filter on it
   directly instead of joining `dim_session` when you only need scoping.
 - Surrogate keys are `md5(natural key)` — `session_key = md5(session_id)`
