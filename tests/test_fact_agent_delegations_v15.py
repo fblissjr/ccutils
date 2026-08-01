@@ -354,6 +354,98 @@ class TestFactAgentDelegations:
         ).fetchone()
         assert row == (None,)
 
+class TestAsyncLaunchIsNotACompletion:
+    """A background launch acknowledgment must not masquerade as a result.
+
+    Since Claude Code v2.1.198+ subagents run in the background by default:
+    the tool result returned at spawn time is an acknowledgment, not the
+    agent's output. On a real corpus 719 of 941 delegations (76%) are
+    `async_launched`, and on those rows three columns held values that read
+    as valid and were not --
+
+      completion_timestamp   the acknowledgment's timestamp, milliseconds
+                             after the spawn
+      seconds_to_completion  median 2.05s, versus 102.45s on the 192 rows
+                             that really completed
+      agent_output_text      literally "Async agent launched successfully."
+
+    Claim: delete these and any aggregate over seconds_to_completion
+    silently blends acknowledgment latency with real duration, with nothing
+    in the row marking which is which -- and the bias runs the wrong way,
+    because async is what long-running expensive delegations use. NULL is
+    honest; a plausible wrong number is not.
+
+    This is the honesty half only. Re-deriving the real metrics from the
+    agent's own transcript is separate work -- see
+    internal/plans/2026-08-01_agent_delegation_capture_gap.md.
+    """
+
+    def test_async_launch_nulls_the_misleading_columns(self, conn, tmp_path):
+        from ccutils.etl.orchestrator import run_v15_etl
+
+        jsonl = tmp_path / "async.jsonl"
+        jsonl.write_text("\n".join(json.dumps(d) for d in [
+            {"type": "user", "uuid": "u1", "sessionId": "async-s",
+             "timestamp": "2026-04-19T10:00:00Z", "cwd": "/p",
+             "gitBranch": "main", "version": "2.1.114",
+             "message": {"role": "user", "content": "delegate"}},
+            {"type": "assistant", "uuid": "a1", "parentUuid": "u1",
+             "sessionId": "async-s", "timestamp": "2026-04-19T10:00:01Z",
+             "requestId": "r1",
+             "message": {"role": "assistant", "model": "claude-opus-5",
+                         "content": [{"type": "tool_use", "id": "tu_async",
+                                      "name": "Task",
+                                      "input": {"description": "go",
+                                                "subagent_type": "Explore",
+                                                "prompt": "x"}}]}},
+            {"type": "user", "uuid": "u2", "parentUuid": "a1",
+             "sessionId": "async-s", "timestamp": "2026-04-19T10:00:03Z",
+             "message": {"role": "user", "content": [
+                 {"type": "tool_result", "tool_use_id": "tu_async",
+                  "content": "Async agent launched successfully."}]},
+             "toolUseResult": {
+                 "isAsync": True, "status": "async_launched",
+                 "agentId": "async-agent-1",
+                 "resolvedModel": "claude-sonnet-5",
+                 "description": "go"}},
+        ]))
+        run_v15_etl(conn, jsonl, project_name="test-project",
+                    parquet_lake_root=tmp_path / "lake")
+        row = conn.execute(
+            """
+            SELECT agent_is_async, completion_timestamp,
+                   seconds_to_completion, agent_output_text,
+                   agent_status, agent_resolved_model
+            FROM fact_agent_delegations WHERE tool_use_id = 'tu_async'
+            """
+        ).fetchone()
+        assert row[0] is True, "isAsync is stated in the payload; capture it"
+        # The three that lied are NULL...
+        assert row[1] is None, "completion_timestamp was the ack timestamp"
+        assert row[2] is None, "seconds_to_completion was ack latency"
+        assert row[3] is None, "agent_output_text was the ack text"
+        # ...while everything genuinely stated at spawn time survives.
+        assert row[4] == "async_launched"
+        assert row[5] == "claude-sonnet-5"
+
+    def test_synchronous_completion_keeps_its_metrics(
+        self, conn, agent_session, tmp_path
+    ):
+        """The nulling must be gated on isAsync, not applied to everything."""
+        _populate(conn, agent_session, tmp_path)
+        rows = conn.execute(
+            "SELECT agent_is_async, completion_timestamp, "
+            "seconds_to_completion, agent_output_text "
+            "FROM fact_agent_delegations"
+        ).fetchall()
+        assert rows
+        for is_async, completion_ts, secs, output in rows:
+            assert not is_async
+            assert completion_ts is not None
+            assert secs is not None
+            assert output is not None
+
+
     def test_lineage_block_populated(self, conn, agent_session, tmp_path):
         _populate(conn, agent_session, tmp_path)
         row = conn.execute(

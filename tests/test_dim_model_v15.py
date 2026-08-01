@@ -21,6 +21,7 @@ and the CASE in `etl/orchestrator.py` (SQL) -- so both are asserted here.
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pytest
 
@@ -160,3 +161,60 @@ class TestContextVariant:
             "WHERE model_name = 'claude-opus-5'"
         ).fetchone()
         assert row[0] == row[1]
+
+
+class TestUnknownFamilyIsLoud:
+    """A new model line must fail visibly, not file itself under 'unknown'.
+
+    The structural parse means a new family classifies itself, but the
+    fallback is still silent -- an id that stops matching the
+    `claude-<family>-...` convention would land in 'unknown' and be read as
+    a rounding error rather than a whole tier. That is exactly how
+    `claude-fable-5` hid: third-most-used model, 23.7M output tokens, more
+    output than Opus 5, bucketed as 'unknown'.
+
+    Claim: delete this and the next naming-convention change is invisible
+    until someone happens to eyeball a GROUP BY model_family.
+    """
+
+    def test_no_claude_model_in_the_archive_maps_to_unknown(self):
+        archive_dir = Path.home() / ".claude" / "projects"
+        if not archive_dir.exists():
+            pytest.skip("Archive dir not present")
+
+        offenders: dict[str, int] = {}
+        claude_models_seen = 0
+        for jsonl in archive_dir.glob("**/*.jsonl"):
+            try:
+                lines = jsonl.read_text(errors="replace").splitlines()
+            except OSError:
+                continue
+            for line in lines:
+                if '"model"' not in line:
+                    continue
+                try:
+                    entry = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if entry.get("type") != "assistant":
+                    continue
+                message = entry.get("message")
+                if not isinstance(message, dict):
+                    continue
+                model = message.get("model")
+                if not isinstance(model, str) or not model.startswith("claude-"):
+                    continue
+                claude_models_seen += 1
+                if get_model_family(model) == "unknown":
+                    offenders[model] = offenders.get(model, 0) + 1
+
+        assert claude_models_seen > 0, (
+            "No claude-* model ids found on assistant entries; this scan "
+            "proves nothing about the family rule."
+        )
+        assert not offenders, (
+            "A claude-* model id did not yield a family. The naming "
+            "convention this parse relies on has changed -- update "
+            "get_model_family AND the mirrored MODEL_FAMILY_SQL in "
+            f"etl/utils.py. Offenders: {offenders}"
+        )

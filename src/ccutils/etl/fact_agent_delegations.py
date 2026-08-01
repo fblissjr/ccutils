@@ -35,7 +35,7 @@ _PAYLOAD_COLS = [
     "agent_status", "agent_total_duration_ms",
     "agent_total_tokens", "agent_total_tool_use_count",
     "agent_was_interrupted", "agent_output_text",
-    "agent_resolved_model",
+    "agent_resolved_model", "agent_is_async",
 ]
 _HASH_COLS = [
     # agent_session_key IS hashed: it was previously excluded, so once a row
@@ -47,7 +47,7 @@ _HASH_COLS = [
     "agent_status", "agent_total_duration_ms",
     "agent_total_tokens", "agent_total_tool_use_count",
     "agent_was_interrupted", "agent_output_text",
-    "agent_resolved_model",
+    "agent_resolved_model", "agent_is_async",
 ]
 
 
@@ -88,9 +88,22 @@ def populate_fact_agent_delegations(conn, *, run: EtlRun) -> None:
             md5('agent-' || ftr.agent_id) AS agent_session_key,
             ftu.timestamp,
             ftu.timestamp AS delegation_timestamp,
-            ftr.timestamp AS completion_timestamp,
-            CASE WHEN ftr.timestamp IS NOT NULL THEN
-                EXTRACT(EPOCH FROM (ftr.timestamp - ftu.timestamp))
+            -- On a background launch the tool result is an acknowledgment
+            -- that lands milliseconds after the spawn, so neither of these
+            -- describes the agent finishing. Measured on the real corpus:
+            -- median seconds_to_completion 2.05s across 719 async rows
+            -- versus 102.45s across the 192 that actually completed, mixed
+            -- together with nothing marking which was which. NULL is
+            -- honest; a plausible wrong number silently poisons every
+            -- aggregate, and biased toward under-reporting exactly the
+            -- long-running delegations. Re-deriving the true values from
+            -- the agent's own transcript is separate work -- see
+            -- internal/plans/2026-08-01_agent_delegation_capture_gap.md.
+            CASE WHEN ftr.agent_is_async IS TRUE THEN NULL
+                 ELSE ftr.timestamp END AS completion_timestamp,
+            CASE WHEN ftr.agent_is_async IS TRUE THEN NULL
+                 WHEN ftr.timestamp IS NOT NULL THEN
+                     EXTRACT(EPOCH FROM (ftr.timestamp - ftu.timestamp))
             ELSE NULL END AS seconds_to_completion,
             json_extract_string(ftu.input_json, '$.description')
                 AS task_description,
@@ -106,13 +119,19 @@ def populate_fact_agent_delegations(conn, *, run: EtlRun) -> None:
             ftr.agent_total_tool_use_count,
             ftr.agent_was_interrupted,
             ftr.agent_resolved_model,
+            ftr.agent_is_async,
             -- Tool result content can be a list of blocks (Agent typically
             -- emits one text block); fall back to result_content_text when
             -- the parser flattened it to a plain string.
-            COALESCE(
-                ftr.result_content_text,
-                CAST(json_extract(ftr.result_payload_json, '$.content') AS VARCHAR)
-            ) AS agent_output_text
+            -- Same reasoning: on a background launch this is the string
+            -- "Async agent launched successfully...", not the agent's work.
+            CASE WHEN ftr.agent_is_async IS TRUE THEN NULL ELSE
+                COALESCE(
+                    ftr.result_content_text,
+                    CAST(json_extract(ftr.result_payload_json, '$.content')
+                         AS VARCHAR)
+                )
+            END AS agent_output_text
         FROM fact_tool_uses ftu
         LEFT JOIN fact_tool_results ftr USING (tool_use_id)
         WHERE ftu.is_deleted = FALSE

@@ -728,7 +728,10 @@ def create_star_schema(db_path):
             agent_subagent_type VARCHAR,
             agent_id VARCHAR,
             -- The model the subagent actually ran on, per toolUseResult.
-            agent_resolved_model VARCHAR
+            agent_resolved_model VARCHAR,
+            -- TRUE when the result is a background-launch acknowledgment
+            -- rather than an outcome (Claude Code v2.1.198+ default).
+            agent_is_async BOOLEAN
         )
     """
     )
@@ -2297,6 +2300,8 @@ _COLUMN_MIGRATIONS = [
     # resolvedModel capture postdates both tables shipping.
     ("fact_tool_results", "agent_resolved_model", "VARCHAR"),
     ("fact_agent_delegations", "agent_resolved_model", "VARCHAR"),
+    ("fact_tool_results", "agent_is_async", "BOOLEAN"),
+    ("fact_agent_delegations", "agent_is_async", "BOOLEAN"),
 ]
 
 

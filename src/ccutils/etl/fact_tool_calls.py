@@ -44,7 +44,7 @@ _RESULTS_PAYLOAD_COLS = [
     "webfetch_http_code", "webfetch_bytes",
     "agent_status", "agent_total_duration_ms", "agent_total_tokens",
     "agent_total_tool_use_count", "agent_was_interrupted", "agent_subagent_type",
-    "agent_id", "agent_resolved_model",
+    "agent_id", "agent_resolved_model", "agent_is_async",
 ]
 _RESULTS_HASH_COLS = [
     "tool_name", "timestamp", "is_error",
@@ -58,7 +58,7 @@ _RESULTS_HASH_COLS = [
     "webfetch_http_code", "webfetch_bytes",
     "agent_status", "agent_total_duration_ms", "agent_total_tokens",
     "agent_total_tool_use_count", "agent_was_interrupted", "agent_subagent_type",
-    "agent_id", "agent_resolved_model",
+    "agent_id", "agent_resolved_model", "agent_is_async",
 ]
 
 
@@ -291,7 +291,18 @@ SELECT
     -- their own, so their model is otherwise unknowable.
     CASE WHEN tool_name IN ('Agent', 'Task', 'TaskCreate')
          THEN json_extract_string(tool_use_result_json, '$.resolvedModel') END
-        AS agent_resolved_model
+        AS agent_resolved_model,
+    -- isAsync is STATED in the payload (and, like is_error, only ever
+    -- written as true -- absence means synchronous). Since Claude Code
+    -- v2.1.198+ subagents run in the background by default, so the result
+    -- returned at spawn time is a launch acknowledgment, not an outcome.
+    -- Downstream uses this to refuse to present that acknowledgment as a
+    -- completion.
+    CASE WHEN tool_name IN ('Agent', 'Task', 'TaskCreate')
+         THEN COALESCE(
+             json_extract(tool_use_result_json, '$.isAsync')::BOOLEAN, FALSE)
+         END
+        AS agent_is_async
 FROM with_tool_name
 """
 
