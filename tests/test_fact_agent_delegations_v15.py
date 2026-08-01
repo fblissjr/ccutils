@@ -18,6 +18,7 @@ Run AFTER populate_fact_tool_uses + populate_fact_tool_results.
 
 from __future__ import annotations
 
+import hashlib
 import json
 
 import pytest
@@ -211,19 +212,87 @@ class TestFactAgentDelegations:
             assert parent_sk == session_sk
             assert parent_sk is not None
 
-    def test_agent_session_key_null_when_no_subagent_loaded(
+    def test_agent_session_key_derived_without_the_subagent_loaded(
         self, conn, agent_session, tmp_path
     ):
-        """In this fixture only the parent session is loaded -- no
-        corresponding subagent JSONL has been ingested -- so the
-        dim_session lookup by agent_id finds nothing and
-        agent_session_key stays NULL."""
+        """The key is derived from the natural key, not looked up.
+
+        It previously resolved through a correlated subquery on
+        dim_session.agent_id, which only finds a row if the agent's OWN
+        transcript happened to be ETL'd already. ETL is per-session and a
+        parent is typically processed before its agents, so on the real
+        corpus this produced agent_session_key NULL for 941 of 941
+        delegations -- while 826 of them carried a subagent_type and 936
+        agent sessions sat unlinked. Excluding the column from _HASH_COLS
+        meant a later run never repaired it either: hash unchanged, no
+        update, NULL forever.
+
+        session_key is md5(session_id) and an agent's session_id is
+        'agent-<agent_id>' (verified: holds for all 2,046 agent sessions),
+        so the key needs no lookup and no ordering guarantee.
+        """
         _populate(conn, agent_session, tmp_path)
         rows = conn.execute(
-            "SELECT agent_session_key FROM fact_agent_delegations"
+            """
+            SELECT ftr.agent_id, fad.agent_session_key
+            FROM fact_agent_delegations fad
+            JOIN fact_tool_results ftr USING (tool_use_id)
+            ORDER BY ftr.agent_id
+            """
         ).fetchall()
-        for (agent_sk,) in rows:
-            assert agent_sk is None
+        assert rows, "no delegations produced"
+        for agent_id, agent_sk in rows:
+            assert agent_sk is not None, f"{agent_id} left unlinked"
+            expected = hashlib.md5(
+                f"agent-{agent_id}".encode()
+            ).hexdigest()
+            assert agent_sk == expected
+
+    def test_agent_session_key_survives_parent_first_ordering(
+        self, conn, tmp_path
+    ):
+        """The real-world ordering: parent ETL'd before the agent exists.
+
+        Claim: delete this and the lookup-based implementation passes every
+        other test in this file (its fixtures load both sides, or neither)
+        while producing zero linkage on a real corpus, because nothing here
+        exercises parent-then-agent ordering.
+        """
+        from ccutils.etl.orchestrator import run_v15_etl
+
+        parent = tmp_path / "p.jsonl"
+        parent.write_text("\n".join(json.dumps(d) for d in [
+            {"type": "user", "uuid": "u1", "sessionId": "ord-parent",
+             "timestamp": "2026-04-19T10:00:00Z", "cwd": "/p",
+             "gitBranch": "main", "version": "2.1.114",
+             "message": {"role": "user", "content": "delegate"}},
+            {"type": "assistant", "uuid": "a1", "parentUuid": "u1",
+             "sessionId": "ord-parent", "timestamp": "2026-04-19T10:00:01Z",
+             "requestId": "r1",
+             "message": {"role": "assistant", "model": "claude-opus-4-7",
+                         "content": [{"type": "tool_use", "id": "tu_ord",
+                                      "name": "Task",
+                                      "input": {"description": "go",
+                                                "subagent_type": "Explore",
+                                                "prompt": "x"}}]}},
+            {"type": "user", "uuid": "u2", "parentUuid": "a1",
+             "sessionId": "ord-parent", "timestamp": "2026-04-19T10:00:30Z",
+             "message": {"role": "user", "content": [
+                 {"type": "tool_result", "tool_use_id": "tu_ord",
+                  "content": [{"type": "text", "text": "done"}]}]},
+             "toolUseResult": {"agentId": "ord-agent-1",
+                               "agentType": "Explore", "status": "completed",
+                               "totalDurationMs": 10, "totalTokens": 5,
+                               "totalToolUseCount": 1}},
+        ]))
+        # Parent first, agent transcript never ingested at all.
+        run_v15_etl(conn, parent, project_name="test-project",
+                    parquet_lake_root=tmp_path / "lake")
+        row = conn.execute(
+            "SELECT agent_session_key FROM fact_agent_delegations "
+            "WHERE tool_use_id = 'tu_ord'"
+        ).fetchone()
+        assert row[0] == hashlib.md5(b"agent-ord-agent-1").hexdigest()
 
     def test_lineage_block_populated(self, conn, agent_session, tmp_path):
         _populate(conn, agent_session, tmp_path)

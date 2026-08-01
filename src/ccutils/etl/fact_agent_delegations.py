@@ -6,10 +6,11 @@ and the agent rollup metrics (status, totalDurationMs, totalTokens,
 totalToolUseCount, wasInterrupted) from fact_tool_results.agent_*
 columns -- the v0.15 R1 structured toolUseResult capture.
 
-agent_session_key / parent_session_key are NULL for now. Cross-session
-subagent linkage (reading .meta.json sidecars to mark dim_session
-.is_agent / .parent_session_key) is a separate Phase D follow-up; the
-parent-side rollup metrics already tell most of the story.
+parent_session_key is md5 of the parent session_id; agent_session_key is
+md5('agent-' || agent_id), derived from the natural key rather than looked
+up in dim_session so it does not depend on whether the agent's own
+transcript has been ETL'd yet. Either may point at a session absent from
+dim_session -- LEFT JOIN accordingly.
 
 Run AFTER populate_fact_tool_uses + populate_fact_tool_results.
 """
@@ -36,7 +37,11 @@ _PAYLOAD_COLS = [
     "agent_was_interrupted", "agent_output_text",
 ]
 _HASH_COLS = [
-    "tool_use_id", "delegation_timestamp", "completion_timestamp",
+    # agent_session_key IS hashed: it was previously excluded, so once a row
+    # was written with a NULL key no later run could ever repair it (hash
+    # unchanged -> no update). Including it lets a re-run heal old rows.
+    "tool_use_id", "agent_session_key",
+    "delegation_timestamp", "completion_timestamp",
     "task_description", "task_prompt", "subagent_type",
     "agent_status", "agent_total_duration_ms",
     "agent_total_tokens", "agent_total_tool_use_count",
@@ -60,11 +65,25 @@ def populate_fact_agent_delegations(conn, *, run: EtlRun) -> None:
             -- it under the parent_session_key column as well for query
             -- ergonomics on subagent rollup analysis.
             md5(ftu.session_id) AS parent_session_key,
-            -- agent_session_key resolves via dim_session.agent_id (which
-            -- gets set during subagent_dim_session enrichment).
-            (SELECT ds.session_key FROM dim_session ds
-             WHERE ds.is_agent = TRUE AND ds.agent_id = ftr.agent_id
-             LIMIT 1) AS agent_session_key,
+            -- agent_session_key is DERIVED, not looked up. session_key is
+            -- md5(session_id) and an agent's session_id is
+            -- 'agent-<agent_id>' (holds for all 2,046 agent sessions on the
+            -- real corpus), so the key needs neither a join nor an ordering
+            -- guarantee.
+            --
+            -- It used to resolve through a correlated subquery on
+            -- dim_session.agent_id, which only finds a row if the agent's
+            -- OWN transcript was already ETL'd. ETL is per-session and the
+            -- parent is normally processed first, so on the real corpus
+            -- this produced NULL for 941 of 941 delegations -- 826 of them
+            -- carrying a subagent_type, 936 agent sessions left unlinked.
+            -- agent_session_key is also excluded from _HASH_COLS, so a
+            -- later run never repaired it: hash unchanged, no update.
+            --
+            -- The key may point at a session that was never ingested (30 of
+            -- 880 on the real corpus). That is the normal degenerate-key
+            -- situation -- consumers LEFT JOIN dim_session already.
+            md5('agent-' || ftr.agent_id) AS agent_session_key,
             ftu.timestamp,
             ftu.timestamp AS delegation_timestamp,
             ftr.timestamp AS completion_timestamp,
