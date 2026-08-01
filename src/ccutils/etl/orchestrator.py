@@ -71,6 +71,8 @@ from ccutils.etl.fact_tool_calls import (
 from ccutils.etl.lineage import EtlRun
 from ccutils.etl.staging import load_session_to_staging
 from ccutils.etl.utils import (
+    MODEL_BASE_SQL,
+    MODEL_FAMILY_SQL,
     TOOL_CATEGORY_SQL,
     insert_missing_dim_dates,
     project_dir_sql,
@@ -179,16 +181,16 @@ def _upsert_minimal_dimensions(conn) -> int:
     # dim_model: from assistant message.model values
     conn.execute(
         """
-        INSERT INTO dim_model (model_key, model_name, model_family)
+        INSERT INTO dim_model (model_key, model_name, model_base, model_family)
         SELECT DISTINCT
             md5(json_extract_string(sle.message_json, '$.model')) AS model_key,
             json_extract_string(sle.message_json, '$.model') AS model_name,
-            CASE
-                WHEN json_extract_string(sle.message_json, '$.model') LIKE '%opus%' THEN 'opus'
-                WHEN json_extract_string(sle.message_json, '$.model') LIKE '%sonnet%' THEN 'sonnet'
-                WHEN json_extract_string(sle.message_json, '$.model') LIKE '%haiku%' THEN 'haiku'
-                ELSE 'unknown'
-            END AS model_family
+            """
+        + MODEL_BASE_SQL.format(col="json_extract_string(sle.message_json, '$.model')")
+        + """ AS model_base,
+            """
+        + MODEL_FAMILY_SQL.format(col="json_extract_string(sle.message_json, '$.model')")
+        + """ AS model_family
         FROM stg_log_entries sle
         WHERE sle.type = 'assistant'
           AND json_extract_string(sle.message_json, '$.model') IS NOT NULL
@@ -231,6 +233,23 @@ def _upsert_minimal_dimensions(conn) -> int:
           AND NOT EXISTS (
               SELECT 1 FROM dim_tool dt WHERE dt.tool_key = md5(cand.tool_name)
           )
+        """
+    )
+
+    # Backfill model_base / model_family on rows written before the
+    # structural rule (they hold NULL / 'unknown'). Same reasoning as the
+    # tool_category backfill below.
+    conn.execute(
+        """
+        UPDATE dim_model SET
+            model_base = """
+        + MODEL_BASE_SQL.format(col="model_name")
+        + """,
+            model_family = """
+        + MODEL_FAMILY_SQL.format(col="model_name")
+        + """
+        WHERE model_base IS NULL OR model_family IS NULL
+           OR model_family = 'unknown'
         """
     )
 

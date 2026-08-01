@@ -210,3 +210,27 @@ TOOL_CATEGORY_SQL = """CASE
     ) THEN 'interact'
     ELSE 'other'
 END"""
+
+
+# Context-window suffix stripped from a model id: 'claude-opus-5[1m]' is the
+# same model as 'claude-opus-5' with a larger window. Without this they become
+# separate dim_model rows and every per-model aggregate splits silently.
+# `model_name` stays byte-faithful to the transcript; model_base is the
+# grouping key. Mirrors get_model_base() in schemas/star/utils.py.
+MODEL_BASE_SQL = """NULLIF(TRIM(SPLIT_PART({col}, '[', 1)), '')"""
+
+# Family parsed STRUCTURALLY from the claude-<family>-<version...> convention,
+# not matched against a list of known families. An enumerated list goes stale
+# the moment a new model line ships -- `fable` was missing from the previous
+# LIKE-chain, which bucketed the corpus's third-most-used model (more output
+# tokens than Opus 5) as 'unknown' in every GROUP BY model_family.
+# Mirrors get_model_family() in schemas/star/utils.py; the two are asserted
+# to agree in tests/test_dim_model_v15.py.
+MODEL_FAMILY_SQL = """CASE
+    WHEN {col} IS NULL THEN 'unknown'
+    WHEN LOWER(SPLIT_PART(TRIM(SPLIT_PART({col}, '[', 1)), '-', 1)) <> 'claude'
+        THEN 'unknown'
+    WHEN NULLIF(SPLIT_PART(TRIM(SPLIT_PART({col}, '[', 1)), '-', 2), '') IS NULL
+        THEN 'unknown'
+    ELSE LOWER(SPLIT_PART(TRIM(SPLIT_PART({col}, '[', 1)), '-', 2))
+END"""

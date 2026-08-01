@@ -44,7 +44,7 @@ _RESULTS_PAYLOAD_COLS = [
     "webfetch_http_code", "webfetch_bytes",
     "agent_status", "agent_total_duration_ms", "agent_total_tokens",
     "agent_total_tool_use_count", "agent_was_interrupted", "agent_subagent_type",
-    "agent_id",
+    "agent_id", "agent_resolved_model",
 ]
 _RESULTS_HASH_COLS = [
     "tool_name", "timestamp", "is_error",
@@ -58,7 +58,7 @@ _RESULTS_HASH_COLS = [
     "webfetch_http_code", "webfetch_bytes",
     "agent_status", "agent_total_duration_ms", "agent_total_tokens",
     "agent_total_tool_use_count", "agent_was_interrupted", "agent_subagent_type",
-    "agent_id",
+    "agent_id", "agent_resolved_model",
 ]
 
 
@@ -284,7 +284,14 @@ SELECT
     -- for the subagent that ran this delegation.
     CASE WHEN tool_name IN ('Agent', 'Task', 'TaskCreate')
          THEN json_extract_string(tool_use_result_json, '$.agentId') END
-        AS agent_id
+        AS agent_id,
+    -- resolvedModel is the model the subagent ACTUALLY ran on, and the
+    -- parent's delegation row is the only place it is stated: 894 of 2,046
+    -- agent sessions on the real corpus have no ingestible transcript of
+    -- their own, so their model is otherwise unknowable.
+    CASE WHEN tool_name IN ('Agent', 'Task', 'TaskCreate')
+         THEN json_extract_string(tool_use_result_json, '$.resolvedModel') END
+        AS agent_resolved_model
 FROM with_tool_name
 """
 

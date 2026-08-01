@@ -35,6 +35,7 @@ _PAYLOAD_COLS = [
     "agent_status", "agent_total_duration_ms",
     "agent_total_tokens", "agent_total_tool_use_count",
     "agent_was_interrupted", "agent_output_text",
+    "agent_resolved_model",
 ]
 _HASH_COLS = [
     # agent_session_key IS hashed: it was previously excluded, so once a row
@@ -46,6 +47,7 @@ _HASH_COLS = [
     "agent_status", "agent_total_duration_ms",
     "agent_total_tokens", "agent_total_tool_use_count",
     "agent_was_interrupted", "agent_output_text",
+    "agent_resolved_model",
 ]
 
 
@@ -103,6 +105,7 @@ def populate_fact_agent_delegations(conn, *, run: EtlRun) -> None:
             ftr.agent_total_tokens,
             ftr.agent_total_tool_use_count,
             ftr.agent_was_interrupted,
+            ftr.agent_resolved_model,
             -- Tool result content can be a list of blocks (Agent typically
             -- emits one text block); fall back to result_content_text when
             -- the parser flattened it to a plain string.

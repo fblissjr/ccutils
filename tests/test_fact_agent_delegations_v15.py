@@ -69,6 +69,7 @@ def agent_session(tmp_path):
          ]},
          "toolUseResult": {
              "agentId": "ag-001", "agentType": "Explore",
+             "resolvedModel": "claude-sonnet-5",
              "status": "completed",
              "totalDurationMs": 38695, "totalTokens": 70817,
              "totalToolUseCount": 9,
@@ -95,6 +96,7 @@ def agent_session(tmp_path):
          ]},
          "toolUseResult": {
              "agentId": "ag-002", "agentType": "Plan",
+             "resolvedModel": "claude-sonnet-5",
              "status": "interrupted",
              "totalDurationMs": 5000, "totalTokens": 8000,
              "totalToolUseCount": 2,
@@ -293,6 +295,64 @@ class TestFactAgentDelegations:
             "WHERE tool_use_id = 'tu_ord'"
         ).fetchone()
         assert row[0] == hashlib.md5(b"agent-ord-agent-1").hexdigest()
+
+    def test_resolved_model_captured_from_tool_use_result(
+        self, conn, agent_session, tmp_path
+    ):
+        """toolUseResult.resolvedModel is the model the subagent ACTUALLY ran
+        on, and it is the only place that fact appears.
+
+        Claim: delete this and per-delegation model attribution is
+        unrecoverable. A subagent's own transcript records the model on its
+        assistant entries, but 894 of 2,046 agent sessions on the real corpus
+        have no ingestible transcript at all -- and the parent's delegation
+        row is the only other place the model is stated. 815 resolvedModel
+        values sit in the corpus today, captured nowhere.
+        """
+        _populate(conn, agent_session, tmp_path)
+        rows = conn.execute(
+            "SELECT tool_use_id, agent_resolved_model "
+            "FROM fact_agent_delegations ORDER BY tool_use_id"
+        ).fetchall()
+        assert rows, "no delegations produced"
+        models = {r[1] for r in rows}
+        assert models == {"claude-sonnet-5"}, models
+
+    def test_resolved_model_null_when_absent(self, conn, tmp_path):
+        """Older transcripts predate resolvedModel; absence must not error."""
+        from ccutils.etl.orchestrator import run_v15_etl
+
+        jsonl = tmp_path / "nomodel.jsonl"
+        jsonl.write_text("\n".join(json.dumps(d) for d in [
+            {"type": "user", "uuid": "u1", "sessionId": "nomodel-s",
+             "timestamp": "2026-04-19T10:00:00Z", "cwd": "/p",
+             "gitBranch": "main", "version": "2.1.114",
+             "message": {"role": "user", "content": "delegate"}},
+            {"type": "assistant", "uuid": "a1", "parentUuid": "u1",
+             "sessionId": "nomodel-s", "timestamp": "2026-04-19T10:00:01Z",
+             "requestId": "r1",
+             "message": {"role": "assistant", "model": "claude-opus-5",
+                         "content": [{"type": "tool_use", "id": "tu_nm",
+                                      "name": "Task",
+                                      "input": {"description": "go",
+                                                "subagent_type": "Explore",
+                                                "prompt": "x"}}]}},
+            {"type": "user", "uuid": "u2", "parentUuid": "a1",
+             "sessionId": "nomodel-s", "timestamp": "2026-04-19T10:00:30Z",
+             "message": {"role": "user", "content": [
+                 {"type": "tool_result", "tool_use_id": "tu_nm",
+                  "content": [{"type": "text", "text": "done"}]}]},
+             "toolUseResult": {"agentId": "nm-agent", "agentType": "Explore",
+                               "status": "completed", "totalDurationMs": 10,
+                               "totalTokens": 5, "totalToolUseCount": 1}},
+        ]))
+        run_v15_etl(conn, jsonl, project_name="test-project",
+                    parquet_lake_root=tmp_path / "lake")
+        row = conn.execute(
+            "SELECT agent_resolved_model FROM fact_agent_delegations "
+            "WHERE tool_use_id = 'tu_nm'"
+        ).fetchone()
+        assert row == (None,)
 
     def test_lineage_block_populated(self, conn, agent_session, tmp_path):
         _populate(conn, agent_session, tmp_path)

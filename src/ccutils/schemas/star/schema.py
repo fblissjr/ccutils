@@ -215,6 +215,10 @@ def create_star_schema(db_path):
         CREATE TABLE IF NOT EXISTS dim_model (
             model_key VARCHAR,
             model_name VARCHAR,
+            -- model_name byte-faithful to the transcript; model_base drops
+            -- the context-window suffix ('claude-opus-5[1m]' ->
+            -- 'claude-opus-5') so per-model aggregates do not split.
+            model_base VARCHAR,
             model_family VARCHAR
         )
     """
@@ -722,7 +726,9 @@ def create_star_schema(db_path):
             agent_total_tool_use_count INTEGER,
             agent_was_interrupted BOOLEAN,
             agent_subagent_type VARCHAR,
-            agent_id VARCHAR
+            agent_id VARCHAR,
+            -- The model the subagent actually ran on, per toolUseResult.
+            agent_resolved_model VARCHAR
         )
     """
     )
@@ -2284,6 +2290,13 @@ _COLUMN_MIGRATIONS = [
     # step_kind predates any release of fact_etl_steps, but pre-release
     # warehouses built from this branch exist; widening is free.
     ("fact_etl_steps", "step_kind", "VARCHAR"),
+    # dim_model shipped without model_base; CREATE TABLE IF NOT EXISTS never
+    # widens, so existing warehouses need the ALTER. Backfilled in
+    # _upsert_minimal_dimensions on the next run.
+    ("dim_model", "model_base", "VARCHAR"),
+    # resolvedModel capture postdates both tables shipping.
+    ("fact_tool_results", "agent_resolved_model", "VARCHAR"),
+    ("fact_agent_delegations", "agent_resolved_model", "VARCHAR"),
 ]
 
 
