@@ -1,10 +1,16 @@
 """Tests for the v0.15 fact_tool_chain_steps populator (Phase D).
 
-Grain: one row per (session, tool_use, step_position). A chain is the
-contiguous block of tool_uses within a single assistant message_id.
-Derived from fact_tool_uses + fact_tool_results.
+Grain: one row per (session, tool_use, step_position). A chain is an
+"agentic run" -- the contiguous block of tool_uses following one human
+turn, up to the next human turn. Derived from fact_tool_uses +
+fact_tool_results + fact_messages (for the human-turn boundaries).
 
-Run AFTER populate_fact_tool_uses + populate_fact_tool_results.
+Run AFTER populate_fact_tool_uses + populate_fact_tool_results +
+populate_fact_messages.
+
+The grain must not depend on how content blocks are packed into JSONL
+entries -- see TestAgenticRunGrain, which runs the same assertions over
+both packings.
 """
 
 from __future__ import annotations
@@ -241,63 +247,216 @@ class TestFactToolChainSteps:
 
 
 @pytest.fixture
+def realistic_chain_session(tmp_path):
+    """The same two agentic runs as `chain_session`, in the REAL JSONL shape.
+
+    Claude Code writes one content block per assistant entry: parallel tool
+    calls become separate entries that share an API message id but carry
+    distinct uuids. Verified against real transcripts -- content-block shapes
+    observed are ('tool_use',), ('thinking',), ('text',), never mixed.
+
+    `chain_session` packs three tool_use blocks into one entry, which real
+    transcripts never produce. Both fixtures must yield identical chains:
+    run 1 = Read -> Edit -> Bash, run 2 = Read.
+    """
+    jsonl = tmp_path / "realistic.jsonl"
+
+    def assistant(uuid, parent, ts, tool_id, name, tool_input, req):
+        return {
+            "type": "assistant", "uuid": uuid, "parentUuid": parent,
+            "sessionId": "real-s", "timestamp": ts, "requestId": req,
+            "message": {"role": "assistant", "model": "claude-opus-4-7",
+                        "id": "msg_shared_1",
+                        "content": [{"type": "tool_use", "id": tool_id,
+                                     "name": name, "input": tool_input}]},
+        }
+
+    def result(uuid, parent, ts, tool_id, content, is_error=False):
+        block = {"type": "tool_result", "tool_use_id": tool_id,
+                 "content": content}
+        if is_error:
+            block["is_error"] = True
+        return {"type": "user", "uuid": uuid, "parentUuid": parent,
+                "sessionId": "real-s", "timestamp": ts,
+                "message": {"role": "user", "content": [block]}}
+
+    lines = [
+        {"type": "user", "uuid": "u1", "sessionId": "real-s",
+         "timestamp": "2026-04-19T10:00:00Z", "cwd": "/p",
+         "gitBranch": "main", "version": "2.1.114",
+         "message": {"role": "user", "content": "do a multi-tool turn"}},
+        # Agentic run 1 -- three tools, one per assistant entry.
+        assistant("a1", "u1", "2026-04-19T10:00:01Z", "tu_rr", "Read",
+                  {"file_path": "/p/a.py"}, "r1"),
+        result("u2", "a1", "2026-04-19T10:00:02Z", "tu_rr", "data"),
+        assistant("a2", "u2", "2026-04-19T10:00:03Z", "tu_ee", "Edit",
+                  {"file_path": "/p/a.py", "old_string": "x",
+                   "new_string": "y"}, "r2"),
+        result("u3", "a2", "2026-04-19T10:00:04Z", "tu_ee", "ok"),
+        assistant("a3", "u3", "2026-04-19T10:00:05Z", "tu_bb", "Bash",
+                  {"command": "pytest"}, "r3"),
+        result("u4", "a3", "2026-04-19T10:00:06Z", "tu_bb", "fail",
+               is_error=True),
+        # A new human turn opens agentic run 2.
+        {"type": "user", "uuid": "u5", "parentUuid": "u4",
+         "sessionId": "real-s", "timestamp": "2026-04-19T10:00:10Z",
+         "message": {"role": "user", "content": "one more"}},
+        assistant("a4", "u5", "2026-04-19T10:00:11Z", "tu_rr2", "Read",
+                  {"file_path": "/p/b.py"}, "r4"),
+        result("u6", "a4", "2026-04-19T10:00:12Z", "tu_rr2", "data"),
+    ]
+    jsonl.write_text("\n".join(json.dumps(d) for d in lines))
+    return jsonl
+
+
+class TestAgenticRunGrain:
+    """A chain is the human-turn-delimited run, not the assistant entry.
+
+    Claim: delete these and the chain grain can silently regress to
+    one-step-per-entry, which makes prev/next_tool_key universally NULL and
+    empties semantic_tool_patterns and facet F07 without failing anything.
+    That is exactly what shipped: on a 2,250-session corpus, 71,175 of 71,216
+    chain steps were step_position 1 and F07 was [] for 99.5% of sessions.
+    """
+
+    def test_chain_spans_assistant_entries(
+        self, conn, realistic_chain_session, tmp_path
+    ):
+        _populate(conn, realistic_chain_session, tmp_path)
+        n_chains = conn.execute(
+            "SELECT COUNT(DISTINCT chain_id) FROM fact_tool_chain_steps"
+        ).fetchone()[0]
+        assert n_chains == 2, "one chain per human turn, not per entry"
+
+    def test_prev_next_linked_across_entries(
+        self, conn, realistic_chain_session, tmp_path
+    ):
+        _populate(conn, realistic_chain_session, tmp_path)
+        row = conn.execute(
+            """
+            SELECT dt_cur.tool_name, dt_prev.tool_name, dt_next.tool_name
+            FROM fact_tool_chain_steps fcs
+            JOIN dim_tool dt_cur ON fcs.tool_key = dt_cur.tool_key
+            LEFT JOIN dim_tool dt_prev ON fcs.prev_tool_key = dt_prev.tool_key
+            LEFT JOIN dim_tool dt_next ON fcs.next_tool_key = dt_next.tool_key
+            WHERE fcs.tool_use_id = 'tu_ee'
+            """
+        ).fetchone()
+        assert row == ("Edit", "Read", "Bash")
+
+    def test_step_positions_run_the_length_of_the_run(
+        self, conn, realistic_chain_session, tmp_path
+    ):
+        _populate(conn, realistic_chain_session, tmp_path)
+        rows = conn.execute(
+            """
+            SELECT fcs.step_position, dt.tool_name
+            FROM fact_tool_chain_steps fcs
+            JOIN dim_tool dt ON fcs.tool_key = dt.tool_key
+            WHERE fcs.tool_use_id IN ('tu_rr', 'tu_ee', 'tu_bb')
+            ORDER BY fcs.step_position
+            """
+        ).fetchall()
+        assert rows == [(1, "Read"), (2, "Edit"), (3, "Bash")]
+
+    def test_new_human_turn_starts_a_new_chain(
+        self, conn, realistic_chain_session, tmp_path
+    ):
+        _populate(conn, realistic_chain_session, tmp_path)
+        row = conn.execute(
+            """
+            SELECT step_position, prev_tool_key, next_tool_key
+            FROM fact_tool_chain_steps WHERE tool_use_id = 'tu_rr2'
+            """
+        ).fetchone()
+        assert row == (1, None, None), "run 2 is a fresh single-step chain"
+
+    def test_time_since_prev_is_real_elapsed_time(
+        self, conn, realistic_chain_session, tmp_path
+    ):
+        """Was always NULL under the per-entry grain (no prev row existed)."""
+        _populate(conn, realistic_chain_session, tmp_path)
+        row = conn.execute(
+            "SELECT time_since_prev_seconds FROM fact_tool_chain_steps "
+            "WHERE tool_use_id = 'tu_ee'"
+        ).fetchone()
+        assert row[0] == pytest.approx(2.0)  # 10:00:01 -> 10:00:03
+
+    def test_grain_is_independent_of_block_packing(
+        self, conn, realistic_chain_session, chain_session, tmp_path
+    ):
+        """Both JSONL packings must produce the same chain shape."""
+        _populate(conn, realistic_chain_session, tmp_path)
+        _populate(conn, chain_session, tmp_path)
+        shapes = conn.execute(
+            """
+            SELECT session_id, chain_id, COUNT(*) AS n
+            FROM fact_tool_chain_steps
+            GROUP BY session_id, chain_id
+            """
+        ).fetchall()
+        per_session = {}
+        for session_id, _chain, n in shapes:
+            per_session.setdefault(session_id, []).append(n)
+        assert sorted(per_session["real-s"]) == [1, 3]
+        assert sorted(per_session["chain-s"]) == [1, 3]
+
+
+@pytest.fixture
 def repeated_pattern_session(tmp_path):
     """Turn 1: Read, Edit, Bash. Turn 2: Read, Edit.
 
     Read->Edit occurs twice (crosses the semantic_tool_patterns
     HAVING COUNT(*) >= 2 threshold); Edit->Bash occurs once (stays below).
+
+    Written in the real JSONL packing -- one content block per assistant
+    entry -- so the view is exercised against transitions that must span
+    entries. Under the old per-entry chain grain this fixture yields no
+    transitions at all, which is the corpus-wide failure it now guards.
     """
     jsonl = tmp_path / "pattern.jsonl"
+
+    def assistant(uuid, parent, ts, tool_id, name, tool_input, req):
+        return {
+            "type": "assistant", "uuid": uuid, "parentUuid": parent,
+            "sessionId": "pattern-s", "timestamp": ts, "requestId": req,
+            "message": {"role": "assistant", "model": "claude-opus-4-7",
+                        "content": [{"type": "tool_use", "id": tool_id,
+                                     "name": name, "input": tool_input}]},
+        }
+
+    def result(uuid, parent, ts, tool_id, content):
+        return {"type": "user", "uuid": uuid, "parentUuid": parent,
+                "sessionId": "pattern-s", "timestamp": ts,
+                "message": {"role": "user", "content": [
+                    {"type": "tool_result", "tool_use_id": tool_id,
+                     "content": content}]}}
+
     lines = [
         {"type": "user", "uuid": "u1", "sessionId": "pattern-s",
          "timestamp": "2026-04-19T11:00:00Z", "cwd": "/p",
          "gitBranch": "main", "version": "2.1.114",
          "message": {"role": "user", "content": "repeat a tool pattern"}},
-        {"type": "assistant", "uuid": "a1", "parentUuid": "u1",
-         "sessionId": "pattern-s", "timestamp": "2026-04-19T11:00:01Z",
-         "requestId": "r1",
-         "message": {"role": "assistant", "model": "claude-opus-4-7",
-                     "content": [
-                         {"type": "tool_use", "id": "tu_r1",
-                          "name": "Read",
-                          "input": {"file_path": "/p/a.py"}},
-                         {"type": "tool_use", "id": "tu_e1",
-                          "name": "Edit",
-                          "input": {"file_path": "/p/a.py",
-                                    "old_string": "x", "new_string": "y"}},
-                         {"type": "tool_use", "id": "tu_b1",
-                          "name": "Bash",
-                          "input": {"command": "pytest"}},
-                     ]}},
-        {"type": "user", "uuid": "u2", "parentUuid": "a1",
-         "sessionId": "pattern-s", "timestamp": "2026-04-19T11:00:02Z",
-         "message": {"role": "user", "content": [
-             {"type": "tool_result", "tool_use_id": "tu_r1", "content": "data"},
-             {"type": "tool_result", "tool_use_id": "tu_e1", "content": "ok"},
-             {"type": "tool_result", "tool_use_id": "tu_b1", "content": "ok"},
-         ]}},
-        {"type": "user", "uuid": "u3", "parentUuid": "u2",
-         "sessionId": "pattern-s", "timestamp": "2026-04-19T11:00:05Z",
+        assistant("a1", "u1", "2026-04-19T11:00:01Z", "tu_r1", "Read",
+                  {"file_path": "/p/a.py"}, "r1"),
+        result("u2", "a1", "2026-04-19T11:00:02Z", "tu_r1", "data"),
+        assistant("a2", "u2", "2026-04-19T11:00:03Z", "tu_e1", "Edit",
+                  {"file_path": "/p/a.py", "old_string": "x",
+                   "new_string": "y"}, "r2"),
+        result("u3", "a2", "2026-04-19T11:00:04Z", "tu_e1", "ok"),
+        assistant("a3", "u3", "2026-04-19T11:00:05Z", "tu_b1", "Bash",
+                  {"command": "pytest"}, "r3"),
+        result("u4", "a3", "2026-04-19T11:00:06Z", "tu_b1", "ok"),
+        {"type": "user", "uuid": "u5", "parentUuid": "u4",
+         "sessionId": "pattern-s", "timestamp": "2026-04-19T11:00:10Z",
          "message": {"role": "user", "content": "again"}},
-        {"type": "assistant", "uuid": "a2", "parentUuid": "u3",
-         "sessionId": "pattern-s", "timestamp": "2026-04-19T11:00:06Z",
-         "requestId": "r2",
-         "message": {"role": "assistant", "model": "claude-opus-4-7",
-                     "content": [
-                         {"type": "tool_use", "id": "tu_r2",
-                          "name": "Read",
-                          "input": {"file_path": "/p/b.py"}},
-                         {"type": "tool_use", "id": "tu_e2",
-                          "name": "Edit",
-                          "input": {"file_path": "/p/b.py",
-                                    "old_string": "x", "new_string": "y"}},
-                     ]}},
-        {"type": "user", "uuid": "u4", "parentUuid": "a2",
-         "sessionId": "pattern-s", "timestamp": "2026-04-19T11:00:07Z",
-         "message": {"role": "user", "content": [
-             {"type": "tool_result", "tool_use_id": "tu_r2", "content": "data"},
-             {"type": "tool_result", "tool_use_id": "tu_e2", "content": "ok"},
-         ]}},
+        assistant("a4", "u5", "2026-04-19T11:00:11Z", "tu_r2", "Read",
+                  {"file_path": "/p/b.py"}, "r4"),
+        result("u6", "a4", "2026-04-19T11:00:12Z", "tu_r2", "data"),
+        assistant("a5", "u6", "2026-04-19T11:00:13Z", "tu_e2", "Edit",
+                  {"file_path": "/p/b.py", "old_string": "x",
+                   "new_string": "y"}, "r5"),
+        result("u7", "a5", "2026-04-19T11:00:14Z", "tu_e2", "ok"),
     ]
     jsonl.write_text("\n".join(json.dumps(d) for d in lines))
     return jsonl

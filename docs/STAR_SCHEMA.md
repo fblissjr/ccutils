@@ -89,7 +89,7 @@ The orchestrator at `src/ccutils/etl/orchestrator.py` (`run_v15_etl`) runs per s
    - `fact_plan_revisions` (ExitPlanMode outcome classification via R16 tri-state `is_error`)
    - `fact_agent_delegations` (Task tool spawns + agent rollup metrics)
    - `fact_errors` (flattens fact_tool_results where is_error=TRUE)
-   - `fact_tool_chain_steps` (tool sequences per assistant turn)
+   - `fact_tool_chain_steps` (tool sequences per agentic run)
    - `dim_session` heuristic enrichment (intent / complexity / outcome / domain)
    - `dim_session_chain` (slug-grouped chain aggregate)
    - `fact_session_facets` Tier 1 (F01..F19, SQL-computed)
@@ -498,7 +498,11 @@ Task tool spawns + agent rollup metrics from R1 structured `toolUseResult` captu
 One row per `fact_tool_results.is_error=TRUE`. Columns: `error_id` (PK), `tool_use_id` (FK), `session_key`, `tool_key`, `error_type` (one of `permission_denied` / `file_not_found` / `syntax_error` / `timeout` / `import_error` / `tool_error`, classified via DuckDB regex CASE), `date_key`, `time_key`, `error_message`, `timestamp`.
 
 #### fact_tool_chain_steps
-Per (session, tool_use, step_position) with prev/next tool keys for adjacency-pattern queries. Columns: `chain_step_id` (PK), `session_key`, `date_key`, `time_key`, `chain_id` (groups steps in the same chain, per assistant turn), `tool_use_id` (FK), `tool_key`, `step_position` (0-based), `prev_tool_key`, `next_tool_key`, `is_error`, `time_since_prev_seconds`, `timestamp`.
+Per (session, tool_use, step_position) with prev/next tool keys for adjacency-pattern queries. Columns: `chain_step_id` (PK), `session_key`, `date_key`, `time_key`, `chain_id` (groups steps in the same chain), `tool_use_id` (FK), `tool_key`, `step_position` (1-indexed within the chain), `prev_tool_key`, `next_tool_key`, `is_error`, `time_since_prev_seconds`, `timestamp`.
+
+**Chain grain: the agentic run.** A chain is the contiguous block of tool uses following one human turn, up to the next human turn -- a human turn being a user message that is not a tool-result carrier and not meta. `chain_id` is `md5(session_id || '|' || run_index)`, where `run_index` counts human turns at or before the tool use; tool uses preceding the first human turn keep `run_index = 0` rather than being dropped (resumed and agent transcripts can open mid-flight).
+
+Do NOT partition on the assistant message. Claude Code writes one content block per assistant entry -- parallel tool calls become separate entries sharing an API message id but carrying distinct uuids -- so `fact_tool_uses.message_id` (a per-entry uuid) puts every tool use in a chain of length 1. That shipped and stayed silent: on a 2,250-session corpus 71,175 of 71,216 steps were `step_position = 1` with NULL prev/next, leaving `semantic_tool_patterns` with 5 rows and facet F07 empty for 99.5% of sessions. `time_since_prev_seconds` is genuine elapsed time under this grain (median ~4.6s on the real corpus); it was universally NULL before.
 
 #### fact_session_facets
 One row per (session_key, facet_type_key). Tier 1 facets (F01-F19) populated via SQL; Tier 2 facets (F20+) populated via the LLM extractor when injected.
