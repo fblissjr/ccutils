@@ -31,3 +31,18 @@ parquet_lake/
 # here -- an unanchored `meta.json` would silently swallow unrelated files.
 **/dimensions/
 **/facts/
+
+# Rendered transcripts are the HIGHEST-fidelity private artifact this tool
+# emits -- full session text, formatted for reading, in a format meant for
+# sharing. The type rules above cover .duckdb/.parquet/.jsonl but nothing
+# covered HTML, so `ccutils -o out/` inside the repo produced a directory of
+# real transcripts that was untracked but NOT ignored -- one `git add -A`
+# from being committed. Ignore HTML everywhere; the Jinja templates are the
+# only tracked HTML and are whitelisted explicitly.
+*.html
+!src/ccutils/templates/*.html
+# Markdown export writes one .md per session. Ignore the common output dir
+# names rather than all markdown, which would swallow the docs.
+out/
+archive/
+analytics/
