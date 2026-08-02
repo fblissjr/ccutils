@@ -1,7 +1,7 @@
 <!-- path-privacy: skip-file -- references universal Claude Code data paths (not personal) -->
 # Star Schema DuckDB Implementation
 
-Last updated: 2026-07-18
+Last updated: 2026-08-02
 
 A dimensional data model for Claude Code transcript analytics, built on a four-tier ETL pipeline with full lineage tracking. The star schema is now the only schema (the legacy 4-table simple schema was removed when v0.15 stabilized).
 
@@ -485,14 +485,22 @@ Task tool spawns + agent rollup metrics from R1 structured `toolUseResult` captu
 | task_prompt | TEXT | Task prompt text |
 | subagent_type | VARCHAR | "Explore", "Plan", etc. |
 | agent_status | VARCHAR | From toolUseResult rollup |
-| agent_total_duration_ms | FLOAT | From toolUseResult rollup |
-| agent_total_tokens | INTEGER | From toolUseResult rollup |
-| agent_total_tool_use_count | INTEGER | From toolUseResult rollup |
+| agent_is_async | BOOLEAN | Stated `toolUseResult.isAsync`. TRUE = the parent's result is a launch acknowledgment, not an outcome |
+| completion_state | VARCHAR | `completed` / `no_completion_recorded` / `spawn_failed` / NULL (not reconciled). See below |
+| agent_resolved_model | VARCHAR | The model the subagent actually ran on. May carry a context-window suffix (`claude-opus-4-8[1m]`) |
+| agent_total_duration_ms | FLOAT | Stated for sync rows; re-derived from the agent's transcript for completed async rows (validated 188/188 against ground truth) |
+| agent_total_tokens | INTEGER | **API-stated only.** NULL on async rows -- the API never states one for a background launch. Do NOT compare with `agent_derived_io_tokens` |
+| agent_derived_io_tokens | INTEGER | Input+output summed from the agent's OWN transcript. A *different measure* from `agent_total_tokens`, not a fallback for it |
+| agent_total_tool_use_count | INTEGER | Stated for sync rows; re-derived for completed async rows (validated 188/188). NULL when the agent used no tools |
 | agent_was_interrupted | BOOLEAN | From toolUseResult rollup |
-| agent_output_text | TEXT | Agent result text |
+| agent_output_text | TEXT | Agent result text. NULL on background launches (it held "Async agent launched successfully.") |
 | delegation_timestamp | TIMESTAMP | When agent was invoked |
-| completion_timestamp | TIMESTAMP | When agent completed |
-| seconds_to_completion | DOUBLE | completion_timestamp - delegation_timestamp |
+| completion_timestamp | TIMESTAMP | When agent completed. NULL unless `completion_state = 'completed'` |
+| seconds_to_completion | DOUBLE | completion_timestamp - delegation_timestamp. NULL unless `completion_state = 'completed'` |
+
+**Why the two token columns are separate.** 188 synchronous delegations carry both an API-stated rollup and an ingested agent transcript, which makes the async derivation scoreable against a known answer. Duration matched 188/188 and tool count 188/188 -- but tokens matched only 12/188 within 10%, with the per-row ratio spanning p10 0.063 to p90 1.004. No formula reconciles them (in+out, out alone, +cache_creation, +cache_read, `total_uncached_equivalent`, the 5m/1h splits); it is not a capture gap (median 23 assistant records, 23 carrying usage) and not a nested-agent rollup (all 188 spawned none). Summing them in one column made async delegations read 3x cheaper than synchronous ones (median 19,444 vs 61,362) while measuring 2x longer. Aggregate over one or the other, never across both.
+
+**Rollups are written only for `completed`.** A partial sum from an unfinished agent is indistinguishable from a fast one, so `no_completion_recorded` and `spawn_failed` rows carry NULL for every rollup. `no_completion_recorded` states exactly what is known -- the agent's transcript records no completion -- and deliberately makes no claim about liveness: of 101 rows under its former name `in_flight_at_ingest`, 98 had ended mid-tool-loop a median of 15.7 days before the ETL ran. It absorbs a measured ~10% false-negative rate (19 of 188 agents whose parent saw a synchronous result still fail the terminal-`stop_reason` test; two alternative predicates miss the same 19).
 
 #### fact_errors
 One row per `fact_tool_results.is_error=TRUE`. Columns: `error_id` (PK), `tool_use_id` (FK), `session_key`, `tool_key`, `error_type` (one of `permission_denied` / `file_not_found` / `syntax_error` / `timeout` / `import_error` / `tool_error`, classified via DuckDB regex CASE), `date_key`, `time_key`, `error_message`, `timestamp`.

@@ -196,12 +196,23 @@ scored AS (
         ar.first_ts            AS ar_first_ts,
         agt.tool_uses          AS ar_tool_uses,
         CASE
-            -- No agent id at all AND no status: the spawn was refused, so no
-            -- agent ever existed. 29 of the 30 NULL-status rows on the real
-            -- corpus (fork-inside-fork, depth limit 3 of 3, cancellation,
-            -- validation error, user rejection). Distinct from "finished but
-            -- unmeasured" -- collapsing them loses a real signal.
+            -- No agent id at all AND no status AND the result is a STATED
+            -- error: the spawn was refused, so no agent ever existed. 29 of
+            -- the 30 NULL-status rows on the real corpus (fork-inside-fork,
+            -- depth limit 3 of 3, cancellation, validation error, user
+            -- rejection). Distinct from "finished but unmeasured" --
+            -- collapsing them loses a real signal.
+            --
+            -- The is_error gate is load-bearing, not belt-and-braces. Without
+            -- it the branch also swallowed the 30th row, a successful
+            -- background launch reading "Fork started - processing in
+            -- background" that merely carried no agentId. All 29 genuine
+            -- failures state is_error: true; that one omits the field. Per
+            -- the settled tri-state rule an omitted is_error means
+            -- not-an-error, so IS TRUE separates them on a stated fact
+            -- rather than on the result text.
             WHEN d.agent_status IS NULL AND d.agent_session_key IS NULL
+                 AND tr.is_error IS TRUE
                 THEN 'spawn_failed'
             -- Synchronous: the parent genuinely saw the outcome, and those
             -- rollups are already correct. Never recomputed.
@@ -213,11 +224,34 @@ scored AS (
             WHEN ar.agent_session_key IS NULL THEN NULL
             WHEN ar.last_terminal_ts IS NOT NULL
              AND ar.last_terminal_ts = ar.last_assistant_ts THEN 'completed'
-            ELSE 'in_flight_at_ingest'
+            -- The agent's transcript records no completion. That is ALL this
+            -- says. It was called `in_flight_at_ingest`, which asserted the
+            -- agent was still running -- a claim the transcript cannot
+            -- support and which the corpus contradicts: of 101 rows carrying
+            -- it, 98 ended mid-tool-loop a median of 15.7 DAYS before the ETL
+            -- ran, and only 2 had a last message recent enough to still be
+            -- live. Naming the observation rather than the inference also
+            -- removes the reason `abandoned` was withheld: no staleness
+            -- threshold is needed to state that nothing was recorded.
+            --
+            -- Known limit, measured: on 188 agents the parent SAW complete,
+            -- 19 (10.1%) still fail the terminal test, so this state also
+            -- absorbs a ~10% false-negative rate. Two alternative predicates
+            -- (last non-null stop_reason terminal; any end_turn present) miss
+            -- exactly the same 19, so the shortfall is in the transcripts,
+            -- not the predicate. Erring toward "not recorded" keeps the
+            -- rollups NULL rather than inventing them.
+            ELSE 'no_completion_recorded'
         END AS completion_state
     FROM fact_agent_delegations d
     LEFT JOIN agent_rollup ar ON ar.agent_session_key = d.agent_session_key
     LEFT JOIN agent_tools  agt ON agt.agent_session_key = d.agent_session_key
+    -- One row per (session, tool use) is guaranteed by lineage_upsert's
+    -- intra-batch dedup; before that fix this join could fan out.
+    LEFT JOIN fact_tool_results tr
+           ON tr.tool_use_id = d.tool_use_id
+          AND tr.session_id = d.session_id
+          AND tr.is_deleted = FALSE
     WHERE d.is_deleted = FALSE
 )
 SELECT
@@ -239,10 +273,29 @@ SELECT
               THEN EXTRACT(EPOCH FROM (ar_last_ts - delegation_timestamp))
          WHEN completion_state = 'completed' THEN seconds_to_completion
     END AS seconds_to_completion,
-    CASE WHEN completion_state = 'completed' AND agent_is_async IS TRUE
-              THEN ar_tokens
-         WHEN completion_state = 'completed' THEN agent_total_tokens
+    -- agent_total_tokens is the API's STATED number or nothing. The derived
+    -- sum is NOT a substitute for it and must never be written here.
+    --
+    -- Ground truth, 188 synchronous delegations carrying both a stated
+    -- rollup and an ingested agent transcript: the duration derivation
+    -- matched 188/188 and the tool-count derivation 188/188, but tokens
+    -- matched only 12/188 within 10%, per-row ratio p10 0.063 to p90 1.004.
+    -- Nothing reconciles them -- not in+out, out alone, +cache_creation,
+    -- +cache_read, total_uncached_equivalent, nor the 5m/1h splits. It is
+    -- not a capture gap (median 23 assistant records, 23 carrying usage) and
+    -- not a nested-agent rollup (all 188 spawned none). The two count
+    -- different things, so a single column cannot hold both: merging them
+    -- made async delegations read 3x cheaper than synchronous ones (median
+    -- 19,444 vs 61,362) while measuring 2x longer.
+    CASE WHEN completion_state = 'completed' AND agent_is_async IS NOT TRUE
+              THEN agent_total_tokens
     END AS agent_total_tokens,
+    -- The derived measurement, kept in its own column so it can be used
+    -- without being mistaken for the API's. Written only for a completed
+    -- delegation, on the same reasoning as every other rollup here: a
+    -- partial sum is indistinguishable from a fast agent.
+    CASE WHEN completion_state = 'completed' THEN ar_tokens
+    END AS agent_derived_io_tokens,
     CASE WHEN completion_state = 'completed' AND agent_is_async IS TRUE
               THEN EXTRACT(EPOCH FROM (ar_last_ts - ar_first_ts)) * 1000
          WHEN completion_state = 'completed' THEN agent_total_duration_ms
@@ -287,7 +340,11 @@ def populate_delegation_completion(conn, *, run) -> None:
         table="fact_agent_delegations",
         inbound_table="_inbound_delegation_completion",
         natural_key="delegation_key",
-        payload_cols=_PAYLOAD_COLS + ["completion_state"],
-        hash_cols=_HASH_COLS + ["completion_state"],
+        # agent_derived_io_tokens is appended here rather than added to
+        # _PAYLOAD_COLS: that list is shared with the base populator, whose
+        # inbound table has no such column.
+        payload_cols=_PAYLOAD_COLS
+        + ["completion_state", "agent_derived_io_tokens"],
+        hash_cols=_HASH_COLS + ["completion_state", "agent_derived_io_tokens"],
         timestamp_col="delegation_timestamp",
     )

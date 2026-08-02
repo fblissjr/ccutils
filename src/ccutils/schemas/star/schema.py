@@ -2305,20 +2305,41 @@ _COLUMN_MIGRATIONS = [
     # completion_state: which of the delegation's outcomes actually happened.
     # Needed because the parent-side result for a background spawn is a launch
     # acknowledgment, so "has no metrics" conflates four different situations:
-    #   completed           -- agent finished; rollups re-derived from its own
-    #                          transcript and trustworthy
-    #   in_flight_at_ingest -- agent had not finished when the ETL ran; rollups
-    #                          deliberately NULL (a partial sum is
-    #                          indistinguishable from a fast agent)
-    #   spawn_failed        -- the agent was never created (fork-inside-fork,
-    #                          depth limit, cancellation, validation error,
-    #                          user rejection). 29 of the 30 NULL-agent_status
-    #                          rows on the real corpus.
-    #   NULL                -- not yet reconciled
-    # `abandoned` is deliberately NOT emitted: deciding it needs a staleness
-    # threshold, and a wrong one silently reclassifies in-flight work. Every
-    # value above is decidable from a stated fact.
+    #   completed              -- agent finished; rollups re-derived from its
+    #                             own transcript and trustworthy
+    #   no_completion_recorded -- the agent's transcript records no
+    #                             completion. Rollups deliberately NULL: a
+    #                             partial sum is indistinguishable from a
+    #                             fast agent.
+    #   spawn_failed           -- the agent was never created (fork-inside-
+    #                             fork, depth limit, cancellation, validation
+    #                             error, user rejection). Requires a STATED
+    #                             is_error; without that gate the branch also
+    #                             swallowed a successful background launch
+    #                             that carried no agentId.
+    #   NULL                   -- not yet reconciled
+    # Every value is decidable from a stated fact. `no_completion_recorded`
+    # was called `in_flight_at_ingest`, which was not: it asserted the agent
+    # was still running, and of 101 rows carrying it 98 had ended mid-tool-
+    # loop a median of 15.7 days before the ETL ran. Naming the observation
+    # instead of the inference also retires the reason `abandoned` was
+    # withheld -- no staleness threshold is needed to say nothing was
+    # recorded. Measured limit: ~10% of agents that demonstrably finished
+    # still land here (19 of 188 whose parent saw a synchronous result), and
+    # two alternative predicates miss the same 19.
     ("fact_agent_delegations", "completion_state", "VARCHAR"),
+    # agent_derived_io_tokens: the agent's own input+output token sum, from
+    # its transcript. Kept OUT of agent_total_tokens because the two are not
+    # the same measure. Ground truth (188 synchronous delegations carrying
+    # both a stated API rollup and an ingested transcript): duration matched
+    # 188/188 and tool count 188/188, but tokens matched 12/188 within 10%,
+    # per-row ratio p10 0.063 to p90 1.004. No formula reconciles them
+    # (in+out, out only, +cache_creation, +cache_read,
+    # total_uncached_equivalent, the 5m/1h splits); not a capture gap (median
+    # 23 assistant records, 23 with usage); not a nested rollup (all 188
+    # spawned none). Merging them made async delegations read 3x cheaper than
+    # sync (median 19,444 vs 61,362) while measuring 2x longer.
+    ("fact_agent_delegations", "agent_derived_io_tokens", "INTEGER"),
     # run_kind scopes the batch rollup, exactly as step_kind scopes the fact
     # rollup. fact_etl_runs used to be one-row-per-session by construction,
     # so BatchRun.complete could count child rows as sessions. The

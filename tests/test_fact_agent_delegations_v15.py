@@ -683,11 +683,14 @@ class TestAsyncCompletionReconciliation:
         self._reconcile(conn)
 
         row = conn.execute("""
-            SELECT completion_state, agent_total_tokens,
+            SELECT completion_state, agent_derived_io_tokens,
                    completion_timestamp, seconds_to_completion
             FROM fact_agent_delegations WHERE tool_use_id = 'tu_async1'
         """).fetchone()
         assert row[0] == "completed", "terminal stop_reason => completed"
+        # Reads agent_derived_io_tokens, NOT agent_total_tokens: the derived
+        # sum does not reproduce the API's stated totalTokens (12/188 within
+        # 10% on ground truth) so the two are kept in separate columns.
         assert row[1] == 9808, "20 in + 9788 out, summed from the agent file"
         # 10:03:57 is the agent's last timestamp, NOT 10:00:03 (the ack).
         assert row[2].strftime("%H:%M:%S") == "10:03:57"
@@ -711,9 +714,209 @@ class TestAsyncCompletionReconciliation:
             SELECT completion_state, agent_total_tokens, seconds_to_completion
             FROM fact_agent_delegations WHERE tool_use_id = 'tu_async1'
         """).fetchone()
-        assert row[0] == "in_flight_at_ingest"
+        assert row[0] == "no_completion_recorded"
         assert row[1] is None, "no partial sums -- NULL is honest"
         assert row[2] is None
+
+    def test_api_stated_and_derived_tokens_never_share_a_column(
+        self, conn, tmp_path
+    ):
+        """`agent_total_tokens` is the API's number or nothing.
+
+        The derived input+output sum does NOT reproduce the API's stated
+        `totalTokens`. Ground truth: 188 synchronous delegations carry both a
+        stated rollup and an ingested agent transcript, so the async
+        derivation can be scored where the answer is known. Duration matched
+        188/188 and tool count 188/188 exactly -- but tokens matched only
+        12/188 within 10%, with the per-row ratio spanning p10 0.063 to p90
+        1.004. No formula reconciles them (in+out, out only, +cache_creation,
+        +cache_read, total_uncached_equivalent, the 5m/1h splits), it is not a
+        capture gap (median 23 assistant records, 23 carrying usage), and not
+        a nested-agent rollup (all 188 spawned none). They measure different
+        things.
+
+        Writing the derived sum into the stated column made async delegations
+        look 3x cheaper than sync ones (median 19,444 vs 61,362) while
+        measuring 2x longer -- backwards, and silently, in the one column a
+        cost analysis would reach for.
+
+        Delete this and the two definitions merge back into one column.
+        """
+        from ccutils.etl.orchestrator import run_v15_etl
+
+        parent = self._parent_with_async_spawn(tmp_path)
+        agent = self._agent_transcript(tmp_path)
+        run_v15_etl(conn, parent, project_name="p",
+                    parquet_lake_root=tmp_path / "lake")
+        run_v15_etl(conn, agent, project_name="p",
+                    parquet_lake_root=tmp_path / "lake")
+        self._reconcile(conn)
+
+        row = conn.execute("""
+            SELECT completion_state, agent_total_tokens,
+                   agent_derived_io_tokens, agent_total_duration_ms,
+                   agent_total_tool_use_count
+            FROM fact_agent_delegations WHERE tool_use_id = 'tu_async1'
+        """).fetchone()
+        assert row[0] == "completed"
+        assert row[1] is None, (
+            "the API never stated a token count for a background launch; "
+            "the derived sum is a different measure and must not stand in"
+        )
+        assert row[2] == 9808, (
+            "20 in + 9788 out, summed from the agent's own transcript, kept "
+            "in its own column"
+        )
+        # Non-vacuity: the derivations that DID validate against ground truth
+        # stay in the shared columns. If this drifts to None the test above
+        # would pass for the wrong reason -- a reconciliation that wrote
+        # nothing at all.
+        assert row[3] is not None, "duration derivation validated 188/188"
+        # row[4] (tool count) is deliberately not asserted here: this
+        # fixture's agent calls no tools, so there is no fact_tool_uses row
+        # to count and the value is NULL for a reason unrelated to tokens.
+
+    def test_sync_delegation_keeps_api_stated_tokens(self, conn, tmp_path):
+        """The other half: a synchronous row's stated tokens are untouched,
+        and it gets no derived value invented for it."""
+        from ccutils.etl.orchestrator import run_v15_etl
+
+        proj = tmp_path / "projects" / "-Users-dev-myrepo"
+        proj.mkdir(parents=True, exist_ok=True)
+        jsonl = proj / "syncdel.jsonl"
+        lines = [
+            {"type": "user", "uuid": "u1", "sessionId": "syncdel",
+             "timestamp": "2026-04-19T10:00:00Z", "cwd": "/work",
+             "gitBranch": "main", "version": "2.1.198",
+             "message": {"role": "user", "content": "delegate"}},
+            {"type": "assistant", "uuid": "a1", "parentUuid": "u1",
+             "sessionId": "syncdel", "timestamp": "2026-04-19T10:00:01Z",
+             "requestId": "r1",
+             "message": {"role": "assistant", "model": "claude-opus-5",
+                         "content": [{"type": "tool_use", "id": "tu_sync1",
+                                      "name": "Agent",
+                                      "input": {"description": "d",
+                                                "prompt": "p"}}]}},
+            {"type": "user", "uuid": "u2", "parentUuid": "a1",
+             "sessionId": "syncdel", "timestamp": "2026-04-19T10:05:00Z",
+             "message": {"role": "user", "content": [
+                 {"type": "tool_result", "tool_use_id": "tu_sync1",
+                  "content": "done"}]},
+             "toolUseResult": {"status": "completed", "agentId": "zzz999",
+                               "totalTokens": 62150,
+                               "totalDurationMs": 91747,
+                               "totalToolUseCount": 14}},
+        ]
+        jsonl.write_text("\n".join(json.dumps(d) for d in lines))
+        run_v15_etl(conn, jsonl, project_name="p",
+                    parquet_lake_root=tmp_path / "lake")
+        self._reconcile(conn)
+
+        row = conn.execute("""
+            SELECT agent_total_tokens, agent_derived_io_tokens
+            FROM fact_agent_delegations WHERE tool_use_id = 'tu_sync1'
+        """).fetchone()
+        assert row[0] == 62150, "the API's stated number, preserved verbatim"
+        assert row[1] is None, (
+            "no agent transcript in the warehouse => nothing to derive; a "
+            "zero here would read as 'the agent used no tokens'"
+        )
+
+    def test_successful_background_launch_is_not_spawn_failed(
+        self, conn, tmp_path
+    ):
+        """A launch that SUCCEEDED but named no agent is not a failed spawn.
+
+        Corpus evidence: 30 rows matched the spawn_failed branch, but one of
+        them reads "Fork started - processing in background" -- a successful
+        background launch that simply carried no agentId. The 29 genuine
+        failures all carry a stated `is_error: true`; this one omits the
+        field. Without gating on that stated signal the branch over-matches
+        and reports a launch that worked as a failure.
+
+        Delete this and spawn_failed silently absorbs successful launches
+        whose agent id is not stated.
+        """
+        from ccutils.etl.orchestrator import run_v15_etl
+
+        proj = tmp_path / "projects" / "-Users-dev-myrepo"
+        proj.mkdir(parents=True, exist_ok=True)
+        jsonl = proj / "forked.jsonl"
+        lines = [
+            {"type": "user", "uuid": "u1", "sessionId": "forked",
+             "timestamp": "2026-04-19T10:00:00Z", "cwd": "/work",
+             "gitBranch": "main", "version": "2.1.198",
+             "message": {"role": "user", "content": "delegate"}},
+            {"type": "assistant", "uuid": "a1", "parentUuid": "u1",
+             "sessionId": "forked", "timestamp": "2026-04-19T10:00:01Z",
+             "requestId": "r1",
+             "message": {"role": "assistant", "model": "claude-opus-5",
+                         "content": [{"type": "tool_use", "id": "tu_forked",
+                                      "name": "Agent",
+                                      "input": {"description": "fork",
+                                                "prompt": "go"}}]}},
+            # No agentId, and critically NO is_error -- the launch worked.
+            {"type": "user", "uuid": "u2", "parentUuid": "a1",
+             "sessionId": "forked", "timestamp": "2026-04-19T10:00:02Z",
+             "message": {"role": "user", "content": [
+                 {"type": "tool_result", "tool_use_id": "tu_forked",
+                  "content": "Fork started - processing in background"}]}},
+        ]
+        jsonl.write_text("\n".join(json.dumps(d) for d in lines))
+        run_v15_etl(conn, jsonl, project_name="p",
+                    parquet_lake_root=tmp_path / "lake")
+        self._reconcile(conn)
+
+        state = conn.execute("""
+            SELECT completion_state FROM fact_agent_delegations
+            WHERE tool_use_id = 'tu_forked'
+        """).fetchone()[0]
+        assert state != "spawn_failed", (
+            "no stated is_error => the spawn did not fail; with no agent to "
+            "reconcile against, NULL (not reconciled) is the honest value"
+        )
+        assert state is None
+
+    def test_no_completion_state_asserts_liveness(self, conn, tmp_path):
+        """No emitted state may claim the agent was running. It is not
+        decidable from the transcript.
+
+        The state formerly called `in_flight_at_ingest` asserted exactly
+        that, and the corpus contradicts it: of 101 rows carrying it, 98
+        ended mid-tool-loop a median of 15.7 DAYS before the ETL ran and
+        only 2 had a last message recent enough to still be running. What
+        is actually known is narrower -- the agent's transcript records no
+        completion -- and `no_completion_recorded` says only that.
+
+        This mirrors the `semantic_session_behavior` guard that forbids
+        `archetype`/`label`/`bucket` column names: a claim the data cannot
+        support must not re-enter the schema through a value name.
+        """
+        from ccutils.etl.orchestrator import run_v15_etl
+
+        parent = self._parent_with_async_spawn(tmp_path)
+        agent = self._agent_transcript(tmp_path, stop_reason=None)
+        run_v15_etl(conn, parent, project_name="p",
+                    parquet_lake_root=tmp_path / "lake")
+        run_v15_etl(conn, agent, project_name="p",
+                    parquet_lake_root=tmp_path / "lake")
+        self._reconcile(conn)
+
+        states = [
+            r[0] for r in conn.execute(
+                "SELECT DISTINCT completion_state FROM fact_agent_delegations "
+                "WHERE completion_state IS NOT NULL"
+            ).fetchall()
+        ]
+        # Non-vacuity: the unfinished-agent case must actually be present,
+        # or this passes on an empty set.
+        assert "no_completion_recorded" in states
+        for s in states:
+            for banned in ("in_flight", "running", "active", "live"):
+                assert banned not in s.lower(), (
+                    f"completion_state {s!r} asserts liveness, which the "
+                    "transcript cannot establish"
+                )
 
     def test_refused_spawn_is_spawn_failed_not_completed(self, conn, tmp_path):
         """29 of 30 NULL-status rows on the real corpus: the agent was never
