@@ -2136,77 +2136,31 @@ class TestFlatMode:
 
 
 class TestMasterIndex:
-    """Tests for master index generation."""
+    """Tests for the archive index.
 
-    def test_master_index_renders_totals_and_dates(self, tmp_path):
-        """Test that _generate_master_index passes total_projects, total_sessions,
-        recent_date, and global_search_js to the template."""
-        from ccutils.export.html import _generate_master_index
+    Per-project index pages were deleted in C3 -- a project is a filter
+    over one list, not a page, so `_generate_project_index` no longer
+    exists and the test that exercised it went with it.
+    """
 
-        projects = [
-            {
-                "name": "alpha",
-                "sessions": [
-                    {"path": tmp_path / "a.jsonl", "mtime": 1700000000},
-                    {"path": tmp_path / "b.jsonl", "mtime": 1699000000},
-                ],
-            },
-            {
-                "name": "beta",
-                "sessions": [
-                    {"path": tmp_path / "c.jsonl", "mtime": 1698000000},
-                ],
-            },
-        ]
+    def test_index_renders_totals_and_dates(self, tmp_path):
+        """The index states how much it covers.
 
-        output_dir = tmp_path / "out"
-        output_dir.mkdir()
+        Claim: replaces a test of the deleted _generate_master_index. An index
+        that does not say how many sessions it holds cannot be checked against
+        the directory it describes -- which is how a silently-truncated archive
+        would look identical to a complete one.
+        """
+        from ccutils.export.html import _render_archive_index
 
-        _generate_master_index(projects, output_dir, has_search_index=True)
-
-        html_content = read_transcript(output_dir)
-
-        # Should contain total counts
-        assert "2 projects" in html_content
-        assert "3 sessions" in html_content
-
-        # Should contain recent_date for each project (not empty)
-        assert "2023-11-14" in html_content  # approx date for 1700000000
-
-        # Should contain global search JS (the IIFE from global_search.js)
-        assert "global-search-modal" in html_content
-
-    def test_project_index_renders_session_count(self, tmp_path):
-        """Test that _generate_project_index passes session_count to the template."""
-        from ccutils.export.html import _generate_project_index
-
-        project = {
-            "name": "alpha",
-            "sessions": [
-                {
-                    "path": tmp_path / "a.jsonl",
-                    "mtime": 1700000000,
-                    "summary": "First session",
-                    "size": 1024,
-                },
-                {
-                    "path": tmp_path / "b.jsonl",
-                    "mtime": 1699000000,
-                    "summary": "Second session",
-                    "size": 2048,
-                },
-            ],
-        }
-
-        output_dir = tmp_path / "out"
-        output_dir.mkdir()
-
-        _generate_project_index(project, output_dir)
-
-        html_content = read_transcript(output_dir)
-
-        # Should contain session count
-        assert "2 sessions" in html_content
+        out = tmp_path / "out"
+        out.mkdir()
+        _render_archive_index(out, [], session_count=7, project_count=3,
+                              date_range="2026-01-01 - 2026-04-19")
+        html_out = (out / "index.html").read_text()
+        assert "7 sessions" in html_out
+        assert "3 projects" in html_out
+        assert "2026-01-01 - 2026-04-19" in html_out
 
 
 class TestPrivateModeSanitizesJsonl:
@@ -2581,3 +2535,67 @@ class TestSingleFileSessionOutput:
             assert f"sha256-{digest}" in csp, (
                 f"the {tag} block in the document does not match any hash in "
                 f"the CSP -- the browser would block it")
+
+
+class TestBatchIndexIsOneFilterableList:
+    """Batch output is a flat directory: one index plus one file per session.
+
+    Claim: the old layout was master index -> per-project index -> per-session
+    directory -> paginated pages, with a separate search-index.js carrying the
+    full text of every session. Five templates and two JS files to answer
+    "which session was that". A project is a filter over one list, not a page,
+    and cross-session full text belongs in the warehouse where DuckDB's fts
+    already does it.
+
+    Delete these and the archive can silently regrow a per-project page tree,
+    which is what made `--private` leak through the search index (that build
+    re-parsed every session from disk, unsanitized).
+    """
+
+    def _archive(self, tmp_path):
+        src = tmp_path / "projects" / "proj-a"
+        src.mkdir(parents=True)
+        for name, text in (("sess-one", "alpha prompt"), ("sess-two", "beta prompt")):
+            (src / f"{name}.jsonl").write_text("\n".join(json.dumps(d) for d in [
+                {"type": "user", "sessionId": name,
+                 "timestamp": "2026-04-19T10:00:00Z",
+                 "message": {"role": "user", "content": text}},
+                {"type": "assistant", "sessionId": name,
+                 "timestamp": "2026-04-19T10:00:01Z",
+                 "message": {"role": "assistant", "model": "claude-opus-5",
+                             "content": [{"type": "text", "text": "answer"}]}},
+                {"type": "summary", "summary": f"summary for {name}"},
+            ]))
+        out = tmp_path / "archive"
+        from ccutils import generate_batch_html
+        generate_batch_html(tmp_path / "projects", out)
+        return out
+
+    def test_flat_layout_index_plus_one_file_per_session(self, tmp_path):
+        out = self._archive(tmp_path)
+        names = sorted(p.name for p in out.iterdir())
+        assert "index.html" in names
+        assert not any((out / n).is_dir() for n in names), (
+            f"batch output should be flat, found directories: {names}")
+        assert len([n for n in names if n.endswith(".html")]) == 3  # index + 2
+
+    def test_no_search_index_or_sibling_assets(self, tmp_path):
+        out = self._archive(tmp_path)
+        names = {p.name for p in out.iterdir()}
+        assert "search-index.js" not in names
+        assert "global_search.js" not in names
+        assert "transcript.css" not in names
+        assert "transcript.js" not in names
+
+    def test_index_lists_every_session_with_data_search(self, tmp_path):
+        out = self._archive(tmp_path)
+        index = (out / "index.html").read_text()
+        assert index.count("data-search=") == 2
+        assert "sess-one" in index and "sess-two" in index
+        assert "proj-a" in index
+
+    def test_index_never_fetches(self, tmp_path):
+        out = self._archive(tmp_path)
+        index = (out / "index.html").read_text()
+        assert "fetch(" not in index
+        assert "<script src=" not in index

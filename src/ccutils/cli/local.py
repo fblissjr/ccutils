@@ -393,9 +393,9 @@ def _run_export_pipeline(
         else:
             output.mkdir(parents=True, exist_ok=True)
             for idx, session_file in enumerate(session_files, 1):
-                session_output = output / session_file.stem
                 click.echo(f"[{idx}/{len(session_files)}] {session_file.name}")
-                generate_html(session_file, session_output, private=private,
+                # Flat: one self-contained file per session, no per-session dir.
+                generate_html(session_file, output, private=private,
                               include_thinking=include_thinking)
             generate_multi_session_index(output, session_files, agent_map=agent_map)
             click.echo(f"Generated {len(session_files)} session(s) with master index")

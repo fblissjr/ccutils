@@ -196,3 +196,5 @@ time { color: var(--text-muted); font-size: 0.8rem; }
 .prompt-list a:hover { text-decoration: underline; }
 
 .no-match { color: #666; font-style: italic; padding: 2rem 0; }
+.session-card .message-content a { color: #1976d2; text-decoration: none; }
+.session-card .message-content a:hover { text-decoration: underline; }

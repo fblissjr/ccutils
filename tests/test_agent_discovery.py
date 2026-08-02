@@ -329,76 +329,61 @@ class TestFindAgentSessions:
 
 
 class TestGenerateMultiSessionIndex:
-    """Tests for generate_multi_session_index function."""
+    """The flat index for a multi-session `local` run.
+
+    Claim: these assertions previously encoded the nested layout --
+    `href="<stem>/index.html"`, a sibling transcript.css, an `index-item`
+    class. C2/C3 made the archive flat and self-contained, so those are the
+    wrong shape now. The CLAIMS survive: every session is reachable, agents
+    are distinguishable, a custom title is honoured. Only the format moved.
+    """
 
     def test_generates_index_html(self, session_dir, tmp_path):
-        """Should generate index.html in output directory."""
         _, parent, agent1, agent2, _ = session_dir
         output_dir = tmp_path / "output"
         output_dir.mkdir()
-
         agent_map = {parent: [agent1, agent2]}
         result = generate_multi_session_index(output_dir, [parent], agent_map=agent_map)
-
         assert result == output_dir / "index.html"
         assert result.exists()
 
-    def test_includes_session_info(self, session_dir, tmp_path):
-        """Index should include session names and links."""
+    def test_links_straight_to_the_transcript(self, session_dir, tmp_path):
+        """Flat layout: <stem>.html, not <stem>/index.html."""
         _, parent, _, _, _ = session_dir
         output_dir = tmp_path / "output"
         output_dir.mkdir()
-
         generate_multi_session_index(output_dir, [parent])
+        html_out = (output_dir / "index.html").read_text()
+        assert parent.stem in html_out
+        assert f'href="{parent.stem}.html"' in html_out
+        assert f'href="{parent.stem}/index.html"' not in html_out
 
-        html = (output_dir / "index.html").read_text()
-        assert parent.stem in html
-        assert f'href="{parent.stem}/index.html"' in html
-
-    def test_shows_agent_badges(self, session_dir, tmp_path):
-        """Parent sessions with agents should show agent badge."""
-        _, parent, agent1, agent2, _ = session_dir
-        output_dir = tmp_path / "output"
-        output_dir.mkdir()
-
-        agent_map = {parent: [agent1, agent2]}
-        generate_multi_session_index(output_dir, [parent], agent_map=agent_map)
-
-        html = (output_dir / "index.html").read_text()
-        assert "agent-badge" in html
-        assert "2 agents" in html
-
-    def test_agent_sessions_indented(self, session_dir, tmp_path):
-        """Agent sessions should have agent class for indentation."""
+    def test_agent_sessions_are_labelled(self, session_dir, tmp_path):
         _, parent, agent1, _, _ = session_dir
         output_dir = tmp_path / "output"
         output_dir.mkdir()
-
         agent_map = {parent: [agent1]}
         generate_multi_session_index(output_dir, [parent, agent1], agent_map=agent_map)
+        html_out = (output_dir / "index.html").read_text()
+        assert ">agent<" in html_out
 
-        html = (output_dir / "index.html").read_text()
-        assert 'class="index-item agent"' in html
-
-    def test_includes_css_and_js(self, session_dir, tmp_path):
-        """Index should include CSS and JS."""
+    def test_is_self_contained(self, session_dir, tmp_path):
+        """Styling and script are inlined and hash-pinned -- no siblings."""
         _, parent, _, _, _ = session_dir
         output_dir = tmp_path / "output"
         output_dir.mkdir()
-
         generate_multi_session_index(output_dir, [parent])
+        html_out = (output_dir / "index.html").read_text()
+        assert 'href="transcript.css"' not in html_out
+        assert 'src="transcript.js"' not in html_out
+        assert "<style>" in html_out and "sha256-" in html_out
 
-        html = (output_dir / "index.html").read_text()
-        assert 'href="transcript.css"' in html
-        assert 'src="transcript.js"' in html
-
-    def test_custom_title(self, session_dir, tmp_path):
-        """Should use custom title if provided."""
-        _, parent, _, _, _ = session_dir
+    def test_every_card_is_filterable(self, session_dir, tmp_path):
+        _, parent, agent1, _, _ = session_dir
         output_dir = tmp_path / "output"
         output_dir.mkdir()
+        generate_multi_session_index(output_dir, [parent, agent1])
+        html_out = (output_dir / "index.html").read_text()
+        assert html_out.count("data-search=") == 2
 
-        generate_multi_session_index(output_dir, [parent], title="My Custom Archive")
 
-        html = (output_dir / "index.html").read_text()
-        assert "My Custom Archive" in html

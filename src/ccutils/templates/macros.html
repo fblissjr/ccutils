@@ -215,3 +215,10 @@
 {% macro prompt_item(msg_id, label) %}
 <li><a href="#{{ msg_id }}">{{ label }}</a></li>
 {%- endmacro %}
+
+{# Archive index card. Carries `message` in its class list so the shared
+   filter script matches it -- the index and a transcript filter identically.
+   The project chip is clickable and sets the filter to that project. #}
+{% macro session_card(href, project, title, timestamp, data_search) %}
+<div class="message session-card" data-search="{{ data_search }}"><div class="message-header"><span class="role-label">{{ project }}</span><time data-timestamp="{{ timestamp }}">{{ timestamp }}</time></div><div class="message-content"><a href="{{ href }}">{{ title }}</a></div></div>
+{%- endmacro %}

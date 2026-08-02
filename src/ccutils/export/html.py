@@ -19,7 +19,6 @@ from jinja2 import Environment, PackageLoader
 from markdown_it import MarkdownIt
 
 from ..parsers import (
-    extract_searchable_content,
     extract_text_from_content,
     find_all_sessions,
     get_session_summary,
@@ -657,88 +656,70 @@ def generate_batch_html(
     projects=None,
     include_thinking=True,
 ):
-    """Generate HTML archive for all sessions in a Claude projects folder.
+    """Render every session to a flat archive: one index plus one file each.
 
-    Creates:
-    - Master index.html listing all projects
-    - Per-project directories with index.html listing sessions
-    - Per-session directories with transcript pages
-    - search-index.js for full-text search (unless no_search_index=True)
+    The old layout was master index -> per-project index -> per-session
+    directory -> paginated pages, plus a search-index.js carrying the full
+    text of every session. A project is a filter over one list, not a page;
+    cross-session full text belongs in the warehouse, where DuckDB's fts
+    extension already does it without shipping an index alongside the HTML.
 
-    Args:
-        source_folder: Path to the Claude projects folder
-        output_dir: Path for output archive
-        include_agents: Whether to include agent-* session files
-        progress_callback: Optional callback(project_name, session_name, current, total)
-            called after each session is processed
-        no_search_index: If True, skip generating the search index
+    `no_search_index` is accepted and ignored -- there is no search index to
+    skip. It stays in the signature so existing CLI wiring keeps working.
 
-    Returns statistics dict with total_projects, total_sessions, failed_sessions, output_dir.
+    Returns statistics dict with total_projects, total_sessions,
+    failed_sessions, output_dir.
     """
     source_folder = Path(source_folder)
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
-    
-    (output_dir / "transcript.css").write_text(CSS, encoding="utf-8")
-    (output_dir / "transcript.js").write_text(JS, encoding="utf-8")
 
-    # Find all sessions. A pre-scanned list (already project-filtered by
-    # the CLI) skips the rescan; either way the render-format curation
-    # rule applies -- html never renders warmup/no-summary sessions.
     if projects is None:
         projects = find_all_sessions(source_folder, include_agents=include_agents)
     else:
         projects = curate_projects(projects)
 
-    # Calculate total for progress tracking
     total_session_count = sum(len(p["sessions"]) for p in projects)
     processed_count = 0
     successful_sessions = 0
     failed_sessions = []
+    cards = []
+    timestamps = []
 
-    # Process each project
     for project in projects:
-        project_dir = output_dir / project["name"]
-        project_dir.mkdir(exist_ok=True)
-
-        # Process each session
         for session in project["sessions"]:
             session_name = session["path"].stem
-            session_dir = project_dir / session_name
-
-            # Generate transcript HTML with error handling
             try:
-                generate_html(session["path"], session_dir, private=private,
-                              rel_path="../../",
-                              include_thinking=include_thinking)
+                out_path = generate_html(
+                    session["path"], output_dir, private=private,
+                    include_thinking=include_thinking,
+                )
+                summary = get_session_summary(session["path"]) or session_name
+                timestamp = session.get("modified", "") or ""
+                if timestamp:
+                    timestamps.append(str(timestamp))
+                # One attribute the filter matches against, so behaviour never
+                # depends on which element a term happened to come from.
+                data_search = " ".join(
+                    str(x) for x in (project["name"], session_name, summary, timestamp)
+                ).lower()
+                cards.append(_macros.session_card(
+                    out_path.name, project["name"], summary, timestamp, data_search))
                 successful_sessions += 1
-            except Exception as e:
-                failed_sessions.append(
-                    {
-                        "project": project["name"],
-                        "session": session_name,
-                        "error": str(e),
-                    }
-                )
-
+            except Exception as exc:  # noqa: BLE001 - one bad session must not kill the archive
+                failed_sessions.append({"session": session_name, "error": str(exc)})
             processed_count += 1
-
-            # Call progress callback if provided
             if progress_callback:
-                progress_callback(
-                    project["name"], session_name, processed_count, total_session_count
-                )
+                progress_callback(project["name"], session_name,
+                                  processed_count, total_session_count)
 
-        # Generate project index
-        _generate_project_index(project, project_dir)
+    date_range = ""
+    if timestamps:
+        lo, hi = min(timestamps)[:10], max(timestamps)[:10]
+        date_range = lo if lo == hi else f"{lo} - {hi}"
 
-    # Generate master index (with search UI if search index will be generated)
-    has_search_index = not no_search_index
-    _generate_master_index(projects, output_dir, has_search_index=has_search_index)
-
-    # Generate search index (unless disabled)
-    if has_search_index:
-        _generate_search_index(projects, output_dir)
+    _render_archive_index(output_dir, cards, successful_sessions,
+                          len(projects), date_range)
 
     return {
         "total_projects": len(projects),
@@ -747,156 +728,6 @@ def generate_batch_html(
         "output_dir": output_dir,
     }
 
-
-def _generate_project_index(project, output_dir):
-    """Generate index.html for a single project."""
-    template = get_template("project_index.html")
-
-    # Format sessions for template
-    sessions_data = []
-    for session in project["sessions"]:
-        mod_time = datetime.fromtimestamp(session["mtime"])
-        sessions_data.append(
-            {
-                "name": session["path"].stem,
-                "summary": session["summary"],
-                "date": mod_time.strftime("%Y-%m-%d %H:%M"),
-                "size_kb": session["size"] / 1024,
-            }
-        )
-
-    content = template.render(
-        rel_path="../",
-        project_name=project["name"],
-        sessions=sessions_data,
-        session_count=len(sessions_data),
-    )
-    (output_dir / "index.html").write_text(content, encoding="utf-8")
-
-
-def _generate_master_index(projects, output_dir, has_search_index=False):
-    """Generate master index.html listing all projects."""
-    template = get_template("master_index.html")
-
-    # Format projects for template
-    projects_data = []
-    for project in projects:
-        if not project["sessions"]:
-            continue
-        most_recent = datetime.fromtimestamp(project["sessions"][0]["mtime"])
-        projects_data.append(
-            {
-                "name": project["name"],
-                "session_count": len(project["sessions"]),
-                "recent_date": most_recent.strftime("%Y-%m-%d %H:%M"),
-            }
-        )
-
-    total_sessions = sum(p["session_count"] for p in projects_data)
-
-    if has_search_index:
-        global_search_js = _jinja_env.get_template("global_search.js").render()
-        (output_dir / "global_search.js").write_text(global_search_js, encoding="utf-8")
-
-    content = template.render(
-        rel_path="",
-        projects=projects_data,
-        total_projects=len(projects_data),
-        total_sessions=total_sessions,
-        has_search_index=has_search_index,
-    )
-    (output_dir / "index.html").write_text(content, encoding="utf-8")
-
-
-def _generate_search_index(projects, output_dir):
-    """Generate search-index.js with searchable content from all sessions."""
-    all_documents = []
-
-    for project in projects:
-        for session in project["sessions"]:
-            session_path = session["path"]
-            try:
-                # Parse session file and extract documents
-                data = parse_session_file(session_path)
-                loglines = data.get("loglines", [])
-                session_docs = extract_searchable_content(
-                    loglines, project["name"], session_path.stem
-                )
-                if session_docs:
-                    all_documents.extend(session_docs)
-            except Exception:
-                # Skip sessions that fail to parse
-                pass
-
-    # Build index with version info
-    search_index = {
-        "version": 1,
-        "documents": all_documents,
-    }
-
-    # Write as JavaScript file
-    js_content = f"var SEARCH_INDEX = {json.dumps(search_index, ensure_ascii=False)};"
-    (output_dir / "search-index.js").write_text(js_content, encoding="utf-8")
-
-
-def generate_multi_session_index(
-    output_dir,
-    sessions,
-    agent_map=None,
-    title="Sessions",
-):
-    """Generate an index page for multiple sessions.
-
-    Args:
-        output_dir: Directory to write index.html
-        sessions: List of session Paths
-        agent_map: Optional dict mapping parent session Path to list of agent Paths
-        title: Page title
-
-    Returns:
-        Path to generated index.html
-    """
-    output_dir = Path(output_dir)
-    agent_map = agent_map or {}
-    template = get_template("multi_session_index.html")
-
-    # Format sessions for template
-    sessions_data = []
-    for session_path in sessions:
-        session_path = Path(session_path)
-        stat = session_path.stat()
-        mod_time = datetime.fromtimestamp(stat.st_mtime)
-        summary = get_session_summary(session_path)
-
-        # Check if this is an agent session
-        is_agent = session_path.name.startswith("agent-")
-
-        # Get agent count for parent sessions
-        agent_count = len(agent_map.get(session_path, []))
-
-        sessions_data.append(
-            {
-                "name": session_path.stem,
-                "summary": summary,
-                "date": mod_time.strftime("%Y-%m-%d %H:%M"),
-                "size_kb": stat.st_size / 1024,
-                "is_agent": is_agent,
-                "agent_count": agent_count,
-            }
-        )
-
-    (output_dir / "transcript.css").write_text(CSS, encoding="utf-8")
-    (output_dir / "transcript.js").write_text(JS, encoding="utf-8")
-
-    content = template.render(
-        rel_path="",
-        title=title,
-        sessions=sessions_data,
-    )
-
-    index_path = output_dir / "index.html"
-    index_path.write_text(content, encoding="utf-8")
-    return index_path
 
 
 def _resolve_private_cwd(source_path, loglines):
@@ -1121,6 +952,50 @@ def generate_html(
     finally:
         set_github_repo(_saved_github_repo)
 
+
+
+
+def _render_archive_index(output_dir, cards, session_count, project_count, date_range=""):
+    """Write the one filterable index shared by batch and multi-session runs."""
+    script = JS + "\n" + _jinja_env.get_template("filter.js").render()
+    content = get_template("index.html").render(
+        csp=_build_csp(CSS, script),
+        style=CSS,
+        script=script,
+        session_count=session_count,
+        project_count=project_count,
+        date_range=date_range,
+        cards_html="".join(cards),
+    )
+    path = Path(output_dir) / "index.html"
+    path.write_text(content, encoding="utf-8")
+    return path
+
+
+def generate_multi_session_index(output_dir, session_files, agent_map=None,
+                                 title=None):
+    """Index for a multi-session `local` run -- same flat shape as the archive.
+
+    Kept as a distinct entry point because `local` has already rendered its
+    transcripts and only needs the index; batch renders and indexes in one
+    pass. Both go through _render_archive_index so the two cannot drift.
+    """
+    output_dir = Path(output_dir)
+    cards = []
+    for session_path in session_files:
+        session_path = Path(session_path)
+        stem = session_path.stem
+        summary = get_session_summary(session_path) or stem
+        label = "agent" if stem.startswith("agent-") else "session"
+        if agent_map and stem in agent_map:
+            label = "agent"
+        data_search = f"{label} {stem} {summary}".lower()
+        cards.append(_macros.session_card(f"{stem}.html", label, summary, "", data_search))
+    agent_count = sum(1 for c in cards if 'role-label">agent<' in c)
+    return _render_archive_index(
+        output_dir, cards, len(cards), 1,
+        date_range=(f"{agent_count} agents" if agent_count else ""),
+    )
 
 
 def _build_csp(style_text, script_text):
