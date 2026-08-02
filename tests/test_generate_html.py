@@ -177,16 +177,64 @@ class TestRenderFunctions:
         assert render_markdown_text("") == ""
         assert render_markdown_text(None) == ""
 
-    def test_render_markdown_text_strips_script_tags(self):
-        """Test that script tags are stripped from markdown output."""
+    def test_render_markdown_text_neutralises_script_tags(self):
+        """Raw `<script>` must never reach the output as live markup.
+
+        Claim: the old version of this test asserted `"alert(" not in result`,
+        which encoded STRIP semantics -- it passed only because the renderer
+        deleted the tag and its body outright. That is wrong for an archive: a
+        prompt discussing `<script>` should still show what was written. The
+        durable claim is "never markup", not "never present".
+        """
         result = render_markdown_text("<script>alert('xss')</script>")
         assert "<script>" not in result
-        assert "alert(" not in result
+        assert "&lt;script&gt;" in result
 
-    def test_render_markdown_text_strips_event_handlers(self):
-        """Test that event handler attributes are stripped from markdown output."""
+    def test_render_markdown_text_neutralises_event_handlers(self):
+        """An `onerror` attribute must never appear as markup.
+
+        Claim: escaped, `onerror` is inert text and SHOULD be visible. A test
+        asserting the substring is absent fails on correct behaviour -- delete
+        this and the next rewrite of `render_markdown_text` loses its only
+        statement of what "safe" means here.
+        """
         result = render_markdown_text('<img src=x onerror="alert(1)">')
-        assert "onerror" not in result
+        assert "<img" not in result
+        assert "&lt;img" in result
+
+    def test_render_markdown_text_preserves_script_body_as_text(self):
+        """Transcript content inside a `<script>` survives as visible text.
+
+        Claim: this is the archive-fidelity requirement. Under the previous
+        strip-based renderer `Try <script>console.log(1)</script> here`
+        rendered as `Try  here` -- the body silently deleted. Delete this test
+        and that regression is invisible.
+        """
+        result = render_markdown_text("Try <script>console.log(1)</script> here")
+        assert "console.log(1)" in result
+
+    def test_render_markdown_text_preserves_block_html_as_text(self):
+        """Block-level HTML in prose stays text and does not split the paragraph.
+
+        Claim: the strip-based renderer turned one paragraph into
+        `<p>Wrap it in </p><div> for layout<p></p></div>` -- text lost, structure
+        mangled. One paragraph in, one paragraph out.
+        """
+        result = render_markdown_text('Wrap it in <div class="panel"> for layout')
+        assert "panel" in result
+        assert result.count("<p>") == 1
+
+    def test_render_markdown_text_escapes_code_fence_once(self):
+        """Fenced code is escaped exactly once.
+
+        Claim: guards against the double-escaping trap -- pre-escaping input and
+        then letting the markdown renderer escape again yields `a &amp;lt; b`,
+        which displays literally as `a &lt; b`. Deleting this test removes the
+        only check that the escaping happens in one place.
+        """
+        result = render_markdown_text("```python\nif a < b and c & d:\n```")
+        assert "a &lt; b" in result
+        assert "&amp;lt;" not in result
 
     def test_render_markdown_text_strips_iframe(self):
         """Test that iframe tags are stripped from markdown output."""

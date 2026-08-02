@@ -12,9 +12,9 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
-import markdown
 import nh3
 from jinja2 import Environment, PackageLoader
+from markdown_it import MarkdownIt
 
 from ..parsers import (
     extract_searchable_content,
@@ -153,12 +153,32 @@ def format_json(obj):
         return f"<pre>{html.escape(str(obj))}</pre>"
 
 
+# Transcript text is data, not authored HTML. The `js-default` preset sets
+# html=False, so raw HTML in a prompt is ESCAPED (rendered as visible text)
+# rather than parsed -- which is the correct behaviour for an archive. The
+# previous Python-Markdown renderer passed raw HTML through and relied on nh3
+# to strip it, which silently deleted transcript content: a prompt reading
+# `Try <script>console.log(1)</script> here` rendered as `Try  here`.
+# markdown-it-py also rejects javascript:/vbscript:/file:/data: link targets.
+_MD = MarkdownIt("js-default").enable("table")
+
+
 def render_markdown_text(text):
-    """Render markdown text to HTML, with sanitization to prevent XSS."""
+    """Render markdown text to HTML, with sanitization to prevent XSS.
+
+    Two independent layers, and both are load-bearing. The renderer never
+    emits raw HTML (`html=False`), so nh3 should find nothing to clean; nh3
+    stays as defense in depth because it does not depend on the renderer
+    config staying correct. Do not remove it on the grounds that it is
+    currently a no-op -- that is the point.
+    """
     if not text:
         return ""
-    raw = markdown.markdown(text, extensions=["fenced_code", "tables"])
-    return nh3.clean(raw, attributes={"code": {"class"}})
+    # .strip(): markdown-it-py terminates its output with a newline that
+    # Python-Markdown did not emit. It is insignificant whitespace outside any
+    # element, but it would otherwise land in every `|safe` insertion and make
+    # every snapshot diff noisier than the change that caused it.
+    return nh3.clean(_MD.render(text), attributes={"code": {"class"}}).strip()
 
 
 def is_json_like(text):
