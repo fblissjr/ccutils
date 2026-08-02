@@ -106,10 +106,28 @@ FROM semantic_decisions WHERE session_id = '<id>' ORDER BY timestamp;
 ## Subagents
 
 ```sql
--- Delegations with rollup metrics
+-- Delegations with rollup metrics.
+-- The two token columns are DIFFERENT MEASURES and must never be summed
+-- together or compared: agent_total_tokens is the API's stated number and is
+-- NULL on every async row (the API states none for a background launch);
+-- agent_derived_io_tokens is input+output summed from the agent's own
+-- transcript. Scored against ground truth they agree on only 12 of 188 rows.
+-- completion_state tells you WHY a rollup is absent (completed /
+-- no_completion_recorded / spawn_failed / NULL = not reconciled).
 SELECT parent_session_id, subagent_type, task_description,
-       agent_status, agent_total_duration_ms, agent_total_tokens
+       agent_status, completion_state, agent_is_async,
+       agent_total_duration_ms,
+       agent_total_tokens,        -- API-stated; NULL when agent_is_async
+       agent_derived_io_tokens    -- derived; NOT comparable with the above
 FROM semantic_agent_delegations ORDER BY delegation_timestamp DESC LIMIT 20;
+
+-- Cost-style aggregate: pick ONE measure and say which.
+SELECT subagent_type,
+       COUNT(*) AS delegations,
+       CAST(median(agent_derived_io_tokens) AS BIGINT) AS median_io_tokens
+FROM semantic_agent_delegations
+WHERE completion_state = 'completed' AND agent_derived_io_tokens IS NOT NULL
+GROUP BY 1 ORDER BY delegations DESC;
 
 -- Agent tree under a parent session
 SELECT session_id, agent_type, agent_description, depth_level

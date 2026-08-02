@@ -113,17 +113,23 @@ FROM exploded
 -- for one key and break the uniqueness every consumer joins on.
 --
 -- Collapsing is safe HERE and only here, because the justification is
--- specific to this data: the duplicate records are content-identical on
--- every extracted column (is_error, result_content_text, timestamp,
--- tool_name, and every typed bash_*/edit_*/read_*/agent_* field). Only the
--- raw result_payload_json ever differs, on 8 of the 29. Earliest entry wins;
--- entry_id breaks ties so a rebuild from identical input is reproducible.
+-- specific to this data: the duplicate records are identical in every
+-- column this projection emits -- `tool_name`, `input_json` and
+-- `invoke_sequence_num` all match on 7 of 7 measured duplicate keys. Only
+-- `entry_id` differs, which is by definition the source entry reference.
+-- Earliest entry wins; entry_id breaks ties so a rebuild from identical
+-- input is reproducible.
 --
 -- This used to be a generic collapse inside lineage_upsert, which applied
 -- one fact's judgment to all 13 and resolved it silently. That helper now
 -- ASSERTS this grain instead -- if this QUALIFY is removed, the ETL fails
 -- loudly rather than silently double-counting.
-QUALIFY ROW_NUMBER() OVER (
+-- NULL tool_use_id is left alone: SQL puts every NULL in ONE partition, so
+-- collapsing here would silently drop all but one. lineage_upsert excludes
+-- NULL from its uniqueness check for the same reason. (The column is NOT NULL
+-- at the DDL level, so such a row fails loudly on insert -- which is the
+-- correct outcome and must not be masked into a silent drop.)
+QUALIFY tool_use_id IS NULL OR ROW_NUMBER() OVER (
     PARTITION BY tool_use_id ORDER BY timestamp, entry_id
 ) = 1
 """
@@ -343,7 +349,12 @@ FROM with_tool_name
 -- one fact's judgment to all 13 and resolved it silently. That helper now
 -- ASSERTS this grain instead -- if this QUALIFY is removed, the ETL fails
 -- loudly rather than silently double-counting.
-QUALIFY ROW_NUMBER() OVER (
+-- NULL tool_use_id is left alone: SQL puts every NULL in ONE partition, so
+-- collapsing here would silently drop all but one. lineage_upsert excludes
+-- NULL from its uniqueness check for the same reason. (The column is NOT NULL
+-- at the DDL level, so such a row fails loudly on insert -- which is the
+-- correct outcome and must not be masked into a silent drop.)
+QUALIFY tool_use_id IS NULL OR ROW_NUMBER() OVER (
     PARTITION BY tool_use_id ORDER BY timestamp, entry_id
 ) = 1
 """

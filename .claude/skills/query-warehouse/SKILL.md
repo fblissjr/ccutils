@@ -60,5 +60,7 @@ soft-deleted rows. Drop to raw facts only when the view lacks a column.
   DuckDB JSON idioms. Read before writing joins against raw facts.
 - `docs/STAR_SCHEMA.md` — full column reference for every table and view.
   Grep for the table name; don't read the whole file.
-- Interactive exploration for the user: `ccutils explore <db>` (harlequin,
-  needs the `ccutils[explore]` extra).
+- Interactive exploration for the user: `duckdb -ui <db>` (DuckDB's own
+  local UI; first run fetches the `ui` extension, needs network). There is
+  no `ccutils explore` command -- it was removed along with the harlequin
+  dependency.

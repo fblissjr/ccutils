@@ -23,7 +23,7 @@ Ask the user:
 New file `tests/test_<fact>_v15.py` (one per populator -- see the 24 existing
 `test_*_v15.py` files for the pattern). Cover: DDL (table + lineage block +
 date_key/time_key), behavior (rows from a synthetic session via
-`tests/conftest.py::write_minimal_session`), idempotency (rerun on unchanged
+`tests/helpers_ccutils.py::write_minimal_session`), idempotency (rerun on unchanged
 source = no-op), soft delete. Run tests, confirm they fail.
 
 ## Step 3: Add DDL

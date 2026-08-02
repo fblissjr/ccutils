@@ -26,7 +26,7 @@ For degenerate dimensions, no table is needed -- just add a VARCHAR column direc
 
 New file `tests/test_dim_<name>_v15.py`. Cover: table exists after
 `create_star_schema()` with expected columns/types, dimension populates
-from a synthetic session (`tests/conftest.py::write_minimal_session`),
+from a synthetic session (`tests/helpers_ccutils.py::write_minimal_session`),
 re-running ETL doesn't duplicate rows (`WHERE NOT EXISTS` / natural-key
 uniqueness). Run tests, confirm they fail.
 

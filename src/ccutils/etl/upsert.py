@@ -172,7 +172,7 @@ def lineage_upsert(
                 "projection; do not collapse here (only the populator knows "
                 "whether collapsing is safe and which row should survive)."
             )
-        #
+
         # When natural_key IS session_id, don't list it twice.
         extra_keys = ["session_key", "date_key", "time_key"]
         if natural_key != "session_id":

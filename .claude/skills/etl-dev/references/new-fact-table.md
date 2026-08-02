@@ -14,7 +14,7 @@ Cover four things before writing any implementation:
    `is_deleted`, `deleted_at`) plus `date_key`, `time_key`, and `session_id`
    as a degenerate dimension.
 2. **Behavior**: rows land with correct business values from a synthetic
-   session built with `tests/conftest.py::write_minimal_session` (use
+   session built with `tests/helpers_ccutils.py::write_minimal_session` (use
    `entry_session_id` when modeling agent files — the JSONL contract puts the
    PARENT's sessionId on every line).
 3. **Idempotency**: run ETL twice on unchanged source; second run must be a

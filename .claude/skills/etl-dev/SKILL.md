@@ -32,7 +32,7 @@ healthy). Commit test + implementation + docs together.
   Tier 1 (`parsers/parquet_writer.py`) and re-enforced at staging load. Never
   key anything on `$.sessionId` inside agent JSONL — every line carries the
   PARENT's id. Synthetic fixtures model this with `entry_session_id`
-  (`tests/conftest.py::write_minimal_session`).
+  (`tests/helpers_ccutils.py::write_minimal_session`).
 - **The project-boundary rule lives in exactly two mirrored places**:
   `project_dir_sql` (`etl/utils.py`) and the walk-up loop in
   `parsers/discovery.py::find_all_sessions`.
