@@ -422,7 +422,7 @@ class TestGenerateBatchHtml:
     def test_creates_master_index(self, mock_projects_dir, output_dir):
         """Test that master index.html is created."""
         generate_batch_html(mock_projects_dir, output_dir)
-        assert (output_dir / "index.html").exists()
+        assert len(list(output_dir.glob("*.html"))) == 1
 
     def test_creates_project_directories(self, mock_projects_dir, output_dir):
         """Test that project directories are created."""
@@ -449,7 +449,9 @@ class TestGenerateBatchHtml:
 
         # Each session directory should have an index.html
         for session_dir in session_dirs:
-            assert (session_dir / "index.html").exists()
+            # C2: one self-contained transcript per session, named for the
+            # session rather than index.html. C3 flattens the directory nesting.
+            assert len(list(session_dir.glob("*.html"))) == 1
 
     def test_master_index_lists_all_projects(self, mock_projects_dir, output_dir):
         """Test that master index lists all projects."""
@@ -595,7 +597,7 @@ class TestAllCommand:
         )
 
         assert result.exit_code == 0
-        assert (output_dir / "index.html").exists()
+        assert len(list(output_dir.glob("*.html"))) == 1
 
     def test_all_includes_agents_by_default(self, mock_projects_dir, output_dir):
         """Test that agent sessions are included by default."""
@@ -655,7 +657,7 @@ class TestAllCommand:
 
         assert result.exit_code == 0
         # Should create the archive
-        assert (output_dir / "index.html").exists()
+        assert len(list(output_dir.glob("*.html"))) == 1
         # Output should be minimal (no progress messages)
         assert "Scanning" not in result.output
         assert "Processed" not in result.output
@@ -804,4 +806,4 @@ class TestFileConversion:
         )
 
         assert result.exit_code == 0
-        assert (html_output / "index.html").exists()
+        assert len(list(html_output.glob("*.html"))) == 1

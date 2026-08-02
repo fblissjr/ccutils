@@ -1,6 +1,7 @@
 """Tests for HTML generation from Claude Code session JSON."""
 
 import json
+import re
 import tempfile
 from pathlib import Path
 
@@ -25,6 +26,18 @@ from ccutils import (
     find_local_sessions,
     extract_session_slug,
 )
+
+
+def read_transcript(out_dir):
+    """Read the single self-contained transcript a session renders to.
+
+    Since C2 there is exactly one .html file per session -- no index.html, no
+    page-NNN.html. Tests read through this helper so the next layout change
+    touches one function instead of two dozen assertions.
+    """
+    files = sorted(Path(out_dir).glob("*.html"))
+    assert len(files) == 1, f"expected exactly one transcript, got {[f.name for f in files]}"
+    return files[0].read_text(encoding="utf-8")
 
 
 @pytest.fixture
@@ -60,18 +73,17 @@ class TestGenerateHtml:
         fixture_path = Path(__file__).parent / "sample_session.json"
         generate_html(fixture_path, output_dir, github_repo="example/project")
 
-        index_html = (output_dir / "index.html").read_text(encoding="utf-8")
+        index_html = read_transcript(output_dir)
         assert "<!DOCTYPE html>" in index_html
         assert "Content-Security-Policy" in index_html
-        assert "index-item" in index_html
+        assert 'class="prompt-list"' in index_html
 
     def test_csp_header_in_generated_html(self, output_dir):
         """Test that Content-Security-Policy meta tag is present in generated HTML."""
         fixture_path = Path(__file__).parent / "sample_session.json"
         generate_html(fixture_path, output_dir, github_repo="example/project")
 
-        for html_file in ["index.html", "page-001.html"]:
-            html_content = (output_dir / html_file).read_text(encoding="utf-8")
+        for html_content in [read_transcript(output_dir)]:
             assert "Content-Security-Policy" in html_content, (
                 f"CSP meta tag missing from {html_file}"
             )
@@ -83,7 +95,7 @@ class TestGenerateHtml:
         fixture_path = Path(__file__).parent / "sample_session.json"
         generate_html(fixture_path, output_dir, github_repo="example/project")
 
-        page_html = (output_dir / "page-001.html").read_text(encoding="utf-8")
+        page_html = read_transcript(output_dir)
         assert "<!DOCTYPE html>" in page_html
         assert 'class="message' in page_html
         # Stable anchor: bookmarked message links must survive any layout change.
@@ -94,7 +106,7 @@ class TestGenerateHtml:
         fixture_path = Path(__file__).parent / "sample_session.json"
         generate_html(fixture_path, output_dir, github_repo="example/project")
 
-        page_html = (output_dir / "page-002.html").read_text(encoding="utf-8")
+        page_html = read_transcript(output_dir)
         assert "<!DOCTYPE html>" in page_html
         assert 'id="msg-' in page_html
 
@@ -148,12 +160,12 @@ class TestGenerateHtml:
 
         generate_html(jsonl_file, output_dir)
 
-        index_html = (output_dir / "index.html").read_text(encoding="utf-8")
+        index_html = read_transcript(output_dir)
         # Should have 1 prompt, not 0
         assert "1 prompts" in index_html or "1 prompt" in index_html
         assert "0 prompts" not in index_html
         # The page file should exist
-        assert (output_dir / "page-001.html").exists()
+        assert len(list(output_dir.glob("*.html"))) == 1
 
 
 class TestRenderFunctions:
@@ -691,7 +703,7 @@ class TestContinuationLongTexts:
         generate_html(session_file, output_dir)
 
         # Read the index.html
-        index_html = (output_dir / "index.html").read_text(encoding="utf-8")
+        index_html = read_transcript(output_dir)
 
         # The long text summary should appear in the index
         # This is the bug: currently it doesn't because the continuation
@@ -879,7 +891,7 @@ class TestParseSessionFile:
         fixture_path = Path(__file__).parent / "sample_session.jsonl"
         generate_html(fixture_path, output_dir)
 
-        index_html = (output_dir / "index.html").read_text(encoding="utf-8")
+        index_html = read_transcript(output_dir)
         assert "hello world" in index_html.lower()
 class TestNonMessageEntryRendering:
     """v0.15 Phase 1: the renderer must dispatch on non-user/assistant
@@ -902,7 +914,7 @@ class TestNonMessageEntryRendering:
         jsonl.write_text("\n".join(json.dumps(e) for e in all_entries))
         out_dir = tmp_path / "out"
         generate_html(jsonl, out_dir)
-        return (out_dir / "page-001.html").read_text(encoding="utf-8")
+        return read_transcript(out_dir)
 
     def test_permission_mode_renders_styled_banner(self, tmp_path):
         html_out = self._render(
@@ -1333,84 +1345,47 @@ class TestLocalSessionCLI:
         assert "No sessions selected" in result.output
 
 
-class TestSearchFeature:
-    """Tests for the search feature on index.html pages."""
+class TestFilterUI:
+    """The in-document filter that replaced fetch-based search.
 
-    def test_search_box_in_index_html(self, output_dir):
-        """Test that search box is present in index.html."""
+    Claim: the old search fetched every page-NNN.html and parsed it with
+    DOMParser. Browsers block fetch() to file:// URLs, and the .catch()
+    swallowed the failure, so opening an export from disk and searching
+    reported "Found 0 result(s)" -- indistinguishable from no matches. The
+    replacement filters messages already in the document, so it cannot fail
+    that way. These assertions exist to stop a network dependency coming back.
+    """
+
+    def _html(self, output_dir):
         fixture_path = Path(__file__).parent / "sample_session.json"
         generate_html(fixture_path, output_dir, github_repo="example/project")
+        return read_transcript(output_dir)
 
-        index_html = (output_dir / "index.html").read_text(encoding="utf-8")
+    def test_filter_input_present(self, output_dir):
+        html_out = self._html(output_dir)
+        assert 'id="q"' in html_out
+        assert 'id="shown"' in html_out
 
-        # Search box should be present with id="search-box"
-        assert 'id="search-box"' in index_html
-        # Search input should be present
-        assert 'id="search-input"' in index_html
-        # Search button should be present
-        assert 'id="search-btn"' in index_html
+    def test_filter_script_is_inline_and_never_fetches(self, output_dir):
+        html_out = self._html(output_dir)
+        assert "addEventListener" in html_out
+        assert "fetch(" not in html_out
+        assert "DOMParser" not in html_out
+        assert "XMLHttpRequest" not in html_out
 
-    def test_search_modal_in_index_html(self, output_dir):
-        """Test that search modal dialog is present in index.html."""
+    def test_filter_matches_data_search_not_rendered_text(self, output_dir):
+        """Matching the DOM would diverge from data-search the first time CSS
+        changed what is displayed."""
+        html_out = self._html(output_dir)
+        assert "data-search" in html_out
+
+    def test_no_sibling_search_assets(self, output_dir):
         fixture_path = Path(__file__).parent / "sample_session.json"
         generate_html(fixture_path, output_dir, github_repo="example/project")
-
-        index_html = (output_dir / "index.html").read_text(encoding="utf-8")
-
-        # Search modal should be present
-        assert 'id="search-modal"' in index_html
-        # Results container should be present
-        assert 'id="search-results"' in index_html
-
-    def test_search_javascript_present(self, output_dir):
-        """Test that search JavaScript functionality is present."""
-        fixture_path = Path(__file__).parent / "sample_session.json"
-        generate_html(fixture_path, output_dir, github_repo="example/project")
-
-        search_js = (output_dir / "search.js").read_text(encoding="utf-8")
-
-        # JavaScript should handle DOMParser for parsing fetched pages
-        assert "DOMParser" in search_js
-        # JavaScript should handle fetch for getting pages
-        assert "fetch(" in search_js
-        # JavaScript should handle #search= URL fragment
-        assert "#search=" in search_js or "search=" in search_js
-
-    def test_search_css_present(self, output_dir):
-        """Test that search CSS styles are present."""
-        fixture_path = Path(__file__).parent / "sample_session.json"
-        generate_html(fixture_path, output_dir, github_repo="example/project")
-
-        transcript_css = (output_dir / "transcript.css").read_text(encoding="utf-8")
-
-        # CSS should style the search box
-        assert "#search-box" in transcript_css or ".search-box" in transcript_css
-        # CSS should style the search modal
-        assert "#search-modal" in transcript_css or ".search-modal" in transcript_css
-
-    def test_search_box_hidden_by_default_in_css(self, output_dir):
-        """Test that search box is hidden by default (for progressive enhancement)."""
-        fixture_path = Path(__file__).parent / "sample_session.json"
-        generate_html(fixture_path, output_dir, github_repo="example/project")
-
-        transcript_css = (output_dir / "transcript.css").read_text(encoding="utf-8")
-        search_js = (output_dir / "search.js").read_text(encoding="utf-8")
-
-        # Search box should be hidden by default in CSS
-        # JavaScript will show it when loaded
-        assert "search-box" in transcript_css
-        # The JS should show the search box
-        assert "style.display" in search_js or "classList" in search_js
-
-    def test_search_total_pages_available(self, output_dir):
-        """Test that total_pages is available to JavaScript for fetching."""
-        fixture_path = Path(__file__).parent / "sample_session.json"
-        generate_html(fixture_path, output_dir, github_repo="example/project")
-
-        search_js = (output_dir / "search.js").read_text(encoding="utf-8")
-
-        # Total pages should be embedded for JS to know how many pages to fetch
-        assert "totalPages" in search_js or "total_pages" in search_js
+        names = {p.name for p in output_dir.iterdir()}
+        assert "search.js" not in names
+        assert "transcript.css" not in names
+        assert "transcript.js" not in names
 
 
 class TestExtractSessionSlug:
@@ -2189,7 +2164,7 @@ class TestMasterIndex:
 
         _generate_master_index(projects, output_dir, has_search_index=True)
 
-        html_content = (output_dir / "index.html").read_text(encoding="utf-8")
+        html_content = read_transcript(output_dir)
 
         # Should contain total counts
         assert "2 projects" in html_content
@@ -2228,7 +2203,7 @@ class TestMasterIndex:
 
         _generate_project_index(project, output_dir)
 
-        html_content = (output_dir / "index.html").read_text(encoding="utf-8")
+        html_content = read_transcript(output_dir)
 
         # Should contain session count
         assert "2 sessions" in html_content
@@ -2275,7 +2250,7 @@ class TestPrivateModeSanitizesJsonl:
     def _rendered(self, tmp_path, jsonl, private):
         out_dir = tmp_path / ("out-private" if private else "out-plain")
         generate_html(jsonl, out_dir, private=private)
-        return (out_dir / "page-001.html").read_text(encoding="utf-8")
+        return read_transcript(out_dir)
 
     def test_private_strips_cwd_prefix(self, tmp_path):
         jsonl, cwd = self._session(tmp_path)
@@ -2481,3 +2456,128 @@ class TestExportersAgreeOnThinking:
         html, md = self._both(tmp_path, include_thinking=False)
         assert "visible answer" in html
         assert "visible answer" in md
+
+
+class TestSingleFileSessionOutput:
+    """A session renders to ONE self-contained file. No siblings, no fetch.
+
+    Claim: the multi-file layout is what made in-session search silently
+    broken. `search.js` fetched `page-NNN.html` for every page, browsers
+    block `fetch()` to file:// URLs, and the `.catch()` swallowed the error
+    and incremented the counter -- so opening an export from disk and
+    searching reported "Found 0 result(s) in N pages", indistinguishable
+    from no matches.
+
+    These assertions are layout-independent on purpose: they must survive
+    any future restyling. Delete them and the export can quietly regain a
+    dependency on being served over HTTP, which is not how anyone opens it.
+    """
+
+    def _session(self, tmp_path):
+        jsonl = tmp_path / "sess.jsonl"
+        jsonl.write_text("\n".join(json.dumps(d) for d in [
+            {"type": "user", "sessionId": "s1",
+             "cwd": "/Users/dev/workspace/p",  # path-privacy: ignore
+             "timestamp": "2026-04-19T10:00:00Z",
+             "message": {"role": "user", "content": "first prompt"}},
+            {"type": "assistant", "sessionId": "s1",
+             "timestamp": "2026-04-19T10:00:01Z",
+             "message": {"role": "assistant", "model": "claude-opus-5",
+                         "content": [{"type": "text", "text": "an answer"}]}},
+            {"type": "user", "sessionId": "s1",
+             "timestamp": "2026-04-19T10:00:02Z",
+             "message": {"role": "user", "content": "second prompt"}},
+        ]))
+        return jsonl
+
+    def _render(self, tmp_path):
+        out = tmp_path / "out"
+        generate_html(self._session(tmp_path), out)
+        files = sorted(p.name for p in out.glob("*"))
+        return out, files
+
+    def test_exactly_one_file_is_written(self, tmp_path):
+        _, files = self._render(tmp_path)
+        assert len([f for f in files if f.endswith(".html")]) == 1, files
+        assert files == [f for f in files if f.endswith(".html")], (
+            f"sibling assets written alongside the transcript: {files}")
+
+    def test_no_pagination_files(self, tmp_path):
+        _, files = self._render(tmp_path)
+        assert not any(f.startswith("page-") for f in files), files
+
+    def test_output_never_fetches(self, tmp_path):
+        out, files = self._render(tmp_path)
+        html = (out / files[0]).read_text()
+        assert "fetch(" not in html
+        assert "XMLHttpRequest" not in html
+        assert "page-001.html" not in html
+
+    def test_no_external_or_sibling_asset_references(self, tmp_path):
+        out, files = self._render(tmp_path)
+        html = (out / files[0]).read_text()
+        assert "<script src=" not in html
+        assert "<link rel=\"stylesheet\"" not in html
+        assert "http://" not in html and "https://" not in html
+
+    def test_every_message_carries_data_search(self, tmp_path):
+        out, files = self._render(tmp_path)
+        html = (out / files[0]).read_text()
+        # Tight match: `class="message` alone also hits message-header and
+        # message-content, which is how this assertion first passed for the
+        # wrong reason.
+        assert html.count('<div class="message ') == html.count("data-search="), (
+            "filtering matches against data-search only; a message without "
+            "one is invisible to the filter")
+
+    def test_prompt_list_lists_every_user_prompt(self, tmp_path):
+        out, files = self._render(tmp_path)
+        html = (out / files[0]).read_text()
+        assert "first prompt" in html and "second prompt" in html
+        assert 'class="prompt-list"' in html
+
+    def test_csp_allows_inline_only_via_hash(self, tmp_path):
+        """Self-contained means inline blocks; inline must be hash-pinned.
+
+        Claim: `unsafe-inline` would permit ANY inline script, including one
+        an attacker buried in a transcript. A sha256 hash permits exactly
+        the block we emitted and nothing else.
+        """
+        out, files = self._render(tmp_path)
+        html = (out / files[0]).read_text()
+        # Assert on the POLICY, not the document. transcript.css carries a
+        # comment mentioning 'unsafe-inline' to explain why inline styles were
+        # removed, and inlining the stylesheet puts that prose in the output --
+        # a whole-document search matches the explanation, not the policy.
+        m = re.search(r'<meta http-equiv="Content-Security-Policy" content="([^"]+)"', html)
+        assert m, "no CSP meta tag in the rendered document"
+        csp = m.group(1)
+        assert "unsafe-inline" not in csp
+        assert "unsafe-hashes" not in csp
+        assert csp.count("sha256-") == 2, f"expected style+script hashes, got: {csp}"
+
+    def test_emitted_hashes_match_the_emitted_blocks(self, tmp_path):
+        """The CSP hash must match the bytes actually in the document.
+
+        Claim: this is the assertion that catches a silently dead page. Jinja
+        autoescape turned `'` into `&#39;` inside the inline script -- the JS
+        was corrupt AND the hash had been computed over the pre-escape text,
+        so the browser would have hashed different bytes and blocked the
+        script. The document still rendered, so every structural test passed;
+        only the filter was dead. Checking "a sha256- appears in the CSP" is
+        not enough -- it must be the RIGHT sha256.
+        """
+        import base64
+        import hashlib
+
+        out, files = self._render(tmp_path)
+        doc = (out / files[0]).read_text()
+        csp = re.search(r'content="([^"]*default-src[^"]*)"', doc).group(1)
+
+        for tag in ("style", "script"):
+            body = re.search(rf"<{tag}>(.*?)</{tag}>", doc, re.S).group(1)
+            digest = base64.b64encode(
+                hashlib.sha256(body.encode("utf-8")).digest()).decode("ascii")
+            assert f"sha256-{digest}" in csp, (
+                f"the {tag} block in the document does not match any hash in "
+                f"the CSP -- the browser would block it")

@@ -170,3 +170,29 @@ time { color: var(--text-muted); font-size: 0.8rem; }
 .index-item-size { color: var(--text-muted); }
 .index-actions { margin-top: 24px; }
 .back-button { display: inline-block; padding: 8px 16px; background: var(--user-border); color: white; text-decoration: none; border-radius: 6px; }
+
+/* --- Self-contained single-file layout (C2) --- */
+/* content-visibility lets the browser skip layout/paint for offscreen
+   messages. This is what replaces pagination: a 10 MB transcript scrolls
+   because only the visible messages are rendered, not because it was split
+   across files that then had to be re-fetched to search. */
+.message { content-visibility: auto; contain-intrinsic-size: auto 200px; }
+.hidden { display: none; }
+
+.session-header { margin-bottom: 1.5rem; }
+.session-meta { color: #666; font-size: 0.88rem; margin: 0.25rem 0 1rem; }
+
+.filter-bar { display: flex; gap: 0.75rem; align-items: center; margin-bottom: 1rem; }
+#q { flex: 1 1 18rem; padding: 0.5rem 0.7rem; font: inherit; font-size: 0.94rem;
+     border: 1px solid #ccc; border-radius: 5px; }
+#q:focus { outline: 2px solid #1976d2; outline-offset: -1px; }
+.filter-count { color: #666; font-size: 0.85rem; white-space: nowrap; }
+
+.prompt-nav { margin-bottom: 1.5rem; }
+.prompt-nav summary { cursor: pointer; font-size: 0.9rem; color: #444; }
+.prompt-list { margin: 0.6rem 0 0; padding-left: 1.6rem; }
+.prompt-list li { margin: 0.2rem 0; }
+.prompt-list a { color: #1976d2; text-decoration: none; }
+.prompt-list a:hover { text-decoration: underline; }
+
+.no-match { color: #666; font-style: italic; padding: 2rem 0; }

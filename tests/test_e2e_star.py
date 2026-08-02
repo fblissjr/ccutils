@@ -727,39 +727,32 @@ def test_t2_html_csp_contains_strict_default_src(temp_dir):
     assert "default-src 'none'" in csp, "CSP default-src is not set to 'none'"
 
 
-def test_t2_html_externalized_script_file_written(temp_dir):
-    """Test 38: Verify generating HTML writes search script to a separate .js file in the output directory."""
+def test_t2_html_is_self_contained_no_sibling_assets(temp_dir):
+    """Since C2 the transcript is ONE file: styling and script are inlined and
+    pinned by sha256 in its CSP.
+
+    Claim: these tests previously asserted the opposite -- that .js and .css
+    were written as separate files. That was correct under the old
+    `script-src 'self'` policy and is wrong now. Externalizing assets is what
+    made the export a directory rather than a document, and a directory is
+    what made search reach for fetch(). Assert the current contract, not the
+    previous one.
+    """
     session = create_mock_session_file(temp_dir, "sess_html_1", make_basic_loglines("sess_html_1"))
-    
+
     output_dir = temp_dir / "html_out_1"
     generate_html(json_path=session, output_dir=output_dir)
-    
-    js_files = list(output_dir.glob("**/*.js"))
-    assert len(js_files) > 0, "No externalized JavaScript files written to output directory"
+
+    assert not list(output_dir.glob("**/*.js")), "sibling .js written; transcript must be self-contained"
+    assert not list(output_dir.glob("**/*.css")), "sibling .css written; transcript must be self-contained"
+
+    html_files = list(output_dir.glob("*.html"))
+    assert len(html_files) == 1
+    doc = html_files[0].read_text()
+    assert "<style>" in doc and "<script>" in doc
+    assert "sha256-" in doc
 
 
-def test_t2_html_externalized_style_file_written(temp_dir):
-    """Test 39: Verify generating HTML writes styling to a separate .css file in the output directory."""
-    session = create_mock_session_file(temp_dir, "sess_html_2", make_basic_loglines("sess_html_2"))
-    
-    output_dir = temp_dir / "html_out_2"
-    generate_html(json_path=session, output_dir=output_dir)
-    
-    css_files = list(output_dir.glob("**/*.css"))
-    assert len(css_files) > 0, "No externalized CSS files written to output directory"
-
-
-def test_t2_html_xss_escaping_in_search_append(temp_dir):
-    """Test 40: Verify search.js escapes search keywords properly using textContent or safe appendChild."""
-    search_js = Path(__file__).parent.parent / "src" / "ccutils" / "templates" / "search.js"
-    content = search_js.read_text(encoding="utf-8")
-    
-    assert "createTextNode" in content, "search.js lacks textNode escaping for safe appends"
-
-
-# =========================================================================
-# TIER 3: Cross-Feature Combinations (Tests 41-44)
-# =========================================================================
 
 def test_t3_incremental_load_and_scoped_summary_interaction(conn, temp_dir):
     """Test 41: Combined test verifying that sequential incremental runs correctly update the summary table
@@ -843,8 +836,9 @@ def test_t3_html_export_with_js_ts_heuristics_metadata(conn, temp_dir):
     output_dir = temp_dir / "html_out_js"
     generate_html(json_path=session, output_dir=output_dir)
     
-    index_file = output_dir / "index.html"
-    assert index_file.exists()
+    # One self-contained transcript per session since C2 -- no index.html.
+    html_files = list(output_dir.glob("*.html"))
+    assert len(html_files) == 1
 
 
 def test_t3_zero_rows_soft_delete_and_unconditional_staging_clearance(conn, temp_dir):
@@ -1048,4 +1042,4 @@ def test_t4_scenario_6_e2e_cli_flow(conn, temp_dir):
     
     output_dir = temp_dir / "html_e2e_out"
     generate_html(json_path=parent_file, output_dir=output_dir)
-    assert (output_dir / "index.html").exists()
+    assert len(list(output_dir.glob("*.html"))) == 1  # one self-contained transcript

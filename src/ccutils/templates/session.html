@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    {# `csp` is computed at render time from the sha256 of the exact style
+       and script bodies below. Hashes cover BLOCKS, not attributes -- so
+       per-element styling and per-element event handlers stay forbidden and
+       must never be emitted. See TestNoInlineConstructsForCsp. #}
+    {# |safe on csp/style/script: all three are OURS -- computed here, or read
+       from static/. None is transcript-derived. Without |safe, autoescape
+       turns ' into &#39;, which corrupts the JS *and* changes the bytes the
+       browser hashes, so the CSP would block the very script it pins. #}
+    <meta http-equiv="Content-Security-Policy" content="{{ csp|safe }}">
+    <title>{{ title }}</title>
+    <style>{{ style|safe }}</style>
+</head>
+<body>
+<main>
+    <header class="session-header">
+        <h1>{{ title }}</h1>
+        <p class="session-meta">{{ prompt_count }} prompts &middot; {{ message_count }} messages{% if session_date %} &middot; {{ session_date }}{% endif %}</p>
+        <div class="filter-bar">
+            <input id="q" type="search" placeholder="Filter messages&hellip;" autocomplete="off">
+            <span class="filter-count" id="shown"></span>
+        </div>
+        {% if prompt_list_html %}
+        <details class="prompt-nav" open>
+            <summary>Prompts</summary>
+            <ol class="prompt-list">{{ prompt_list_html|safe }}</ol>
+        </details>
+        {% endif %}
+    </header>
+
+    <section id="messages">
+        {{ messages_html|safe }}
+        <p class="no-match hidden" id="no-match">No message matches that filter.</p>
+    </section>
+</main>
+<script>{{ script|safe }}</script>
+</body>
+</html>

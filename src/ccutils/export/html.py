@@ -5,6 +5,8 @@ including message rendering, CSS styling, and pagination.
 """
 
 import html
+import base64
+import hashlib
 import json
 import re
 import subprocess
@@ -22,7 +24,6 @@ from ..parsers import (
     find_all_sessions,
     get_session_summary,
     parse_session_file,
-    PROMPTS_PER_PAGE,
 )
 from ..parsers.discovery import curate_projects
 from ..parsers.session import RENDERED_NON_MESSAGE_TYPES, extract_header_fields
@@ -499,7 +500,29 @@ def render_message(log_type, message_json, timestamp):
     if not content_html.strip():
         return ""
     msg_id = make_msg_id(timestamp)
-    return _macros.message(role_class, role_label, msg_id, timestamp, content_html)
+    return _macros.message(
+        role_class, role_label, msg_id, timestamp, content_html,
+        data_search=_search_text(role_label, timestamp, content_html),
+    )
+
+
+_TAG_RE = re.compile(r"<[^>]+>")
+_WS_RE = re.compile(r"\s+")
+
+
+def _search_text(role_label, timestamp, content_html):
+    """Plain lowercased text the client-side filter matches against.
+
+    The filter matches this attribute ONLY, never the rendered DOM: matching
+    against displayed text would silently change behaviour the first time CSS
+    hid or transformed something. Tags are stripped and entities unescaped so
+    a term the reader can see is a term that matches -- searching for `<div>`
+    should find a message that displays `<div>`, not one that happens to
+    contain a div element.
+    """
+    text = _TAG_RE.sub(" ", content_html)
+    text = html.unescape(text)
+    return _WS_RE.sub(" ", f"{role_label} {timestamp} {text}").strip().lower()
 
 
 def render_non_message_entry(log_type, raw_obj):
@@ -614,16 +637,6 @@ def render_non_message_entry(log_type, raw_obj):
     if len(raw_str) > 2000:
         raw_str = raw_str[:2000] + "\n... (truncated)"
     return _macros.entry_fallback(label, raw_str)
-
-
-def generate_pagination_html(current_page, total_pages):
-    """Generate pagination HTML for a transcript page."""
-    return _macros.pagination(current_page, total_pages)
-
-
-def generate_index_pagination_html(total_pages):
-    """Generate pagination HTML for the index page."""
-    return _macros.index_pagination(total_pages)
 
 
 # Load static assets via importlib.resources (works with zip/wheel installs)
@@ -1089,19 +1102,49 @@ def generate_html(
 
     # Save previous global so back-to-back generate_html() calls (e.g. from
     # generate_batch_html) don't leak state between sessions.
-    if rel_path == "":
-        (output_dir / "transcript.css").write_text(CSS, encoding="utf-8")
-        (output_dir / "transcript.js").write_text(JS, encoding="utf-8")
+    # No sibling assets: CSS and JS are inlined into the document and pinned
+    # by sha256 in its CSP. A transcript is one file you can send to someone.
+    stem = "session"
+    if json_path is not None:
+        stem = Path(json_path).stem
+    else:
+        for entry in loglines:
+            if entry.get("sessionId"):
+                stem = str(entry["sessionId"])
+                break
+    title = stem
 
     _saved_github_repo = get_github_repo()
     set_github_repo(github_repo)
     try:
-        return _generate_html_body(loglines, output_dir, rel_path=rel_path)
+        return _generate_html_body(loglines, output_dir, stem=stem, title=title)
     finally:
         set_github_repo(_saved_github_repo)
 
 
-def _generate_html_body(loglines, output_dir, rel_path=""):
+
+def _build_csp(style_text, script_text):
+    """CSP pinning the inline blocks by sha256, never 'unsafe-inline'.
+
+    A hash permits exactly the block we emitted. 'unsafe-inline' would permit
+    ANY inline script, including one an attacker buried in a transcript --
+    which is the whole threat this file is rendering. Hashes cover blocks
+    only, so per-element style/handler attributes remain forbidden and are
+    guarded by TestNoInlineConstructsForCsp.
+    """
+    def h(text):
+        digest = hashlib.sha256(text.encode("utf-8")).digest()
+        return "'sha256-" + base64.b64encode(digest).decode("ascii") + "'"
+
+    return (
+        "default-src 'none'; "
+        f"style-src {h(style_text)}; "
+        f"script-src {h(script_text)}; "
+        "img-src data:; frame-src 'none'"
+    )
+
+
+def _generate_html_body(loglines, output_dir, stem="session", title="Transcript"):
     """Render-side body of generate_html. Reads _github_repo via get_github_repo()."""
     # Group messages into conversations (each starting with a user prompt)
     conversations = []
@@ -1160,128 +1203,54 @@ def _generate_html_body(loglines, output_dir, rel_path=""):
     if current_conv:
         conversations.append(current_conv)
 
-    # Calculate pagination
-    total_convs = len(conversations)
-    total_pages = (total_convs + PROMPTS_PER_PAGE - 1) // PROMPTS_PER_PAGE
+    # ---- Single self-contained document -------------------------------
+    # No pagination: the whole transcript is one file. Pagination existed to
+    # keep pages small, but it forced search to fetch() sibling pages, which
+    # browsers block on file:// -- so search silently returned zero results
+    # for anyone who opened the export the normal way. `content-visibility`
+    # on .message does the work pagination was doing, without splitting.
+    messages_html = []
+    for conv in conversations:
+        is_first = True
+        for log_type, message_json, timestamp in conv["messages"]:
+            msg_html = render_message(log_type, message_json, timestamp)
+            if msg_html:
+                if is_first and conv.get("is_continuation"):
+                    msg_html = _macros.continuation(msg_html)
+                messages_html.append(msg_html)
+            is_first = False
 
-    # Generate each page
-    for page_num in range(1, total_pages + 1):
-        start_idx = (page_num - 1) * PROMPTS_PER_PAGE
-        end_idx = min(start_idx + PROMPTS_PER_PAGE, total_convs)
-        page_convs = conversations[start_idx:end_idx]
+    total_messages = sum(len(c["messages"]) for c in conversations)
 
-        messages_html = []
-        for conv in page_convs:
-            is_first = True
-            for log_type, message_json, timestamp in conv["messages"]:
-                msg_html = render_message(log_type, message_json, timestamp)
-                if msg_html:
-                    # Wrap continuation summaries in collapsed details
-                    if is_first and conv.get("is_continuation"):
-                        msg_html = _macros.continuation(msg_html)
-                    messages_html.append(msg_html)
-                is_first = False
-
-        pagination_html = generate_pagination_html(page_num, total_pages)
-
-        page_template = get_template("page.html")
-        page_content = page_template.render(
-            rel_path=rel_path,
-            page_num=page_num,
-            total_pages=total_pages,
-            pagination_html=pagination_html,
-            messages_html="".join(messages_html),
-        )
-
-        (output_dir / f"page-{page_num:03d}.html").write_text(
-            page_content, encoding="utf-8"
-        )
-
-    # Calculate overall stats and collect all commits for timeline
-    total_tool_counts = {}
-    total_messages = 0
-    all_commits = []  # (timestamp, hash, message, page_num, conv_index)
-
-    for i, conv in enumerate(conversations):
-        total_messages += len(conv["messages"])
-        stats = analyze_conversation(conv["messages"])
-        for tool, count in stats["tool_counts"].items():
-            total_tool_counts[tool] = total_tool_counts.get(tool, 0) + count
-        page_num = (i // PROMPTS_PER_PAGE) + 1
-        for commit_hash, commit_msg, commit_ts in stats["commits"]:
-            all_commits.append((commit_ts, commit_hash, commit_msg, page_num, i))
-
-    total_tool_calls = sum(total_tool_counts.values())
-    total_commits = len(all_commits)
-
-    # Build timeline items: prompts and commits merged by timestamp
-    timeline_items = []
-
-    # Add prompts
-    prompt_num = 0
-    for i, conv in enumerate(conversations):
+    prompt_items = []
+    for conv in conversations:
         if conv.get("is_continuation"):
             continue
         if conv["user_text"].startswith("Stop hook feedback:"):
             continue
-        prompt_num += 1
-        page_num = (i // PROMPTS_PER_PAGE) + 1
         msg_id = make_msg_id(conv["timestamp"])
-        link = f"page-{page_num:03d}.html#{msg_id}"
-        rendered_content = render_markdown_text(conv["user_text"])
+        label = conv["user_text"].strip().splitlines()[0][:110] if conv["user_text"].strip() else "(empty prompt)"
+        prompt_items.append(_macros.prompt_item(msg_id, label))
 
-        # Collect all messages including from subsequent continuation conversations
-        all_messages = list(conv["messages"])
-        for j in range(i + 1, len(conversations)):
-            if not conversations[j].get("is_continuation"):
-                break
-            all_messages.extend(conversations[j]["messages"])
+    session_date = ""
+    if conversations:
+        session_date = (conversations[0]["timestamp"] or "")[:10]
 
-        # Analyze conversation for stats
-        stats = analyze_conversation(all_messages)
-        tool_stats_str = format_tool_stats(stats["tool_counts"])
+    script = JS + "\n" + _jinja_env.get_template("filter.js").render()
+    csp = _build_csp(CSS, script)
 
-        long_texts_html = ""
-        for lt in stats["long_texts"]:
-            rendered_lt = render_markdown_text(lt)
-            long_texts_html += _macros.index_long_text(rendered_lt)
-
-        stats_html = _macros.index_stats(tool_stats_str, long_texts_html)
-
-        item_html = _macros.index_item(
-            prompt_num, link, conv["timestamp"], rendered_content, stats_html
-        )
-        timeline_items.append((conv["timestamp"], "prompt", item_html))
-
-    # Add commits as separate timeline items
-    for commit_ts, commit_hash, commit_msg, page_num, conv_idx in all_commits:
-        item_html = _macros.index_commit(
-            commit_hash, commit_msg, commit_ts, get_github_repo()
-        )
-        timeline_items.append((commit_ts, "commit", item_html))
-
-    # Sort by timestamp
-    timeline_items.sort(key=lambda x: x[0])
-    index_items = [item[2] for item in timeline_items]
-
-    # Generate index page
-    index_pagination = generate_index_pagination_html(total_pages)
-    index_template = get_template("index.html")
-    index_content = index_template.render(
-        rel_path=rel_path,
-        pagination_html=index_pagination,
-        prompt_num=prompt_num,
-        total_messages=total_messages,
-        total_tool_calls=total_tool_calls,
-        total_commits=total_commits,
-        total_pages=total_pages,
-        index_items_html="".join(index_items),
+    content = get_template("session.html").render(
+        csp=csp,
+        title=title,
+        style=CSS,
+        script=script,
+        prompt_count=len(prompt_items),
+        message_count=total_messages,
+        session_date=session_date,
+        prompt_list_html="".join(prompt_items),
+        messages_html="".join(messages_html),
     )
 
-    index_path = output_dir / "index.html"
-    index_path.write_text(index_content, encoding="utf-8")
-
-    search_js = _jinja_env.get_template("search.js").render(total_pages=total_pages)
-    (output_dir / "search.js").write_text(search_js, encoding="utf-8")
-
-    return output_dir
+    out_path = output_dir / f"{stem}.html"
+    out_path.write_text(content, encoding="utf-8")
+    return out_path

@@ -161,19 +161,34 @@ _INLINE_EVENT_HANDLER = re.compile(r"""\bon[a-z]+\s*=\s*["']""", re.IGNORECASE)
 _SCRIPT_OPEN_TAG = re.compile(r"<script\b([^>]*)>", re.IGNORECASE)
 
 
-def _csp_blocked_inline_constructs(text: str) -> list[str]:
-    """Return the CSP-forbidden inline constructs a template contains."""
+# Templates whose inline blocks are pinned by a sha256 CSP hash computed at
+# render time. A hash covers a <style>/<script> BLOCK exactly; nothing else
+# may carry inline blocks, and NO template may ever carry inline attributes.
+_HASH_PINNED_TEMPLATES = {"session.html"}
+
+
+def _csp_blocked_inline_constructs(text: str, *, allow_hashed_blocks: bool = False
+                                   ) -> list[str]:
+    """Return the CSP-forbidden inline constructs a template contains.
+
+    `allow_hashed_blocks` permits <style>/<script> BLOCKS, for output whose CSP
+    pins them by sha256. It never permits inline ATTRIBUTES: a hash cannot
+    cover `style=` or `on*=`, and allowing them would require 'unsafe-hashes',
+    which re-permits any inline handler -- including one an attacker buried in
+    a transcript.
+    """
     found: list[str] = []
     if _INLINE_STYLE_ATTR.search(text):
-        found.append("inline style= attribute")
-    if _INLINE_STYLE_BLOCK.search(text):
-        found.append("inline <style> block")
+        found.append("inline style attribute")
     if _INLINE_EVENT_HANDLER.search(text):
-        found.append("inline on*= event handler")
-    for match in _SCRIPT_OPEN_TAG.finditer(text):
-        if "src=" not in match.group(1):
-            found.append("inline <script> without src=")
-            break
+        found.append("inline event handler attribute")
+    if not allow_hashed_blocks:
+        if _INLINE_STYLE_BLOCK.search(text):
+            found.append("inline style block")
+        for match in _SCRIPT_OPEN_TAG.finditer(text):
+            if "src=" not in match.group(1):
+                found.append("inline script block without src=")
+                break
     return found
 
 
@@ -191,7 +206,10 @@ class TestNoInlineConstructsForCsp:
         templates_dir = Path(__file__).parent.parent / "src" / "ccutils" / "templates"
         offenders: dict[str, list[str]] = {}
         for tpl in sorted(templates_dir.glob("*.html")):
-            found = _csp_blocked_inline_constructs(tpl.read_text(encoding="utf-8"))
+            found = _csp_blocked_inline_constructs(
+                tpl.read_text(encoding="utf-8"),
+                allow_hashed_blocks=tpl.name in _HASH_PINNED_TEMPLATES,
+            )
             if found:
                 offenders[tpl.name] = found
 

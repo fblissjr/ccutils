@@ -151,9 +151,12 @@
 {%- endif %}
 {%- endmacro %}
 
-{# Message wrapper - content_html is pre-rendered so needs |safe #}
-{% macro message(role_class, role_label, msg_id, timestamp, content_html) %}
-<div class="message {{ role_class }}" id="{{ msg_id }}"><div class="message-header"><span class="role-label">{{ role_label }}</span><a href="#{{ msg_id }}" class="timestamp-link"><time datetime="{{ timestamp }}" data-timestamp="{{ timestamp }}">{{ timestamp }}</time></a></div><div class="message-content">{{ content_html|safe }}</div></div>
+{# Message wrapper - content_html is pre-rendered so needs |safe.
+   data_search is the lowercased plain text the filter matches against.
+   Matching runs against this attribute ONLY, never against rendered text:
+   the two would diverge the first time styling changed what is displayed. #}
+{% macro message(role_class, role_label, msg_id, timestamp, content_html, data_search="") %}
+<div class="message {{ role_class }}" id="{{ msg_id }}" data-search="{{ data_search }}"><div class="message-header"><span class="role-label">{{ role_label }}</span><a href="#{{ msg_id }}" class="timestamp-link"><time datetime="{{ timestamp }}" data-timestamp="{{ timestamp }}">{{ timestamp }}</time></a></div><div class="message-content">{{ content_html|safe }}</div></div>
 {%- endmacro %}
 
 {# Continuation wrapper - content_html is pre-rendered so needs |safe #}
@@ -205,4 +208,10 @@
 {# Long text in index - rendered_content is pre-rendered markdown so needs |safe #}
 {% macro index_long_text(rendered_content) %}
 <div class="index-item-long-text"><div class="truncatable"><div class="truncatable-content"><div class="index-item-long-text-content">{{ rendered_content|safe }}</div></div><button class="expand-btn">Show more</button></div></div>
+{%- endmacro %}
+
+{# Prompt-list entry. Links to the message's own anchor, so the list and the
+   transcript are the same document -- no page to fetch. #}
+{% macro prompt_item(msg_id, label) %}
+<li><a href="#{{ msg_id }}">{{ label }}</a></li>
 {%- endmacro %}
