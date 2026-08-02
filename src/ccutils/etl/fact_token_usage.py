@@ -5,6 +5,23 @@ correction: cache_creation split into pricing tiers (_5m / _1h) and a
 derived total_uncached_equivalent_tokens (= cache_read + cache_creation
 + input_tokens), so downstream cost views can apply 1.25x and 2x
 multipliers correctly.
+
+R23: that grain is enforced, not assumed. Claude Code flushes ONE API
+response as several assistant entries -- a response with thinking + text
++ tool_use blocks becomes three lines, each repeating the same
+`message.id` and the same `usage` object. Keying on entry_id alone made
+every such response count 2-3 times: on a real 6-session corpus, 7,088
+usage-bearing entries stood for 3,449 responses and
+fact_session_summary.total_output_tokens over-reported by 2.47x. The
+QUALIFY below keeps the first entry of each response.
+
+The dedupe key is `message.id` (present on 100% of usage-bearing lines
+in that corpus; `requestId` was missing on 2) with an entry_id fallback
+so transcripts predating the field stay one-row-per-entry rather than
+collapsing a whole session into one row. It is NOT the natural key:
+1.40% of response ids appear in more than one session file because
+resume/fork replays history, and lineage_upsert matches its natural key
+across sessions, so two sessions' rows would merge into one.
 """
 
 from __future__ import annotations
@@ -16,6 +33,7 @@ from ccutils.etl.utils import project_key_sql
 
 _PAYLOAD_COLS = [
     "project_key", "model_key",
+    "api_message_id",
     "timestamp",
     "input_tokens", "output_tokens",
     "cache_creation_5m_tokens", "cache_creation_1h_tokens",
@@ -26,6 +44,7 @@ _PAYLOAD_COLS = [
     "server_tool_use_web_fetch_requests",
 ]
 _HASH_COLS = [
+    "api_message_id",
     "timestamp",
     "input_tokens", "output_tokens",
     "cache_creation_5m_tokens", "cache_creation_1h_tokens",
@@ -42,6 +61,14 @@ SELECT
     sle.entry_id,
     sle.session_id,
     sle.source_path,
+    -- Identity of the API response this entry belongs to. Several entries
+    -- share one; see the module docstring for why entry_id is the fallback
+    -- and why this is not the natural key.
+    COALESCE(
+        json_extract_string(sle.message_json, '$.id'),
+        json_extract_string(sle.raw_json, '$.requestId'),
+        sle.entry_id
+    ) AS api_message_id,
     TRY_CAST(sle.timestamp AS TIMESTAMP) AS timestamp,
 
     -- Anthropic usage shape
@@ -77,6 +104,13 @@ SELECT
 FROM stg_log_entries sle
 WHERE sle.type = 'assistant'
   AND json_extract(sle.message_json, '$.usage') IS NOT NULL
+-- One row per API response per session. Ordered by sequence_num so the
+-- survivor is stable across re-ETL: entry_id is the natural key, and an
+-- unstable choice would soft-delete and re-insert the row every run.
+QUALIFY ROW_NUMBER() OVER (
+    PARTITION BY sle.session_id, api_message_id
+    ORDER BY sle.sequence_num, sle.entry_id
+) = 1
 """
 
 

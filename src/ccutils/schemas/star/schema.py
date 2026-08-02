@@ -384,6 +384,12 @@ def create_star_schema(db_path):
             has_thinking BOOLEAN DEFAULT FALSE,
             word_count INTEGER,
             estimated_tokens INTEGER,
+            -- R23: which API response this entry belongs to. Several entries
+            -- share one; the token columns above are populated on the first
+            -- only, so a NULL there means either "continuation of this
+            -- response" or "transcript predates usage capture" -- this column
+            -- tells them apart.
+            api_message_id VARCHAR,
             response_time_seconds FLOAT,
             conversation_depth INTEGER,
             content_text VARCHAR
@@ -1215,6 +1221,13 @@ def create_star_schema(db_path):
             date_key INTEGER,
             time_key INTEGER,
             timestamp TIMESTAMP,
+
+            -- R23: identity of the API response. Claude Code writes one
+            -- response as several assistant entries that all repeat its
+            -- `usage`; the grain here is one row per response, keyed for
+            -- upsert purposes by the first entry's entry_id. See
+            -- etl/fact_token_usage.py for why this is not the natural key.
+            api_message_id VARCHAR,
 
             -- Anthropic Messages API `usage` shape (R11/R18 corrections applied)
             input_tokens INTEGER,
@@ -2175,6 +2188,87 @@ def create_star_schema(db_path):
     """
     )
 
+    # Per-request context growth. total_uncached_equivalent_tokens is the
+    # exact prompt size the API saw (input + cache_creation + cache_read),
+    # so diffing it across consecutive requests in a session prices
+    # everything that entered the context between two assistant turns.
+    # That is the only exact handle on tool_result cost: tool results carry
+    # no `usage` of their own and are the bulk of transcript text.
+    #
+    # inbound_tokens nets out the previous response's own output, which
+    # re-enters the context as history -- what remains came from the user
+    # side (prompt text + tool results). Compaction shrinks the prompt, so
+    # a negative delta is flagged as is_context_reset and suppresses
+    # inbound_tokens rather than booking a large negative contribution.
+    #
+    # inbound_tokens can still be slightly negative without a reset:
+    # thinking tokens bill as output but are not retained in later
+    # context, so growth can fall short of the previous response's
+    # output_tokens. Real corpus: 9 of 3,443 rows, worst -4,010. Left
+    # visible rather than clipped -- it is a measurable effect, not noise.
+    # (This view is only meaningful because fact_token_usage holds one row
+    # per API response; see R23 there. Against the pre-R23 per-entry grain
+    # 51% of rows came out negative.)
+    # Ordering is (timestamp, entry_id); the entry_id tiebreak is arbitrary
+    # but deterministic.
+    conn.execute(
+        """
+        CREATE OR REPLACE VIEW semantic_context_growth AS
+        WITH ordered AS (
+            SELECT
+                ftu.entry_id,
+                ftu.session_id,
+                ftu.session_key,
+                ftu.model_key,
+                ftu.date_key,
+                ftu.time_key,
+                ftu.timestamp,
+                ftu.output_tokens,
+                ftu.total_uncached_equivalent_tokens AS context_tokens,
+                ROW_NUMBER() OVER w AS request_seq,
+                LAG(ftu.total_uncached_equivalent_tokens) OVER w
+                    AS prev_context_tokens,
+                LAG(ftu.output_tokens) OVER w AS prev_output_tokens
+            FROM fact_token_usage ftu
+            WHERE ftu.is_deleted = FALSE
+            WINDOW w AS (
+                PARTITION BY ftu.session_id
+                ORDER BY ftu.timestamp, ftu.entry_id
+            )
+        )
+        SELECT
+            o.entry_id,
+            o.session_id,
+            o.timestamp,
+            o.request_seq,
+            o.context_tokens,
+            o.output_tokens,
+            o.prev_output_tokens,
+            o.context_tokens - o.prev_context_tokens AS context_delta_tokens,
+            CASE
+                WHEN o.prev_context_tokens IS NULL THEN NULL
+                WHEN o.context_tokens < o.prev_context_tokens THEN NULL
+                ELSE (o.context_tokens - o.prev_context_tokens)
+                     - COALESCE(o.prev_output_tokens, 0)
+            END AS inbound_tokens,
+            (o.prev_context_tokens IS NOT NULL
+             AND o.context_tokens < o.prev_context_tokens) AS is_context_reset,
+            dm.model_name,
+            dm.model_family,
+            ds.cwd,
+            ds.entrypoint,
+            dp.project_name,
+            dd.full_date,
+            dti.time_of_day
+        FROM ordered o
+        LEFT JOIN dim_model dm ON o.model_key = dm.model_key
+        LEFT JOIN dim_session ds ON o.session_key = ds.session_key
+        LEFT JOIN dim_project dp ON ds.project_key = dp.project_key
+        LEFT JOIN dim_date dd ON o.date_key = dd.date_key
+        LEFT JOIN dim_time dti ON o.time_key = dti.time_key
+    """
+    )
+
     # R11: cache_hit_rate_pct denominator now includes cache_creation_total
     # (legacy view used input + read only, over-stating the hit rate).
     conn.execute(
@@ -2298,6 +2392,11 @@ def create_star_schema(db_path):
 # so every later column addition needs an entry here or old warehouses
 # break on the populator's INSERT. Append-only.
 _COLUMN_MIGRATIONS = [
+    # R23: API-response identity. Both tables shipped keyed per JSONL entry,
+    # which double-counted every response Claude Code split across entries.
+    # Existing warehouses need the column before the next run can dedupe.
+    ("fact_token_usage", "api_message_id", "VARCHAR"),
+    ("fact_messages", "api_message_id", "VARCHAR"),
     ("fact_plan_revisions", "plan_file_path", "VARCHAR"),
     ("fact_etl_runs", "batch_run_id", "VARCHAR"),
     ("fact_etl_runs", "data_start_ts", "TIMESTAMP"),

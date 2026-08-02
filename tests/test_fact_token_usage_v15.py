@@ -234,6 +234,132 @@ class TestPopulateFactTokenUsage:
             assert len(r[2]) == 32
 
 
+@pytest.fixture
+def split_response_session(tmp_path):
+    """One API response written as three JSONL entries, plus a second response.
+
+    This is the real Claude Code shape: a response containing thinking +
+    text + tool_use blocks is flushed as several assistant entries that all
+    carry the SAME `message.id` and the SAME `usage` object. Measured on a
+    real corpus: 7,088 usage-bearing entries for 3,449 API responses, so
+    summing per entry over-counts output tokens by 2.5x.
+    """
+    jsonl = tmp_path / "split.jsonl"
+
+    def _usage(out):
+        return {
+            "input_tokens": 10, "output_tokens": out,
+            "cache_read_input_tokens": 100,
+            "cache_creation": {
+                "ephemeral_5m_input_tokens": 0,
+                "ephemeral_1h_input_tokens": 0,
+            },
+        }
+
+    lines = [
+        {"type": "user", "uuid": "u1", "sessionId": "split-s",
+         "timestamp": "2026-04-19T10:00:00Z",
+         "message": {"role": "user", "content": "go"}},
+    ]
+    # msg_A: three entries, identical usage on each.
+    for i, block in enumerate(
+        [{"type": "thinking", "thinking": "hmm"},
+         {"type": "text", "text": "ok"},
+         {"type": "tool_use", "id": "tu1", "name": "Read", "input": {}}]
+    ):
+        lines.append(
+            {"type": "assistant", "uuid": f"a{i + 1}", "parentUuid": "u1",
+             "sessionId": "split-s", "requestId": "req_A",
+             "timestamp": f"2026-04-19T10:00:0{i + 1}Z",
+             "message": {"id": "msg_A", "role": "assistant",
+                         "model": "claude-opus-4-7", "content": [block],
+                         "usage": _usage(500)}}
+        )
+    # msg_B: a single-entry response.
+    lines.append(
+        {"type": "assistant", "uuid": "a4", "parentUuid": "a3",
+         "sessionId": "split-s", "requestId": "req_B",
+         "timestamp": "2026-04-19T10:00:09Z",
+         "message": {"id": "msg_B", "role": "assistant",
+                     "model": "claude-opus-4-7",
+                     "content": [{"type": "text", "text": "done"}],
+                     "usage": _usage(7)}}
+    )
+    jsonl.write_text("\n".join(json.dumps(d) for d in lines))
+    return jsonl
+
+
+class TestApiResponseGrain:
+    """The table's grain is one row per API RESPONSE, not per JSONL entry."""
+
+    def test_api_message_id_column_exists(self, conn):
+        """Claim: the response identity is stored, not just used and thrown away.
+
+        Without the column there is no way to audit the dedupe or to join
+        a response back to the entries it was split across.
+        """
+        cols = {c[0] for c in conn.execute("DESCRIBE fact_token_usage").fetchall()}
+        assert "api_message_id" in cols
+
+    def test_split_response_produces_one_row(
+        self, conn, split_response_session, tmp_path
+    ):
+        """Claim: entries sharing a message.id collapse to a single row.
+
+        This is the whole bug: four usage-bearing entries, two responses.
+        """
+        run = EtlRun.start(conn, source_path=str(split_response_session))
+        _stage(conn, split_response_session, tmp_path, run)
+        populate_fact_token_usage(conn, run=run)
+        assert conn.execute("SELECT COUNT(*) FROM fact_token_usage").fetchone()[0] == 2
+
+    def test_token_sums_are_not_multiplied(
+        self, conn, split_response_session, tmp_path
+    ):
+        """Claim: SUM over the fact equals what the API actually billed.
+
+        Per-entry rows made this 1,507 (500 counted three times).
+        """
+        run = EtlRun.start(conn, source_path=str(split_response_session))
+        _stage(conn, split_response_session, tmp_path, run)
+        populate_fact_token_usage(conn, run=run)
+        total = conn.execute(
+            "SELECT SUM(output_tokens) FROM fact_token_usage"
+        ).fetchone()[0]
+        assert total == 507
+
+    def test_surviving_row_is_the_first_entry(
+        self, conn, split_response_session, tmp_path
+    ):
+        """Claim: the representative entry is chosen deterministically.
+
+        entry_id remains the natural key, so an unstable choice would
+        soft-delete and re-insert the row on every re-ETL.
+        """
+        run = EtlRun.start(conn, source_path=str(split_response_session))
+        _stage(conn, split_response_session, tmp_path, run)
+        populate_fact_token_usage(conn, run=run)
+        uuid = conn.execute(
+            "SELECT sle.uuid FROM fact_token_usage ftu "
+            "JOIN stg_log_entries sle ON sle.entry_id = ftu.entry_id "
+            "WHERE ftu.api_message_id = 'msg_A'"
+        ).fetchone()[0]
+        assert uuid == "a1"
+
+    def test_entries_without_message_id_are_not_collapsed(
+        self, conn, cached_session, tmp_path
+    ):
+        """Claim: a missing message.id falls back to per-entry identity.
+
+        Pre-2025 transcripts and synthetic fixtures carry no message.id.
+        A NULL dedupe key would collapse an entire session into one row.
+        """
+        run = EtlRun.start(conn, source_path=str(cached_session))
+        _stage(conn, cached_session, tmp_path, run)
+        populate_fact_token_usage(conn, run=run)
+        assert conn.execute("SELECT COUNT(*) FROM fact_token_usage").fetchone()[0] == 2
+
+
 class TestIdempotency:
     def test_reetl_does_not_bump_last_updated_at(self, conn, cached_session, tmp_path):
         run1 = EtlRun.start(conn, source_path=str(cached_session))

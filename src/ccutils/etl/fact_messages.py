@@ -25,7 +25,7 @@ _HASH_DIFF_COLUMNS = [
     "timestamp",
     "is_sidechain", "is_meta", "is_compact_summary", "is_api_error_message",
     "stop_reason", "permission_mode_at_send", "prompt_id", "request_id",
-    "api_error_text",
+    "api_error_text", "api_message_id",
     "input_tokens", "output_tokens",
     "cache_creation_5m_tokens", "cache_creation_1h_tokens",
     "cache_read_tokens", "total_uncached_equivalent_tokens",
@@ -88,24 +88,33 @@ SELECT
          THEN json_extract_string(sle.raw_json, '$.apiError')
          END AS api_error_text,
 
-    -- Tokens (assistant-only; from message.usage)
-    CASE WHEN sle.type = 'assistant'
+    sle.api_message_id,
+
+    -- Tokens (assistant-only; from message.usage). R23: `usage` describes
+    -- the API RESPONSE, and one response is written as several assistant
+    -- entries that each repeat it -- so these land on the response's first
+    -- entry and stay NULL on its continuations. Summing per entry
+    -- over-counted output tokens by 2.47x on a real corpus. NULL here means
+    -- "no usage attributable to this row", the same as it already does for
+    -- pre-2025 transcripts that carry no usage at all; api_message_id
+    -- distinguishes the two cases.
+    CASE WHEN sle.type = 'assistant' AND sle.response_entry_seq = 1
          THEN json_extract(sle.message_json, '$.usage.input_tokens')::INTEGER
          END AS input_tokens,
-    CASE WHEN sle.type = 'assistant'
+    CASE WHEN sle.type = 'assistant' AND sle.response_entry_seq = 1
          THEN json_extract(sle.message_json, '$.usage.output_tokens')::INTEGER
          END AS output_tokens,
-    CASE WHEN sle.type = 'assistant'
+    CASE WHEN sle.type = 'assistant' AND sle.response_entry_seq = 1
          THEN json_extract(sle.message_json, '$.usage.cache_creation.ephemeral_5m_input_tokens')::INTEGER
          END AS cache_creation_5m_tokens,
-    CASE WHEN sle.type = 'assistant'
+    CASE WHEN sle.type = 'assistant' AND sle.response_entry_seq = 1
          THEN json_extract(sle.message_json, '$.usage.cache_creation.ephemeral_1h_input_tokens')::INTEGER
          END AS cache_creation_1h_tokens,
-    CASE WHEN sle.type = 'assistant'
+    CASE WHEN sle.type = 'assistant' AND sle.response_entry_seq = 1
          THEN json_extract(sle.message_json, '$.usage.cache_read_input_tokens')::INTEGER
          END AS cache_read_tokens,
     -- Derived: total = cache_read + creation_5m + creation_1h + input_tokens
-    CASE WHEN sle.type = 'assistant'
+    CASE WHEN sle.type = 'assistant' AND sle.response_entry_seq = 1
          THEN COALESCE(json_extract(sle.message_json, '$.usage.input_tokens')::INTEGER, 0)
             + COALESCE(json_extract(sle.message_json, '$.usage.cache_creation.ephemeral_5m_input_tokens')::INTEGER, 0)
             + COALESCE(json_extract(sle.message_json, '$.usage.cache_creation.ephemeral_1h_input_tokens')::INTEGER, 0)
@@ -166,7 +175,30 @@ SELECT
         THEN 1
         ELSE 0
     END AS content_block_count
-FROM stg_log_entries sle
+-- R23: attach the API-response identity and each entry's position within
+-- its response. Claude Code flushes one response as several assistant
+-- entries that all repeat the response's `usage`; the token columns above
+-- are emitted only on the first, so SUM over this table bills each
+-- response once. Non-assistant entries have no message.id and fall back to
+-- entry_id, making each its own single-entry "response".
+FROM (
+    SELECT
+        *,
+        COALESCE(
+            json_extract_string(message_json, '$.id'),
+            json_extract_string(raw_json, '$.requestId'),
+            entry_id
+        ) AS api_message_id,
+        ROW_NUMBER() OVER (
+            PARTITION BY session_id, COALESCE(
+                json_extract_string(message_json, '$.id'),
+                json_extract_string(raw_json, '$.requestId'),
+                entry_id
+            )
+            ORDER BY sequence_num, entry_id
+        ) AS response_entry_seq
+    FROM stg_log_entries
+) sle
 WHERE sle.type IN ('user', 'assistant')
 """
 
@@ -180,7 +212,7 @@ _PAYLOAD_COLUMNS = [
     "message_type", "parent_message_id", "timestamp", "sequence_num",
     "is_sidechain", "is_meta", "is_compact_summary", "is_api_error_message",
     "stop_reason", "permission_mode_at_send", "prompt_id", "request_id",
-    "api_error_text",
+    "api_error_text", "api_message_id",
     "input_tokens", "output_tokens",
     "cache_creation_5m_tokens", "cache_creation_1h_tokens",
     "cache_read_tokens", "total_uncached_equivalent_tokens",

@@ -412,72 +412,55 @@ class TestIncludeUnsummarized:
 
 
 class TestGenerateBatchHtml:
-    """Tests for generate_batch_html function."""
+    """The flat archive: one index plus one self-contained file per session.
+
+    Claim: these tests previously asserted the nested layout -- per-project
+    directories, per-project index.html, per-session directories. C3 removed
+    all three. A project is a filter over one list, not a page, and the
+    per-project tree is what the deleted search-index.js existed to search
+    across. The CLAIMS survive (every project visible, every session
+    reachable, counts stated); the shape does not.
+    """
 
     def test_creates_output_directory(self, mock_projects_dir, output_dir):
-        """Test that output directory is created."""
         generate_batch_html(mock_projects_dir, output_dir)
         assert output_dir.exists()
 
-    def test_creates_master_index(self, mock_projects_dir, output_dir):
-        """Test that master index.html is created."""
+    def test_layout_is_flat(self, mock_projects_dir, output_dir):
+        """No directories at all: index.html plus one file per session."""
         generate_batch_html(mock_projects_dir, output_dir)
-        assert len(list(output_dir.glob("*.html"))) == 1
+        entries = sorted(output_dir.iterdir())
+        assert not [e for e in entries if e.is_dir()], (
+            f"archive should be flat, found directories: {[e.name for e in entries]}")
+        assert (output_dir / "index.html").exists()
+        assert len(list(output_dir.glob("*.html"))) == 4  # index + 3 sessions
 
-    def test_creates_project_directories(self, mock_projects_dir, output_dir):
-        """Test that project directories are created."""
+    def test_every_session_has_its_own_transcript(self, mock_projects_dir, output_dir):
         generate_batch_html(mock_projects_dir, output_dir)
+        names = {p.stem for p in output_dir.glob("*.html")}
+        assert {"abc123", "def456"} <= names
 
-        assert (output_dir / "project-a").exists()
-        assert (output_dir / "project-b").exists()
-
-    def test_creates_project_indexes(self, mock_projects_dir, output_dir):
-        """Test that project index.html files are created."""
+    def test_index_lists_all_projects(self, mock_projects_dir, output_dir):
         generate_batch_html(mock_projects_dir, output_dir)
-
-        assert (output_dir / "project-a" / "index.html").exists()
-        assert (output_dir / "project-b" / "index.html").exists()
-
-    def test_creates_session_directories(self, mock_projects_dir, output_dir):
-        """Test that session directories are created with transcripts."""
-        generate_batch_html(mock_projects_dir, output_dir)
-
-        # Check project-a has session directories
-        project_a_dir = output_dir / "project-a"
-        session_dirs = [d for d in project_a_dir.iterdir() if d.is_dir()]
-        assert len(session_dirs) == 2
-
-        # Each session directory should have an index.html
-        for session_dir in session_dirs:
-            # C2: one self-contained transcript per session, named for the
-            # session rather than index.html. C3 flattens the directory nesting.
-            assert len(list(session_dir.glob("*.html"))) == 1
-
-    def test_master_index_lists_all_projects(self, mock_projects_dir, output_dir):
-        """Test that master index lists all projects."""
-        generate_batch_html(mock_projects_dir, output_dir)
-
         index_html = (output_dir / "index.html").read_text()
         assert "project-a" in index_html
         assert "project-b" in index_html
 
-    def test_master_index_shows_session_counts(self, mock_projects_dir, output_dir):
-        """Test that master index shows session counts per project."""
+    def test_index_states_its_own_scope(self, mock_projects_dir, output_dir):
+        """An index that does not say how much it covers cannot be checked
+        against the directory it describes -- a truncated archive would look
+        identical to a complete one."""
         generate_batch_html(mock_projects_dir, output_dir)
-
         index_html = (output_dir / "index.html").read_text()
-        # project-a has 2 sessions, project-b has 1
-        assert "2 sessions" in index_html or "2 session" in index_html
-        assert "1 session" in index_html
+        assert "3 sessions" in index_html
+        assert "2 projects" in index_html
 
-    def test_project_index_lists_sessions(self, mock_projects_dir, output_dir):
-        """Test that project index lists all sessions."""
+    def test_index_links_straight_to_transcripts(self, mock_projects_dir, output_dir):
         generate_batch_html(mock_projects_dir, output_dir)
-
-        project_a_index = (output_dir / "project-a" / "index.html").read_text()
-        # Should contain links to session directories
-        assert "abc123" in project_a_index
-        assert "def456" in project_a_index
+        index_html = (output_dir / "index.html").read_text()
+        assert 'href="abc123.html"' in index_html
+        assert 'href="def456.html"' in index_html
+        assert "/index.html" not in index_html
 
     def test_returns_statistics(self, mock_projects_dir, output_dir):
         """Test that batch generation returns statistics."""
@@ -597,7 +580,9 @@ class TestAllCommand:
         )
 
         assert result.exit_code == 0
-        assert len(list(output_dir.glob("*.html"))) == 1
+        # Flat archive: index.html plus one self-contained file per session.
+        assert (output_dir / "index.html").exists()
+        assert len(list(output_dir.glob("*.html"))) > 1
 
     def test_all_includes_agents_by_default(self, mock_projects_dir, output_dir):
         """Test that agent sessions are included by default."""
@@ -615,9 +600,10 @@ class TestAllCommand:
 
         assert result.exit_code == 0
         # Should have agent directory in project-a (agents included by default)
-        project_a_dir = output_dir / "project-a"
-        session_dirs = [d for d in project_a_dir.iterdir() if d.is_dir()]
-        assert len(session_dirs) == 3  # 2 regular + 1 agent
+        # Flat layout: count transcripts, not per-project session dirs.
+        transcripts = [p for p in output_dir.glob("*.html") if p.name != "index.html"]
+        # Flat: all projects share one directory -- 3 regular + 1 agent.
+        assert len(transcripts) == 4
 
     def test_all_no_agents_flag(self, mock_projects_dir, output_dir):
         """Test --no-agents flag excludes agent sessions."""
@@ -636,9 +622,8 @@ class TestAllCommand:
 
         assert result.exit_code == 0
         # Should NOT have agent directory in project-a
-        project_a_dir = output_dir / "project-a"
-        session_dirs = [d for d in project_a_dir.iterdir() if d.is_dir()]
-        assert len(session_dirs) == 2  # 2 regular, agent excluded
+        transcripts = [p for p in output_dir.glob("*.html") if p.name != "index.html"]
+        assert len(transcripts) == 3  # 3 regular, agent excluded
 
     def test_all_quiet_flag(self, mock_projects_dir, output_dir):
         """Test --quiet flag suppresses non-error output."""
@@ -657,7 +642,8 @@ class TestAllCommand:
 
         assert result.exit_code == 0
         # Should create the archive
-        assert len(list(output_dir.glob("*.html"))) == 1
+        assert (output_dir / "index.html").exists()
+        assert len(list(output_dir.glob("*.html"))) > 1
         # Output should be minimal (no progress messages)
         assert "Scanning" not in result.output
         assert "Processed" not in result.output

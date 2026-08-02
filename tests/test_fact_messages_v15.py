@@ -345,3 +345,109 @@ class TestSoftDelete:
         assert ("u1",) in active
         assert ("a1",) in deleted
         assert ("u2",) in deleted
+
+
+@pytest.fixture
+def split_response_session(tmp_path):
+    """One API response flushed as three assistant entries, all repeating usage.
+
+    Every entry stays a row here -- that grain is correct for fact_messages.
+    What must not repeat is the response's `usage`, which belongs to the
+    response, not to each entry it was split across.
+    """
+    jsonl = tmp_path / "split_messages.jsonl"
+    usage = {
+        "input_tokens": 10, "output_tokens": 500,
+        "cache_read_input_tokens": 100,
+        "cache_creation": {
+            "ephemeral_5m_input_tokens": 0,
+            "ephemeral_1h_input_tokens": 0,
+        },
+    }
+    lines = [
+        {"type": "user", "uuid": "u1", "sessionId": "split-msg-s",
+         "timestamp": "2026-04-19T10:00:00Z", "cwd": "/p",
+         "message": {"role": "user", "content": "go"}},
+    ]
+    for i, block in enumerate(
+        [{"type": "thinking", "thinking": "hmm"},
+         {"type": "text", "text": "ok"},
+         {"type": "tool_use", "id": "tu1", "name": "Read", "input": {}}]
+    ):
+        lines.append(
+            {"type": "assistant", "uuid": f"a{i + 1}", "parentUuid": "u1",
+             "sessionId": "split-msg-s", "requestId": "req_A",
+             "timestamp": f"2026-04-19T10:00:0{i + 1}Z",
+             "message": {"id": "msg_A", "role": "assistant",
+                         "model": "claude-opus-4-7", "content": [block],
+                         "usage": usage}}
+        )
+    jsonl.write_text("\n".join(json.dumps(d) for d in lines))
+    return jsonl
+
+
+class TestSplitResponseTokenAttribution:
+    """R23: an API response's usage lands on ONE of its entries."""
+
+    def test_every_entry_still_becomes_a_row(
+        self, conn, split_response_session, tmp_path
+    ):
+        """Claim: the fix does not drop entries.
+
+        fact_messages is per-entry by design -- content and block flags
+        differ across the three. Only the token columns are response-scoped.
+        """
+        run = EtlRun.start(conn, source_path=str(split_response_session))
+        _stage_session(conn, split_response_session, tmp_path, run)
+        populate_fact_messages(conn, run=run)
+        n = conn.execute(
+            "SELECT COUNT(*) FROM fact_messages WHERE message_type = 'assistant'"
+        ).fetchone()[0]
+        assert n == 3
+
+    def test_usage_lands_on_first_entry_only(
+        self, conn, split_response_session, tmp_path
+    ):
+        """Claim: SUM over fact_messages token columns is correct as written.
+
+        With usage repeated on all three entries, SUM(output_tokens) was
+        1,500 for a response that billed 500.
+        """
+        run = EtlRun.start(conn, source_path=str(split_response_session))
+        _stage_session(conn, split_response_session, tmp_path, run)
+        populate_fact_messages(conn, run=run)
+        rows = conn.execute(
+            "SELECT sle.uuid, fm.output_tokens, fm.input_tokens, "
+            "       fm.cache_read_tokens, fm.total_uncached_equivalent_tokens "
+            "FROM fact_messages fm "
+            "JOIN stg_log_entries sle ON sle.entry_id = fm.entry_id "
+            "WHERE fm.message_type = 'assistant' ORDER BY sle.uuid"
+        ).fetchall()
+        # total_uncached_equivalent is input-side only: 10 + 0 creation + 100 read
+        assert rows[0] == ("a1", 500, 10, 100, 110)
+        assert rows[1] == ("a2", None, None, None, None)
+        assert rows[2] == ("a3", None, None, None, None)
+        total = conn.execute(
+            "SELECT SUM(output_tokens) FROM fact_messages"
+        ).fetchone()[0]
+        assert total == 500
+
+    def test_api_message_id_recorded_on_every_entry(
+        self, conn, split_response_session, tmp_path
+    ):
+        """Claim: the entries a response was split across stay recoverable.
+
+        Nulling the tokens without recording the response id would make it
+        impossible to tell a continuation entry from a genuinely
+        usage-less one (pre-2025 transcripts).
+        """
+        run = EtlRun.start(conn, source_path=str(split_response_session))
+        _stage_session(conn, split_response_session, tmp_path, run)
+        populate_fact_messages(conn, run=run)
+        ids = [
+            r[0] for r in conn.execute(
+                "SELECT api_message_id FROM fact_messages "
+                "WHERE message_type = 'assistant'"
+            ).fetchall()
+        ]
+        assert ids == ["msg_A", "msg_A", "msg_A"]
