@@ -132,6 +132,50 @@ def lineage_upsert(
                 f"UPDATE {inbound_table} SET hash_diff = {hash_diff_sql(hash_cols)}"
             )
 
+        # Collapse the inbound batch to one row per natural key BEFORE the
+        # UPDATE/INSERT. The INSERT below guards with NOT EXISTS against the
+        # TARGET only, so without this two inbound rows sharing a key both
+        # pass the check and both insert -- silently breaking the uniqueness
+        # every consumer assumes from `natural_key`. Measured on a real
+        # 2,344-session corpus: 6 of 13 facts violated their own declared key
+        # (fact_tool_results 29 keys, fact_file_operations 8, fact_tool_uses 7,
+        # fact_tool_chain_steps 7, fact_agent_delegations 3, fact_errors 1).
+        #
+        # Duplicates are real source data, not a hypothetical: one Claude Code
+        # session can record a single tool_use_id under two distinct entry
+        # uuids, and a fanned-out join in a populator can double it again.
+        #
+        # The ordering makes the survivor deterministic rather than
+        # whichever row the scan happened to reach first -- a warehouse that
+        # rebuilds to different contents from identical input is not
+        # reproducible. Newest wins, ties broken on hash_diff. Two rows tying
+        # on both are identical in every change-tracked column by definition,
+        # so the choice cannot affect any hashed value. It CAN still vary a
+        # payload column that the caller left out of hash_cols; such a column
+        # is by construction not change-tracked, which is a populator design
+        # choice, not something this helper can decide.
+        #
+        # rows_read is captured above, before this runs, so the gap between
+        # rows_read and rows_inserted+rows_updated stays visible instead of
+        # the duplicates disappearing without trace.
+        dedup_table = f"{inbound_table}_dedup"
+        _validate_ident(dedup_table)
+        conn.execute(f"DROP TABLE IF EXISTS {dedup_table}")
+        conn.execute(
+            f"""
+            CREATE TEMP TABLE {dedup_table} AS
+            SELECT * EXCLUDE (_dedup_rn) FROM (
+                SELECT *, ROW_NUMBER() OVER (
+                    PARTITION BY {natural_key}
+                    ORDER BY {timestamp_col} DESC NULLS LAST, hash_diff
+                ) AS _dedup_rn
+                FROM {inbound_table}
+            ) WHERE _dedup_rn = 1
+            """
+        )
+        conn.execute(f"DROP TABLE {inbound_table}")
+        conn.execute(f"ALTER TABLE {dedup_table} RENAME TO {inbound_table}")
+
         # When natural_key IS session_id, don't list it twice.
         extra_keys = ["session_key", "date_key", "time_key"]
         if natural_key != "session_id":
