@@ -136,6 +136,98 @@ class TestProjectionEmitsDeclaredGrain:
         assert res[0] == "ok"
         assert res[1] is False
 
+    def test_earliest_entry_wins_when_they_differ(self, conn, tmp_path):
+        """Pin the tie-break DIRECTION, not just the row count.
+
+        The shared fixture gives both duplicates the same timestamp and
+        identical content -- which models the real corpus, but means flipping
+        `ORDER BY timestamp, entry_id` to DESC would leave every other
+        assertion in this file passing. That is the "test written from the
+        same premise as its code" pattern this project has been bitten by.
+        This one distinguishes them, so the ordering is falsifiable.
+        """
+        from ccutils.etl.orchestrator import run_v15_etl
+
+        proj = tmp_path / "projects" / "-Users-dev-myrepo"
+        proj.mkdir(parents=True, exist_ok=True)
+        jsonl = proj / "ordered.jsonl"
+        lines = [
+            {"type": "user", "uuid": "u1", "sessionId": "ordered",
+             "timestamp": "2026-04-19T10:00:00Z", "cwd": "/work",
+             "gitBranch": "main", "version": "2.1.198",
+             "message": {"role": "user", "content": "go"}},
+            {"type": "assistant", "uuid": "a1", "parentUuid": "u1",
+             "sessionId": "ordered", "timestamp": "2026-04-19T10:00:01Z",
+             "requestId": "r1",
+             "message": {"role": "assistant", "model": "claude-opus-5",
+                         "content": [{"type": "tool_use", "id": "tu_ord",
+                                      "name": "Bash",
+                                      "input": {"command": "EARLIER"}}]}},
+            {"type": "assistant", "uuid": "a2", "parentUuid": "u1",
+             "sessionId": "ordered", "timestamp": "2026-04-19T10:00:09Z",
+             "requestId": "r1",
+             "message": {"role": "assistant", "model": "claude-opus-5",
+                         "content": [{"type": "tool_use", "id": "tu_ord",
+                                      "name": "Bash",
+                                      "input": {"command": "LATER"}}]}},
+        ]
+        jsonl.write_text("\n".join(json.dumps(d) for d in lines))
+        run_v15_etl(conn, jsonl, project_name="p",
+                    parquet_lake_root=tmp_path / "lake")
+
+        row = conn.execute(
+            "SELECT input_json FROM fact_tool_uses "
+            "WHERE tool_use_id = 'tu_ord' AND NOT is_deleted"
+        ).fetchall()
+        assert len(row) == 1
+        assert "EARLIER" in row[0][0], (
+            "ORDER BY timestamp ASC means the first-recorded entry survives"
+        )
+
+    def test_agent_delegations_inherit_uniqueness(self, conn, tmp_path):
+        """`fact_agent_delegations` is named as an inheriting fact but the
+        shared fixture uses Bash, which its `tool_name IN ('Task','Agent')`
+        filter excludes -- so the claim was asserted only in prose."""
+        from ccutils.etl.orchestrator import run_v15_etl
+
+        proj = tmp_path / "projects" / "-Users-dev-myrepo"
+        proj.mkdir(parents=True, exist_ok=True)
+        jsonl = proj / "deleg.jsonl"
+        spawn = {"type": "tool_use", "id": "tu_agent", "name": "Agent",
+                 "input": {"description": "d", "prompt": "p"}}
+        lines = [
+            {"type": "user", "uuid": "u1", "sessionId": "deleg",
+             "timestamp": "2026-04-19T10:00:00Z", "cwd": "/work",
+             "gitBranch": "main", "version": "2.1.198",
+             "message": {"role": "user", "content": "go"}},
+            {"type": "assistant", "uuid": "a1", "parentUuid": "u1",
+             "sessionId": "deleg", "timestamp": "2026-04-19T10:00:01Z",
+             "requestId": "r1",
+             "message": {"role": "assistant", "model": "claude-opus-5",
+                         "content": [spawn]}},
+            # Same spawn recorded again under a distinct entry uuid.
+            {"type": "assistant", "uuid": "a2", "parentUuid": "u1",
+             "sessionId": "deleg", "timestamp": "2026-04-19T10:00:01Z",
+             "requestId": "r1",
+             "message": {"role": "assistant", "model": "claude-opus-5",
+                         "content": [spawn]}},
+        ]
+        jsonl.write_text("\n".join(json.dumps(d) for d in lines))
+        run_v15_etl(conn, jsonl, project_name="p",
+                    parquet_lake_root=tmp_path / "lake")
+
+        dups = conn.execute(
+            "SELECT COUNT(*) FROM (SELECT delegation_key FROM "
+            "fact_agent_delegations WHERE NOT is_deleted "
+            "GROUP BY 1 HAVING COUNT(*) > 1)"
+        ).fetchone()[0]
+        assert dups == 0
+        # Non-vacuity: the fixture must actually produce a delegation.
+        n = conn.execute(
+            "SELECT COUNT(*) FROM fact_agent_delegations WHERE NOT is_deleted"
+        ).fetchone()[0]
+        assert n == 1
+
     def test_distinct_tool_use_ids_are_not_collapsed(self, conn, tmp_path):
         """Non-vacuity: the collapse must be per-key, not global."""
         from ccutils.etl.orchestrator import run_v15_etl

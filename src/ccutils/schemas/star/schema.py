@@ -1574,6 +1574,10 @@ def create_star_schema(db_path):
     # views: a view can reference a migrated column, and on a pre-existing
     # warehouse the CREATE TABLE IF NOT EXISTS above did not add it.
     _apply_column_migrations(conn)
+    # After migrations (so every column exists), before views. Heals a
+    # warehouse built before lineage_upsert began asserting natural-key
+    # uniqueness; a no-op on a clean one.
+    _repair_duplicate_natural_keys(conn)
 
     # Reconcile dim_date from every session already in the warehouse.
     # Per-session ETL only inserts dim_date for the sessions it re-stages;
@@ -2347,6 +2351,89 @@ _COLUMN_MIGRATIONS = [
     # without this discriminator it inflated sessions_seen by one per batch.
     ("fact_etl_runs", "run_kind", "VARCHAR"),
 ]
+
+
+# Every fact's declared natural key, mirroring the `natural_key=` argument
+# each populator passes to `lineage_upsert`. Single source of truth: the
+# repair below walks it, and roadmap 0a's audit command is meant to as well.
+# `tests/test_natural_key_repair_v15.py` fails if a populator declares a key
+# this map disagrees with, so the two cannot drift.
+NATURAL_KEYS = {
+    "fact_messages": "entry_id",
+    "fact_attachments": "entry_id",
+    "fact_progress_events": "entry_id",
+    "fact_system_events": "entry_id",
+    "fact_meta_events": "entry_id",
+    "fact_file_history_snapshots": "entry_id",
+    "fact_queue_operations": "entry_id",
+    "fact_pr_links": "entry_id",
+    "fact_token_usage": "entry_id",
+    "fact_tool_uses": "tool_use_id",
+    "fact_tool_results": "tool_use_id",
+    "fact_file_operations": "tool_use_id",
+    "fact_tool_chain_steps": "chain_step_id",
+    "fact_errors": "error_id",
+    "fact_diagnostics": "diagnostic_id",
+    "fact_agent_delegations": "delegation_key",
+    "fact_plan_revisions": "revision_key",
+    "fact_session_facets": "facet_row_key",
+    "fact_session_summary": "session_id",
+    "bridge_session_file": "session_file_key",
+}
+
+
+def _repair_duplicate_natural_keys(conn) -> int:
+    """Soft-delete rows violating a declared natural key. Returns the count.
+
+    Warehouses built before `lineage_upsert` began asserting uniqueness can
+    hold duplicates -- 6 of 13 facts did on a real 2,344-session corpus. Those
+    rows are not inert: several populators build their inbound batch by
+    reading a TARGET fact table, so a stale duplicate propagates into a new
+    inbound and trips the assertion.
+
+    The severe case is `populate_delegation_completion`, whose inbound is the
+    WHOLE `fact_agent_delegations` table and which runs from
+    `run_post_session_reconciliation` OUTSIDE any per-session try/except.
+    Without this repair, one stale duplicate killed an entire `ccutils all`
+    invocation after every session had already been processed. Reproduced on
+    a real pre-fix warehouse holding 3 duplicate `delegation_key` rows.
+
+    Soft-delete rather than DELETE: the losing row is retained under the
+    warehouse's own lineage convention, and every consumer already filters
+    `is_deleted`. Discarding data the operator never chose to lose would be a
+    worse cure than the disease.
+
+    The survivor is the lowest rowid, which is stable for a given table, so
+    two warehouses seeded identically heal identically.
+    """
+    repaired = 0
+    for table, key in NATURAL_KEYS.items():
+        # Cheap guard: skip the UPDATE entirely unless a violation exists.
+        # This runs on every connection, so the common (clean) path must not
+        # pay for a full rewrite.
+        has_dupes = conn.execute(
+            f"""
+            SELECT 1 FROM (
+                SELECT {key} FROM {table} WHERE is_deleted = FALSE
+                GROUP BY 1 HAVING COUNT(*) > 1
+            ) LIMIT 1
+            """
+        ).fetchone()
+        if not has_dupes:
+            continue
+        n = conn.execute(
+            f"""
+            UPDATE {table} SET is_deleted = TRUE,
+                               deleted_at = current_timestamp
+            WHERE is_deleted = FALSE
+              AND rowid NOT IN (
+                  SELECT MIN(rowid) FROM {table}
+                  WHERE is_deleted = FALSE GROUP BY {key}
+              )
+            """
+        ).fetchone()[0]
+        repaired += n
+    return repaired
 
 
 def _apply_column_migrations(conn) -> None:

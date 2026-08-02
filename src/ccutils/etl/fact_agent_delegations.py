@@ -246,8 +246,10 @@ scored AS (
     FROM fact_agent_delegations d
     LEFT JOIN agent_rollup ar ON ar.agent_session_key = d.agent_session_key
     LEFT JOIN agent_tools  agt ON agt.agent_session_key = d.agent_session_key
-    -- One row per (session, tool use) is guaranteed by lineage_upsert's
-    -- intra-batch dedup; before that fix this join could fan out.
+    -- One row per (session, tool use) is guaranteed by the QUALIFY in
+    -- _PROJECT_RESULTS_SQL, which makes fact_tool_results unique on
+    -- tool_use_id by construction. It is NOT guaranteed by lineage_upsert,
+    -- which only asserts the key and no longer collapses duplicates.
     LEFT JOIN fact_tool_results tr
            ON tr.tool_use_id = d.tool_use_id
           AND tr.session_id = d.session_id
