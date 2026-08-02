@@ -99,7 +99,6 @@ from .cli import (
     local_cmd,
     web_cmd,
     all_cmd,
-    explore_cmd,
     is_url,
     fetch_url_to_tempfile,
     resolve_credentials,

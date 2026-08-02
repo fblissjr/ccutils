@@ -6,7 +6,6 @@ from click_default_group import DefaultGroup
 from .local import local_cmd
 from .web import web_cmd
 from .all import all_cmd
-from .explore import explore_cmd
 from .import_cmd import import_cmd
 from .schema import schema_cmd
 from .utils import (
@@ -32,7 +31,6 @@ def cli():
 cli.add_command(local_cmd, "local")
 cli.add_command(web_cmd, "web")
 cli.add_command(all_cmd, "all")
-cli.add_command(explore_cmd, "explore")
 cli.add_command(import_cmd, "import")
 cli.add_command(schema_cmd, "schema")
 
@@ -59,7 +57,6 @@ __all__ = [
     "local_cmd",
     "web_cmd",
     "all_cmd",
-    "explore_cmd",
     "import_cmd",
     "schema_cmd",
     "is_url",
