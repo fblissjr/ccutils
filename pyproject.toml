@@ -43,5 +43,4 @@ colbert = ["pylate"]
 dev = [
     "pytest>=9.0.2",
     "pytest-httpx>=0.35.0",
-    "syrupy>=5.0.0",
 ]
