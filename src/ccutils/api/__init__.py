@@ -1,4 +1,3 @@
-# path-privacy: skip-file -- references universal Claude Code data paths (not personal)
 """Claude API client and credentials management.
 
 This module provides functions for authenticating with and fetching data
@@ -112,7 +111,7 @@ def get_access_token_from_keychain():
 
 
 def get_org_uuid_from_config():
-    """Get organization UUID from ~/.claude.json.
+    """Get organization UUID from ~/.claude.json.  # path-privacy: ignore
 
     Returns the organization UUID or None if not found.
     """

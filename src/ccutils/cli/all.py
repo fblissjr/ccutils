@@ -1,4 +1,3 @@
-# path-privacy: skip-file -- references universal Claude Code data paths (not personal)
 """Batch conversion command for all sessions."""
 
 from datetime import datetime
@@ -29,7 +28,7 @@ from .utils import (
     "-s",
     "--source",
     type=click.Path(exists=True),
-    help="Source directory (default: ~/.claude/projects).",
+    help="Source directory (default: ~/.claude/projects).",  # path-privacy: ignore
 )
 @optgroup.option(
     "-o",

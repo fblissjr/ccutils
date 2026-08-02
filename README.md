@@ -1,4 +1,4 @@
-<!-- path-privacy: skip-file -- references universal ~/.claude data paths (not personal) -->
+<!-- path-privacy: skip-file -- documents ~/.claude/projects as a CLI default inside fenced help output, where a per-line marker would render literally -->
 # ccutils
 
 Claude Code transcript analytics: browsable HTML/markdown transcripts and a DuckDB star-schema warehouse with full ETL lineage, built from the session JSONL Claude Code already writes.

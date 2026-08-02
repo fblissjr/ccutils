@@ -1,4 +1,3 @@
-# path-privacy: skip-file -- references universal Claude Code data paths (not personal)
 """DuckDB / JSON archive generation.
 
 Star schema only. Drives the v0.15 four-tier per-session ETL

@@ -1,4 +1,3 @@
-# path-privacy: skip-file -- references universal Claude Code data paths (not personal)
 """Web session import command."""
 
 import tempfile
@@ -32,7 +31,7 @@ from .utils import (
 )
 @click.option("--token", help="API access token (auto-detected from keychain on macOS)")
 @click.option(
-    "--org-uuid", help="Organization UUID (auto-detected from ~/.claude.json)"
+    "--org-uuid", help="Organization UUID (auto-detected from ~/.claude.json)"  # path-privacy: ignore
 )
 @click.option(
     "--repo",

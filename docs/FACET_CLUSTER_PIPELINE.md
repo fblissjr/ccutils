@@ -1,4 +1,3 @@
-<!-- path-privacy: skip-file -- references universal Claude Code data paths (not personal) -->
 # Facet & Cluster Pipeline — Data Architecture
 
 *Companion to `STAR_SCHEMA.md`. Defines the data, transforms, and pipeline layers that turn the v0.15 transcript archive into a queryable map of usage patterns. Use cases are derived from the data we capture, not the other way around.*
@@ -12,7 +11,7 @@
 
 The v0.15 star schema captures *what happened* in every Claude Code session — every tool call, every message, every token. What it doesn't capture is *what the session was about* in any form that can be aggregated, searched, or compared across sessions. The regex-based heuristics in `etl/heuristics.py` give us a coarse first cut (`intent`, `complexity`, `outcome`, `domain`) but stop short of anything that supports cross-session pattern discovery.
 
-This document defines the data layer that closes that gap. It does so without changing ccutils's source-data contract: **transcripts only, no API pulls.** All new data is derived from what's already in `~/.claude` plus what's already in the star schema.
+This document defines the data layer that closes that gap. It does so without changing ccutils's source-data contract: **transcripts only, no API pulls.** All new data is derived from what's already in `~/.claude` plus what's already in the star schema.  <!-- path-privacy: ignore -->
 
 Design principles, in priority order:
 

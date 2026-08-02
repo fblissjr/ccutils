@@ -1,4 +1,3 @@
-# path-privacy: skip-file -- references ~/.claude/projects as data input (not personal)
 """Tests for search index generation."""
 
 import json
@@ -18,7 +17,7 @@ from ccutils import (
 
 @pytest.fixture
 def mock_projects_dir():
-    """Create a mock ~/.claude/projects structure with test sessions."""
+    """Create a mock ~/.claude/projects structure with test sessions."""  # path-privacy: ignore
     with tempfile.TemporaryDirectory() as tmpdir:
         projects_dir = Path(tmpdir)
 

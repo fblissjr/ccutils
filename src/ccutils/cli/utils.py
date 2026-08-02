@@ -1,4 +1,3 @@
-# path-privacy: skip-file -- references universal Claude Code data paths (not personal)
 """Utility functions for CLI commands."""
 
 import platform
@@ -122,7 +121,7 @@ def resolve_credentials(token, org_uuid):
         org_uuid = get_org_uuid_from_config()
         if org_uuid is None:
             raise click.ClickException(
-                "Could not find organization UUID in ~/.claude.json. "
+                "Could not find organization UUID in ~/.claude.json. "  # path-privacy: ignore
                 "Provide --org-uuid with your organization UUID."
             )
 

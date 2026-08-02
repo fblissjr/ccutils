@@ -1,4 +1,3 @@
-# path-privacy: skip-file -- references universal Claude Code data paths (not personal)
 """Star schema DDL - creates the dimensional model tables.
 
 Authoritative table/view inventory: CLAUDE.md ("Star Schema Tables") and
@@ -1313,7 +1312,7 @@ def create_star_schema(db_path):
     )
 
     # =========================================================================
-    # Prompt History (from ~/.claude/history.jsonl)
+    # Prompt History (from ~/.claude/history.jsonl)  # path-privacy: ignore
     # =========================================================================
 
     conn.execute(
@@ -1790,6 +1789,9 @@ def create_star_schema(db_path):
             fad.task_prompt,
             fad.subagent_type,
             fad.agent_status,
+            fad.completion_state,
+            fad.agent_is_async,
+            fad.agent_resolved_model,
             dd.full_date AS delegation_date,
             fad.delegation_timestamp,
             fad.completion_timestamp,
@@ -1798,7 +1800,13 @@ def create_star_schema(db_path):
             fad.agent_total_tool_use_count,
             fad.agent_was_interrupted,
             fad.agent_total_duration_ms,
+            -- API-stated; NULL on async rows (the API never states one for a
+            -- background launch). NOT comparable with agent_derived_io_tokens
+            -- below: see STAR_SCHEMA.md "Why the two token columns are
+            -- separate". Filter on completion_state to know why a value is
+            -- absent.
             fad.agent_total_tokens,
+            fad.agent_derived_io_tokens,
             fad.agent_output_text,
             ps.session_id AS parent_session_id,
             ps.cwd AS parent_cwd,
@@ -2403,8 +2411,19 @@ def _repair_duplicate_natural_keys(conn) -> int:
     `is_deleted`. Discarding data the operator never chose to lose would be a
     worse cure than the disease.
 
-    The survivor is the lowest rowid, which is stable for a given table, so
-    two warehouses seeded identically heal identically.
+    NULL keys are skipped, matching `lineage_upsert`, which excludes them
+    from its own uniqueness check. Every natural-key column is NOT NULL at the
+    DDL level today, so this is defensive -- but the three places that reason
+    about key uniqueness must agree, or a future nullable key breaks whichever
+    one was overlooked.
+
+    The survivor is the lowest rowid. Do NOT read that as reproducible across
+    warehouses: DuckDB implements UPDATE as delete+reinsert, so a row's rowid
+    reflects its update history rather than insertion order, and
+    `lineage_upsert` updates rows routinely. The choice is arbitrary. It is
+    harmless only because the known duplicates are content-identical on every
+    extracted column -- if that ever stops being true, this needs a stated
+    rule, not a rowid.
     """
     repaired = 0
     for table, key in NATURAL_KEYS.items():
@@ -2414,7 +2433,8 @@ def _repair_duplicate_natural_keys(conn) -> int:
         has_dupes = conn.execute(
             f"""
             SELECT 1 FROM (
-                SELECT {key} FROM {table} WHERE is_deleted = FALSE
+                SELECT {key} FROM {table}
+                WHERE is_deleted = FALSE AND {key} IS NOT NULL
                 GROUP BY 1 HAVING COUNT(*) > 1
             ) LIMIT 1
             """
@@ -2426,9 +2446,11 @@ def _repair_duplicate_natural_keys(conn) -> int:
             UPDATE {table} SET is_deleted = TRUE,
                                deleted_at = current_timestamp
             WHERE is_deleted = FALSE
+              AND {key} IS NOT NULL
               AND rowid NOT IN (
                   SELECT MIN(rowid) FROM {table}
-                  WHERE is_deleted = FALSE GROUP BY {key}
+                  WHERE is_deleted = FALSE AND {key} IS NOT NULL
+                  GROUP BY {key}
               )
             """
         ).fetchone()[0]

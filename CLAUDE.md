@@ -1,4 +1,3 @@
-<!-- path-privacy: skip-file -- references universal Claude data layout paths (not personal) -->
 # Start Here
 
 Uses uv. Run tests: `uv run pytest tests/ --confcutdir=tests`. Run the dev CLI: `uv run ccutils --help`.

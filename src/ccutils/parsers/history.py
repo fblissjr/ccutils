@@ -1,5 +1,4 @@
-# path-privacy: skip-file -- references universal Claude Code data paths (not personal)
-"""Parser for ~/.claude/history.jsonl -- global prompt history.
+"""Parser for ~/.claude/history.jsonl -- global prompt history.  # path-privacy: ignore
 
 Each line contains a user prompt with project context and optional session link.
 """

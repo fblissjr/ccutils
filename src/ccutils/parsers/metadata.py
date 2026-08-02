@@ -1,4 +1,3 @@
-# path-privacy: skip-file -- references universal Claude Code data paths (not personal)
 """Rich metadata extraction from Claude Code session files.
 
 Provides fast metadata extraction for session selection UI,
@@ -99,7 +98,7 @@ def shorten_model_name(model_id: str | None) -> str:
 def derive_project_name(cwd: str | None, folder_name: str) -> str:
     """Derive a readable project name from cwd or folder name.
 
-    Prefers cwd (e.g., /Users/dev/workspace/myproject -> myproject)
+    Prefers cwd (e.g., /Users/dev/workspace/myproject -> myproject)  # path-privacy: ignore
     because it's the actual directory name, not an encoded path.
 
     Falls back to folder_name parsing (same logic as get_project_display_name).

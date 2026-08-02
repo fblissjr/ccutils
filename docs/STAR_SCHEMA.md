@@ -1,4 +1,3 @@
-<!-- path-privacy: skip-file -- references universal Claude Code data paths (not personal) -->
 # Star Schema DuckDB Implementation
 
 Last updated: 2026-08-02
@@ -143,7 +142,7 @@ ccutils local --format json -o ./star-export/
 ccutils all --format duckdb -o ./analytics
 
 # Launch the visual Data Explorer
-ccutils explore ./analytics/archive.duckdb
+duckdb -ui ./analytics/archive.duckdb
 
 # Query directly with DuckDB CLI
 duckdb ./analytics/archive.duckdb
@@ -178,7 +177,7 @@ ORDER BY total_uncached_equivalent_tokens DESC
 LIMIT 20;
 ```
 
-`ccutils explore <db>` opens the database in [harlequin](https://harlequin.sh) (requires the `ccutils[explore]` extra) for interactive browsing -- there is no separate visual-interface doc.
+`duckdb -ui <db>` opens DuckDB's own local UI for interactive browsing (first run fetches the `ui` extension, needs network) -- there is no separate visual-interface doc. The `ccutils explore` command and its harlequin dependency were removed.
 
 ---
 
