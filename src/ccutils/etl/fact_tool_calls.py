@@ -105,6 +105,27 @@ SELECT
     json_extract_string(block, '$.caller.type') AS caller_type,
     CAST(json_extract(block, '$.input') AS VARCHAR) AS input_json
 FROM exploded
+
+-- One row per tool_use_id, which is the grain this fact DECLARES via
+-- natural_key="tool_use_id". A real Claude Code session records a single
+-- tool_use_id under two distinct entry uuids (29 keys on a 2,344-session
+-- corpus), so unnesting blocks across entries would otherwise emit two rows
+-- for one key and break the uniqueness every consumer joins on.
+--
+-- Collapsing is safe HERE and only here, because the justification is
+-- specific to this data: the duplicate records are content-identical on
+-- every extracted column (is_error, result_content_text, timestamp,
+-- tool_name, and every typed bash_*/edit_*/read_*/agent_* field). Only the
+-- raw result_payload_json ever differs, on 8 of the 29. Earliest entry wins;
+-- entry_id breaks ties so a rebuild from identical input is reproducible.
+--
+-- This used to be a generic collapse inside lineage_upsert, which applied
+-- one fact's judgment to all 13 and resolved it silently. That helper now
+-- ASSERTS this grain instead -- if this QUALIFY is removed, the ETL fails
+-- loudly rather than silently double-counting.
+QUALIFY ROW_NUMBER() OVER (
+    PARTITION BY tool_use_id ORDER BY timestamp, entry_id
+) = 1
 """
 
 
@@ -304,6 +325,27 @@ SELECT
          END
         AS agent_is_async
 FROM with_tool_name
+
+-- One row per tool_use_id, which is the grain this fact DECLARES via
+-- natural_key="tool_use_id". A real Claude Code session records a single
+-- tool_use_id under two distinct entry uuids (29 keys on a 2,344-session
+-- corpus), so unnesting blocks across entries would otherwise emit two rows
+-- for one key and break the uniqueness every consumer joins on.
+--
+-- Collapsing is safe HERE and only here, because the justification is
+-- specific to this data: the duplicate records are content-identical on
+-- every extracted column (is_error, result_content_text, timestamp,
+-- tool_name, and every typed bash_*/edit_*/read_*/agent_* field). Only the
+-- raw result_payload_json ever differs, on 8 of the 29. Earliest entry wins;
+-- entry_id breaks ties so a rebuild from identical input is reproducible.
+--
+-- This used to be a generic collapse inside lineage_upsert, which applied
+-- one fact's judgment to all 13 and resolved it silently. That helper now
+-- ASSERTS this grain instead -- if this QUALIFY is removed, the ETL fails
+-- loudly rather than silently double-counting.
+QUALIFY ROW_NUMBER() OVER (
+    PARTITION BY tool_use_id ORDER BY timestamp, entry_id
+) = 1
 """
 
 

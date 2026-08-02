@@ -132,96 +132,47 @@ def lineage_upsert(
                 f"UPDATE {inbound_table} SET hash_diff = {hash_diff_sql(hash_cols)}"
             )
 
-        # Collapse the inbound batch to one row per natural key BEFORE the
-        # UPDATE/INSERT. The INSERT below guards with NOT EXISTS against the
-        # TARGET only, so without this two inbound rows sharing a key both
-        # pass the check and both insert -- silently breaking the uniqueness
-        # every consumer assumes from `natural_key`. Measured on a real
-        # 2,344-session corpus: 6 of 13 facts violated their own declared key
+        # ASSERT the inbound batch already holds one row per natural key.
+        #
+        # This does NOT collapse duplicates. It used to, and that was the
+        # wrong layer: a duplicate key means the populator's projection does
+        # not produce the grain it declares, and only that populator knows
+        # whether collapsing is safe or what the right survivor is. Resolving
+        # it here applied one fact's judgment to all 13 and did so silently --
+        # the row counts could not even distinguish a collapse from an
+        # unchanged row.
+        #
+        # The INSERT below guards with NOT EXISTS against the TARGET only, so
+        # two inbound rows sharing a key would both pass and both insert,
+        # breaking the uniqueness every consumer assumes from `natural_key`.
+        # Measured on a real 2,344-session corpus before the projections were
+        # fixed: 6 of 13 facts violated their own declared key
         # (fact_tool_results 29 keys, fact_file_operations 8, fact_tool_uses 7,
         # fact_tool_chain_steps 7, fact_agent_delegations 3, fact_errors 1).
         #
-        # Duplicates are real source data, not a hypothetical: one Claude Code
-        # session records a single tool_use_id under two distinct entry uuids.
-        # Measured: all 29 violations are that shape, and ZERO entries carry
-        # two tool_result blocks for one tool_use_id -- there is no populator
-        # fan-out, contrary to what an earlier version of this comment said.
-        # Separately, 3 sessions are ingested from more than one source_path,
-        # which is a discovery-level duplicate and a real upstream fix.
-        #
-        # THIS IS A BACKSTOP, NOT THE FIX. It makes the declared key hold, but
-        # it resolves two questions that belong upstream:
-        #   - Is tool_use_id the right natural key for fact_tool_results at
-        #     all? If the source legitimately records one under two entries,
-        #     the semantic grain may be (session, entry), and declaring a key
-        #     the data does not satisfy and then deduping to satisfy it is
-        #     backwards.
-        #   - When the two records DISAGREE (8 of the 29 carried two distinct
-        #     payload hashes), which is true? "Newest wins" is a mechanical
-        #     rule with no domain justification.
-        # The better design is to FAIL LOUD on an intra-batch duplicate key by
-        # default and let a populator opt in to a stated collapse rule where
-        # duplication is semantically expected -- that also makes duplicates
-        # observable and removes the soft-delete hazard noted below. It cannot
-        # be turned on until the four affected populators declare their rule,
-        # because it would fail the ETL on real data today.
-        #
-        # The ordering makes the survivor deterministic rather than whichever
-        # row the scan happened to reach first -- a warehouse that rebuilds to
-        # different contents from identical input is not reproducible. Newest
-        # wins, ties broken on hash_diff.
-        #
-        # KNOWN GAP: rows tying on BOTH timestamp and hash_diff can still
-        # differ in a payload column the caller left out of hash_cols, and the
-        # survivor is then arbitrary. This is live, not theoretical, for
-        # fact_agent_delegations, whose payload-minus-hash set is
-        # parent_session_key / timestamp / seconds_to_completion. Such a column
-        # is by construction not change-tracked, which is a populator design
-        # choice rather than something this helper can decide.
-        #
-        # INVARIANT THIS RELIES ON: no inbound batch contains one natural key
-        # spanning two session_ids. If that ever happens, dedup drops a row and
-        # with it that session_id from the soft-delete scope below
-        # (`session_id IN (stg UNION inbound)`), so stale rows for the dropped
-        # session are never soft-deleted -- silently. It holds today for two
-        # unrelated reasons, neither enforced: per-session populators build
-        # inbound from stg_log_entries, which holds one session; and the only
-        # cross-session populator (populate_delegation_completion) keys on
-        # md5(session_id || '|' || tool_use_id), session-unique by
-        # construction. A future cross-session populator with a
-        # session-independent natural key breaks it.
-        #
-        # NOT an audit trail. rows_read is captured before this runs, but the
-        # gap between rows_read and inserted+updated is NOT a duplicate count:
-        # it is dominated by keys that already existed in the target with an
-        # unchanged hash. Measured on a full rebuild, fact_tool_results read
-        # 76,166 / inserted 75,397 / updated 33 -- a gap of 736 against roughly
-        # 72 rows actually removed here. Deduplication is not separately
-        # observable; counting it would need its own metric.
-        #
-        # _dedup_rn carries an underscore prefix to avoid colliding with an
-        # inbound column of the same name -- convention, not enforcement. Two
-        # columns of one name would make the EXCLUDE below ambiguous, which is
-        # the same trap `d.* EXCLUDE (completion_state)` exists to avoid in
-        # fact_agent_delegations.
-        dedup_table = f"{inbound_table}_dedup"
-        _validate_ident(dedup_table)
-        conn.execute(f"DROP TABLE IF EXISTS {dedup_table}")
-        conn.execute(
+        # Failing loud also removes a hazard the collapse carried: dropping a
+        # row could drop its session_id from the soft-delete scope below
+        # (`session_id IN (stg UNION inbound)`), leaving stale rows for that
+        # session soft-deleted never -- silently.
+        dupes = fetch_scalar(
+            conn,
             f"""
-            CREATE TEMP TABLE {dedup_table} AS
-            SELECT * EXCLUDE (_dedup_rn) FROM (
-                SELECT *, ROW_NUMBER() OVER (
-                    PARTITION BY {natural_key}
-                    ORDER BY {timestamp_col} DESC NULLS LAST, hash_diff
-                ) AS _dedup_rn
-                FROM {inbound_table}
-            ) WHERE _dedup_rn = 1
-            """
+            SELECT COUNT(*) FROM (
+                SELECT {natural_key} FROM {inbound_table}
+                WHERE {natural_key} IS NOT NULL
+                GROUP BY 1 HAVING COUNT(*) > 1
+            )
+            """,
         )
-        conn.execute(f"DROP TABLE {inbound_table}")
-        conn.execute(f"ALTER TABLE {dedup_table} RENAME TO {inbound_table}")
-
+        if dupes:
+            raise ValueError(
+                f"{inbound_table} has {dupes} duplicate value(s) of "
+                f"natural_key '{natural_key}' -- {table} declares that key as "
+                "unique, so its projection must emit one row per key. Fix the "
+                "projection; do not collapse here (only the populator knows "
+                "whether collapsing is safe and which row should survive)."
+            )
+        #
         # When natural_key IS session_id, don't list it twice.
         extra_keys = ["session_key", "date_key", "time_key"]
         if natural_key != "session_id":
