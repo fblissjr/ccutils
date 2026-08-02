@@ -622,6 +622,7 @@ def generate_batch_html(
     no_search_index=False,
     private=False,
     projects=None,
+    include_thinking=True,
 ):
     """Generate HTML archive for all sessions in a Claude projects folder.
 
@@ -674,7 +675,9 @@ def generate_batch_html(
 
             # Generate transcript HTML with error handling
             try:
-                generate_html(session["path"], session_dir, private=private, rel_path="../../")
+                generate_html(session["path"], session_dir, private=private,
+                              rel_path="../../",
+                              include_thinking=include_thinking)
                 successful_sessions += 1
             except Exception as e:
                 failed_sessions.append(
@@ -971,6 +974,40 @@ def _sanitize_loglines(loglines, cwd=None):
     return loglines
 
 
+_THINKING_BLOCK_TYPES = ("thinking", "redacted_thinking")
+
+
+def _strip_thinking_blocks(loglines):
+    """Remove thinking blocks from every message's content.
+
+    Both `thinking` and `redacted_thinking` -- the redacted variant still
+    carries an Anthropic-side summary and is rendered by
+    `render_content_block`, so omitting it here would leave `--no-thinking`
+    half-honoured.
+
+    String-form content is returned untouched: it cannot contain a block.
+    """
+    cleaned = []
+    for entry in loglines:
+        message = entry.get("message")
+        content = message.get("content") if isinstance(message, dict) else None
+        if not isinstance(content, list):
+            cleaned.append(entry)
+            continue
+        kept = [
+            b for b in content
+            if not (isinstance(b, dict)
+                    and b.get("type") in _THINKING_BLOCK_TYPES)
+        ]
+        if len(kept) == len(content):
+            cleaned.append(entry)
+            continue
+        new_entry = dict(entry)
+        new_entry["message"] = {**message, "content": kept}
+        cleaned.append(new_entry)
+    return cleaned
+
+
 def generate_html(
     json_path=None,
     output_dir=None,
@@ -978,6 +1015,7 @@ def generate_html(
     loglines=None,
     private=False,
     rel_path="",
+    include_thinking=True,
 ):
     """Generate HTML transcript from a session file or pre-parsed loglines.
 
@@ -1000,6 +1038,16 @@ def generate_html(
             raise ValueError("Either json_path or loglines must be provided")
         data = parse_session_file(json_path)
         loglines = data.get("loglines", [])
+
+    # Drop thinking blocks up front rather than threading a flag down to
+    # render_content_block. One auditable place, applied before ANY consumer
+    # sees the loglines, so no render path (transcript body, stats, index)
+    # can reproduce the content by another route. This shipped broken the
+    # other way: generate_html had no include_thinking parameter at all, so
+    # `--format html --no-thinking` produced byte-identical output while
+    # markdown honoured the same flag.
+    if not include_thinking:
+        loglines = _strip_thinking_blocks(loglines)
 
     # Sanitize paths in loglines if private mode. Normalized JSONL loglines
     # carry only type/timestamp/message -- no cwd -- so resolve cwd from the

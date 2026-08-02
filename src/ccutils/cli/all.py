@@ -303,6 +303,7 @@ def all_cmd(
             output,
             include_agents=include_agents,
             progress_callback=html_progress,
+            include_thinking=include_thinking,
             no_search_index=no_search_index,
             private=private,
             projects=projects,

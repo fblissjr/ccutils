@@ -388,13 +388,15 @@ def _run_export_pipeline(
     # in the JSONL session data, or from the current working directory's git remote.
     if output_format == "html":
         if len(session_files) == 1 and not agent_map:
-            generate_html(session_files[0], output, private=private)
+            generate_html(session_files[0], output, private=private,
+                          include_thinking=include_thinking)
         else:
             output.mkdir(parents=True, exist_ok=True)
             for idx, session_file in enumerate(session_files, 1):
                 session_output = output / session_file.stem
                 click.echo(f"[{idx}/{len(session_files)}] {session_file.name}")
-                generate_html(session_file, session_output, private=private)
+                generate_html(session_file, session_output, private=private,
+                              include_thinking=include_thinking)
             generate_multi_session_index(output, session_files, agent_map=agent_map)
             click.echo(f"Generated {len(session_files)} session(s) with master index")
 

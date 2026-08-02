@@ -2287,3 +2287,88 @@ class TestPrivateFailsLoudWhenCwdUnresolvable:
         }))
         generate_html(jsonl, tmp_path / "out", private=True)
         assert "not sanitized" not in capsys.readouterr().err.lower()
+
+
+class TestNoThinkingIsHonouredByHtml:
+    """`--no-thinking` must actually remove thinking from HTML output.
+
+    Claim: this asserts the flag's EFFECT, not its acceptance. It shipped
+    broken precisely because nothing did -- `generate_html` had no
+    `include_thinking` parameter at all, so `ccutils local --format html
+    --no-thinking` exited 0 and produced output byte-identical to the
+    default, with every thinking block rendered. `export/markdown.py`
+    honoured the same flag, so the two renderers silently disagreed.
+
+    CLAUDE.md names this exact failure: "Exit-code-only CLI flag tests are
+    insufficient -- assert the flag's actual effect (sanitized paths, absent
+    thinking), not just acceptance."
+
+    Delete these and the flag can go back to being decorative on the format
+    most people use.
+    """
+
+    SECRET = "deliberating about the secret plan"
+
+    def _session(self, tmp_path):
+        jsonl = tmp_path / "thinking.jsonl"
+        jsonl.write_text("\n".join(json.dumps(d) for d in [
+            {"type": "user", "sessionId": "s1",
+             "cwd": "/Users/dev/workspace/p",  # path-privacy: ignore
+             "timestamp": "2026-04-19T10:00:00Z",
+             "message": {"role": "user", "content": "go"}},
+            {"type": "assistant", "sessionId": "s1",
+             "timestamp": "2026-04-19T10:00:01Z",
+             "message": {"role": "assistant", "model": "claude-opus-5",
+                         "content": [
+                             {"type": "thinking", "thinking": self.SECRET},
+                             {"type": "text", "text": "visible answer"},
+                         ]}},
+        ]))
+        return jsonl
+
+    def _rendered(self, out_dir):
+        return "\n".join(
+            p.read_text() for p in Path(out_dir).rglob("*.html")
+        )
+
+    def test_thinking_absent_when_excluded(self, tmp_path):
+        out = tmp_path / "out"
+        generate_html(self._session(tmp_path), out, include_thinking=False)
+        assert self.SECRET not in self._rendered(out)
+
+    def test_thinking_present_by_default(self, tmp_path):
+        """Non-vacuity: if thinking never rendered, the test above passes
+        for the wrong reason."""
+        out = tmp_path / "out"
+        generate_html(self._session(tmp_path), out)
+        assert self.SECRET in self._rendered(out)
+
+    def test_rest_of_transcript_survives(self, tmp_path):
+        """Excluding thinking must not blank the message it came from."""
+        out = tmp_path / "out"
+        generate_html(self._session(tmp_path), out, include_thinking=False)
+        assert "visible answer" in self._rendered(out)
+
+    def test_cli_no_thinking_changes_html_output(self, tmp_path):
+        """End to end through the CLI -- the path that actually shipped
+        broken. Asserts the two runs DIFFER, which is what byte-identical
+        output disproved."""
+        from click.testing import CliRunner
+
+        from ccutils.cli.local import local_cmd
+
+        src = tmp_path / "projects" / "-Users-dev-p"
+        src.mkdir(parents=True)
+        session = self._session(tmp_path)
+        session.rename(src / "s1.jsonl")
+
+        runner = CliRunner()
+        for name, args in (("with", []), ("without", ["--no-thinking"])):
+            res = runner.invoke(local_cmd, [
+                str(src / "s1.jsonl"), "--format", "html",
+                "-o", str(tmp_path / name), *args,
+            ])
+            assert res.exit_code == 0, res.output
+
+        assert self.SECRET in self._rendered(tmp_path / "with")
+        assert self.SECRET not in self._rendered(tmp_path / "without")
