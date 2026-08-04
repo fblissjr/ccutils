@@ -96,7 +96,12 @@ def populate_fact_plan_revisions(conn, *, run: EtlRun) -> None:
                 ftr.timestamp AS resolved_timestamp,
                 ftr.message_id AS result_message_id
             FROM plan_calls pc
-            LEFT JOIN fact_tool_results ftr USING (tool_use_id)
+            -- is_deleted in the ON clause: a soft-deleted duplicate result
+            -- row would pair one plan_call to two results and duplicate the
+            -- revision downstream.
+            LEFT JOIN fact_tool_results ftr
+                   ON ftr.tool_use_id = pc.tool_use_id
+                  AND ftr.is_deleted = FALSE
         ),
         with_outcome AS (
             SELECT

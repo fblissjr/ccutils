@@ -304,3 +304,46 @@ class TestFactFileOperationsPopulator:
             "SELECT last_updated_at FROM fact_file_operations ORDER BY 1"
         ).fetchall()
         assert first == second, "re-ETL on unchanged source must be a no-op"
+
+
+class TestSoftDeletedResultsDoNotFanOut:
+    """A soft-deleted fact_tool_results twin must not join into the inbound.
+
+    The upgrade path creates exactly this state: `_repair_duplicate_natural_
+    keys` soft-deletes duplicate tool_use_id rows at open, then the next
+    batch run re-ETLs the session. The inbound here derives from
+    fact_tool_uses JOIN fact_tool_results; without an is_deleted filter on
+    the RESULTS side of the join, the repaired twin fans it out, the inbound
+    carries a duplicate tool_use_id, and lineage_upsert kills the session.
+    Observed on a real pre-R23 warehouse: 2 sessions failed exactly here
+    (7 and 1 duplicate keys) after the open-time repair had run.
+    """
+
+    def test_repaired_twin_does_not_duplicate_the_inbound(
+        self, conn, file_op_session, tmp_path
+    ):
+        _populate(conn, file_op_session, tmp_path)
+        before = conn.execute(
+            "SELECT COUNT(*) FROM fact_file_operations WHERE NOT is_deleted"
+        ).fetchone()[0]
+
+        # Plant the post-repair state: a second physical row for one
+        # tool_use_id, soft-deleted, exactly as the repair leaves it.
+        conn.execute(
+            "INSERT INTO fact_tool_results SELECT * REPLACE ("
+            "  'e_twin' AS entry_id, TRUE AS is_deleted,"
+            "  current_timestamp AS deleted_at)"
+            "FROM fact_tool_results ORDER BY tool_use_id LIMIT 1"
+        )
+
+        _populate(conn, file_op_session, tmp_path)  # must not raise
+
+        after = conn.execute(
+            "SELECT COUNT(*) FROM fact_file_operations WHERE NOT is_deleted"
+        ).fetchone()[0]
+        assert after == before
+        dup = conn.execute(
+            "SELECT COUNT(*) FROM (SELECT tool_use_id FROM fact_file_operations "
+            "WHERE NOT is_deleted GROUP BY 1 HAVING COUNT(*) > 1)"
+        ).fetchone()[0]
+        assert dup == 0

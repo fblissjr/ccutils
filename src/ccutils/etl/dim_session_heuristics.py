@@ -78,7 +78,12 @@ def populate_dim_session_heuristics(
                    SUM(CASE WHEN ftr.is_error = TRUE THEN 1 ELSE 0 END)
                        AS error_count
             FROM fact_tool_uses ftu
-            LEFT JOIN fact_tool_results ftr USING (tool_use_id)
+            -- is_deleted in the ON clause: a soft-deleted duplicate result
+            -- row would fan this join out and silently double-count
+            -- tool_count/error_count (no natural-key assertion runs here).
+            LEFT JOIN fact_tool_results ftr
+                   ON ftr.tool_use_id = ftu.tool_use_id
+                  AND ftr.is_deleted = FALSE
             WHERE ftu.is_deleted = FALSE
               AND ftu.session_id IN (SELECT session_id FROM staging_sessions)
             GROUP BY ftu.session_id

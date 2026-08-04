@@ -1005,3 +1005,40 @@ class TestAsyncCompletionReconciliation:
         assert row[0] == "completed"
         assert row[1] == 4242, "parent-side metric preserved, not clobbered"
         assert row[2] == pytest.approx(102.0, abs=1.0)
+
+
+class TestSoftDeletedResultsDoNotFanOut:
+    """A soft-deleted fact_tool_results twin must not fan out the inbound.
+
+    Same defect class as the file-operations test of the same name: this
+    populator derives from fact_tool_uses JOIN fact_tool_results, and a
+    repaired (soft-deleted) duplicate result row must not re-enter through
+    the join. Observed on a real pre-R23 warehouse: 1 session failed with
+    2 duplicate delegation_keys after the open-time repair had run.
+    """
+
+    def test_repaired_twin_does_not_duplicate_the_inbound(
+        self, conn, agent_session, tmp_path
+    ):
+        _populate(conn, agent_session, tmp_path)
+        before = conn.execute(
+            "SELECT COUNT(*) FROM fact_agent_delegations WHERE NOT is_deleted"
+        ).fetchone()[0]
+        assert before > 0, "fixture must produce at least one delegation"
+
+        conn.execute(
+            "INSERT INTO fact_tool_results SELECT * REPLACE ("
+            "  'e_twin' AS entry_id, TRUE AS is_deleted,"
+            "  current_timestamp AS deleted_at)"
+            "FROM fact_tool_results WHERE tool_name = 'Task' "
+            "ORDER BY tool_use_id LIMIT 1"
+        )
+
+        _populate(conn, agent_session, tmp_path)  # must not raise
+
+        dup = conn.execute(
+            "SELECT COUNT(*) FROM (SELECT delegation_key FROM "
+            "fact_agent_delegations WHERE NOT is_deleted GROUP BY 1 "
+            "HAVING COUNT(*) > 1)"
+        ).fetchone()[0]
+        assert dup == 0

@@ -187,7 +187,14 @@ def populate_fact_file_operations(conn, *, run: EtlRun) -> None:
                 ELSE NULL
             END AS file_size_chars
         FROM fact_tool_uses ftu
-        LEFT JOIN fact_tool_results ftr USING (tool_use_id)
+        -- is_deleted belongs in the ON clause, not just on ftu: a repaired
+        -- (soft-deleted) duplicate result row would otherwise fan the join
+        -- out and hand lineage_upsert a duplicate tool_use_id. The upgrade
+        -- path hits exactly this -- repair soft-deletes twins at open, then
+        -- this populator re-runs over the same session.
+        LEFT JOIN fact_tool_results ftr
+               ON ftr.tool_use_id = ftu.tool_use_id
+              AND ftr.is_deleted = FALSE
         WHERE ftu.is_deleted = FALSE
           AND ftu.tool_name IN ({tool_list})
           -- Scope to the session currently being ETL'd: prior sessions'

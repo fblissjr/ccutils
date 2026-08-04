@@ -133,7 +133,13 @@ def populate_fact_agent_delegations(conn, *, run: EtlRun) -> None:
                 )
             END AS agent_output_text
         FROM fact_tool_uses ftu
-        LEFT JOIN fact_tool_results ftr USING (tool_use_id)
+        -- is_deleted in the ON clause: a repaired (soft-deleted) duplicate
+        -- result row must not fan the join out into a duplicate
+        -- delegation_key. See fact_file_operations for the upgrade-path
+        -- failure this caused.
+        LEFT JOIN fact_tool_results ftr
+               ON ftr.tool_use_id = ftu.tool_use_id
+              AND ftr.is_deleted = FALSE
         WHERE ftu.is_deleted = FALSE
           AND ftu.tool_name IN ({tool_list})
           AND ftu.session_id IN (
