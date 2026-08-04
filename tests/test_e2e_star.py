@@ -416,58 +416,64 @@ def test_t1_subagent_recursive_cte_used_in_depth_propagation(conn):
 # --- Feature 4: HTML Export and Security Improvements ---
 
 def test_t1_html_csp_no_unsafe_inline_script(temp_dir):
-    """Test 17: Verify generated CSP header does not contain 'unsafe-inline' in script-src."""
-    base_template = Path(__file__).parent.parent / "src" / "ccutils" / "templates" / "base.html"
-    content = base_template.read_text(encoding="utf-8")
-    
-    csp_match = re.search(r'http-equiv="Content-Security-Policy"\s+content="([^"]+)"', content, re.I)
-    assert csp_match is not None, "CSP meta tag not found in base.html"
-    
-    csp = csp_match.group(1)
-    
-    # Find script-src directive
+    """Test 17: The built CSP never contains 'unsafe-inline' in script-src.
+
+    Since C2 every document builds its policy via _build_csp, which pins the
+    inline blocks by sha256; 'unsafe-inline' would permit ANY inline script,
+    including one buried in a transcript.
+    """
+    from ccutils.export.html import _build_csp
+
+    csp = _build_csp("body { color: red }", "console.log('x')")
     script_src = [part.strip() for part in csp.split(";") if part.strip().startswith("script-src")]
-    if script_src:
-        assert "'unsafe-inline'" not in script_src[0], "script-src contains 'unsafe-inline'"
+    assert script_src, "no script-src directive in built CSP"
+    assert "'unsafe-inline'" not in script_src[0], "script-src contains 'unsafe-inline'"
+    assert "'unsafe-hashes'" not in script_src[0], "script-src contains 'unsafe-hashes'"
 
 
 def test_t1_html_csp_no_unsafe_inline_style(temp_dir):
-    """Test 18: Verify generated CSP header does not contain 'unsafe-inline' in style-src."""
-    base_template = Path(__file__).parent.parent / "src" / "ccutils" / "templates" / "base.html"
-    content = base_template.read_text(encoding="utf-8")
-    
-    csp_match = re.search(r'http-equiv="Content-Security-Policy"\s+content="([^"]+)"', content, re.I)
-    assert csp_match is not None, "CSP meta tag not found"
-    
-    csp = csp_match.group(1)
-    
-    # Find style-src directive
+    """Test 18: The built CSP never contains 'unsafe-inline' in style-src."""
+    from ccutils.export.html import _build_csp
+
+    csp = _build_csp("body { color: red }", "console.log('x')")
     style_src = [part.strip() for part in csp.split(";") if part.strip().startswith("style-src")]
-    if style_src:
-        assert "'unsafe-inline'" not in style_src[0], "style-src contains 'unsafe-inline'"
+    assert style_src, "no style-src directive in built CSP"
+    assert "'unsafe-inline'" not in style_src[0], "style-src contains 'unsafe-inline'"
 
 
-def test_t1_html_no_inline_scripts_in_body(temp_dir):
-    """Test 19: Verify base.html has externalized scripts and styles.
-    It should not have inline script blocks injecting raw js.
+def test_t1_html_inline_blocks_only_in_csp_bearing_templates(temp_dir):
+    """Test 19: A template may inject inline <style>/<script> only if it also
+    emits its own CSP meta tag (which _build_csp fills with the blocks'
+    sha256 hashes). An injection without a policy to pin it is the regression
+    this test exists to catch.
     """
-    base_template = Path(__file__).parent.parent / "src" / "ccutils" / "templates" / "base.html"
-    content = base_template.read_text(encoding="utf-8")
-    
-    assert "<script>{{ js|safe }}</script>" not in content, "Inline script injection block found in base.html"
-    assert "<style>{{ css|safe }}</style>" not in content, "Inline style injection block found in base.html"
+    templates_dir = Path(__file__).parent.parent / "src" / "ccutils" / "templates"
+    for tpl in sorted(templates_dir.glob("*.html")):
+        content = tpl.read_text(encoding="utf-8")
+        has_injection = re.search(r"<(style|script)>\{\{", content) is not None
+        if has_injection:
+            assert 'http-equiv="Content-Security-Policy"' in content and "{{ csp" in content, (
+                f"{tpl.name} injects inline blocks but renders no CSP to pin them"
+            )
 
 
-def test_t1_html_no_innerhtml_in_search_js(temp_dir):
-    """Test 20: Verify search.js does not use dynamic innerHTML assignment to update DOM search results."""
-    search_js = Path(__file__).parent.parent / "src" / "ccutils" / "templates" / "search.js"
-    content = search_js.read_text(encoding="utf-8")
-    
-    # Verify we do not do resultDiv.innerHTML = ...
-    # Wait, clearing like .innerHTML = '' is fine, but string concatenation assignment is vulnerable
-    matches = re.findall(r"\w+\.innerHTML\s*=\s*[^';]+", content)
-    for match in matches:
-        assert "''" in match or '""' in match, f"Unsafe innerHTML assignment found in search.js: {match}"
+def test_t1_html_no_innerhtml_in_shipped_js(temp_dir):
+    """Test 20: No shipped JS uses dynamic innerHTML assignment.
+
+    Clearing like .innerHTML = '' is fine; assignment from a variable or
+    concatenation is an XSS sink. Scans every JS source the exporter inlines
+    (templates/*.js and static/*.js) so a renamed or added file stays covered.
+    """
+    src_root = Path(__file__).parent.parent / "src" / "ccutils"
+    js_files = sorted((src_root / "templates").glob("*.js")) + sorted(
+        (src_root / "static").glob("*.js"))
+    assert js_files, "no JS sources found -- glob roots are stale"
+    for js in js_files:
+        content = js.read_text(encoding="utf-8")
+        matches = re.findall(r"\w+\.innerHTML\s*=\s*[^';]+", content)
+        for match in matches:
+            assert "''" in match or '""' in match, (
+                f"Unsafe innerHTML assignment found in {js.name}: {match}")
 
 
 # =========================================================================
@@ -705,25 +711,29 @@ def test_t2_subagent_recursive_cte_handles_deep_tree(conn):
 
 # --- Feature 4: HTML Export and Security Improvements ---
 
-def test_t2_html_no_innerhtml_in_global_search_js(temp_dir):
-    """Test 36: Verify global_search.js does not use dynamic innerHTML assignment to update DOM search results."""
-    global_search_js = Path(__file__).parent.parent / "src" / "ccutils" / "templates" / "global_search.js"
-    content = global_search_js.read_text(encoding="utf-8")
-    
-    matches = re.findall(r"\w+\.innerHTML\s*=\s*[^';]+", content)
-    for match in matches:
-        assert "''" in match or '""' in match, f"Unsafe innerHTML assignment found in global_search.js: {match}"
+def test_t2_html_shipped_js_never_fetches(temp_dir):
+    """Test 36: No shipped JS source calls fetch() or XMLHttpRequest.
+
+    search.js fetched page-NNN.html for every page; browsers block fetch()
+    from file://, the .catch() swallowed the error, and search reported
+    "0 results" indistinguishably from no matches. The archive is static
+    files -- any network call in shipped JS is that bug returning.
+    """
+    src_root = Path(__file__).parent.parent / "src" / "ccutils"
+    js_files = sorted((src_root / "templates").glob("*.js")) + sorted(
+        (src_root / "static").glob("*.js"))
+    assert js_files, "no JS sources found -- glob roots are stale"
+    for js in js_files:
+        content = js.read_text(encoding="utf-8")
+        assert "fetch(" not in content, f"{js.name} calls fetch()"
+        assert "XMLHttpRequest" not in content, f"{js.name} uses XMLHttpRequest"
 
 
 def test_t2_html_csp_contains_strict_default_src(temp_dir):
-    """Test 37: Verify CSP meta tag in base.html contains default-src 'none'."""
-    base_template = Path(__file__).parent.parent / "src" / "ccutils" / "templates" / "base.html"
-    content = base_template.read_text(encoding="utf-8")
-    
-    csp_match = re.search(r'http-equiv="Content-Security-Policy"\s+content="([^"]+)"', content, re.I)
-    assert csp_match is not None, "CSP meta tag not found"
-    
-    csp = csp_match.group(1)
+    """Test 37: The built CSP locks default-src to 'none'."""
+    from ccutils.export.html import _build_csp
+
+    csp = _build_csp("body { color: red }", "console.log('x')")
     assert "default-src 'none'" in csp, "CSP default-src is not set to 'none'"
 
 
@@ -940,9 +950,9 @@ def test_t4_scenario_2_js_ts_web_subagent_classification(conn, temp_dir):
 
 
 def test_t4_scenario_3_safe_html_generation_search_csp(temp_dir):
-    """Test 47: Scenario 3 - Safe HTML Generation & Search with CSP.
-    Generates HTML, verifies CSP script-src and style-src contain no unsafe-inline directives,
-    and checks that search.js has no unsafe innerHTML assignments.
+    """Test 47: Scenario 3 - Safe HTML Generation with CSP.
+    Generates HTML and verifies CSP script-src and style-src contain no
+    unsafe-inline directives, and any emitted JS has no unsafe innerHTML.
     """
     session = create_mock_session_file(temp_dir, "sess_html_safe", make_basic_loglines("sess_html_safe"))
     output_dir = temp_dir / "html_safe_out"

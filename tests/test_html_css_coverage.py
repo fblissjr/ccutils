@@ -17,7 +17,7 @@ from pathlib import Path
 
 import pytest
 
-from ccutils import CSS, generate_html
+from ccutils import CSS, generate_html, generate_multi_session_index
 
 
 # Classes emitted by templates but intentionally without a direct CSS rule.
@@ -98,31 +98,38 @@ def _literal_classes_in_template(text: str) -> set[str]:
 
 @pytest.fixture(scope="class")
 def rendered_sample_outputs(tmp_path_factory):
-    """Render the comprehensive sample once per test class; return (index, page) HTML."""
+    """Render the comprehensive sample once per test class; return HTML by doc name.
+
+    C2/C3 layout: one self-contained file per session plus one flat
+    index.html. There is no transcript.css on disk -- each document carries
+    its stylesheet as an inline <style> block pinned by sha256 in its CSP.
+    """
     fixture = Path(__file__).parent / "sample_session.json"
     out = tmp_path_factory.mktemp("css_coverage_render")
     generate_html(fixture, out, github_repo="example/project")
-    pages = sorted(out.glob("page-*.html"))
-    assert pages, "No page-*.html generated"
+    sessions = sorted(p for p in out.glob("*.html") if p.name != "index.html")
+    assert sessions, "No session .html generated"
+    generate_multi_session_index(out, [fixture])
     return {
+        "session": sessions[0].read_text(encoding="utf-8"),
         "index": (out / "index.html").read_text(encoding="utf-8"),
-        "page": pages[0].read_text(encoding="utf-8"),
-        "out_dir": out,
     }
 
 
 class TestRenderedCssCoverage:
-    """Runtime check: every class in the rendered sample must have a CSS rule."""
+    """Runtime check: every class in a rendered document has a rule in the
+    stylesheet that same document ships (self-contained files carry their own).
+    """
 
-    @pytest.mark.parametrize("doc_name", ["index", "page"])
+    @pytest.mark.parametrize("doc_name", ["session", "index"])
     def test_rendered_classes_have_rules(self, rendered_sample_outputs, doc_name):
         html = rendered_sample_outputs[doc_name]
-        out_dir = rendered_sample_outputs["out_dir"]
-        css_content = (out_dir / "transcript.css").read_text(encoding="utf-8")
-        defined = _classes_defined_in_css(css_content)
+        style = re.search(r"<style>(.*?)</style>", html, re.DOTALL)
+        assert style, f"{doc_name} document carries no inline stylesheet"
+        defined = _classes_defined_in_css(style.group(1))
         missing = _filter_known_safe(_classes_used_in_html(html) - defined)
         assert not missing, (
-            f"Classes in {doc_name}.html without CSS rules: {sorted(missing)}. "
+            f"Classes in the {doc_name} document without CSS rules: {sorted(missing)}. "
             f"Add a rule to transcript.css or extend KNOWN_SAFE_UNSTYLED with a justification."
         )
 
@@ -130,8 +137,8 @@ class TestRenderedCssCoverage:
 class TestTemplateStaticCssCoverage:
     """Static check: every literal class token across all .html templates has a CSS rule.
 
-    Catches classes emitted only by rarely-exercised templates (multi_session_index,
-    master_index, project_index) that the runtime fixture doesn't hit.
+    Catches classes emitted only by template branches the runtime fixture
+    doesn't hit.
     """
 
     def test_all_template_classes_have_rules(self):
@@ -151,10 +158,11 @@ class TestTemplateStaticCssCoverage:
         )
 
 
-# base.html serves a strict CSP: `style-src 'self'; script-src 'self'` with NO
-# 'unsafe-inline'. The browser silently blocks any inline style/script under
-# that policy -- and pytest never renders under an enforcing CSP, so nothing
-# else catches a regression. These patterns are what the policy forbids.
+# The exporter serves a strict CSP (`_build_csp`) with NO 'unsafe-inline':
+# inline <style>/<script> BLOCKS are legal only because the policy pins each
+# one by sha256. The browser silently blocks anything else -- and pytest never
+# renders under an enforcing CSP, so nothing else catches a regression. These
+# patterns are what the policy forbids.
 _INLINE_STYLE_ATTR = re.compile(r"""\bstyle\s*=\s*["']""")
 _INLINE_STYLE_BLOCK = re.compile(r"<style[\s>]", re.IGNORECASE)
 _INLINE_EVENT_HANDLER = re.compile(r"""\bon[a-z]+\s*=\s*["']""", re.IGNORECASE)
@@ -164,7 +172,7 @@ _SCRIPT_OPEN_TAG = re.compile(r"<script\b([^>]*)>", re.IGNORECASE)
 # Templates whose inline blocks are pinned by a sha256 CSP hash computed at
 # render time. A hash covers a <style>/<script> BLOCK exactly; nothing else
 # may carry inline blocks, and NO template may ever carry inline attributes.
-_HASH_PINNED_TEMPLATES = {"session.html"}
+_HASH_PINNED_TEMPLATES = {"session.html", "index.html"}
 
 
 def _csp_blocked_inline_constructs(text: str, *, allow_hashed_blocks: bool = False
@@ -193,13 +201,16 @@ def _csp_blocked_inline_constructs(text: str, *, allow_hashed_blocks: bool = Fal
 
 
 class TestNoInlineConstructsForCsp:
-    """Keystone guard for the tightened CSP (base.html, `*-src 'self'`).
+    """Keystone guard for the strict CSP (`_build_csp`, hash-pinned blocks).
 
-    The inline-style regression -- CSP tightened to 'self' while macros.html /
-    page.html / the index templates still carried `style=` attrs -- passed every
-    test because the class-coverage checks only look at class rules and pytest
-    doesn't enforce CSP. This scans template source directly so re-introducing an
-    inline style/script/handler fails loud.
+    The inline-style regression -- CSP tightened while macros.html and the
+    index templates still carried `style=` attrs -- passed every test because
+    the class-coverage checks only look at class rules and pytest doesn't
+    enforce CSP. This scans template source directly so re-introducing an
+    inline style/script/handler fails loud. Since C2/C3, <style>/<script>
+    BLOCKS are legal in the hash-pinned templates; `style=` and `on*=`
+    ATTRIBUTES stay forbidden everywhere -- permitting them would require
+    'unsafe-hashes', which re-permits any inline handler.
     """
 
     def test_templates_have_no_csp_blocked_inline_constructs(self):
@@ -215,8 +226,9 @@ class TestNoInlineConstructsForCsp:
 
         assert not offenders, (
             f"Templates contain CSP-blocked inline constructs: {offenders}. "
-            f"base.html forbids 'unsafe-inline' -- move inline styles into "
-            f"transcript.css classes and load scripts via <script src=...>."
+            f"The CSP forbids 'unsafe-inline' -- move inline styles into "
+            f"transcript.css classes, and inline blocks only in hash-pinned "
+            f"templates (_HASH_PINNED_TEMPLATES)."
         )
 
     def test_rendered_output_has_no_csp_blocked_inline_constructs(
@@ -224,9 +236,14 @@ class TestNoInlineConstructsForCsp:
     ):
         # Belt-and-suspenders against the actual rendered HTML (catches anything
         # a macro emits at runtime that the static template scan can't see).
-        for doc_name in ("index", "page"):
-            found = _csp_blocked_inline_constructs(rendered_sample_outputs[doc_name])
+        # Blocks are allowed -- rendered documents inline their pinned CSS/JS,
+        # and test_generate_html.py asserts each block's sha256 appears in the
+        # emitted CSP. Attributes are never allowed.
+        for doc_name in ("session", "index"):
+            found = _csp_blocked_inline_constructs(
+                rendered_sample_outputs[doc_name], allow_hashed_blocks=True
+            )
             assert not found, (
-                f"Rendered {doc_name}.html contains CSP-blocked inline constructs: "
-                f"{found}."
+                f"Rendered {doc_name} document contains CSP-blocked inline "
+                f"constructs: {found}."
             )
