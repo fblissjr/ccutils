@@ -68,7 +68,7 @@ Note: pairing `--batch-llm-facets` with `--format json` runs the full LLM extrac
 Batch convert every session. Agents and thinking blocks included by default.
 
 ```bash
-ccutils all -o ./archive                         # HTML archive with search index
+ccutils all -o ./archive                         # Flat HTML archive: index + one file per session
 ccutils all --format markdown -o ./md-archive    # One .md per session, per-project tree
 ccutils all --format duckdb -o ./analytics       # v0.15 star schema for all sessions
 ccutils all --format duckdb --embed -o ./out     # With ColBERT embeddings
@@ -126,11 +126,17 @@ Four formats: `html`, `markdown`, `duckdb`, `json` (plus `both` = html+duckdb on
 
 ### HTML Transcripts
 
-Clean, mobile-friendly HTML with pagination, commit timeline, tool stats, and full-text search.
+One self-contained `.html` file per session -- styling and script inlined and
+pinned by sha256 in a strict CSP, so a transcript is a single file you can
+open from disk or send to someone. Batch output is flat: one filterable
+`index.html` plus one file per session; projects are a filter over the one
+list, not a page tree. In-page navigation is a collapsible prompt list plus a
+client-side filter box (no network calls -- the old fetch-based search
+silently returned zero results when opened from `file://`).
 
 ```bash
 ccutils -o ./transcript --open
-ccutils all -o ./archive                    # Archive with master index and search
+ccutils all -o ./archive                    # Flat archive: index + one file per session
 ```
 
 ### DuckDB Analytics (v0.15 star schema)
@@ -253,7 +259,7 @@ hdiutil detach /Volumes/CCArchive
 
 The encrypted volume covers both the DuckDB file and the parquet lake (they're just files on it). Two caveats for a full-system export:
 
-- **`--private` is best-effort and not wired through the v0.15 ETL** (the flag is rejected on `duckdb`/`json`). On the render formats (html, markdown) it only masks cwd/home-prefixed paths in a subset of channels -- `tool_use` inputs (`file_path`/`command`/`content`/`path`) and string `tool_result` content. It does **not** sanitize message text, thinking blocks, non-message entries (e.g. `file-history-snapshot` paths), the batch `ccutils all` search index, project directory names, or absolute paths from another machine/user pasted into content. When it can't resolve a working directory (agent transcripts, `.json`/claude.ai exports) it now prints a loud warning rather than silently no-opping. Treat `--private` as a convenience for local encrypted archives, not a guarantee for public sharing; review output before sharing. (Comprehensive channel-walking is a tracked follow-up.)
+- **`--private` is best-effort and not wired through the v0.15 ETL** (the flag is rejected on `duckdb`/`json`). On the render formats (html, markdown) it only masks cwd/home-prefixed paths in a subset of channels -- `tool_use` inputs (`file_path`/`command`/`content`/`path`) and string `tool_result` content. It does **not** sanitize message text, thinking blocks, non-message entries (e.g. `file-history-snapshot` paths), project directory names, or absolute paths from another machine/user pasted into content. When it can't resolve a working directory (agent transcripts, `.json`/claude.ai exports) it now prints a loud warning rather than silently no-opping. Treat `--private` as a convenience for local encrypted archives, not a guarantee for public sharing; review output before sharing. (Comprehensive channel-walking is a tracked follow-up.)
 - **Tier 2 LLM facets cost real money at full-system scale.** `--with-llm-facets` runs one Haiku call per session -- pennies on a handful of sessions, but potentially dollars across hundreds. Omit it for a bulk archive run, or run it separately on a filtered subset.
 
 Portable alternative (any OS), encrypting the export as a single artifact with [age](https://github.com/FiloSottile/age):
@@ -299,7 +305,7 @@ tar czf - ./archive | age -r <recipient-key> > archive.tar.gz.age && rm -rf ./ar
 -j, --jobs N               Parallel workers (default: 1)
 --batch-size N             Sessions per batch (default: 10)
 -q, --quiet                Suppress output except errors
---no-search-index          Skip search index generation
+--no-search-index          Deprecated no-op (there is no search index); accepted for compatibility
 ```
 
 ## Documentation
