@@ -78,6 +78,11 @@ def _parse_jsonl_file(filepath):
                 }
                 if obj.get("isCompactSummary"):
                     entry["isCompactSummary"] = True
+                # Stated provenance of a user prompt (typed/sdk/queued/system).
+                # The renderer's prompt list drops "system" entries -- task
+                # notifications the harness injects as user turns.
+                if obj.get("promptSource"):
+                    entry["promptSource"] = obj["promptSource"]
                 loglines.append(entry)
             elif entry_type in _RENDERED_NON_MESSAGE_TYPES:
                 # Carry the raw entry through under `_raw` so the

@@ -85,7 +85,7 @@ class TestGenerateHtml:
 
         for html_content in [read_transcript(output_dir)]:
             assert "Content-Security-Policy" in html_content, (
-                f"CSP meta tag missing from {html_file}"
+                "CSP meta tag missing from transcript"
             )
             assert "script-src" in html_content
             assert "frame-src 'none'" in html_content
@@ -2490,6 +2490,49 @@ class TestSingleFileSessionOutput:
         assert "first prompt" in html and "second prompt" in html
         assert 'class="prompt-list"' in html
 
+    def test_prompt_list_excludes_machine_generated_prompts(self, tmp_path):
+        """User entries stating promptSource "system" are machine-generated
+        (task notifications), not prompts anyone typed.
+
+        Claim: the field is stated on the entry, so the prompt list can act
+        on it instead of pattern-matching content. Measured on the real
+        corpus: promptSource takes typed/sdk/queued (human- or
+        driver-initiated -- listed) and system (task-notification payloads --
+        noise in a navigation list). "Stop hook feedback:" prompts do NOT
+        carry promptSource "system" (measured: 2 typed, 7 absent), so the
+        existing literal check stays alongside, not replaced.
+        """
+        jsonl = tmp_path / "s2.jsonl"
+        jsonl.write_text("\n".join(json.dumps(d) for d in [
+            {"type": "user", "sessionId": "s2",
+             "timestamp": "2026-04-19T10:00:00Z", "promptSource": "typed",
+             "message": {"role": "user", "content": "a real question"}},
+            {"type": "assistant", "sessionId": "s2",
+             "timestamp": "2026-04-19T10:00:01Z",
+             "message": {"role": "assistant", "model": "claude-opus-5",
+                         "content": [{"type": "text", "text": "an answer"}]}},
+            {"type": "user", "sessionId": "s2",
+             "timestamp": "2026-04-19T10:00:02Z", "promptSource": "system",
+             "message": {"role": "user",
+                         "content": "<task-notification>task done</task-notification>"}},
+            {"type": "user", "sessionId": "s2",
+             "timestamp": "2026-04-19T10:00:03Z", "promptSource": "queued",
+             "message": {"role": "user", "content": "a queued follow-up"}},
+        ]))
+        out = tmp_path / "out"
+        generate_html(jsonl, out)
+        html = (out / "s2.html").read_text()
+        prompt_list = re.search(
+            r'<(ul|ol|nav|details)[^>]*class="prompt-list".*?</\1>', html, re.S)
+        assert prompt_list, "no prompt-list in rendered document"
+        listed = prompt_list.group(0)
+        assert "a real question" in listed
+        assert "a queued follow-up" in listed
+        assert "task-notification" not in listed
+        # The notification still renders in the transcript BODY -- excluded
+        # from navigation, not from the record.
+        assert "task done" in html
+
     def test_csp_allows_inline_only_via_hash(self, tmp_path):
         """Self-contained means inline blocks; inline must be hash-pinned.
 
@@ -2599,3 +2642,23 @@ class TestBatchIndexIsOneFilterableList:
         index = (out / "index.html").read_text()
         assert "fetch(" not in index
         assert "<script src=" not in index
+
+    def test_index_hashes_match_the_emitted_blocks(self, tmp_path):
+        # Same invariant the session document carries
+        # (test_emitted_hashes_match_the_emitted_blocks): the CSP hash must be
+        # computed over the exact bytes in the document, or the browser blocks
+        # the block and the filter dies silently.
+        import base64
+        import hashlib
+
+        out = self._archive(tmp_path)
+        index = (out / "index.html").read_text()
+        csp = re.search(r'content="([^"]*default-src[^"]*)"', index).group(1)
+        assert "unsafe-inline" not in csp and "unsafe-hashes" not in csp
+        for tag in ("style", "script"):
+            body = re.search(rf"<{tag}>(.*?)</{tag}>", index, re.S).group(1)
+            digest = base64.b64encode(
+                hashlib.sha256(body.encode("utf-8")).digest()).decode("ascii")
+            assert f"sha256-{digest}" in csp, (
+                f"the {tag} block in index.html does not match any hash in "
+                f"the CSP -- the browser would block it")

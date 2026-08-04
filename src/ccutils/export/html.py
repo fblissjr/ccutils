@@ -1069,6 +1069,7 @@ def _generate_html_body(loglines, output_dir, stem="session", title="Transcript"
                 "timestamp": timestamp,
                 "messages": [(log_type, message_json, timestamp)],
                 "is_continuation": bool(is_compact_summary),
+                "prompt_source": entry.get("promptSource"),
             }
         elif current_conv:
             # Add to current conversation
@@ -1100,6 +1101,13 @@ def _generate_html_body(loglines, output_dir, stem="session", title="Transcript"
     prompt_items = []
     for conv in conversations:
         if conv.get("is_continuation"):
+            continue
+        # promptSource is stated on the entry: "system" marks harness-injected
+        # user turns (task notifications), which are noise in a navigation
+        # list. The literal check below is NOT replaced by it -- measured on
+        # the real corpus, "Stop hook feedback:" prompts carry
+        # promptSource "typed" or no field at all, never "system".
+        if conv.get("prompt_source") == "system":
             continue
         if conv["user_text"].startswith("Stop hook feedback:"):
             continue
