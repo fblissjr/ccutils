@@ -1,6 +1,6 @@
 # Star Schema DuckDB Implementation
 
-Last updated: 2026-08-02
+Last updated: 2026-08-04
 
 A dimensional data model for Claude Code transcript analytics, built on a four-tier ETL pipeline with full lineage tracking. The star schema is now the only schema (the legacy 4-table simple schema was removed when v0.15 stabilized).
 
@@ -101,6 +101,7 @@ After the per-session loop, `dim_prompt` is best-effort populated from the Claud
 
 - **`toolUseResult` structured payload (R1)**: per-tool typed columns on `fact_tool_results` (Edit `structured_patch`, Bash `exit_code`/`interrupted`, Read `num_lines`/`total_lines`, Agent rollups including `total_duration_ms`), plus a JSON catch-all for unknown tools.
 - **Cache-token split (R11)**: `fact_token_usage` and `fact_session_summary` split `cache_creation_tokens` into `cache_creation_5m_tokens` (1.25x pricing) and `cache_creation_1h_tokens` (2x pricing). `total_uncached_equivalent_tokens` correctly = input + creation_total + read.
+- **API-response grain on token facts (R23)**: one Claude Code response is flushed as several assistant entries that each repeat the same `usage`; `fact_token_usage` dedupes to one row per response (`api_message_id`) and `fact_messages` populates its token columns only on the response's first entry, so SUMs bill each response once instead of 2-3 times.
 - **Tri-state `is_error` (R16)**: nullable BOOLEAN on `fact_tool_results` instead of coercing missing-vs-false.
 - **All 12 entry types**: `file-history-snapshot`, `queue-operation`, `pr-link`, `last-prompt`, etc.
 - **All 7 system subtypes** on `fact_system_events` (turn_duration, stop_hook_summary, api_error, compact_boundary, local_command, away_summary, bridge_status).
@@ -280,8 +281,9 @@ One row per user/assistant entry.
 | prompt_id | VARCHAR | Anthropic prompt id (R9) |
 | request_id | VARCHAR | Anthropic request id (R9) |
 | api_error_text | VARCHAR | Error text when is_api_error_message=TRUE |
-| input_tokens | INTEGER | API-reported, post-last-cache-breakpoint (NOT total uncached) |
-| output_tokens | INTEGER | API-reported output tokens |
+| api_message_id | VARCHAR | API response this entry belongs to (R23); several entries share one |
+| input_tokens | INTEGER | API-reported, post-last-cache-breakpoint (NOT total uncached). R23: populated only on the FIRST entry of each response; NULL on continuations, so SUM bills each response once. `api_message_id` distinguishes "continuation" from "no usage captured" |
+| output_tokens | INTEGER | API-reported output tokens (R23 first-entry-only, as above) |
 | cache_creation_5m_tokens | INTEGER | 5-minute cache writes (R11) |
 | cache_creation_1h_tokens | INTEGER | 1-hour cache writes (R11) |
 | cache_read_tokens | INTEGER | Cache reads |
@@ -365,9 +367,20 @@ One row per `tool_use_id`. Combines the `tool_result` content with the entry-lev
 #### fact_token_usage
 Per-API-response token data from assistant messages.
 
+**The response grain is enforced, not assumed (R23).** Claude Code flushes
+one API response as several assistant entries (thinking + text + tool_use
+become three lines), each repeating the same `message.id` and the same
+`usage` object. Keying per entry made every split response count 2-3 times
+(2.47x output-token over-count on a real corpus). The populator QUALIFYs to
+the first entry per `(session_id, api_message_id)`; `entry_id` stays the
+natural key, `api_message_id` is stored for audit. `api_message_id` is NOT
+the natural key: ~1.4% of response ids recur across session files because
+resume/fork replays history.
+
 | Column | Type | Description |
 |--------|------|-------------|
 | entry_id | VARCHAR | PK (JSONL entry id); no separate usage_id |
+| api_message_id | VARCHAR | API response identity: `message.id`, falling back to `requestId`, then `entry_id` (R23) |
 | session_key | VARCHAR | FK to dim_session |
 | project_key | VARCHAR | FK to dim_project |
 | model_key | VARCHAR | FK to dim_model |
@@ -387,7 +400,7 @@ Per-API-response token data from assistant messages.
 | server_tool_use_web_search_requests | INTEGER | Server-side web_search tool invocations |
 | server_tool_use_web_fetch_requests | INTEGER | Server-side web_fetch tool invocations |
 
-Note: this table has no `message_id` column -- join to `fact_messages` via `session_key` + `timestamp` if needed, or use `entry_id`.
+Note: join to `fact_messages` via `entry_id`, or via `session_key` + `api_message_id` to reach every entry a response was split across.
 
 #### fact_attachments
 One row per attachment, covering all 23 attachment subtypes (selected_lines_in_ide, opened_file_in_ide, diagnostics, hook_success, etc.). Standard columns: `entry_id` (PK), `session_key`, `date_key`, `time_key`, `timestamp`, `attachment_type` (discriminator), `attachment_json` (full attachment, JSON-encoded string).
@@ -599,12 +612,13 @@ All views use the `semantic_` prefix and join facts with dimensions for easy que
 - `semantic_project_context` -- sessions enriched with first/last messages for catching up on a project
 - `semantic_project_files` -- file activity aggregated by project
 - `semantic_token_usage` -- per-API-response token data with model/session/project context
+- `semantic_context_growth` -- per-request context-size deltas within a session (R23). `context_tokens` is `total_uncached_equivalent_tokens` (the exact prompt size the API saw); `inbound_tokens` nets out the previous response's own output, isolating what the user side added (prompt text + tool results, which carry no `usage` of their own). Compaction shows as `is_context_reset` with `inbound_tokens` suppressed. Slightly negative `inbound_tokens` without a reset is real (thinking bills as output but is not retained in later context; 9 of 3,443 rows on a validation corpus) and left visible. Only meaningful on the R23 response grain -- per-entry rows made 51% of deltas negative
 - `semantic_cost_analysis` -- session-level cost aggregation. R11-corrected: `cache_hit_rate_pct` denominator includes cache_creation
 - `semantic_prompt_history` -- prompts from history JSONL linked to session metadata
 - `semantic_etl_runs` -- run-grain ETL observability: per-session run status/duration, orchestration (batch) context, CDC data window, and step-count/row-count rollups from `fact_etl_steps`
 - `semantic_session_behavior` -- per-session behavioral feature vector: tool-category counts and shares (`read`/`search`/`mutate`/`execute`/`web`/`delegate`), agentic-run shape (`agentic_runs`, `tools_per_run`, `median_gap_seconds`), tokens in/out, thinking blocks, error rate, plus a `*_pctile` corpus-relative rank for each discriminating feature
 
-All 17 views bind against the current DDL (view creation validates column references on every `create_star_schema()` call).
+All 18 views bind against the current DDL (view creation validates column references on every `create_star_schema()` call).
 
 Sessions with no tool uses are kept (283 of 2,250 on a real corpus -- pure conversation is a real behavioral case). Their `*_ops` counts are `0` while their `*_share` values stay `NULL`, because "used no tools" and "0% of tools used" are different statements.
 
