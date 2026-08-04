@@ -180,6 +180,17 @@ def lineage_upsert(
         set_clause = ",\n            ".join(
             f"{c} = im.{c}" for c in (*payload_cols, *extra_keys)
         )
+        # The UPDATE must address exactly ONE physical row per natural key:
+        # the live row, else the lowest-rowid soft-deleted one (that keeps
+        # revival working -- the INSERT's NOT EXISTS matches deleted rows, so
+        # this UPDATE is the only path back). Matching on the key alone
+        # touches every physical twin sharing it, and the SET's
+        # `is_deleted = FALSE` then RESURRECTS duplicates that
+        # `_repair_duplicate_natural_keys` soft-deleted on open. Observed on
+        # a real pre-fix warehouse: a new hash column changed every row's
+        # hash, one batch run revived all 29 repaired tool_use_id twins, and
+        # the delegation-completion pass died on them after every session
+        # had already been processed.
         st.rows_updated = fetch_scalar(
             conn,
             f"""
@@ -193,7 +204,14 @@ def lineage_upsert(
                 is_deleted = FALSE,
                 deleted_at = NULL
             FROM {inbound_table} im
+            JOIN (
+                SELECT {natural_key} AS canon_key,
+                       first(rowid ORDER BY is_deleted, rowid) AS canon_rowid
+                FROM {table}
+                GROUP BY 1
+            ) canon ON canon.canon_key = im.{natural_key}
             WHERE tgt.{natural_key} = im.{natural_key}
+              AND tgt.rowid = canon.canon_rowid
               AND tgt.hash_diff IS DISTINCT FROM im.hash_diff
             """,
             [run.version_key, run.etl_run_id],

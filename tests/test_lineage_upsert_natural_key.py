@@ -160,3 +160,71 @@ class TestNaturalKeyIsAsserted:
             [run2.etl_run_id],
         ).fetchone()
         assert (inserted, updated) == (0, 0)
+
+
+class TestUpdateAddressesOneRowPerKey:
+    """The UPDATE step must touch exactly one physical row per natural key.
+
+    Claim: a natural key names ONE logical row. Matching `tgt.key = im.key`
+    alone addresses every physical row sharing the key -- including twins
+    `_repair_duplicate_natural_keys` soft-deleted on open -- and the SET
+    includes `is_deleted = FALSE`, so a single hash change resurrects all
+    of them. Observed on a real pre-fix warehouse: the open-time repair
+    soft-deleted 29 duplicate tool_use_ids; the next batch run added a new
+    hash column, every row's hash changed, and all 29 twins came back live
+    -- killing the run in `populate_delegation_completion`, after every
+    session had been processed. A fresh rebuild can never catch this.
+    """
+
+    def _plant_soft_deleted_twin(self, conn, key, twin_entry):
+        """Simulate a repaired warehouse: a second physical row for `key`,
+        soft-deleted by the repair, with a stale hash."""
+        conn.execute(
+            "INSERT INTO fact_tool_results SELECT * REPLACE ("
+            "  ? AS entry_id, TRUE AS is_deleted, "
+            "  current_timestamp AS deleted_at, 'stale-twin-hash' AS hash_diff)"
+            "FROM fact_tool_results WHERE tool_use_id = ?",
+            [twin_entry, key],
+        )
+
+    def test_repaired_twin_stays_dead_when_the_live_rows_hash_changes(self, conn):
+        _inbound(conn, [("toolu_a", "s1", "e1", "m1", "Bash", TS, False)])
+        _upsert(conn)
+        self._plant_soft_deleted_twin(conn, "toolu_a", "e_twin")
+
+        # Content change -> hash differs from BOTH physical rows.
+        _inbound(conn, [("toolu_a", "s1", "e1", "m1", "Bash", TS, True)])
+        _upsert(conn)
+
+        live = conn.execute(
+            "SELECT entry_id, is_error FROM fact_tool_results "
+            "WHERE tool_use_id = 'toolu_a' AND NOT is_deleted"
+        ).fetchall()
+        assert live == [("e1", True)], (
+            f"expected the one live row updated in place, got {live} -- "
+            "a resurrected twin means the UPDATE addressed the key, not a row"
+        )
+        twin = conn.execute(
+            "SELECT is_deleted FROM fact_tool_results WHERE entry_id = 'e_twin'"
+        ).fetchone()[0]
+        assert twin is True, "the repaired twin must stay soft-deleted"
+
+    def test_soft_deleted_row_still_revives_when_its_key_returns(self, conn):
+        """Non-vacuity for the fix: revival through the UPDATE is the ONLY
+        way a soft-deleted row comes back (the INSERT's NOT EXISTS matches
+        deleted rows too). Restricting the UPDATE must not break it."""
+        _inbound(conn, [("toolu_gone", "s1", "e1", "m1", "Bash", TS, False)])
+        _upsert(conn)
+        conn.execute(
+            "UPDATE fact_tool_results SET is_deleted = TRUE, "
+            "deleted_at = current_timestamp WHERE tool_use_id = 'toolu_gone'"
+        )
+
+        _inbound(conn, [("toolu_gone", "s1", "e1", "m1", "Bash", TS, True)])
+        _upsert(conn)
+
+        n = conn.execute(
+            "SELECT COUNT(*) FROM fact_tool_results "
+            "WHERE tool_use_id = 'toolu_gone' AND NOT is_deleted"
+        ).fetchone()[0]
+        assert n == 1, "a returning key must revive its (only) soft-deleted row"
