@@ -50,6 +50,48 @@ _PROGRESS_TABLES = (
 )
 
 
+def _import_auto_memory(conn) -> int:
+    """Ingest Claude Code auto memory for the projects this archive covers.
+
+    Scoped to the project directories already in ``dim_project`` so a
+    filtered run (``-p mitate``) does not pull in every other project's
+    memory from the same machine -- ``dim_project.project_name`` is the
+    encoded ``projects/`` directory name, which is exactly the memory
+    directory's owner.
+
+    Subagent memory declared ``memory: project`` / ``memory: local`` lives
+    in the repository rather than under the Claude home, so repo roots come
+    from the sessions themselves (``dim_session.cwd``). A session started in
+    a subdirectory of its repo will not surface that repo's committed agent
+    memory; the user-scope directory is always scanned.
+    """
+    from ..etl.dim_memory import import_memories
+
+    claude_home = Path.home() / ".claude"
+    projects = {
+        row[0]
+        for row in conn.execute(
+            "SELECT DISTINCT project_name FROM dim_project WHERE project_name IS NOT NULL"
+        ).fetchall()
+    }
+    repo_paths = [
+        row[0]
+        for row in conn.execute(
+            "SELECT DISTINCT cwd FROM dim_session WHERE cwd IS NOT NULL"
+        ).fetchall()
+    ]
+    return import_memories(
+        conn,
+        projects_root=claude_home / "projects",
+        # Deliberately not `projects or None`: None means "every project on
+        # the machine", so an empty dim_project would invert the scoping and
+        # ingest everything. An empty set correctly ingests nothing.
+        only=projects,
+        agent_user_root=claude_home / "agent-memory",
+        agent_repo_paths=repo_paths,
+    )
+
+
 def generate_duckdb_archive(
     source_folder,
     output_dir,
@@ -240,6 +282,15 @@ def generate_duckdb_archive(
         except Exception:
             # history ingestion is optional -- never fail the archive build
             # because of it.
+            pass
+
+        # Auto memory lives per-repository, not per-session, so it is
+        # ingested once after the loop for the same reason as history.
+        try:
+            _import_auto_memory(conn)
+        except Exception:
+            # Same policy as history: an unreadable memory directory must
+            # not fail an otherwise complete archive build.
             pass
 
         # Per-session failures were isolated above (they land as failed

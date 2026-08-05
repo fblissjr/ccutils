@@ -1345,6 +1345,87 @@ def create_star_schema(db_path):
     )
 
     # =========================================================================
+    # Auto Memory (from <HOME>/.claude/projects/<project>/memory/  # path-privacy: ignore
+    #              and the agent-memory directories)
+    # =========================================================================
+    # Type 2 SCD. Claude Code overwrites memory files in place and keeps no
+    # history of its own -- the `modified:` frontmatter field holds only the
+    # last write time, and earlier contents survive only in file-history
+    # rollback checkpoints, which are pruned. One row per file would make
+    # every re-ingest destroy the prior state, so a row is one VERSION:
+    #
+    #   memory_id   stable identity of the file  (scope + owner + file name)
+    #   memory_key  one version of it            (memory_id + version_num)
+    #
+    # version_num, not content_hash, completes the key: a memory reverted to
+    # earlier text repeats its hash, and keying on content would silently
+    # drop the revert.
+    #
+    # content_hash covers name/description/type/node_type/origin + body and
+    # deliberately EXCLUDES the `modified:` stamp, which Claude Code rewrites
+    # on every write -- hashing it would open a version per touch.
+
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS dim_memory (
+            memory_key VARCHAR,
+            memory_id VARCHAR,
+            project_key VARCHAR,
+            session_key VARCHAR,
+            scope VARCHAR,
+            owner_key VARCHAR,
+            owner_root VARCHAR,
+            agent_scope VARCHAR,
+            source_path VARCHAR,
+            file_name VARCHAR,
+            memory_name VARCHAR,
+            description TEXT,
+            memory_type VARCHAR,
+            node_type VARCHAR,
+            origin_session_id VARCHAR,
+            is_index BOOLEAN,
+            has_frontmatter BOOLEAN,
+            body_text TEXT,
+            content_hash VARCHAR,
+            body_chars INTEGER,
+            body_lines INTEGER,
+            link_count INTEGER,
+            modified_at TIMESTAMP,
+            file_mtime TIMESTAMP,
+            version_num INTEGER,
+            valid_from TIMESTAMP,
+            valid_to TIMESTAMP,
+            is_current BOOLEAN,
+            date_key INTEGER,
+            time_key INTEGER
+        )
+    """
+    )
+
+    # One row per [[wiki-link]] OCCURRENCE in one memory version -- repeats
+    # are kept (a memory referenced twice is stronger signal than once) and
+    # each version owns its own edges, so the graph is queryable as of any
+    # point in time. Dangling links are retained with is_resolved = FALSE:
+    # a link to a memory that was never written marks something Claude meant
+    # to record, which dropping the row would hide.
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS bridge_memory_link (
+            memory_link_key VARCHAR,
+            memory_key VARCHAR,
+            memory_id VARCHAR,
+            project_key VARCHAR,
+            scope VARCHAR,
+            owner_key VARCHAR,
+            target_name VARCHAR,
+            target_memory_id VARCHAR,
+            is_resolved BOOLEAN,
+            ordinal INTEGER
+        )
+    """
+    )
+
+    # =========================================================================
     # Optional Tables (require pylate)
     # =========================================================================
 
@@ -2332,6 +2413,77 @@ def create_star_schema(db_path):
         LEFT JOIN dim_session ds ON dp.session_key = ds.session_key
         LEFT JOIN fact_session_summary fss ON ds.session_key = fss.session_key
         LEFT JOIN dim_date dd ON dp.date_key = dd.date_key
+    """
+    )
+
+    # semantic_memory: the memory corpus AS IT STANDS NOW. Filtered to
+    # is_current so the default read is "what does Claude currently believe
+    # about this project" -- query dim_memory directly for the version
+    # history behind it.
+    conn.execute(
+        """
+        CREATE OR REPLACE VIEW semantic_memory AS
+        SELECT
+            m.memory_key,
+            m.memory_id,
+            m.scope,
+            m.owner_key,
+            m.agent_scope,
+            m.file_name,
+            m.memory_name,
+            m.description,
+            m.memory_type,
+            m.is_index,
+            m.body_text,
+            m.body_chars,
+            m.body_lines,
+            m.link_count,
+            m.version_num,
+            m.modified_at,
+            m.file_mtime,
+            m.valid_from,
+            dp.project_name,
+            dp.project_path,
+            ds.session_id AS origin_session_id,
+            ds.intent AS origin_intent,
+            ds.custom_title AS origin_session_title,
+            dd.full_date,
+            dt.time_of_day
+        FROM dim_memory m
+        LEFT JOIN dim_project dp ON m.project_key = dp.project_key
+        LEFT JOIN dim_session ds ON m.session_key = ds.session_key
+        LEFT JOIN dim_date dd ON m.date_key = dd.date_key
+        LEFT JOIN dim_time dt ON m.time_key = dt.time_key
+        WHERE m.is_current
+    """
+    )
+
+    # semantic_memory_links: the current memory graph, both ends named.
+    # Unresolved edges are kept (target_name with a NULL target) so a query
+    # for "what does Claude reference that it never wrote down" works.
+    conn.execute(
+        """
+        CREATE OR REPLACE VIEW semantic_memory_links AS
+        SELECT
+            bl.memory_link_key,
+            bl.scope,
+            bl.owner_key,
+            src.memory_name AS source_name,
+            src.file_name AS source_file_name,
+            src.memory_type AS source_type,
+            bl.target_name,
+            tgt.memory_name AS target_resolved_name,
+            tgt.file_name AS target_file_name,
+            tgt.memory_type AS target_type,
+            bl.is_resolved,
+            bl.ordinal,
+            dp.project_name
+        FROM bridge_memory_link bl
+        JOIN dim_memory src ON bl.memory_key = src.memory_key
+        LEFT JOIN dim_memory tgt
+               ON bl.target_memory_id = tgt.memory_id AND tgt.is_current
+        LEFT JOIN dim_project dp ON bl.project_key = dp.project_key
+        WHERE src.is_current
     """
     )
 

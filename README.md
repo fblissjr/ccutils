@@ -161,11 +161,16 @@ Subagent transcripts are first-class sessions: agent files carry their parent's 
 **Tables populated by `run_v15_etl`:**
 
 - **Lineage / Meta:** `dim_etl_version`, `fact_etl_batch_runs`, `fact_etl_runs`, `fact_etl_steps`, `meta_schema_version`.
-- **Dimensions:** `dim_session` (with intent/complexity/outcome/domain enrichment + subagent linkage), `dim_project`, `dim_tool`, `dim_model`, `dim_file`, `dim_session_chain`, `dim_prompt`, `dim_facet_type` (facet registry).
+- **Dimensions:** `dim_session` (with intent/complexity/outcome/domain enrichment + subagent linkage), `dim_project`, `dim_tool`, `dim_model`, `dim_file`, `dim_session_chain`, `dim_facet_type` (facet registry).
 - **Core facts:** `fact_messages`, `fact_tool_uses`, `fact_tool_results` (R1 structured `toolUseResult` payloads: Edit `structured_patch`, Bash `exit_code` / `interrupted`, Read `num_lines`, Agent rollups), `fact_token_usage` (R11 cache split: `cache_creation_5m_tokens` + `cache_creation_1h_tokens`), `fact_session_summary`.
 - **Entry-type facts:** `fact_attachments`, `fact_progress_events`, `fact_system_events`, `fact_meta_events` (permission-mode time series), `fact_file_history_snapshots`, `fact_queue_operations`, `fact_pr_links`.
 - **Derived:** `fact_file_operations` + `bridge_session_file`, `fact_diagnostics`, `fact_plan_revisions` (structural outcome from `fact_tool_results.is_error`), `fact_agent_delegations` (cross-session linkage via `dim_session.agent_id`), `fact_errors`, `fact_tool_chain_steps`.
 - **Facets:** `fact_session_facets` Tier 1 (F01-F19, SQL-computed; always on). Tier 2 (F20+, LLM-extracted via Haiku) is opt-in via `--with-llm-facets` / `--batch-llm-facets`.
+
+**Populated after the per-session loop** (global sources, not per-session, so they are outside `run_v15_etl` and only the batch archive path reaches them):
+
+- `dim_prompt` -- user prompts from the Claude Code prompt-history JSONL, linked to sessions by `sessionId`.
+- `dim_memory` + `bridge_memory_link` -- Claude Code **auto memory**: the markdown Claude writes to itself per project, plus subagent memory in all three scopes. A **Type 2 SCD**, because Claude Code overwrites memory files in place and keeps no history of its own -- one row per (memory file, content version), so re-ingesting does not destroy what the memory said before. Deleted memories are closed, not erased. `bridge_memory_link` carries the `[[wiki-link]]` graph, dangling links included. Query `semantic_memory` for the current state, `dim_memory` for the history.
 
 **Not yet populated (DDL stubs only):** `fact_content_blocks`, `fact_code_blocks`, `fact_entity_mentions`, `fact_tool_input_params`. `fact_session_embeddings` is populated only by `--embed` runs (empty otherwise). `fact_turn_durations` / `fact_stop_events` are subsumed by `fact_system_events`; `fact_tool_calls` by `fact_tool_uses` + `fact_tool_results`.
 

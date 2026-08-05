@@ -1,0 +1,528 @@
+"""Tests for dim_memory / bridge_memory_link (Claude Code auto memory).
+
+Grain: one row per (memory file, content version). ``dim_memory`` is a Type 2
+slowly-changing dimension -- ``memory_id`` is the stable identity of a memory
+file, ``memory_key`` identifies one version of it.
+
+Type 2 is not decoration here. Claude Code overwrites memory files in place
+and keeps no history of its own: the ``modified:`` frontmatter field holds
+only the last write time, and prior contents survive only incidentally in
+``file-history`` rollback checkpoints, which are pruned. If the warehouse
+stored one row per file, every re-ingest would silently destroy the previous
+state and memory evolution would be unrecoverable.
+
+Like ``dim_prompt``, this is not part of ``run_v15_etl``: memory directories
+are per-repository, not per-session, so the importer is called once after the
+per-session loop.
+"""
+
+from __future__ import annotations
+
+import pytest
+
+from ccutils import create_star_schema
+from ccutils.etl.dim_memory import import_memories
+
+FEEDBACK = """\
+---
+name: check-exit-codes
+description: "Piping a validator into tail reports the filter's status"
+metadata:
+  node_type: memory
+  type: feedback
+  originSessionId: sess-A
+  modified: 2026-07-30T03:57:12.156Z
+---
+
+Never verify a gate by piping it into `tail`.
+
+Related: [[signal-honesty]] and [[nothing-here]].
+"""
+
+SIGNAL = """\
+---
+name: signal-honesty
+description: do not touch what a check measures
+metadata:
+  node_type: memory
+  type: feedback
+  originSessionId: sess-B
+  modified: 2026-07-24T10:00:00.000Z
+---
+
+Body of signal honesty.
+"""
+
+INDEX = """\
+# project memory
+
+Index with no frontmatter.
+"""
+
+PROJECT_DIR = "-work-alpha"
+
+# Mirrors the real layout: dim_project.project_path is the encoded directory
+# under the Claude home, and project_name is its last segment.
+_FAKE_CLAUDE_HOME = "/home/u/.claude/projects"  # path-privacy: ignore
+
+
+@pytest.fixture
+def conn(tmp_path):
+    conn = create_star_schema(tmp_path / "test.duckdb")
+    # dim_project rows are keyed by the encoded projects/ directory name,
+    # which is exactly the memory directory's owner.
+    conn.execute(
+        "INSERT INTO dim_project (project_key, project_path, project_name) "
+        "VALUES ('pk-alpha', ?, ?)",
+        [f"{_FAKE_CLAUDE_HOME}/{PROJECT_DIR}", PROJECT_DIR],
+    )
+    conn.execute(
+        """
+        INSERT INTO dim_session (session_key, session_id, project_key)
+        VALUES ('sk-A', 'sess-A', 'pk-alpha')
+        """
+    )
+    return conn
+
+
+@pytest.fixture
+def projects_root(tmp_path):
+    d = tmp_path / "projects" / PROJECT_DIR / "memory"
+    d.mkdir(parents=True)
+    (d / "check-exit-codes.md").write_text(FEEDBACK)
+    (d / "signal-honesty.md").write_text(SIGNAL)
+    (d / "MEMORY.md").write_text(INDEX)
+    return tmp_path / "projects"
+
+
+def cols(conn, table):
+    return {r[0] for r in conn.execute(f"DESCRIBE {table}").fetchall()}
+
+
+class TestDdl:
+    def test_dim_memory_has_scd_columns(self, conn):
+        assert {
+            "memory_key", "memory_id", "content_hash",
+            "version_num", "valid_from", "valid_to", "is_current",
+        } <= cols(conn, "dim_memory")
+
+    def test_dim_memory_has_content_and_provenance_columns(self, conn):
+        assert {
+            "project_key", "session_key", "scope", "owner_key", "agent_scope",
+            "source_path", "file_name", "memory_name", "description",
+            "memory_type", "node_type", "origin_session_id", "is_index",
+            "has_frontmatter", "body_text", "body_chars", "body_lines",
+            "link_count", "modified_at", "file_mtime", "date_key", "time_key",
+        } <= cols(conn, "dim_memory")
+
+    def test_bridge_memory_link_has_edge_columns(self, conn):
+        assert {
+            "memory_link_key", "memory_key", "memory_id", "project_key",
+            "scope", "owner_key", "target_name", "target_memory_id",
+            "is_resolved", "ordinal",
+        } <= cols(conn, "bridge_memory_link")
+
+    def test_semantic_memory_view_exists(self, conn):
+        conn.execute("SELECT * FROM semantic_memory LIMIT 0")
+
+    def test_semantic_memory_links_view_exists(self, conn):
+        conn.execute("SELECT * FROM semantic_memory_links LIMIT 0")
+
+
+class TestFirstImport:
+    def test_every_memory_file_lands_as_version_one(self, conn, projects_root):
+        import_memories(conn, projects_root=projects_root)
+        rows = conn.execute(
+            "SELECT file_name, version_num, is_current, valid_to "
+            "FROM dim_memory ORDER BY file_name"
+        ).fetchall()
+        assert [r[0] for r in rows] == [
+            "MEMORY.md", "check-exit-codes.md", "signal-honesty.md",
+        ]
+        assert all(r[1] == 1 and r[2] is True and r[3] is None for r in rows)
+
+    def test_frontmatter_is_projected_onto_columns(self, conn, projects_root):
+        import_memories(conn, projects_root=projects_root)
+        row = conn.execute(
+            "SELECT memory_name, memory_type, node_type, origin_session_id, "
+            "is_index, has_frontmatter FROM dim_memory "
+            "WHERE file_name = 'check-exit-codes.md'"
+        ).fetchone()
+        assert row == ("check-exit-codes", "feedback", "memory", "sess-A", False, True)
+
+    def test_index_file_is_flagged(self, conn, projects_root):
+        import_memories(conn, projects_root=projects_root)
+        row = conn.execute(
+            "SELECT is_index, has_frontmatter FROM dim_memory "
+            "WHERE file_name = 'MEMORY.md'"
+        ).fetchone()
+        assert row == (True, False)
+
+    def test_body_text_is_stored(self, conn, projects_root):
+        import_memories(conn, projects_root=projects_root)
+        body = conn.execute(
+            "SELECT body_text FROM dim_memory WHERE file_name = 'check-exit-codes.md'"
+        ).fetchone()[0]
+        assert "Never verify a gate" in body
+        assert "originSessionId" not in body
+
+
+class TestKeyResolution:
+    def test_project_key_resolves_via_dim_project(self, conn, projects_root):
+        import_memories(conn, projects_root=projects_root)
+        keys = {
+            r[0] for r in conn.execute("SELECT DISTINCT project_key FROM dim_memory").fetchall()
+        }
+        assert keys == {"pk-alpha"}
+
+    def test_session_key_resolves_from_origin_session_id(self, conn, projects_root):
+        import_memories(conn, projects_root=projects_root)
+        row = conn.execute(
+            "SELECT session_key FROM dim_memory WHERE file_name = 'check-exit-codes.md'"
+        ).fetchone()
+        assert row[0] == "sk-A"
+
+    def test_unresolvable_origin_session_is_kept_raw(self, conn, projects_root):
+        """sess-B is not in dim_session. The link must degrade to a NULL
+        session_key while the stated id survives -- dropping it would lose
+        the only evidence of which session wrote the memory."""
+        import_memories(conn, projects_root=projects_root)
+        row = conn.execute(
+            "SELECT session_key, origin_session_id FROM dim_memory "
+            "WHERE file_name = 'signal-honesty.md'"
+        ).fetchone()
+        assert row == (None, "sess-B")
+
+
+class TestIdempotencyAndVersioning:
+    def test_reimport_of_unchanged_files_adds_nothing(self, conn, projects_root):
+        import_memories(conn, projects_root=projects_root)
+        before = conn.execute("SELECT COUNT(*) FROM dim_memory").fetchone()[0]
+        import_memories(conn, projects_root=projects_root)
+        after = conn.execute("SELECT COUNT(*) FROM dim_memory").fetchone()[0]
+        assert after == before
+
+    def test_modified_stamp_alone_does_not_open_a_version(self, conn, projects_root):
+        """Claude Code rewrites modified: on every write. Treating that as a
+        content change would fill the history with versions that differ only
+        by a timestamp."""
+        import_memories(conn, projects_root=projects_root)
+        path = projects_root / PROJECT_DIR / "memory" / "check-exit-codes.md"
+        path.write_text(
+            FEEDBACK.replace("2026-07-30T03:57:12.156Z", "2026-08-05T09:00:00.000Z")
+        )
+        import_memories(conn, projects_root=projects_root)
+        assert conn.execute(
+            "SELECT COUNT(*) FROM dim_memory WHERE file_name = 'check-exit-codes.md'"
+        ).fetchone()[0] == 1
+
+    def test_body_change_opens_a_new_version_and_closes_the_old(
+        self, conn, projects_root
+    ):
+        import_memories(conn, projects_root=projects_root)
+        path = projects_root / PROJECT_DIR / "memory" / "check-exit-codes.md"
+        path.write_text(FEEDBACK.replace("Never verify", "Always verify"))
+        import_memories(conn, projects_root=projects_root)
+
+        rows = conn.execute(
+            "SELECT version_num, is_current, valid_to IS NULL FROM dim_memory "
+            "WHERE file_name = 'check-exit-codes.md' ORDER BY version_num"
+        ).fetchall()
+        assert rows == [(1, False, False), (2, True, True)]
+
+    def test_exactly_one_current_row_per_memory(self, conn, projects_root):
+        import_memories(conn, projects_root=projects_root)
+        path = projects_root / PROJECT_DIR / "memory" / "check-exit-codes.md"
+        path.write_text(FEEDBACK.replace("Never verify", "Always verify"))
+        import_memories(conn, projects_root=projects_root)
+        path.write_text(FEEDBACK.replace("Never verify", "Sometimes verify"))
+        import_memories(conn, projects_root=projects_root)
+
+        dupes = conn.execute(
+            "SELECT memory_id, COUNT(*) FROM dim_memory WHERE is_current "
+            "GROUP BY memory_id HAVING COUNT(*) > 1"
+        ).fetchall()
+        assert dupes == []
+
+    def test_reverting_to_earlier_content_is_a_new_version(self, conn, projects_root):
+        """Content hashes repeat when a memory is reverted. Version identity
+        must be (memory, version_num), not (memory, content) -- keying on
+        content would silently drop the revert."""
+        path = projects_root / PROJECT_DIR / "memory" / "check-exit-codes.md"
+        import_memories(conn, projects_root=projects_root)
+        path.write_text(FEEDBACK.replace("Never verify", "Always verify"))
+        import_memories(conn, projects_root=projects_root)
+        path.write_text(FEEDBACK)
+        import_memories(conn, projects_root=projects_root)
+
+        rows = conn.execute(
+            "SELECT version_num, is_current FROM dim_memory "
+            "WHERE file_name = 'check-exit-codes.md' ORDER BY version_num"
+        ).fetchall()
+        assert rows == [(1, False), (2, False), (3, True)]
+
+    def test_deleting_the_whole_memory_directory_closes_its_rows(
+        self, conn, projects_root
+    ):
+        """Closing must key off the scope that was SCANNED, not off the files
+        that happened to come back. If it keyed off results, wiping a memory
+        directory would leave every one of its rows open forever, and the
+        warehouse would report retired memories as current."""
+        import_memories(conn, projects_root=projects_root)
+        for md in (projects_root / PROJECT_DIR / "memory").glob("*.md"):
+            md.unlink()
+        import_memories(conn, projects_root=projects_root)
+
+        assert conn.execute(
+            "SELECT COUNT(*) FROM dim_memory WHERE is_current"
+        ).fetchone()[0] == 0
+        assert conn.execute("SELECT COUNT(*) FROM dim_memory").fetchone()[0] == 3
+
+    def test_a_filtered_run_does_not_retire_another_projects_memory(
+        self, conn, projects_root
+    ):
+        """-p alpha must not close beta's rows just because it did not look
+        at them."""
+        other = projects_root / "-work-beta" / "memory"
+        other.mkdir(parents=True)
+        (other / "MEMORY.md").write_text(INDEX)
+        import_memories(conn, projects_root=projects_root)
+
+        import_memories(conn, projects_root=projects_root, only={PROJECT_DIR})
+        assert conn.execute(
+            "SELECT COUNT(*) FROM dim_memory WHERE is_current AND owner_key = '-work-beta'"
+        ).fetchone()[0] == 1
+
+    def test_deleted_memory_file_is_closed_not_erased(self, conn, projects_root):
+        """A retired memory is a fact about the project's history. Closing the
+        row keeps it queryable; deleting it would make the warehouse forget
+        the memory ever existed."""
+        import_memories(conn, projects_root=projects_root)
+        (projects_root / PROJECT_DIR / "memory" / "signal-honesty.md").unlink()
+        import_memories(conn, projects_root=projects_root)
+
+        row = conn.execute(
+            "SELECT is_current, valid_to IS NOT NULL FROM dim_memory "
+            "WHERE file_name = 'signal-honesty.md'"
+        ).fetchone()
+        assert row == (False, True)
+
+
+class TestLinkGraph:
+    def test_links_land_as_bridge_rows_in_order(self, conn, projects_root):
+        import_memories(conn, projects_root=projects_root)
+        rows = conn.execute(
+            "SELECT target_name, ordinal FROM bridge_memory_link bl "
+            "JOIN dim_memory m USING (memory_key) "
+            "WHERE m.file_name = 'check-exit-codes.md' ORDER BY ordinal"
+        ).fetchall()
+        assert rows == [("signal-honesty", 0), ("nothing-here", 1)]
+
+    def test_link_resolves_to_a_sibling_memory(self, conn, projects_root):
+        import_memories(conn, projects_root=projects_root)
+        row = conn.execute(
+            "SELECT bl.is_resolved, bl.target_memory_id = t.memory_id "
+            "FROM bridge_memory_link bl "
+            "JOIN dim_memory t ON t.file_name = 'signal-honesty.md' "
+            "WHERE bl.target_name = 'signal-honesty'"
+        ).fetchone()
+        assert row == (True, True)
+
+    def test_link_resolves_across_separator_conventions(self, conn, projects_root):
+        """Real corpora write the file stem with underscores and the
+        frontmatter name with hyphens, then link with either. `-` and `_` are
+        the same identifier in different clothes, so matching modulo
+        separator recovers real edges that an exact match drops."""
+        d = projects_root / PROJECT_DIR / "memory"
+        (d / "feedback_signal_honesty.md").write_text(
+            SIGNAL.replace("name: signal-honesty", "name: signal-honesty-over-boards")
+        )
+        (d / "linker.md").write_text(
+            "---\nname: linker\n---\n\nsee [[feedback-signal-honesty]]\n"
+        )
+        import_memories(conn, projects_root=projects_root)
+
+        row = conn.execute(
+            "SELECT is_resolved, target_file_name FROM semantic_memory_links "
+            "WHERE target_name = 'feedback-signal-honesty'"
+        ).fetchone()
+        assert row == (True, "feedback_signal_honesty.md")
+
+    def test_a_near_miss_link_is_not_fuzzy_matched(self, conn, projects_root):
+        """[[signal]] is not [[signal-honesty]]. Resolving on prefixes or
+        substrings would invent edges the author never wrote -- an unresolved
+        row is the honest answer."""
+        d = projects_root / PROJECT_DIR / "memory"
+        (d / "linker.md").write_text(
+            "---\nname: linker\n---\n\nsee [[signal]] and [[signal-honesty-extra]]\n"
+        )
+        import_memories(conn, projects_root=projects_root)
+
+        rows = conn.execute(
+            "SELECT target_name, is_resolved FROM bridge_memory_link "
+            "WHERE target_name IN ('signal', 'signal-honesty-extra') ORDER BY 1"
+        ).fetchall()
+        assert rows == [("signal", False), ("signal-honesty-extra", False)]
+
+    def test_dangling_link_is_kept_unresolved(self, conn, projects_root):
+        """A [[link]] to a memory that was never written is real signal --
+        it marks something Claude meant to record. Dropping the row would
+        hide it."""
+        import_memories(conn, projects_root=projects_root)
+        row = conn.execute(
+            "SELECT is_resolved, target_memory_id FROM bridge_memory_link "
+            "WHERE target_name = 'nothing-here'"
+        ).fetchone()
+        assert row == (False, None)
+
+    def test_links_are_rebuilt_for_the_new_version_only(self, conn, projects_root):
+        """Each version owns its edges. The closed version keeps the edges it
+        had, so the graph can be queried as of any point in time."""
+        path = projects_root / PROJECT_DIR / "memory" / "check-exit-codes.md"
+        import_memories(conn, projects_root=projects_root)
+        path.write_text(FEEDBACK.replace("[[nothing-here]]", "[[still-nothing]]"))
+        import_memories(conn, projects_root=projects_root)
+
+        current = conn.execute(
+            "SELECT bl.target_name FROM bridge_memory_link bl "
+            "JOIN dim_memory m USING (memory_key) "
+            "WHERE m.file_name = 'check-exit-codes.md' AND m.is_current "
+            "ORDER BY bl.ordinal"
+        ).fetchall()
+        assert current == [("signal-honesty",), ("still-nothing",)]
+
+        historical = conn.execute(
+            "SELECT COUNT(*) FROM bridge_memory_link bl "
+            "JOIN dim_memory m USING (memory_key) "
+            "WHERE m.file_name = 'check-exit-codes.md' AND NOT m.is_current"
+        ).fetchone()[0]
+        assert historical == 2
+
+
+class TestAgentScope:
+    @pytest.fixture
+    def agent_root(self, tmp_path):
+        d = tmp_path / "agent-memory" / "prompt-engineer"
+        d.mkdir(parents=True)
+        (d / "MEMORY.md").write_text(INDEX)
+        return tmp_path / "agent-memory"
+
+    def test_agent_memory_is_ingested_with_its_scope(self, conn, agent_root):
+        import_memories(conn, agent_user_root=agent_root)
+        row = conn.execute(
+            "SELECT scope, owner_key, agent_scope, project_key FROM dim_memory"
+        ).fetchone()
+        assert row == ("agent", "prompt-engineer", "user", None)
+
+    def test_agent_and_project_memory_coexist(self, conn, projects_root, agent_root):
+        import_memories(
+            conn, projects_root=projects_root, agent_user_root=agent_root
+        )
+        counts = dict(
+            conn.execute("SELECT scope, COUNT(*) FROM dim_memory GROUP BY scope").fetchall()
+        )
+        assert counts == {"project": 3, "agent": 1}
+
+    def test_same_agent_name_in_different_agent_scopes_stays_distinct(
+        self, conn, tmp_path
+    ):
+        """A subagent can declare `memory: user` in one place and
+        `memory: project` in another under the same name. If agent_scope is
+        not part of the identity they collapse into one memory that appears
+        to flip-flop between two bodies on every import."""
+        user = tmp_path / "agent-memory" / "reviewer"
+        user.mkdir(parents=True)
+        (user / "MEMORY.md").write_text("# user scope body\n")
+
+        repo = tmp_path / "repo"
+        committed = repo / ".claude" / "agent-memory" / "reviewer"
+        committed.mkdir(parents=True)
+        (committed / "MEMORY.md").write_text("# project scope body\n")
+
+        import_memories(
+            conn,
+            agent_user_root=tmp_path / "agent-memory",
+            agent_repo_paths=[repo],
+        )
+        rows = conn.execute(
+            "SELECT agent_scope, version_num, is_current FROM dim_memory "
+            "ORDER BY agent_scope"
+        ).fetchall()
+        assert rows == [("project", 1, True), ("user", 1, True)]
+
+    def test_same_agent_name_in_two_repos_stays_distinct(self, conn, tmp_path):
+        """Committed subagent memory is shared with a team, so a `reviewer`
+        agent existing in two repositories is ordinary. Keying identity on
+        the agent name alone would merge them."""
+        repos = []
+        for name, body in (("alpha", "# alpha body\n"), ("beta", "# beta body\n")):
+            repo = tmp_path / name
+            d = repo / ".claude" / "agent-memory" / "reviewer"
+            d.mkdir(parents=True)
+            (d / "MEMORY.md").write_text(body)
+            repos.append(repo)
+
+        import_memories(conn, agent_repo_paths=repos)
+        assert conn.execute(
+            "SELECT COUNT(DISTINCT memory_id) FROM dim_memory"
+        ).fetchone()[0] == 2
+        assert conn.execute(
+            "SELECT COUNT(*) FROM dim_memory WHERE is_current"
+        ).fetchone()[0] == 2
+
+    def test_same_file_name_in_both_scopes_stays_distinct(
+        self, conn, projects_root, agent_root
+    ):
+        """Both scopes have a MEMORY.md. Keying identity on file name alone
+        would collapse them into one memory."""
+        import_memories(
+            conn, projects_root=projects_root, agent_user_root=agent_root
+        )
+        ids = conn.execute(
+            "SELECT COUNT(DISTINCT memory_id) FROM dim_memory WHERE file_name = 'MEMORY.md'"
+        ).fetchone()[0]
+        assert ids == 2
+
+
+class TestScoping:
+    def test_only_named_projects_are_ingested(self, conn, projects_root):
+        """A filtered archive run (-p alpha) must not pull in every other
+        project's memory from the same machine."""
+        other = projects_root / "-work-beta" / "memory"
+        other.mkdir(parents=True)
+        (other / "MEMORY.md").write_text(INDEX)
+
+        import_memories(conn, projects_root=projects_root, only={PROJECT_DIR})
+        owners = {r[0] for r in conn.execute("SELECT DISTINCT owner_key FROM dim_memory").fetchall()}
+        assert owners == {PROJECT_DIR}
+
+    def test_missing_roots_are_a_no_op(self, conn, tmp_path):
+        assert import_memories(conn, projects_root=tmp_path / "nope") == 0
+        assert conn.execute("SELECT COUNT(*) FROM dim_memory").fetchone()[0] == 0
+
+
+class TestSemanticViews:
+    def test_semantic_memory_exposes_only_current_versions(self, conn, projects_root):
+        path = projects_root / PROJECT_DIR / "memory" / "check-exit-codes.md"
+        import_memories(conn, projects_root=projects_root)
+        path.write_text(FEEDBACK.replace("Never verify", "Always verify"))
+        import_memories(conn, projects_root=projects_root)
+
+        assert conn.execute(
+            "SELECT COUNT(*) FROM semantic_memory WHERE file_name = 'check-exit-codes.md'"
+        ).fetchone()[0] == 1
+
+    def test_semantic_memory_carries_project_name(self, conn, projects_root):
+        import_memories(conn, projects_root=projects_root)
+        names = {
+            r[0] for r in conn.execute("SELECT DISTINCT project_name FROM semantic_memory").fetchall()
+        }
+        assert names == {PROJECT_DIR}
+
+    def test_semantic_memory_links_names_both_ends(self, conn, projects_root):
+        import_memories(conn, projects_root=projects_root)
+        row = conn.execute(
+            "SELECT source_name, target_name, is_resolved FROM semantic_memory_links "
+            "WHERE target_name = 'signal-honesty'"
+        ).fetchone()
+        assert row == ("check-exit-codes", "signal-honesty", True)

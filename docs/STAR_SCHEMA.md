@@ -1,6 +1,6 @@
 # Star Schema DuckDB Implementation
 
-Last updated: 2026-08-04
+Last updated: 2026-08-05
 
 A dimensional data model for Claude Code transcript analytics, built on a four-tier ETL pipeline with full lineage tracking. The star schema is now the only schema (the legacy 4-table simple schema was removed when v0.15 stabilized).
 
@@ -95,7 +95,7 @@ The orchestrator at `src/ccutils/etl/orchestrator.py` (`run_v15_etl`) runs per s
    - `fact_session_facets` Tier 2 (LLM-extracted, only when a `FacetExtractor` is injected)
 5. `fact_session_summary` LAST (aggregates over everything above).
 
-After the per-session loop, `dim_prompt` is best-effort populated from the Claude Code prompt-history JSONL.
+After the per-session loop, two global sources are best-effort populated, both outside `run_v15_etl` because neither is per-session: `dim_prompt` from the Claude Code prompt-history JSONL, and `dim_memory` / `bridge_memory_link` from the auto-memory directories.
 
 ### What v0.15 captures that v0.14 missed
 
@@ -248,6 +248,40 @@ One row per chain (sessions sharing a slug). Populated by `populate_dim_session_
 
 #### dim_prompt
 User prompts from the Claude Code prompt-history JSONL, linked to sessions via sessionId. Columns: `prompt_key` (PK), `session_key` (NULL if the session was not imported), `project_path`, `project_name`, `display_text`, `timestamp`, `date_key`, `time_key`, `has_pasted_content`.
+
+#### dim_memory
+Claude Code auto memory -- the markdown notes Claude writes itself. **Type 2 SCD**: one row per (memory file, content version).
+
+Type 2 is load-bearing rather than decorative. Claude Code overwrites memory files in place and keeps no history of its own; the `modified:` frontmatter field records only the last write, and earlier contents survive solely in `file-history` rollback checkpoints, which are pruned. One row per file would mean every re-ingest destroyed the prior state.
+
+Two identity columns:
+
+- `memory_id` -- the stable identity of a memory FILE, `md5(scope || agent_scope || owner_root || owner_key || file_name)`. All five parts are load-bearing: without them, memories that merely share a file name collapse into one row that appears to flip-flop between bodies on every import. Three real collisions this prevents -- a project's `MEMORY.md` against a subagent's; the same subagent declared `memory: user` in one place and `memory: project` in another; and a committed `reviewer` agent existing in two repositories, which is ordinary since that memory is shared with a team.
+- `memory_key` (PK) -- one VERSION of it, `md5(memory_id || version_num)`. Keyed on `version_num` and **not** `content_hash`: a memory reverted to earlier text repeats its hash, and keying on content would silently drop the revert.
+
+`content_hash` covers `memory_name` + `description` + `memory_type` + `node_type` + `origin_session_id` + body, and deliberately **excludes** the `modified:` stamp. Claude Code rewrites that field on every write, so hashing it would open a spurious version on every touch.
+
+Sources, both plain markdown with optional YAML frontmatter:
+
+| `scope` | `owner_key` | Location |
+|---|---|---|
+| `project` | encoded project dir name | `<claude-home>/projects/<project>/memory/` |
+| `agent` | subagent name | `<claude-home>/agent-memory/<agent>/` (`agent_scope='user'`), `<repo>/.claude/agent-memory/<agent>/` (`'project'`), `<repo>/.claude/agent-memory-local/<agent>/` (`'local'`) |
+
+Columns: `memory_key` (PK), `memory_id`, `project_key` (FK to dim_project via `project_name = owner_key`; NULL for agent scope), `session_key` (FK to dim_session resolved from `origin_session_id`; NULL when that session was not ingested), `scope`, `owner_key`, `owner_root` (the directory the owner lives under -- NULL for project scope, where the encoded directory name is already globally unique; set for agent scope, where the agent name alone is not), `agent_scope`, `source_path`, `file_name`, `memory_name`, `description`, `memory_type` (`user`/`feedback`/`project`/`reference`), `node_type`, `origin_session_id` (retained raw even when unresolvable -- it is the only evidence of which session wrote the memory), `is_index` (`MEMORY.md`), `has_frontmatter`, `body_text`, `content_hash`, `body_chars`, `body_lines`, `link_count`, `modified_at`, `file_mtime`, `version_num`, `valid_from`, `valid_to` (NULL while current), `is_current`, `date_key`, `time_key`.
+
+`date_key`/`time_key` describe when the memory was WRITTEN (`modified_at`, falling back to `file_mtime`), not when ccutils observed it.
+
+Populated by `import_memories` (`etl/dim_memory.py`), scoped to the projects already in `dim_project` so a filtered run does not ingest the whole machine's memory corpus. A memory file that disappears is **closed, not deleted** (`is_current = FALSE`, `valid_to` set) -- a retired memory is a fact about the project's history. Retirement keys off the owners that were *scanned*, not the files that came back, or emptying a memory directory would leave its rows marked current forever.
+
+Two frontmatter shapes coexist in real corpora: newer files nest under `metadata:`, older ones carry a top-level `type:`. Both are read.
+
+#### bridge_memory_link
+The `[[wiki-link]]` graph between memories. One row per link OCCURRENCE in one memory version -- repeats are kept (a memory referenced twice is stronger signal than once), and each version owns its own edges, so the graph is queryable as of any point in time.
+
+Columns: `memory_link_key` (PK, `md5(memory_key || ordinal)`), `memory_key` (FK to the SOURCE version), `memory_id`, `project_key`, `scope`, `owner_key`, `target_name` (raw `[[text]]`), `target_memory_id` (resolved within the same scope+owner, matching either the frontmatter `name` or the file stem -- both styles occur), `is_resolved`, `ordinal`.
+
+Dangling links are retained with `is_resolved = FALSE` and a NULL target: a link to a memory that was never written marks something Claude meant to record, which dropping the row would hide.
 
 #### dim_facet_type
 Catalog of every facet (F01+). Seeded by `create_star_schema()` from `src/ccutils/etl/facets/catalog.py::FACET_SPECS` via `INSERT ... ON CONFLICT DO NOTHING`. One row per (facet_id, prompt_version); bumping `prompt_version` adds a new row and old fact rows survive.
@@ -615,10 +649,12 @@ All views use the `semantic_` prefix and join facts with dimensions for easy que
 - `semantic_context_growth` -- per-request context-size deltas within a session (R23). `context_tokens` is `total_uncached_equivalent_tokens` (the exact prompt size the API saw); `inbound_tokens` nets out the previous response's own output, isolating what the user side added (prompt text + tool results, which carry no `usage` of their own). Compaction shows as `is_context_reset` with `inbound_tokens` suppressed. Slightly negative `inbound_tokens` without a reset is real (thinking bills as output but is not retained in later context; 9 of 3,443 rows on a validation corpus) and left visible. Only meaningful on the R23 response grain -- per-entry rows made 51% of deltas negative
 - `semantic_cost_analysis` -- session-level cost aggregation. R11-corrected: `cache_hit_rate_pct` denominator includes cache_creation
 - `semantic_prompt_history` -- prompts from history JSONL linked to session metadata
+- `semantic_memory` -- the auto-memory corpus AS IT STANDS NOW (`is_current` only), with project, origin-session and date context. Query `dim_memory` directly for the version history behind it
+- `semantic_memory_links` -- the current memory graph with both ends named. Unresolved edges are kept, so "what does Claude reference that it never wrote down" is a `WHERE NOT is_resolved`
 - `semantic_etl_runs` -- run-grain ETL observability: per-session run status/duration, orchestration (batch) context, CDC data window, and step-count/row-count rollups from `fact_etl_steps`
 - `semantic_session_behavior` -- per-session behavioral feature vector: tool-category counts and shares (`read`/`search`/`mutate`/`execute`/`web`/`delegate`), agentic-run shape (`agentic_runs`, `tools_per_run`, `median_gap_seconds`), tokens in/out, thinking blocks, error rate, plus a `*_pctile` corpus-relative rank for each discriminating feature
 
-All 18 views bind against the current DDL (view creation validates column references on every `create_star_schema()` call).
+All 20 views bind against the current DDL (view creation validates column references on every `create_star_schema()` call).
 
 Sessions with no tool uses are kept (283 of 2,250 on a real corpus -- pure conversation is a real behavioral case). Their `*_ops` counts are `0` while their `*_share` values stay `NULL`, because "used no tools" and "0% of tools used" are different statements.
 
