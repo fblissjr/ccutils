@@ -3,7 +3,7 @@
 *Companion to `STAR_SCHEMA.md`. Defines the data, transforms, and pipeline layers that turn the v0.15 transcript archive into a queryable map of usage patterns. Use cases are derived from the data we capture, not the other way around.*
 
 **Status:** Steps 1-4.5 landed. DDL + Tier 1 registry, Tier 1 SQL populator (F01-F19, `src/ccutils/etl/fact_session_facets.py`), Tier 2 extractor protocol (`AnthropicFacetExtractor` + `CannedFacetExtractor`, `src/ccutils/etl/facets/`), F20 `task_description` populator end-to-end, CLI flags `--with-llm-facets` (local) / `--batch-llm-facets` (all). `FACET_SPECS` in `etl/facets/catalog.py` still holds only F20 -- F21+ are cataloged below as design, not yet implemented. Step 5 (embedding + clustering) not yet started; the `fact_facet_embeddings` table exists as a DDL stub (unpopulated), and `fact_clustering_run` / `dim_cluster` / `bridge_cluster_session` / `fact_cluster_metrics` described in §4 don't exist in the DDL yet. Awaiting first F20 sample run on a real corpus to inform the embedding-model choice.
-**Last updated:** 2026-07-17
+**Last updated:** 2026-08-05
 
 ---
 
@@ -364,6 +364,13 @@ For each use case, what facets it requires and what queries it implies. Use case
 4. ~~**Where to store embeddings.** DuckDB BLOB column (simple, one source of truth) vs. separate Parquet shard (faster k-NN).~~ **Resolved during build step 1** (see the schema-split note in §4): neither BLOB nor Parquet -- `fact_facet_embeddings.embedding FLOAT[384]` in DuckDB, so `array_cosine_similarity` / `array_inner_product` work natively in SQL. The table exists as a DDL stub; T03 (the populator) is still unbuilt.
 5. **Incremental re-clustering.** Full recompute nightly is simplest. Incremental (assign new sessions to existing clusters, rebuild quarterly) is cheaper. Start simple.
 6. **Privacy audit cadence.** Always-on, or only when exporting? Always-on adds cost; export-time is sufficient for personal use.
+7. **Auto memory as a Tier 2 source.** `dim_memory` (v0.19.0) is a new candidate input: Claude's own notes per project, already typed (`feedback` / `project` / `user` / `reference`), described, cross-linked, and version-tracked. Deferred deliberately rather than overlooked — three questions have to be answered first, and none of them is "how do we call an LLM".
+
+   - **What does an extractor add that the columns don't?** Every other Tier 2 facet distils raw transcript into structure. Memory arrives *already distilled* — a human-written `description`, a stated `memory_type`, an explicit link graph. An LLM pass over it risks re-summarising a summary, which is the least valuable thing a facet can do. The burden of proof is on finding a question `semantic_memory` cannot already answer in SQL.
+   - **What is the unit?** One memory, or a project's whole corpus? Session-grain facets don't fit either: memory is not per-session, so a memory-derived facet cannot join to `fact_session_facets` without picking a grain that does not exist yet. That is a schema decision, not a prompt decision.
+   - **Is the interesting signal a join rather than an extraction?** The sharpest question memory enables is **drift** — where what memory *claims* about a project diverges from what the sessions *show* (a memory asserting a convention that tool calls contradict; a `feedback` memory that stopped correlating with error rates after the date it was written). That needs `dim_memory` joined against the existing facts, not an extractor over memory text.
+
+   Until those are settled, `dim_memory` stays a plain dimension and memory questions are answered with SQL. It is a good source; it is not obviously a good *facet* source.
 
 ---
 

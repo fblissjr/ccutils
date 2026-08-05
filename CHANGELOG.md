@@ -5,6 +5,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.19.0]
+
 ### Fixed
 - **`semantic_etl_runs` did not expose `run_kind`.** The column was added to `fact_etl_runs` to scope the batch rollup (a reconciliation run is a child run that is not a session) but never surfaced in the documented observability view, so the view could not distinguish the two and an unqualified count over it silently mixed them. Now three kinds exist -- `session`, `reconciliation`, and the new `global_source` used by the auto-memory import -- which makes the omission actively misleading rather than merely incomplete. Found by querying a real warehouse for the memory import's run row and getting a binder error on the column that `fact_etl_runs` has carried since it was added.
 - **Four populator joins read soft-deleted `fact_tool_results` rows.** `fact_file_operations`, `fact_agent_delegations`, `dim_session_heuristics` and `fact_plan_revisions` all joined `fact_tool_results USING (tool_use_id)` with `is_deleted` filtered on the LEFT side only, so a soft-deleted duplicate result row -- exactly what `_repair_duplicate_natural_keys` leaves behind on an upgraded warehouse -- fanned the join out. In the two lineage-asserted populators that produced duplicate inbound keys and killed the session's ETL (observed: 3 sessions failed on the real upgrade, with 7, 2 and 1 duplicate keys); in the heuristics rollup it would silently double-count `tool_count`/`error_count` with no assertion to catch it. The filter now lives in each join's ON clause. Found by the same upgrade-path test as the resurrection fix below -- the two defects masked each other: while the UPDATE revived the twins, the joins never met a soft-deleted row.

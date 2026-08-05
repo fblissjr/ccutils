@@ -9,4 +9,4 @@ both parsers/ and etl/ can import it without layering either on the
 other.
 """
 
-PARSER_VERSION = "0.18.0"
+PARSER_VERSION = "0.19.0"
