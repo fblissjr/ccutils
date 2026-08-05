@@ -24,6 +24,7 @@ import pytest
 
 from ccutils.parsers.memory import (
     MemoryFile,
+    MemoryLink,
     iter_agent_memories,
     iter_project_memories,
     parse_memory_file,
@@ -128,7 +129,10 @@ class TestWikiLinks:
     def test_links_are_extracted_in_order(self, tmp_path):
         path = write(tmp_path, "a.md", FULL)
         m = parse_memory_file(path, scope="project", owner_key="p")
-        assert m.links == ["signal-honesty", "derive-at-write-time"]
+        assert [(x.target, x.syntax) for x in m.links] == [
+            ("signal-honesty", "wiki"),
+            ("derive-at-write-time", "wiki"),
+        ]
 
     def test_links_inside_fenced_code_are_ignored(self, tmp_path):
         """A fenced block showing the link syntax is documentation, not an
@@ -139,13 +143,81 @@ class TestWikiLinks:
         )
         path = write(tmp_path, "a.md", text)
         m = parse_memory_file(path, scope="project", owner_key="p")
-        assert m.links == ["one", "two"]
+        assert [x.target for x in m.links] == ["one", "two"]
 
     def test_repeated_link_is_kept_once_per_occurrence(self, tmp_path):
         text = "---\nname: a\n---\n\n[[x]] then [[x]] again\n"
         path = write(tmp_path, "a.md", text)
         m = parse_memory_file(path, scope="project", owner_key="p")
-        assert m.links == ["x", "x"]
+        assert [x.target for x in m.links] == ["x", "x"]
+
+
+class TestMarkdownIndexLinks:
+    """MEMORY.md is an index and points at topic files with
+    ``- [Title](file.md) -- hook``, not with [[wiki]] syntax. Reading only
+    the wiki form drops every index edge -- on a real corpus that was 71 of
+    140 edges, all of them originating in an index."""
+
+    def test_markdown_link_to_a_sibling_is_an_edge(self, tmp_path):
+        path = write(
+            tmp_path,
+            "MEMORY.md",
+            "# index\n\n- [Cowork transcripts](cowork-local.md) -- hook text\n",
+        )
+        m = parse_memory_file(path, scope="project", owner_key="p")
+        assert m.links == [
+            MemoryLink(
+                target="cowork-local.md",
+                syntax="markdown",
+                text="Cowork transcripts",
+            )
+        ]
+
+    def test_both_syntaxes_share_one_document_order(self, tmp_path):
+        path = write(
+            tmp_path,
+            "a.md",
+            "---\nname: a\n---\n\n[[first]] then [second](two.md) then [[third]]\n",
+        )
+        m = parse_memory_file(path, scope="project", owner_key="p")
+        assert [(x.target, x.syntax) for x in m.links] == [
+            ("first", "wiki"),
+            ("two.md", "markdown"),
+            ("third", "wiki"),
+        ]
+
+    def test_non_memory_targets_are_not_edges(self, tmp_path):
+        """An external URL, an in-document anchor, an image, and a path
+        reaching outside the memory directory are all links, but none of
+        them is a memory-to-memory edge."""
+        path = write(
+            tmp_path,
+            "a.md",
+            "---\nname: a\n---\n\n"
+            "[ext](https://example.test/page.md) [top](#section) "
+            "[nested](sub/dir/file.md) ![img](pic.png) [ok](real.md)\n",
+        )
+        m = parse_memory_file(path, scope="project", owner_key="p")
+        assert [x.target for x in m.links] == ["real.md"]
+
+    def test_fragment_is_stripped_from_the_target(self, tmp_path):
+        path = write(
+            tmp_path,
+            "a.md",
+            "---\nname: a\n---\n\nsee [part](topic.md#a-section)\n",
+        )
+        m = parse_memory_file(path, scope="project", owner_key="p")
+        assert [x.target for x in m.links] == ["topic.md"]
+
+    def test_markdown_links_in_fenced_code_are_ignored(self, tmp_path):
+        path = write(
+            tmp_path,
+            "a.md",
+            "---\nname: a\n---\n\nreal [a](one.md)\n\n"
+            "```\n[doc](not-an-edge.md)\n```\n",
+        )
+        m = parse_memory_file(path, scope="project", owner_key="p")
+        assert [x.target for x in m.links] == ["one.md"]
 
 
 class TestContentHash:

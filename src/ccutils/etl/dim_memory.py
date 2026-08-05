@@ -27,6 +27,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable, Sequence
 
+from ccutils.etl.lineage import EtlRun
 from ccutils.etl.utils import insert_missing_dim_dates
 from ccutils.parsers.memory import (
     MemoryFile,
@@ -35,7 +36,66 @@ from ccutils.parsers.memory import (
     scanned_owners,
 )
 
-__all__ = ["import_memories"]
+__all__ = ["import_memories", "run_memory_import"]
+
+
+#: source_path value for the memory import's own ``fact_etl_runs`` row.
+#: Mirrors ``<post-session-reconciliation>`` -- a run that is not a session
+#: still needs a stable, greppable identity in the run table.
+MEMORY_RUN_SOURCE = "<auto-memory>"
+
+
+def _provenance(run: EtlRun | None) -> tuple:
+    """(version_key, etl_run_id, record_source) for the INSERTs.
+
+    NULL when no run was supplied, which only unit tests do. The version key
+    matters here as much as on any fact: what ``content_hash`` covers and how
+    links are extracted are parser semantics, so rows written under different
+    parser versions are not interchangeable, and a stale stamp would make
+    them indistinguishable.
+    """
+    if run is None:
+        return (None, None, None)
+    return (run.version_key, run.etl_run_id, MEMORY_RUN_SOURCE)
+
+
+def run_memory_import(conn, *, batch_run_id: str | None = None, **kwargs) -> int:
+    """Import auto memory as a recorded ETL run. Returns versions written.
+
+    Memory is a per-repository source, not a per-session one, so it cannot
+    live inside ``run_v15_etl``. That is a reason to run it after the loop,
+    NOT a reason to run it outside the run-metadata system: a global source
+    that writes rows without a run is invisible -- nothing reports how many
+    memory versions a run wrote, no row says which run observed it, and a
+    failure leaves no trace. This wrapper gives it the same three-grain
+    treatment every other populator gets, following
+    ``run_post_session_reconciliation``.
+
+    **Failures are recorded, not raised.** The reconciliation pass re-raises
+    because its output is load-bearing (without it the warehouse reports
+    acknowledgment latencies as agent durations). Memory is additive: losing
+    it costs the memory rows and corrupts nothing else, so an archive build
+    should finish. What must NOT happen is the previous ``except Exception:
+    pass`` -- that lost the fact that memory was meant to be there at all,
+    leaving a warehouse indistinguishable from one built where auto memory
+    was disabled. The run row carries the error instead.
+    """
+    run = EtlRun.start(
+        conn,
+        source_path=MEMORY_RUN_SOURCE,
+        batch_run_id=batch_run_id,
+        description="auto-memory import",
+        run_kind="global_source",
+    )
+    try:
+        with run.step("dim_memory", kind="stage") as counts:
+            written = import_memories(conn, run=run, **kwargs)
+            counts.rows_inserted = written
+        run.complete(sessions_seen=0, sessions_inserted=0, sessions_updated=0)
+        return written
+    except BaseException as e:
+        run.fail(str(e) or type(e).__name__)
+        return 0
 
 
 def _memory_id(mem: MemoryFile) -> str:
@@ -122,6 +182,7 @@ def import_memories(
     agent_user_root: str | Path | None = None,
     agent_repo_paths: Sequence[str | Path] = (),
     now: datetime | None = None,
+    run: EtlRun | None = None,
 ) -> int:
     """Load auto memory into dim_memory. Returns the number of versions written.
 
@@ -138,6 +199,12 @@ def import_memories(
             subagent memory.
         now: Injected clock for the SCD boundary; defaults to UTC now. Tests
             pass it so ``valid_from`` / ``valid_to`` are deterministic.
+        run: The ``EtlRun`` this import belongs to. Supplied by
+            :func:`run_memory_import`, which every real caller goes through;
+            rows are stamped with its id and version key so a Type 2 row can
+            answer "which run observed this version". Omitted only by unit
+            tests exercising the import in isolation, where the provenance
+            columns are left NULL.
 
     Missing directories are a no-op (returns 0): memory is optional and can
     be disabled entirely via ``autoMemoryEnabled: false``.
@@ -213,7 +280,7 @@ def import_memories(
             )
         )
 
-        for ordinal, target in enumerate(mem.links):
+        for ordinal, link in enumerate(mem.links):
             links.append(
                 (
                     hashlib.md5(
@@ -223,7 +290,9 @@ def import_memories(
                     memory_id,
                     mem.scope,
                     mem.owner_key,
-                    target,
+                    link.target,
+                    link.syntax,
+                    link.text,
                     ordinal,
                 )
             )
@@ -252,8 +321,8 @@ def import_memories(
     if not inbound:
         return 0
 
-    _insert_versions(conn, inbound)
-    _insert_links(conn, links)
+    _insert_versions(conn, inbound, run)
+    _insert_links(conn, links, run)
     _resolve_project_and_session_keys(conn)
     _resolve_link_targets(conn)
     insert_missing_dim_dates(conn, "dim_memory", "modified_at")
@@ -295,7 +364,7 @@ def _close_absent(
             _close_version(conn, memory_key, stamp)
 
 
-def _insert_versions(conn, inbound: list[tuple]) -> None:
+def _insert_versions(conn, inbound: list[tuple], run: EtlRun | None) -> None:
     conn.execute("DROP TABLE IF EXISTS _inbound_memory")
     conn.execute(
         """
@@ -321,6 +390,7 @@ def _insert_versions(conn, inbound: list[tuple]) -> None:
     conn.execute(
         """
         INSERT INTO dim_memory (
+            created_by_version_key, etl_run_id, record_source,
             memory_key, memory_id, project_key, session_key, scope, owner_key,
             owner_root, agent_scope, source_path, file_name, memory_name, description,
             memory_type, node_type, origin_session_id, is_index,
@@ -329,6 +399,7 @@ def _insert_versions(conn, inbound: list[tuple]) -> None:
             valid_to, is_current, date_key, time_key
         )
         SELECT
+            ?, ?, ?,
             memory_key, memory_id, NULL, NULL, scope, owner_key,
             owner_root, agent_scope, source_path, file_name, memory_name, description,
             memory_type, node_type, origin_session_id, is_index,
@@ -336,22 +407,25 @@ def _insert_versions(conn, inbound: list[tuple]) -> None:
             link_count, modified_at, file_mtime, version_num, valid_from,
             NULL, TRUE, date_key, time_key
         FROM _inbound_memory
-        """
+        """,
+        _provenance(run),
     )
     conn.execute("DROP TABLE IF EXISTS _inbound_memory")
 
 
-def _insert_links(conn, links: list[tuple]) -> None:
+def _insert_links(conn, links: list[tuple], run: EtlRun | None) -> None:
     if not links:
         return
     conn.executemany(
         """
         INSERT INTO bridge_memory_link (
+            created_by_version_key, etl_run_id, record_source,
             memory_link_key, memory_key, memory_id, project_key, scope,
-            owner_key, target_name, target_memory_id, is_resolved, ordinal
-        ) VALUES (?, ?, ?, NULL, ?, ?, ?, NULL, FALSE, ?)
+            owner_key, target_name, target_memory_id, is_resolved,
+            link_syntax, link_text, ordinal
+        ) VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, NULL, FALSE, ?, ?, ?)
         """,
-        links,
+        [_provenance(run) + row for row in links],
     )
 
 
@@ -398,23 +472,48 @@ def _resolve_project_and_session_keys(conn) -> None:
 
 
 def _resolve_link_targets(conn) -> None:
-    """Match each ``[[name]]`` to a sibling memory in the same scope+owner.
+    """Match each link to a sibling memory in the same scope+owner.
 
-    Both naming styles in the corpus are honoured: the target may be written
-    as the frontmatter ``name`` or as the file stem, and in a real corpus
-    those routinely disagree (``feedback_signal_honesty.md`` carries
+    The two syntaxes resolve differently because they name different things.
+
+    A ``markdown`` target is a FILE NAME the author wrote as a path
+    (``[Title](cowork-local.md)``), so it matches ``file_name`` exactly.
+    Running it through the name/stem matching below would be wrong in both
+    directions: it could match a memory whose frontmatter ``name`` merely
+    resembles the filename, and it would ignore the one unambiguous thing
+    the author actually supplied.
+
+    A ``wiki`` target is an identifier, and both naming styles in the corpus
+    are honoured: it may be written as the frontmatter ``name`` or as the
+    file stem, and in a real corpus those routinely disagree
+    (``feedback_signal_honesty.md`` carries
     ``name: signal-honesty-over-green-boards``), so a link may legitimately
     point at either.
 
-    Matching is modulo separator -- ``-`` and ``_`` are the same identifier
-    in different clothes, and corpora mix them freely (``[[feedback-signal-
-    honesty]]`` referring to ``feedback_signal_honesty.md``). That is still
-    an EXACT match on a normalised string, not fuzzy matching: prefixes and
-    substrings are deliberately NOT matched, because a link whose text
-    resembles a memory without naming it is authoring drift, and guessing
-    would invent edges the author never wrote. Unmatched links stay
-    ``is_resolved = FALSE`` with a NULL target rather than being dropped.
+    Wiki matching is modulo separator -- ``-`` and ``_`` are the same
+    identifier in different clothes, and corpora mix them freely
+    (``[[feedback-signal-honesty]]`` referring to
+    ``feedback_signal_honesty.md``). That is still an EXACT match on a
+    normalised string, not fuzzy matching: prefixes and substrings are
+    deliberately NOT matched, because a link whose text resembles a memory
+    without naming it is authoring drift, and guessing would invent edges
+    the author never wrote. Unmatched links stay ``is_resolved = FALSE``
+    with a NULL target rather than being dropped.
     """
+    conn.execute(
+        """
+        UPDATE bridge_memory_link SET
+            target_memory_id = (
+                SELECT t.memory_id FROM dim_memory t
+                WHERE t.scope = bridge_memory_link.scope
+                  AND t.owner_key = bridge_memory_link.owner_key
+                  AND t.is_current
+                  AND t.file_name = bridge_memory_link.target_name
+                LIMIT 1
+            )
+        WHERE target_memory_id IS NULL AND link_syntax = 'markdown'
+        """
+    )
     norm = "lower(replace({}, '_', '-'))"
     conn.execute(
         f"""
@@ -432,7 +531,7 @@ def _resolve_link_targets(conn) -> None:
                   )
                 LIMIT 1
             )
-        WHERE target_memory_id IS NULL
+        WHERE target_memory_id IS NULL AND link_syntax <> 'markdown'
         """
     )
     conn.execute(

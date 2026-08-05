@@ -50,7 +50,7 @@ _PROGRESS_TABLES = (
 )
 
 
-def _import_auto_memory(conn) -> int:
+def _import_auto_memory(conn, *, batch_run_id: str | None = None) -> int:
     """Ingest Claude Code auto memory for the projects this archive covers.
 
     Scoped to the project directories already in ``dim_project`` so a
@@ -65,7 +65,7 @@ def _import_auto_memory(conn) -> int:
     a subdirectory of its repo will not surface that repo's committed agent
     memory; the user-scope directory is always scanned.
     """
-    from ..etl.dim_memory import import_memories
+    from ..etl.dim_memory import run_memory_import
 
     claude_home = Path.home() / ".claude"
     projects = {
@@ -80,8 +80,9 @@ def _import_auto_memory(conn) -> int:
             "SELECT DISTINCT cwd FROM dim_session WHERE cwd IS NOT NULL"
         ).fetchall()
     ]
-    return import_memories(
+    return run_memory_import(
         conn,
+        batch_run_id=batch_run_id,
         projects_root=claude_home / "projects",
         # Deliberately not `projects or None`: None means "every project on
         # the machine", so an empty dim_project would invert the scoping and
@@ -285,13 +286,12 @@ def generate_duckdb_archive(
             pass
 
         # Auto memory lives per-repository, not per-session, so it is
-        # ingested once after the loop for the same reason as history.
-        try:
-            _import_auto_memory(conn)
-        except Exception:
-            # Same policy as history: an unreadable memory directory must
-            # not fail an otherwise complete archive build.
-            pass
+        # ingested once after the loop for the same reason as history --
+        # but as a RECORDED run, not a bare call. run_memory_import owns
+        # its own error handling: a failure lands as a failed
+        # fact_etl_runs row rather than vanishing, and the archive still
+        # completes because memory is additive.
+        _import_auto_memory(conn, batch_run_id=batch.batch_run_id)
 
         # Per-session failures were isolated above (they land as failed
         # fact_etl_runs children and make the batch 'partial').

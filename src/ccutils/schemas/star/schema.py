@@ -1368,6 +1368,18 @@ def create_star_schema(db_path):
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS dim_memory (
+            -- Run provenance. NOT the full fact lineage block: there is
+            -- deliberately no is_deleted/deleted_at, because the Type 2
+            -- columns (is_current / valid_to) ARE this table's deletion
+            -- mechanism. A second one would let a row be closed by one
+            -- convention and deleted by the other, and the two would
+            -- disagree the first time a memory was retired. hash_diff is
+            -- likewise absent: content_hash is the change detector.
+            created_at TIMESTAMP DEFAULT current_timestamp,
+            created_by_version_key VARCHAR,
+            etl_run_id VARCHAR,
+            record_source VARCHAR,
+
             memory_key VARCHAR,
             memory_id VARCHAR,
             project_key VARCHAR,
@@ -1402,15 +1414,29 @@ def create_star_schema(db_path):
     """
     )
 
-    # One row per [[wiki-link]] OCCURRENCE in one memory version -- repeats
-    # are kept (a memory referenced twice is stronger signal than once) and
-    # each version owns its own edges, so the graph is queryable as of any
-    # point in time. Dangling links are retained with is_resolved = FALSE:
-    # a link to a memory that was never written marks something Claude meant
-    # to record, which dropping the row would hide.
+    # One row per link OCCURRENCE in one memory version -- repeats are kept
+    # (a memory referenced twice is stronger signal than once) and each
+    # version owns its own edges, so the graph is queryable as of any point
+    # in time. Dangling links are retained with is_resolved = FALSE: a link
+    # to a memory that was never written marks something Claude meant to
+    # record, which dropping the row would hide.
+    #
+    # TWO syntaxes carry edges and link_syntax keeps them apart:
+    #   'wiki'     [[name]]            prose cross-reference between topics
+    #   'markdown' [Title](file.md)    how MEMORY.md indexes its topic files
+    # Reading only the wiki form drops every index edge -- measured on a real
+    # corpus, 71 of 140 edges were markdown links and ALL of them originated
+    # in an index. Collapsing the two would lose the difference between
+    # "this memory is catalogued here" and "this memory argues against that
+    # one". link_text is the index's own label for the target.
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS bridge_memory_link (
+            created_at TIMESTAMP DEFAULT current_timestamp,
+            created_by_version_key VARCHAR,
+            etl_run_id VARCHAR,
+            record_source VARCHAR,
+
             memory_link_key VARCHAR,
             memory_key VARCHAR,
             memory_id VARCHAR,
@@ -1420,6 +1446,8 @@ def create_star_schema(db_path):
             target_name VARCHAR,
             target_memory_id VARCHAR,
             is_resolved BOOLEAN,
+            link_syntax VARCHAR,
+            link_text VARCHAR,
             ordinal INTEGER
         )
     """
@@ -2476,6 +2504,9 @@ def create_star_schema(db_path):
             tgt.file_name AS target_file_name,
             tgt.memory_type AS target_type,
             bl.is_resolved,
+            bl.link_syntax,
+            bl.link_text,
+            src.is_index AS source_is_index,
             bl.ordinal,
             dp.project_name
         FROM bridge_memory_link bl
@@ -2500,6 +2531,13 @@ def create_star_schema(db_path):
             b.source_root AS batch_source_root,
             b.output_format AS batch_output_format,
             r.source_path,
+            -- run_kind was added to fact_etl_runs to scope the batch rollup
+            -- but never surfaced here, so the documented observability view
+            -- could not tell a session run from one that is not a session.
+            -- With three kinds in play ('session', 'reconciliation',
+            -- 'global_source') an unqualified row count over this view
+            -- silently mixes them.
+            r.run_kind,
             r.status,
             r.started_at,
             r.completed_at,
@@ -2609,6 +2647,28 @@ _COLUMN_MIGRATIONS = [
     # cross-session reconciliation pass is a child run that is NOT a session;
     # without this discriminator it inflated sessions_seen by one per batch.
     ("fact_etl_runs", "run_kind", "VARCHAR"),
+    # dim_memory / bridge_memory_link shipped without run provenance and
+    # without link_syntax. Both tables landed in a commit before these
+    # columns existed, so a warehouse built from that commit has the narrow
+    # shape and CREATE TABLE IF NOT EXISTS will never widen it -- the import
+    # would fail on a missing column rather than degrade. The memory import
+    # is the first consumer of its own lineage columns, so a missed
+    # migration here breaks the populator outright instead of silently
+    # blanking a field.
+    ("dim_memory", "created_at", "TIMESTAMP"),
+    ("dim_memory", "created_by_version_key", "VARCHAR"),
+    ("dim_memory", "etl_run_id", "VARCHAR"),
+    ("dim_memory", "record_source", "VARCHAR"),
+    ("bridge_memory_link", "created_at", "TIMESTAMP"),
+    ("bridge_memory_link", "created_by_version_key", "VARCHAR"),
+    ("bridge_memory_link", "etl_run_id", "VARCHAR"),
+    ("bridge_memory_link", "record_source", "VARCHAR"),
+    # link_syntax distinguishes an index entry ([Title](file.md)) from a
+    # prose cross-reference ([[name]]). _resolve_link_targets branches on
+    # it, so on an un-migrated warehouse every markdown edge would fall
+    # through to identifier matching and silently fail to resolve.
+    ("bridge_memory_link", "link_syntax", "VARCHAR"),
+    ("bridge_memory_link", "link_text", "VARCHAR"),
 ]
 
 

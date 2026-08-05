@@ -38,6 +38,7 @@ from typing import Iterable, Iterator
 
 __all__ = [
     "MemoryFile",
+    "MemoryLink",
     "parse_memory_file",
     "iter_project_memories",
     "iter_agent_memories",
@@ -55,8 +56,30 @@ _REPO_AGENT_DIRS = {
 
 _FRONTMATTER_RE = re.compile(r"\A---\r?\n(.*?)\r?\n---[ \t]*\r?\n?", re.DOTALL)
 _KEY_RE = re.compile(r"^(?P<indent>[ \t]*)(?P<key>[\w-]+):[ \t]*(?P<value>.*?)[ \t]*$")
-_LINK_RE = re.compile(r"\[\[([^\]\[\n]+)\]\]")
+#: Both link syntaxes in one scan, so `ordinal` is true document order
+#: across them. `[[x]]` cannot match the markdown branch (that branch needs
+#: a `(` after the `]`), so the alternation is unambiguous.
+_ANY_LINK_RE = re.compile(
+    r"\[\[(?P<wiki>[^\]\[\n]+)\]\]"
+    r"|(?<!!)\[(?P<text>[^\]\n]*)\]\((?P<href>[^)\s]+)\)"
+)
 _FENCE_RE = re.compile(r"^[ \t]*(`{3,}|~{3,})", re.MULTILINE)
+
+
+@dataclass
+class MemoryLink:
+    """One link occurrence from a memory body.
+
+    ``syntax`` is retained rather than normalised away: a ``markdown`` edge
+    from ``MEMORY.md`` is an index entry, a ``wiki`` edge is a prose
+    cross-reference between topic files, and collapsing them would lose the
+    distinction between "this memory is catalogued here" and "this memory
+    argues against that one".
+    """
+
+    target: str
+    syntax: str
+    text: str | None = None
 
 
 @dataclass
@@ -93,7 +116,7 @@ class MemoryFile:
     origin_session_id: str | None = None
     modified: datetime | None = None
     agent_scope: str | None = None
-    links: list[str] = field(default_factory=list)
+    links: list[MemoryLink] = field(default_factory=list)
 
     @property
     def body_chars(self) -> int:
@@ -190,14 +213,44 @@ def _strip_fenced_code(text: str) -> str:
     return "\n".join(out)
 
 
-def _extract_links(body: str) -> list[str]:
-    """Every ``[[name]]`` occurrence outside fenced code, in document order.
+def _extract_links(body: str) -> list[MemoryLink]:
+    """Every link occurrence outside fenced code, in document order.
+
+    TWO syntaxes carry real edges and both must be read. ``[[name]]`` is the
+    prose cross-reference between topic files. ``[Title](file.md)`` is how
+    ``MEMORY.md`` -- the index -- points at the topic files it indexes, one
+    line per entry. Reading only the wiki form drops every index edge, which
+    is the relationship that makes the corpus an index rather than a pile of
+    files: measured on a real corpus, 71 of 140 edges were markdown links and
+    all 71 originated in an index.
+
+    Markdown links count only when the target names a sibling markdown file.
+    External URLs, in-document anchors and paths reaching outside the memory
+    directory are not memory-to-memory edges.
 
     Occurrences are kept rather than deduped: the bridge table records one row
     per link, and repeat references are real signal about which memories lean
     on which.
     """
-    return [m.group(1).strip() for m in _LINK_RE.finditer(_strip_fenced_code(body))]
+    links: list[MemoryLink] = []
+    for match in _ANY_LINK_RE.finditer(_strip_fenced_code(body)):
+        if match.group("wiki") is not None:
+            links.append(MemoryLink(target=match.group("wiki").strip(), syntax="wiki"))
+            continue
+
+        target = match.group("href").strip()
+        # Drop the fragment so `file.md#section` still names the file.
+        target = target.split("#", 1)[0]
+        if not target.endswith(".md") or "/" in target:
+            continue
+        links.append(
+            MemoryLink(
+                target=target,
+                syntax="markdown",
+                text=(match.group("text") or "").strip() or None,
+            )
+        )
+    return links
 
 
 def parse_memory_file(

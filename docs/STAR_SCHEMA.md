@@ -272,14 +272,33 @@ Columns: `memory_key` (PK), `memory_id`, `project_key` (FK to dim_project via `p
 
 `date_key`/`time_key` describe when the memory was WRITTEN (`modified_at`, falling back to `file_mtime`), not when ccutils observed it.
 
-Populated by `import_memories` (`etl/dim_memory.py`), scoped to the projects already in `dim_project` so a filtered run does not ingest the whole machine's memory corpus. A memory file that disappears is **closed, not deleted** (`is_current = FALSE`, `valid_to` set) -- a retired memory is a fact about the project's history. Retirement keys off the owners that were *scanned*, not the files that came back, or emptying a memory directory would leave its rows marked current forever.
+**Recorded as a real ETL run.** Populated by `run_memory_import` (`etl/dim_memory.py`), which wraps `import_memories` in an `EtlRun` with `run_kind = 'global_source'` and a `dim_memory` step, following `run_post_session_reconciliation`. Memory is a per-repository source so it cannot live inside `run_v15_etl` -- but that is a reason to run it after the per-session loop, not a reason to run it outside the run-metadata system. A global source writing rows without a run is invisible: nothing reports how many versions a run wrote, no row says which run observed it, and a failure leaves no trace.
+
+Rows carry `created_at`, `created_by_version_key`, `etl_run_id` and `record_source` (`<auto-memory>`), so a Type 2 row can answer "which run observed this version". They deliberately carry **no `is_deleted`/`deleted_at`** -- `is_current`/`valid_to` ARE this table's deletion mechanism, and a second one would let a row be closed by one convention and deleted by the other -- and **no `hash_diff`**, since `content_hash` is the change detector.
+
+Unlike the cross-session reconciliation pass, a memory-import failure is **recorded, not raised**: the run row carries the error and the archive still completes, because memory is additive and losing it corrupts nothing else. What it must never do is vanish -- a swallowed failure leaves a warehouse indistinguishable from one built where auto memory was disabled.
+
+Scoped to the projects already in `dim_project` so a filtered run does not ingest the whole machine's memory corpus. A memory file that disappears is **closed, not deleted** (`is_current = FALSE`, `valid_to` set) -- a retired memory is a fact about the project's history. Retirement keys off the owners that were *scanned*, not the files that came back, or emptying a memory directory would leave its rows marked current forever.
 
 Two frontmatter shapes coexist in real corpora: newer files nest under `metadata:`, older ones carry a top-level `type:`. Both are read.
 
 #### bridge_memory_link
-The `[[wiki-link]]` graph between memories. One row per link OCCURRENCE in one memory version -- repeats are kept (a memory referenced twice is stronger signal than once), and each version owns its own edges, so the graph is queryable as of any point in time.
+The link graph between memories. One row per link OCCURRENCE in one memory version -- repeats are kept (a memory referenced twice is stronger signal than once), and each version owns its own edges, so the graph is queryable as of any point in time.
 
-Columns: `memory_link_key` (PK, `md5(memory_key || ordinal)`), `memory_key` (FK to the SOURCE version), `memory_id`, `project_key`, `scope`, `owner_key`, `target_name` (raw `[[text]]`), `target_memory_id` (resolved within the same scope+owner, matching either the frontmatter `name` or the file stem -- both styles occur), `is_resolved`, `ordinal`.
+**Two syntaxes carry edges, and `link_syntax` keeps them apart:**
+
+| `link_syntax` | Form | What it means |
+|---|---|---|
+| `wiki` | `[[name]]` | prose cross-reference between topic files |
+| `markdown` | `[Title](file.md)` | how `MEMORY.md` indexes the topic files below it |
+
+Reading only the wiki form drops every index edge -- the relationship that makes the corpus an index rather than a pile of files. Measured on a real corpus: **71 of 140 edges were markdown links, all 71 originating in an index, and 70 duplicated no wiki edge.** Collapsing the two would lose the difference between "this memory is catalogued here" and "this memory argues against that one".
+
+The two also **resolve differently, because they name different things**. A `markdown` target is a file name the author wrote as a path, so it matches `file_name` exactly -- running it through name/stem matching could match a memory whose frontmatter `name` merely resembles the filename while ignoring the one unambiguous thing supplied. A `wiki` target is an identifier, matched against either the frontmatter `name` or the file stem (both styles occur, and they routinely disagree: `feedback_signal_honesty.md` carries `name: signal-honesty-over-green-boards`), modulo separator since `-` and `_` are the same identifier in different clothes. That is still an exact match on a normalized string -- prefixes and substrings are deliberately not matched, because a link that resembles a memory without naming it is authoring drift, and guessing would invent edges.
+
+Markdown links count only when the target names a sibling markdown file; external URLs, in-document anchors, images, and paths reaching outside the memory directory are not memory-to-memory edges. A `file.md#section` fragment is stripped so the file still resolves.
+
+Columns: `memory_link_key` (PK, `md5(memory_key || ordinal)`), `memory_key` (FK to the SOURCE version), `memory_id`, `project_key`, `scope`, `owner_key`, `target_name` (raw `[[text]]`, or the file name for a markdown link), `target_memory_id`, `is_resolved`, `link_syntax`, `link_text` (the index's own label for the target -- not recoverable from the target file), `ordinal` (document order across BOTH syntaxes).
 
 Dangling links are retained with `is_resolved = FALSE` and a NULL target: a link to a memory that was never written marks something Claude meant to record, which dropping the row would hide.
 
@@ -651,7 +670,7 @@ All views use the `semantic_` prefix and join facts with dimensions for easy que
 - `semantic_prompt_history` -- prompts from history JSONL linked to session metadata
 - `semantic_memory` -- the auto-memory corpus AS IT STANDS NOW (`is_current` only), with project, origin-session and date context. Query `dim_memory` directly for the version history behind it
 - `semantic_memory_links` -- the current memory graph with both ends named. Unresolved edges are kept, so "what does Claude reference that it never wrote down" is a `WHERE NOT is_resolved`
-- `semantic_etl_runs` -- run-grain ETL observability: per-session run status/duration, orchestration (batch) context, CDC data window, and step-count/row-count rollups from `fact_etl_steps`
+- `semantic_etl_runs` -- run-grain ETL observability: run status/duration, orchestration (batch) context, CDC data window, and step-count/row-count rollups from `fact_etl_steps`. Carries `run_kind` -- **filter on it.** Three kinds share this view (`session`, `reconciliation`, `global_source`) and an unqualified count over it mixes them
 - `semantic_session_behavior` -- per-session behavioral feature vector: tool-category counts and shares (`read`/`search`/`mutate`/`execute`/`web`/`delegate`), agentic-run shape (`agentic_runs`, `tools_per_run`, `median_gap_seconds`), tokens in/out, thinking blocks, error rate, plus a `*_pctile` corpus-relative rank for each discriminating feature
 
 All 20 views bind against the current DDL (view creation validates column references on every `create_star_schema()` call).

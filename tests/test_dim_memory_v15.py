@@ -21,7 +21,7 @@ from __future__ import annotations
 import pytest
 
 from ccutils import create_star_schema
-from ccutils.etl.dim_memory import import_memories
+from ccutils.etl.dim_memory import import_memories, run_memory_import
 
 FEEDBACK = """\
 ---
@@ -399,6 +399,86 @@ class TestLinkGraph:
         assert historical == 2
 
 
+class TestIndexLinks:
+    """MEMORY.md is the index, and it points at topic files with
+    ``- [Title](file.md)``, not [[wiki]] syntax. Those index edges are the
+    relationship that makes the corpus an index rather than a pile of files.
+    Measured on a real corpus: 71 of 140 edges were markdown links, ALL of
+    them originating in an index, and 70 duplicated no wiki edge."""
+
+    @pytest.fixture
+    def indexed(self, projects_root):
+        (projects_root / PROJECT_DIR / "memory" / "MEMORY.md").write_text(
+            "# project memory\n\n"
+            "- [Exit codes](check-exit-codes.md) -- pipes hide failures\n"
+            "- [Signal honesty](signal-honesty.md) -- do not touch the check\n"
+            "- [Missing](never-written.md) -- not on disk\n"
+        )
+        return projects_root
+
+    def test_index_entries_become_resolved_edges(self, conn, indexed):
+        import_memories(conn, projects_root=indexed)
+        rows = conn.execute(
+            "SELECT bl.target_name, bl.is_resolved, bl.link_syntax "
+            "FROM bridge_memory_link bl JOIN dim_memory m USING (memory_key) "
+            "WHERE m.file_name = 'MEMORY.md' ORDER BY bl.ordinal"
+        ).fetchall()
+        assert rows == [
+            ("check-exit-codes.md", True, "markdown"),
+            ("signal-honesty.md", True, "markdown"),
+            ("never-written.md", False, "markdown"),
+        ]
+
+    def test_index_label_is_captured(self, conn, indexed):
+        """The index's own label for a memory is what a human reads in the
+        table of contents; it is not recoverable from the target file."""
+        import_memories(conn, projects_root=indexed)
+        row = conn.execute(
+            "SELECT link_text FROM bridge_memory_link "
+            "WHERE target_name = 'check-exit-codes.md'"
+        ).fetchone()
+        assert row == ("Exit codes",)
+
+    def test_markdown_target_resolves_on_file_name_not_memory_name(
+        self, conn, indexed
+    ):
+        """check-exit-codes.md carries `name: check-exit-codes`, but a
+        markdown target is a path the author wrote -- it must match the file
+        name, so an index still resolves when the two disagree."""
+        d = indexed / PROJECT_DIR / "memory"
+        (d / "renamed_file.md").write_text(
+            FEEDBACK.replace("name: check-exit-codes", "name: totally-different")
+        )
+        (d / "MEMORY.md").write_text("# index\n\n- [R](renamed_file.md) -- x\n")
+        import_memories(conn, projects_root=indexed)
+
+        row = conn.execute(
+            "SELECT bl.is_resolved, t.memory_name FROM bridge_memory_link bl "
+            "LEFT JOIN dim_memory t ON bl.target_memory_id = t.memory_id "
+            "WHERE bl.target_name = 'renamed_file.md'"
+        ).fetchone()
+        assert row == (True, "totally-different")
+
+    def test_both_syntaxes_coexist_in_one_graph(self, conn, indexed):
+        import_memories(conn, projects_root=indexed)
+        counts = dict(
+            conn.execute(
+                "SELECT link_syntax, COUNT(*) FROM bridge_memory_link "
+                "GROUP BY link_syntax"
+            ).fetchall()
+        )
+        # 3 index entries + the 2 [[wiki]] links in check-exit-codes.md
+        assert counts == {"markdown": 3, "wiki": 2}
+
+    def test_semantic_view_distinguishes_index_edges(self, conn, indexed):
+        import_memories(conn, projects_root=indexed)
+        row = conn.execute(
+            "SELECT source_is_index, link_syntax FROM semantic_memory_links "
+            "WHERE target_name = 'signal-honesty.md'"
+        ).fetchone()
+        assert row == (True, "markdown")
+
+
 class TestAgentScope:
     @pytest.fixture
     def agent_root(self, tmp_path):
@@ -482,6 +562,236 @@ class TestAgentScope:
             "SELECT COUNT(DISTINCT memory_id) FROM dim_memory WHERE file_name = 'MEMORY.md'"
         ).fetchone()[0]
         assert ids == 2
+
+
+class TestEtlIntegration:
+    """Memory ingestion has to be visible to the run-metadata system.
+
+    The warehouse records three grains (batch / run / step) and every other
+    populator reports into them. A global source that writes rows outside
+    that system is invisible: nothing says how many memory versions a run
+    wrote, nothing says which run wrote a given version, and a failure
+    leaves no trace at all. For a Type 2 SCD the provenance question --
+    "which run observed this version" -- is exactly the one you want
+    answered.
+    """
+
+    def test_dim_memory_carries_run_provenance_columns(self, conn):
+        assert {
+            "etl_run_id", "record_source", "created_at", "created_by_version_key",
+        } <= cols(conn, "dim_memory")
+
+    def test_bridge_memory_link_carries_run_provenance_columns(self, conn):
+        assert {
+            "etl_run_id", "record_source", "created_at", "created_by_version_key",
+        } <= cols(conn, "bridge_memory_link")
+
+    def test_dim_memory_has_no_is_deleted_column(self, conn):
+        """Deliberate. The Type 2 columns (is_current / valid_to) ARE the
+        deletion mechanism here. A second one would let a row be closed by
+        one convention and deleted by the other, and the two would disagree
+        the first time a memory was retired."""
+        assert "is_deleted" not in cols(conn, "dim_memory")
+
+    def test_import_records_a_run_of_its_own_kind(self, conn, projects_root):
+        run_memory_import(conn, projects_root=projects_root)
+        rows = conn.execute(
+            "SELECT run_kind, status FROM fact_etl_runs "
+            "WHERE source_path = '<auto-memory>'"
+        ).fetchall()
+        assert rows == [("global_source", "success")]
+
+    def test_semantic_etl_runs_exposes_the_run_kind(self, conn, projects_root):
+        """The documented observability view must be able to tell a memory
+        import from a session run. Without run_kind exposed, an unqualified
+        count over this view silently mixes three different kinds of run."""
+        run_memory_import(conn, projects_root=projects_root)
+        row = conn.execute(
+            "SELECT run_kind, status FROM semantic_etl_runs "
+            "WHERE source_path = '<auto-memory>'"
+        ).fetchone()
+        assert row == ("global_source", "success")
+
+    def test_import_records_a_step_with_real_counts(self, conn, projects_root):
+        """Counts must be derived from the work actually done, not asserted
+        by the caller -- a hand-tallied count is how a step row starts
+        lying."""
+        run_memory_import(conn, projects_root=projects_root)
+        row = conn.execute(
+            "SELECT step_name, status, rows_inserted FROM fact_etl_steps "
+            "WHERE step_name = 'dim_memory'"
+        ).fetchone()
+        assert row == ("dim_memory", "success", 3)
+
+    def test_rows_are_stamped_with_the_run_that_wrote_them(
+        self, conn, projects_root
+    ):
+        run_memory_import(conn, projects_root=projects_root)
+        run_id = conn.execute(
+            "SELECT etl_run_id FROM fact_etl_runs WHERE source_path = '<auto-memory>'"
+        ).fetchone()[0]
+        assert conn.execute(
+            "SELECT COUNT(*) FROM dim_memory WHERE etl_run_id = ?", [run_id]
+        ).fetchone()[0] == 3
+        assert conn.execute(
+            "SELECT COUNT(*) FROM bridge_memory_link WHERE etl_run_id IS NULL"
+        ).fetchone()[0] == 0
+
+    def test_a_new_version_is_stamped_with_the_later_run(
+        self, conn, projects_root
+    ):
+        """The whole point of provenance on a Type 2 row: two versions of one
+        memory must name the two different runs that observed them."""
+        run_memory_import(conn, projects_root=projects_root)
+        path = projects_root / PROJECT_DIR / "memory" / "check-exit-codes.md"
+        path.write_text(FEEDBACK.replace("Never verify", "Always verify"))
+        run_memory_import(conn, projects_root=projects_root)
+
+        runs = conn.execute(
+            "SELECT version_num, etl_run_id FROM dim_memory "
+            "WHERE file_name = 'check-exit-codes.md' ORDER BY version_num"
+        ).fetchall()
+        assert len(runs) == 2
+        assert runs[0][1] != runs[1][1]
+
+    def test_an_unchanged_reimport_records_a_run_that_wrote_nothing(
+        self, conn, projects_root
+    ):
+        """Idempotency has to be observable. A second run that inserts zero
+        rows is the evidence that nothing changed -- silence would be
+        indistinguishable from the import never happening."""
+        run_memory_import(conn, projects_root=projects_root)
+        run_memory_import(conn, projects_root=projects_root)
+        counts = [
+            r[0] for r in conn.execute(
+                "SELECT rows_inserted FROM fact_etl_steps "
+                "WHERE step_name = 'dim_memory' ORDER BY started_at"
+            ).fetchall()
+        ]
+        assert counts == [3, 0]
+
+    def test_a_failure_is_recorded_rather_than_swallowed(
+        self, conn, projects_root, monkeypatch
+    ):
+        """A best-effort import must still leave a trace when it fails.
+        `except Exception: pass` loses the fact that memory was supposed to
+        be there -- the warehouse then looks identical to one built on a
+        machine with auto memory disabled."""
+        import ccutils.etl.dim_memory as mod
+
+        def boom(*a, **k):
+            raise RuntimeError("disk on fire")
+
+        monkeypatch.setattr(mod, "_collect", boom)
+        run_memory_import(conn, projects_root=projects_root)
+
+        row = conn.execute(
+            "SELECT status, error_message FROM fact_etl_runs "
+            "WHERE source_path = '<auto-memory>'"
+        ).fetchone()
+        assert row[0] == "failed"
+        assert "disk on fire" in row[1]
+
+    def test_a_failure_does_not_abort_the_archive(
+        self, conn, projects_root, monkeypatch
+    ):
+        """Memory is additive -- losing it corrupts nothing else, so unlike
+        the cross-session reconciliation pass this one records and returns
+        instead of re-raising."""
+        import ccutils.etl.dim_memory as mod
+
+        monkeypatch.setattr(
+            mod, "_collect", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("x"))
+        )
+        assert run_memory_import(conn, projects_root=projects_root) == 0
+
+
+class TestUpgradePath:
+    """A warehouse built before the provenance/link_syntax columns existed
+    must heal on open, not fail.
+
+    ``CREATE TABLE IF NOT EXISTS`` never widens an existing table, so the
+    narrow shape survives every subsequent create_star_schema() call unless
+    _COLUMN_MIGRATIONS re-adds the columns. This is not a cosmetic gap here:
+    the import writes those columns directly, so an un-migrated warehouse
+    fails outright rather than degrading.
+    """
+
+    def _narrow_warehouse(self, tmp_path):
+        """A database holding the memory tables as originally shipped."""
+        import duckdb
+
+        path = tmp_path / "old.duckdb"
+        conn = duckdb.connect(str(path))
+        conn.execute(
+            """
+            CREATE TABLE dim_memory (
+                memory_key VARCHAR, memory_id VARCHAR, project_key VARCHAR,
+                session_key VARCHAR, scope VARCHAR, owner_key VARCHAR,
+                owner_root VARCHAR, agent_scope VARCHAR, source_path VARCHAR,
+                file_name VARCHAR, memory_name VARCHAR, description TEXT,
+                memory_type VARCHAR, node_type VARCHAR,
+                origin_session_id VARCHAR, is_index BOOLEAN,
+                has_frontmatter BOOLEAN, body_text TEXT, content_hash VARCHAR,
+                body_chars INTEGER, body_lines INTEGER, link_count INTEGER,
+                modified_at TIMESTAMP, file_mtime TIMESTAMP,
+                version_num INTEGER, valid_from TIMESTAMP, valid_to TIMESTAMP,
+                is_current BOOLEAN, date_key INTEGER, time_key INTEGER
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE bridge_memory_link (
+                memory_link_key VARCHAR, memory_key VARCHAR,
+                memory_id VARCHAR, project_key VARCHAR, scope VARCHAR,
+                owner_key VARCHAR, target_name VARCHAR,
+                target_memory_id VARCHAR, is_resolved BOOLEAN, ordinal INTEGER
+            )
+            """
+        )
+        conn.close()
+        return path
+
+    def test_narrow_warehouse_gains_the_columns_on_open(self, tmp_path):
+        path = self._narrow_warehouse(tmp_path)
+        conn = create_star_schema(path)
+        assert {
+            "created_at", "created_by_version_key", "etl_run_id", "record_source",
+        } <= cols(conn, "dim_memory")
+        assert {
+            "created_at", "created_by_version_key", "etl_run_id",
+            "record_source", "link_syntax", "link_text",
+        } <= cols(conn, "bridge_memory_link")
+
+    def test_import_succeeds_against_an_upgraded_warehouse(
+        self, tmp_path, projects_root
+    ):
+        """The end the migration exists for. Without it this raises on a
+        missing column instead of writing rows."""
+        conn = create_star_schema(self._narrow_warehouse(tmp_path))
+        assert run_memory_import(conn, projects_root=projects_root) == 3
+        assert conn.execute(
+            "SELECT COUNT(*) FROM dim_memory WHERE etl_run_id IS NOT NULL"
+        ).fetchone()[0] == 3
+
+    def test_markdown_links_resolve_on_an_upgraded_warehouse(
+        self, tmp_path, projects_root
+    ):
+        """link_syntax is branched on during resolution, so an un-migrated
+        warehouse would send every index edge down the identifier path and
+        silently resolve none of them."""
+        (projects_root / PROJECT_DIR / "memory" / "MEMORY.md").write_text(
+            "# index\n\n- [Exit codes](check-exit-codes.md) -- hook\n"
+        )
+        conn = create_star_schema(self._narrow_warehouse(tmp_path))
+        run_memory_import(conn, projects_root=projects_root)
+
+        row = conn.execute(
+            "SELECT link_syntax, is_resolved FROM bridge_memory_link "
+            "WHERE target_name = 'check-exit-codes.md'"
+        ).fetchone()
+        assert row == ("markdown", True)
 
 
 class TestScoping:
