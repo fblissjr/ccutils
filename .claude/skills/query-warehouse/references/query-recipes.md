@@ -189,3 +189,66 @@ FROM fact_system_events
 WHERE subtype IN ('compact_boundary', 'api_error') AND is_deleted = FALSE
 GROUP BY ALL ORDER BY n DESC;
 ```
+
+## Auto memory (what Claude has learned)
+
+`dim_memory` is a Type 2 SCD -- one row per (memory file, content VERSION).
+Filter `is_current` for present state, or use `semantic_memory`, which already
+does. Query `dim_memory` directly only when you want history.
+
+```sql
+-- What Claude currently believes about each project, densest first
+SELECT project_name, memory_type, memory_name, description, body_chars
+FROM semantic_memory
+WHERE NOT is_index
+ORDER BY project_name, body_chars DESC;
+
+-- Which memories have actually evolved, and how much
+SELECT owner_key, file_name,
+       COUNT(*)        AS versions,
+       MIN(valid_from) AS first_seen,
+       MAX(CASE WHEN is_current THEN modified_at END) AS last_written
+FROM dim_memory
+GROUP BY ALL HAVING COUNT(*) > 1
+ORDER BY versions DESC;
+
+-- What one memory used to say (point-in-time read)
+SELECT version_num, valid_from, valid_to, body_text
+FROM dim_memory
+WHERE file_name = 'feedback_signal_honesty.md'
+ORDER BY version_num;
+
+-- Memory volume by type and project
+SELECT project_name, memory_type, COUNT(*) AS memories, SUM(body_chars) AS chars
+FROM semantic_memory GROUP BY ALL ORDER BY chars DESC;
+
+-- Which kinds of session produced memories (what teaches Claude something)
+SELECT origin_intent, COUNT(*) AS memories_written
+FROM semantic_memory
+WHERE origin_session_id IS NOT NULL
+GROUP BY ALL ORDER BY memories_written DESC;
+```
+
+The link graph carries two edge kinds -- keep them apart (see gotchas):
+
+```sql
+-- What the index catalogues, with the label it uses
+SELECT project_name, link_text, target_file_name, is_resolved
+FROM semantic_memory_links
+WHERE source_is_index AND link_syntax = 'markdown'
+ORDER BY project_name, ordinal;
+
+-- Prose cross-references between topic files (not index entries)
+SELECT source_name, target_resolved_name
+FROM semantic_memory_links
+WHERE link_syntax = 'wiki' AND is_resolved;
+
+-- Referenced but never written -- memories Claude meant to record
+SELECT DISTINCT owner_key, source_file_name, target_name
+FROM semantic_memory_links WHERE NOT is_resolved;
+
+-- Most-referenced memories (load-bearing knowledge)
+SELECT target_resolved_name, COUNT(*) AS inbound
+FROM semantic_memory_links
+WHERE is_resolved GROUP BY ALL ORDER BY inbound DESC LIMIT 10;
+```

@@ -16,6 +16,7 @@ healthy). Commit test + implementation + docs together.
 | New fact table / populator | `references/new-fact-table.md` (full checklist) |
 | Add/rename column on a shipped table; version bump/release | `references/migrations-and-versioning.md` |
 | Add/change a facet (F01+), bump a prompt version | `references/facets.md` |
+| Ingest a source that is NOT per-session (a global file, a per-repo directory) | `etl/dim_memory.py` is the worked example -- wrap it as a recorded run, see the contract below |
 | Query-shape questions while developing | the `query-warehouse` skill's references |
 | Table/view column ground truth | `docs/STAR_SCHEMA.md` (grep the table name) |
 | Facet pipeline design/status | `docs/FACET_CLUSTER_PIPELINE.md` |
@@ -28,6 +29,24 @@ healthy). Commit test + implementation + docs together.
 - **Populators reading permanent facts (not staging) must scope inbound to
   staged sessions**: `AND session_id IN (SELECT DISTINCT session_id FROM
   stg_log_entries ...)` — otherwise every run rescans the whole warehouse.
+- **Global (non-per-session) sources still go through the run-metadata
+  system.** Living outside `run_v15_etl` is a statement about GRAIN, not a
+  licence to skip lineage. `import_memories` first shipped as a bare call
+  inside `except Exception: pass` — no run row, no step row, no `etl_run_id`,
+  and a failure that left a warehouse indistinguishable from one where the
+  source did not exist. Wrap it like `run_memory_import` /
+  `run_post_session_reconciliation`: `EtlRun.start(run_kind=...)`, a
+  `run.step()` whose counts come from the work done, `run.fail()` on error.
+  Re-raise only when the output is load-bearing (reconciliation does; memory
+  is additive and records instead). `dim_prompt` is still un-wrapped.
+- **A Type 2 dimension does not inherit the fact lineage block wholesale, and
+  must not use `lineage_upsert`** (Type 1 upsert-with-soft-delete fights Type
+  2). Take `created_at`/`created_by_version_key`/`etl_run_id`/`record_source`;
+  omit `is_deleted`/`deleted_at` (the `is_current`/`valid_to` pair IS the
+  deletion mechanism — two of them disagree the first time a row is retired)
+  and `hash_diff` (the content hash is the change detector). Version identity
+  is `(entity_id, version_num)`, never `(entity_id, content_hash)`: reverted
+  content repeats its hash and the revert would silently vanish.
 - **Subagent identity comes from the FILE** (`agent-<id>` stem), stamped at
   Tier 1 (`parsers/parquet_writer.py`) and re-enforced at staging load. Never
   key anything on `$.sessionId` inside agent JSONL — every line carries the

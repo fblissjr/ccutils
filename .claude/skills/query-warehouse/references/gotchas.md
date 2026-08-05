@@ -47,6 +47,21 @@ filter: `semantic_sessions`, `semantic_tool_calls`, `semantic_decisions`,
   `SUM(CASE WHEN is_error THEN 1 ELSE 0 END)`, which routes NULL correctly.
   (Do not rely on "only Bash writes FALSE" — a `Workflow` result writes it too,
   which is harmless since FALSE and absent are equivalent.)
+- `dim_memory` is a **Type 2 SCD** — one row per (memory file, content
+  version), not one per file. **Any query that is not about history must
+  filter `WHERE is_current`**, or a memory edited five times counts five
+  times. `semantic_memory` applies that filter for you; `dim_memory` does not.
+  `memory_id` is the file's stable identity across versions, `memory_key` one
+  version of it — group by `memory_id` to count memories, `memory_key` to
+  count versions.
+- `bridge_memory_link` mixes two link kinds and **`link_syntax` is not
+  cosmetic**: `markdown` rows are `MEMORY.md` index entries (the index
+  catalogues a topic file), `wiki` rows are prose cross-references between
+  topic files. Counting both as one edge type conflates "is catalogued here"
+  with "argues against that". Unresolved rows are kept deliberately
+  (`is_resolved = FALSE`, NULL target) — a link to a memory that was never
+  written is real signal, so filter it out explicitly rather than assuming
+  every row resolves.
 - Most facts carry `session_id` as a degenerate dimension — filter on it
   directly instead of joining `dim_session` when you only need scoping.
 - Surrogate keys are `md5(natural key)` — `session_key = md5(session_id)`
