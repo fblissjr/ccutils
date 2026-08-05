@@ -7,7 +7,8 @@ Always practice TDD: write a failing test, watch it fail, then make it pass. Com
 Reference docs (read these instead of expanding this file):
 
 - `README.md` -- CLI commands, export formats, defaults.
-- `docs/STAR_SCHEMA.md` -- every table/view, lineage convention, run-metadata grains, populator order.
+- `docs/STAR_SCHEMA.md` -- every table/view, lineage convention, run-metadata grains, populator order. Describes the warehouse **as built**.
+- `docs/ETL_ARCHITECTURE.md` -- the layering the ETL is **moving to**, and the three rules that decide where a new table/view/populator belongs. **DECIDED, NOT YET IMPLEMENTED**: existing populators do not conform, but anything added from now on should be born conforming. Sequenced migration in `internal/plans/etl_layer_rewrite.md`.
 - `docs/FACET_CLUSTER_PIPELINE.md` -- facet pipeline design + status.
 - `.claude/skills/` -- task-scoped skills (`etl-dev`, `query-warehouse`, `render-exports`, `new-fact`, `new-dimension`, `test-schema`, `release`) with on-demand reference files; they load the detail above progressively, so prefer triggering the matching skill over re-reading the docs wholesale.
 
@@ -59,6 +60,7 @@ Four tiers: Claude Code JSONL -> Parquet lake (`parsers/parquet_writer.py`, re-d
 
 ## Workflow recipes
 
+- **Before adding any new table, view or populator**: check it against the three rules in `docs/ETL_ARCHITECTURE.md` -- read staging not other facts; compute your own keys; an object earns existence by encoding something a consumer would get wrong, not by saving a JOIN. New work born conforming is work that stays off the migration list.
 - **New fact table**: failing tests (DDL + lineage cols + behavior + idempotency) -> DDL with the standard lineage block -> `populate_fact_<x>` delegating to `lineage_upsert` (its projection MUST emit one row per declared `natural_key`; add the table to `NATURAL_KEYS`) -> wire into `run_v15_etl` in dependency order (`fact_session_summary` stays LAST) -> add to `_PROGRESS_TABLES` -> CHANGELOG + STAR_SCHEMA.md.
 - **Removing a feature**: grep imports/`__all__`/CLI registrations/tests; delete; update CHANGELOG, README, `_PROGRESS_TABLES`; grep help text for stale counts.
 - **Versioning**: version in `pyproject.toml`, sync with `CHANGELOG.md` (`[Unreleased]` promotes on release) AND `PARSER_VERSION` in `src/ccutils/_version.py` (it stamps every lineage row -- a stale value makes rows from different contracts indistinguishable); tag `v0.X.0`. Semver, no major bumps without permission.
