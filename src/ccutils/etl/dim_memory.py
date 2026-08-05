@@ -27,7 +27,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable, Sequence
 
-from ccutils.etl.lineage import EtlRun
+from ccutils.etl.lineage import EtlRun, record_source_label
 from ccutils.etl.utils import insert_missing_dim_dates
 from ccutils.parsers.memory import (
     MemoryFile,
@@ -44,6 +44,12 @@ __all__ = ["import_memories", "run_memory_import"]
 #: still needs a stable, greppable identity in the run table.
 MEMORY_RUN_SOURCE = "<auto-memory>"
 
+#: Provenance label stamped on every memory row. Distinct from the run
+#: sentinel above: that identifies the RUN, this identifies the SOURCE, and
+#: it is validated against lineage.py's allow-list so a typo cannot reach
+#: 100k rows.
+MEMORY_RECORD_SOURCE = "claude_code_memory"
+
 
 def _provenance(run: EtlRun | None) -> tuple:
     """(version_key, etl_run_id, record_source) for the INSERTs.
@@ -56,10 +62,16 @@ def _provenance(run: EtlRun | None) -> tuple:
     """
     if run is None:
         return (None, None, None)
-    return (run.version_key, run.etl_run_id, MEMORY_RUN_SOURCE)
+    return (run.version_key, run.etl_run_id, record_source_label(MEMORY_RECORD_SOURCE))
 
 
-def run_memory_import(conn, *, batch_run_id: str | None = None, **kwargs) -> int:
+def run_memory_import(
+    conn,
+    *,
+    batch_run_id: str | None = None,
+    resolve_kwargs=None,
+    **kwargs,
+) -> int:
     """Import auto memory as a recorded ETL run. Returns versions written.
 
     Memory is a per-repository source, not a per-session one, so it cannot
@@ -88,12 +100,26 @@ def run_memory_import(conn, *, batch_run_id: str | None = None, **kwargs) -> int
         run_kind="global_source",
     )
     try:
+        # Callers whose arguments themselves require work (querying the
+        # warehouse for scope, resolving the home directory) pass a callable
+        # so that work happens INSIDE the guard. Computing it at the call
+        # site would put it outside any recorded boundary, where a raise
+        # escapes the enclosing BatchRun and aborts an archive whose sessions
+        # were all already processed.
+        if resolve_kwargs is not None:
+            kwargs = {**kwargs, **resolve_kwargs()}
         with run.step("dim_memory", kind="stage") as counts:
             written = import_memories(conn, run=run, **kwargs)
             counts.rows_inserted = written
         run.complete(sessions_seen=0, sessions_inserted=0, sessions_updated=0)
         return written
-    except BaseException as e:
+    except (KeyboardInterrupt, SystemExit) as e:
+        # Mark-and-propagate, matching BatchRun.__exit__. Swallowing these
+        # would record a failed run and let the archive sail on to
+        # complete(), discarding the user's interrupt.
+        run.fail(str(e) or type(e).__name__)
+        raise
+    except Exception as e:
         run.fail(str(e) or type(e).__name__)
         return 0
 
@@ -228,6 +254,18 @@ def import_memories(
             # Unchanged since the last import. Note this does NOT mean the
             # file was untouched -- a rewrite that only moved the `modified:`
             # stamp lands here, which is the point.
+            #
+            # But the EDGES can still be wrong here, because they are derived
+            # from the body by a parser whose contract changes between
+            # releases. v0.19.0 started reading `[Title](file.md)` index
+            # entries; every one of those lives in an unchanged MEMORY.md, so
+            # without this the entire index graph stayed invisible on any
+            # upgraded warehouse until the index text happened to change.
+            # Re-derive rather than open a version: the memory did not change,
+            # our reading of it did, and asserting an edit that never happened
+            # would corrupt the history for every memory in the corpus at once.
+            _sync_links(conn, memory_key=existing[0], memory_id=memory_id,
+                        mem=mem, run=run)
             continue
 
         version_num = max_versions.get(memory_id, 0) + 1
@@ -280,22 +318,7 @@ def import_memories(
             )
         )
 
-        for ordinal, link in enumerate(mem.links):
-            links.append(
-                (
-                    hashlib.md5(
-                        f"{memory_key}\x00{ordinal}".encode("utf-8")
-                    ).hexdigest(),
-                    memory_key,
-                    memory_id,
-                    mem.scope,
-                    mem.owner_key,
-                    link.target,
-                    link.syntax,
-                    link.text,
-                    ordinal,
-                )
-            )
+        links.extend(_link_rows(mem, memory_key, memory_id))
 
     # A memory file that vanished from disk is closed, never deleted: a
     # retired memory is a fact about the project's history, and erasing the
@@ -327,6 +350,58 @@ def import_memories(
     _resolve_link_targets(conn)
     insert_missing_dim_dates(conn, "dim_memory", "modified_at")
     return len(inbound)
+
+
+def _link_rows(mem: MemoryFile, memory_key: str, memory_id: str) -> list[tuple]:
+    """The bridge rows one memory version should have, in document order."""
+    return [
+        (
+            hashlib.md5(f"{memory_key}\x00{ordinal}".encode("utf-8")).hexdigest(),
+            memory_key,
+            memory_id,
+            mem.scope,
+            mem.owner_key,
+            link.target,
+            link.syntax,
+            link.text,
+            ordinal,
+        )
+        for ordinal, link in enumerate(mem.links)
+    ]
+
+
+def _sync_links(conn, *, memory_key: str, memory_id: str, mem: MemoryFile, run) -> None:
+    """Re-derive a current version's edges when the PARSER, not the memory, changed.
+
+    Compares the stored edge set against what the current parser extracts and
+    rewrites only on a difference, so the ordinary unchanged case stays a
+    cheap read. Rewriting is a delete-then-insert of that version's rows:
+    edges are a pure projection of the body, ordinals must stay contiguous,
+    and a partial update could leave a version holding edges from two
+    different parser contracts at once.
+
+    ``link_count`` is updated with them -- it is a denormalised copy of the
+    edge count, and leaving it stale would make the column disagree with the
+    bridge table it summarises.
+    """
+    wanted = _link_rows(mem, memory_key, memory_id)
+    stored = conn.execute(
+        "SELECT target_name, link_syntax, link_text, ordinal "
+        "FROM bridge_memory_link WHERE memory_key = ? ORDER BY ordinal",
+        [memory_key],
+    ).fetchall()
+
+    # Compare on the columns the parser produces; the key columns are derived
+    # from (memory_key, ordinal) and cannot differ independently.
+    if [(r[5], r[6], r[7], r[8]) for r in wanted] == [tuple(r) for r in stored]:
+        return
+
+    conn.execute("DELETE FROM bridge_memory_link WHERE memory_key = ?", [memory_key])
+    _insert_links(conn, wanted, run)
+    conn.execute(
+        "UPDATE dim_memory SET link_count = ? WHERE memory_key = ?",
+        [len(wanted), memory_key],
+    )
 
 
 def _close_version(conn, memory_key: str, stamp: datetime) -> None:
@@ -391,6 +466,7 @@ def _insert_versions(conn, inbound: list[tuple], run: EtlRun | None) -> None:
         """
         INSERT INTO dim_memory (
             created_by_version_key, etl_run_id, record_source,
+            created_at,
             memory_key, memory_id, project_key, session_key, scope, owner_key,
             owner_root, agent_scope, source_path, file_name, memory_name, description,
             memory_type, node_type, origin_session_id, is_index,
@@ -400,6 +476,7 @@ def _insert_versions(conn, inbound: list[tuple], run: EtlRun | None) -> None:
         )
         SELECT
             ?, ?, ?,
+            current_timestamp,
             memory_key, memory_id, NULL, NULL, scope, owner_key,
             owner_root, agent_scope, source_path, file_name, memory_name, description,
             memory_type, node_type, origin_session_id, is_index,
@@ -419,11 +496,11 @@ def _insert_links(conn, links: list[tuple], run: EtlRun | None) -> None:
     conn.executemany(
         """
         INSERT INTO bridge_memory_link (
-            created_by_version_key, etl_run_id, record_source,
+            created_by_version_key, etl_run_id, record_source, created_at,
             memory_link_key, memory_key, memory_id, project_key, scope,
             owner_key, target_name, target_memory_id, is_resolved,
             link_syntax, link_text, ordinal
-        ) VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, NULL, FALSE, ?, ?, ?)
+        ) VALUES (?, ?, ?, current_timestamp, ?, ?, ?, NULL, ?, ?, ?, NULL, FALSE, ?, ?, ?)
         """,
         [_provenance(run) + row for row in links],
     )
@@ -505,8 +582,14 @@ def _resolve_link_targets(conn) -> None:
         UPDATE bridge_memory_link SET
             target_memory_id = (
                 SELECT t.memory_id FROM dim_memory t
+                JOIN dim_memory src ON src.memory_key = bridge_memory_link.memory_key
                 WHERE t.scope = bridge_memory_link.scope
                   AND t.owner_key = bridge_memory_link.owner_key
+                  -- owner_key alone is NOT unique for agent memory (that is
+                  -- why memory_id carries owner_root), so without this a
+                  -- `reviewer` agent present in two repositories could have
+                  -- one repo's index point at the other repo's memory.
+                  AND t.owner_root IS NOT DISTINCT FROM src.owner_root
                   AND t.is_current
                   AND t.file_name = bridge_memory_link.target_name
                 LIMIT 1
@@ -520,8 +603,10 @@ def _resolve_link_targets(conn) -> None:
         UPDATE bridge_memory_link SET
             target_memory_id = (
                 SELECT t.memory_id FROM dim_memory t
+                JOIN dim_memory src ON src.memory_key = bridge_memory_link.memory_key
                 WHERE t.scope = bridge_memory_link.scope
                   AND t.owner_key = bridge_memory_link.owner_key
+                  AND t.owner_root IS NOT DISTINCT FROM src.owner_root
                   AND t.is_current
                   AND (
                         {norm.format('t.memory_name')}
@@ -531,7 +616,11 @@ def _resolve_link_targets(conn) -> None:
                   )
                 LIMIT 1
             )
-        WHERE target_memory_id IS NULL AND link_syntax <> 'markdown'
+        -- IS DISTINCT FROM, not <>: pre-0.19 rows carry link_syntax
+        -- NULL, and `NULL <> 'markdown'` is NULL, so the wiki branch
+        -- skipped every legacy row forever -- a dangling link whose
+        -- target was written later could never resolve.
+        WHERE target_memory_id IS NULL AND link_syntax IS DISTINCT FROM 'markdown'
         """
     )
     conn.execute(

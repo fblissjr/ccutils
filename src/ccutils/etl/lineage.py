@@ -38,6 +38,7 @@ _RECORD_SOURCES: frozenset[str] = frozenset({
     "history_jsonl",       # Claude Code prompt-history JSONL
     "claude_ai_export",    # Claude.ai account export
     "derived_post_etl",    # DAG-invariant facts derived from other facts
+    "claude_code_memory",  # Claude Code auto-memory markdown directories
 })
 
 

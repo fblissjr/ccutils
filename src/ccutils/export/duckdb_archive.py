@@ -67,30 +67,33 @@ def _import_auto_memory(conn, *, batch_run_id: str | None = None) -> int:
     """
     from ..etl.dim_memory import run_memory_import
 
-    claude_home = Path.home() / ".claude"
-    projects = {
-        row[0]
-        for row in conn.execute(
-            "SELECT DISTINCT project_name FROM dim_project WHERE project_name IS NOT NULL"
-        ).fetchall()
-    }
-    repo_paths = [
-        row[0]
-        for row in conn.execute(
-            "SELECT DISTINCT cwd FROM dim_session WHERE cwd IS NOT NULL"
-        ).fetchall()
-    ]
-    return run_memory_import(
-        conn,
-        batch_run_id=batch_run_id,
-        projects_root=claude_home / "projects",
-        # Deliberately not `projects or None`: None means "every project on
-        # the machine", so an empty dim_project would invert the scoping and
-        # ingest everything. An empty set correctly ingests nothing.
-        only=projects,
-        agent_user_root=claude_home / "agent-memory",
-        agent_repo_paths=repo_paths,
-    )
+    def _scope() -> dict:
+        """Resolve the import's arguments. Runs INSIDE the recorded run."""
+        claude_home = Path.home() / ".claude"
+        projects = {
+            row[0]
+            for row in conn.execute(
+                "SELECT DISTINCT project_name FROM dim_project "
+                "WHERE project_name IS NOT NULL"
+            ).fetchall()
+        }
+        repo_paths = [
+            row[0]
+            for row in conn.execute(
+                "SELECT DISTINCT cwd FROM dim_session WHERE cwd IS NOT NULL"
+            ).fetchall()
+        ]
+        return {
+            "projects_root": claude_home / "projects",
+            # Deliberately not `projects or None`: None means "every project
+            # on the machine", so an empty dim_project would invert the
+            # scoping and ingest everything. An empty set ingests nothing.
+            "only": projects,
+            "agent_user_root": claude_home / "agent-memory",
+            "agent_repo_paths": repo_paths,
+        }
+
+    return run_memory_import(conn, batch_run_id=batch_run_id, resolve_kwargs=_scope)
 
 
 def generate_duckdb_archive(

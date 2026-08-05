@@ -2798,6 +2798,14 @@ def _apply_column_migrations(conn) -> None:
         "UPDATE fact_etl_runs SET run_kind = 'session' WHERE run_kind IS NULL"
     )
 
+    # Every bridge row written before link_syntax existed was a [[wiki]]
+    # link -- the markdown reader did not exist yet. Without this backfill
+    # they keep link_syntax NULL, and any predicate comparing against it is
+    # NULL-blind, so those rows drop out of link resolution permanently.
+    conn.execute(
+        "UPDATE bridge_memory_link SET link_syntax = 'wiki' WHERE link_syntax IS NULL"
+    )
+
     # Reconcile pre-0.18 subagent-collapse corruption: the old contract
     # keyed agent transcripts on their embedded (parent) sessionId, which
     # mislabeled PARENT rows is_agent=TRUE with a SELF-referencing

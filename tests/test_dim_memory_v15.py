@@ -794,6 +794,243 @@ class TestUpgradePath:
         assert row == ("markdown", True)
 
 
+class TestParserContractUpgrade:
+    """Findings from the v0.19.0 review. Each of these passes on a freshly
+    built warehouse and fails on an upgraded one, which is why none was
+    caught before release -- every verification rebuilt from scratch."""
+
+    def _import_with_wiki_links_only(self, conn, projects_root):
+        """Import as the pre-0.19 parser did: wiki links only."""
+        import ccutils.parsers.memory as pm
+
+        original = pm._extract_links
+        pm._extract_links = lambda body: [
+            link for link in original(body) if link.syntax == "wiki"
+        ]
+        try:
+            run_memory_import(conn, projects_root=projects_root)
+        finally:
+            pm._extract_links = original
+
+    @pytest.fixture
+    def indexed_root(self, projects_root):
+        (projects_root / PROJECT_DIR / "memory" / "MEMORY.md").write_text(
+            "# index\n\n- [Guard rails](guard-rail-ordering.md) -- hook\n"
+        )
+        return projects_root
+
+    def test_index_edges_appear_when_only_the_parser_changed(
+        self, conn, indexed_root
+    ):
+        """content_hash covers the memory's CONTENT, and links are derived
+        from it -- so an unchanged MEMORY.md takes the no-op path and its
+        markdown edges never materialize. Every markdown edge lives in an
+        index, so upgrading delivered zero of them until the index text
+        happened to change."""
+        self._import_with_wiki_links_only(conn, indexed_root)
+        assert conn.execute(
+            "SELECT COUNT(*) FROM bridge_memory_link WHERE link_syntax = 'markdown'"
+        ).fetchone()[0] == 0
+
+        run_memory_import(conn, projects_root=indexed_root)
+
+        assert conn.execute(
+            "SELECT COUNT(*) FROM bridge_memory_link WHERE link_syntax = 'markdown'"
+        ).fetchone()[0] == 1
+
+    def test_relinking_does_not_open_a_spurious_version(self, conn, indexed_root):
+        """The memory did not change -- our reading of it did. Opening a
+        version would assert an edit that never happened, and would do it for
+        every memory in the corpus at once."""
+        self._import_with_wiki_links_only(conn, indexed_root)
+        run_memory_import(conn, projects_root=indexed_root)
+
+        assert conn.execute(
+            "SELECT COUNT(*) FROM dim_memory WHERE file_name = 'MEMORY.md'"
+        ).fetchone()[0] == 1
+
+    def test_link_count_is_corrected_when_links_are_rebuilt(
+        self, conn, indexed_root
+    ):
+        """link_count is a denormalized copy of the edge count; leaving it
+        stale makes the column disagree with the bridge table."""
+        self._import_with_wiki_links_only(conn, indexed_root)
+        run_memory_import(conn, projects_root=indexed_root)
+
+        row = conn.execute(
+            "SELECT m.link_count, (SELECT COUNT(*) FROM bridge_memory_link bl "
+            "WHERE bl.memory_key = m.memory_key) FROM dim_memory m "
+            "WHERE m.file_name = 'MEMORY.md' AND m.is_current"
+        ).fetchone()
+        assert row[0] == row[1] == 1
+
+    def test_relink_is_idempotent(self, conn, indexed_root):
+        """A third import with nothing changed must not duplicate edges."""
+        self._import_with_wiki_links_only(conn, indexed_root)
+        run_memory_import(conn, projects_root=indexed_root)
+        run_memory_import(conn, projects_root=indexed_root)
+
+        assert conn.execute(
+            "SELECT COUNT(*) FROM bridge_memory_link bl JOIN dim_memory m "
+            "USING (memory_key) WHERE m.file_name = 'MEMORY.md'"
+        ).fetchone()[0] == 1
+
+    def test_legacy_rows_with_null_link_syntax_still_resolve(
+        self, conn, projects_root
+    ):
+        """Pre-0.19 bridge rows carry link_syntax NULL. `link_syntax <>
+        'markdown'` is NULL for them, so the wiki branch skipped them
+        forever: a dangling link whose target was written later could never
+        resolve."""
+        import_memories(conn, projects_root=projects_root)
+        conn.execute("UPDATE bridge_memory_link SET link_syntax = NULL")
+        conn.execute(
+            "UPDATE bridge_memory_link SET target_memory_id = NULL, is_resolved = FALSE"
+        )
+
+        from ccutils.etl.dim_memory import _resolve_link_targets
+
+        _resolve_link_targets(conn)
+        assert conn.execute(
+            "SELECT COUNT(*) FROM bridge_memory_link WHERE is_resolved"
+        ).fetchone()[0] >= 1
+
+
+class TestMigratedWarehouseWrites:
+    """created_at comes from a table DEFAULT, and ALTER TABLE ADD COLUMN
+    carries no default -- so on a migrated warehouse the column exists but
+    every row written into it is NULL, silently diverging from a freshly
+    built one."""
+
+    def _narrow(self, tmp_path):
+        import duckdb
+
+        path = tmp_path / "narrow.duckdb"
+        conn = duckdb.connect(str(path))
+        conn.execute(
+            """
+            CREATE TABLE dim_memory (
+                memory_key VARCHAR, memory_id VARCHAR, project_key VARCHAR,
+                session_key VARCHAR, scope VARCHAR, owner_key VARCHAR,
+                owner_root VARCHAR, agent_scope VARCHAR, source_path VARCHAR,
+                file_name VARCHAR, memory_name VARCHAR, description TEXT,
+                memory_type VARCHAR, node_type VARCHAR,
+                origin_session_id VARCHAR, is_index BOOLEAN,
+                has_frontmatter BOOLEAN, body_text TEXT, content_hash VARCHAR,
+                body_chars INTEGER, body_lines INTEGER, link_count INTEGER,
+                modified_at TIMESTAMP, file_mtime TIMESTAMP,
+                version_num INTEGER, valid_from TIMESTAMP, valid_to TIMESTAMP,
+                is_current BOOLEAN, date_key INTEGER, time_key INTEGER
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE bridge_memory_link (
+                memory_link_key VARCHAR, memory_key VARCHAR, memory_id VARCHAR,
+                project_key VARCHAR, scope VARCHAR, owner_key VARCHAR,
+                target_name VARCHAR, target_memory_id VARCHAR,
+                is_resolved BOOLEAN, ordinal INTEGER
+            )
+            """
+        )
+        conn.close()
+        return path
+
+    def test_created_at_is_populated_on_a_migrated_warehouse(
+        self, tmp_path, projects_root
+    ):
+        conn = create_star_schema(self._narrow(tmp_path))
+        run_memory_import(conn, projects_root=projects_root)
+
+        assert conn.execute(
+            "SELECT COUNT(*) FROM dim_memory WHERE created_at IS NULL"
+        ).fetchone()[0] == 0
+        assert conn.execute(
+            "SELECT COUNT(*) FROM bridge_memory_link WHERE created_at IS NULL"
+        ).fetchone()[0] == 0
+
+
+class TestInterruptAndGuarding:
+    def test_keyboard_interrupt_is_not_swallowed(self, conn, projects_root):
+        """Ctrl-C during a long archive build must reach the caller. Catching
+        BaseException and returning 0 records a failed run and lets the batch
+        sail on to complete(), discarding the user's interrupt."""
+        import ccutils.etl.dim_memory as mod
+
+        def interrupt(*a, **k):
+            raise KeyboardInterrupt
+
+        original = mod._collect
+        mod._collect = interrupt
+        try:
+            with pytest.raises(KeyboardInterrupt):
+                run_memory_import(conn, projects_root=projects_root)
+        finally:
+            mod._collect = original
+
+        # The run must still be marked failed on the way out.
+        assert conn.execute(
+            "SELECT status FROM fact_etl_runs WHERE source_path = '<auto-memory>'"
+        ).fetchone()[0] == "failed"
+
+    def test_ordinary_errors_are_still_recorded_and_swallowed(
+        self, conn, projects_root
+    ):
+        import ccutils.etl.dim_memory as mod
+
+        original = mod._collect
+        mod._collect = lambda *a, **k: (_ for _ in ()).throw(RuntimeError("x"))
+        try:
+            assert run_memory_import(conn, projects_root=projects_root) == 0
+        finally:
+            mod._collect = original
+
+
+class TestRecordSource:
+    def test_record_source_is_a_known_provenance_label(self, conn, projects_root):
+        """lineage.py keeps an allow-list so a typo cannot land in 100k rows.
+        Writing a value straight past record_source_label bypasses it."""
+        from ccutils.etl.lineage import record_source_label
+
+        run_memory_import(conn, projects_root=projects_root)
+        value = conn.execute(
+            "SELECT DISTINCT record_source FROM dim_memory"
+        ).fetchone()[0]
+        assert record_source_label(value) == value
+
+
+class TestAgentLinkIsolation:
+    def test_markdown_link_does_not_cross_repositories(self, conn, tmp_path):
+        """owner_key alone is not unique for agent memory -- that is why
+        memory_id includes owner_root. Link resolution matching only on
+        scope+owner_key+file_name can point one repo's index at another
+        repo's memory."""
+        repos = []
+        for name in ("alpha", "beta"):
+            repo = tmp_path / name
+            d = repo / ".claude" / "agent-memory" / "reviewer"
+            d.mkdir(parents=True)
+            (d / "MEMORY.md").write_text(f"# {name}\n\n- [T](topic.md) -- hook\n")
+            (d / "topic.md").write_text(f"---\nname: topic\n---\n\n{name} body\n")
+            repos.append(repo)
+
+        run_memory_import(conn, agent_repo_paths=repos)
+
+        rows = conn.execute(
+            """
+            SELECT src.owner_root, tgt.owner_root
+            FROM bridge_memory_link bl
+            JOIN dim_memory src ON bl.memory_key = src.memory_key
+            JOIN dim_memory tgt ON bl.target_memory_id = tgt.memory_id
+            WHERE bl.link_syntax = 'markdown'
+            """
+        ).fetchall()
+        assert len(rows) == 2
+        for source_root, target_root in rows:
+            assert source_root == target_root
+
+
 class TestScoping:
     def test_only_named_projects_are_ingested(self, conn, projects_root):
         """A filtered archive run (-p alpha) must not pull in every other
