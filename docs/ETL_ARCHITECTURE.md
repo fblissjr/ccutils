@@ -186,12 +186,24 @@ gives each table its own CDC window instead of inheriting the session's.
 
 Two gates, both cheap, both born from defects this codebase actually shipped:
 
-1. **Upgrade-path fixture.** Five defects in one cycle were reachable only on
-   an *upgraded* warehouse and invisible on a fresh build — including one that
-   shipped in a tagged release. A rebuild recomputes everything and
-   structurally cannot show that class. A `conftest` fixture materialising a
-   previous-release-shaped warehouse turns "remember to check" into "the suite
-   fails if you didn't".
+1. **Upgrade-path fixture.** Defects in one cycle were reachable only on an
+   *upgraded* warehouse and invisible on a fresh build — including one that
+   shipped in a tagged release, and one where the *fix* for it was itself
+   broken in the same way (edges relinked but never resolved, because
+   resolution ran only on the path where new versions were written). A rebuild
+   recomputes everything and structurally cannot show that class. A `conftest`
+   fixture materialising a previous-release-shaped warehouse turns "remember
+   to check" into "the suite fails if you didn't".
+
+   **This is overdue, not preparatory.** It is listed here as a gate for the
+   rewrite, but every one of the defects above predates the rewrite. Each was
+   caught by a human review round that the fixture would have made unnecessary.
+
+   Corollary, learned the same way: **assert the property that makes the
+   feature work, not the one that is easiest to query.** A test asserting an
+   edge row EXISTS passes while the edge is unresolved and unusable. Reach for
+   the consumer-facing surface — the semantic view — rather than the table the
+   populator just wrote.
 2. **Full-corpus regression baseline.** Re-run the ETL against a copy of a
    real multi-thousand-session warehouse and diff per-table row counts. A
    silent count change is the signature of most of what goes wrong here.

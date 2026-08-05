@@ -2806,6 +2806,18 @@ def _apply_column_migrations(conn) -> None:
         "UPDATE bridge_memory_link SET link_syntax = 'wiki' WHERE link_syntax IS NULL"
     )
 
+    # The memory import first stamped record_source with the RUN sentinel
+    # '<auto-memory>' rather than a provenance label. That value is not in
+    # lineage.py's _RECORD_SOURCES, so record_source_label() raises on it and
+    # any query filtering record_source = 'claude_code_memory' silently misses
+    # every row written before the fix. Same precedent as run_kind and
+    # link_syntax above: change the value, backfill the history.
+    for _memory_table in ("dim_memory", "bridge_memory_link"):
+        conn.execute(
+            f"UPDATE {_memory_table} SET record_source = 'claude_code_memory' "
+            "WHERE record_source = '<auto-memory>'"
+        )
+
     # Reconcile pre-0.18 subagent-collapse corruption: the old contract
     # keyed agent transcripts on their embedded (parent) sessionId, which
     # mislabeled PARENT rows is_agent=TRUE with a SELF-referencing

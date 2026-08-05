@@ -834,9 +834,55 @@ class TestParserContractUpgrade:
 
         run_memory_import(conn, projects_root=indexed_root)
 
+        # Assert the edge RESOLVES, not merely that a row exists. A row with
+        # is_resolved = FALSE and a NULL target is an unusable edge -- the
+        # index graph is still dead -- and asserting COUNT(*) alone passes
+        # straight over that.
+        row = conn.execute(
+            "SELECT is_resolved, target_memory_id IS NOT NULL, project_key IS NOT NULL "
+            "FROM bridge_memory_link WHERE link_syntax = 'markdown'"
+        ).fetchone()
+        assert row == (True, True, True)
+
+    def test_relinked_edge_is_visible_through_the_semantic_view(
+        self, conn, indexed_root
+    ):
+        """The view is what a consumer actually reads. An edge that resolves
+        in the bridge but shows NULL names through the view is still dead."""
+        self._import_with_wiki_links_only(conn, indexed_root)
+        run_memory_import(conn, projects_root=indexed_root)
+
+        row = conn.execute(
+            "SELECT is_resolved, target_file_name, project_name "
+            "FROM semantic_memory_links WHERE link_syntax = 'markdown'"
+        ).fetchone()
+        assert row == (True, "topic_one.md", PROJECT_DIR)
+
+    def test_relink_is_not_self_sealing(self, conn, indexed_root):
+        """Second and third runs must not leave the edge stuck unresolved.
+        _sync_links short-circuits once stored == wanted, so a relink that
+        failed to resolve would never get another chance."""
+        self._import_with_wiki_links_only(conn, indexed_root)
+        run_memory_import(conn, projects_root=indexed_root)
+        run_memory_import(conn, projects_root=indexed_root)
+
         assert conn.execute(
-            "SELECT COUNT(*) FROM bridge_memory_link WHERE link_syntax = 'markdown'"
-        ).fetchone()[0] == 1
+            "SELECT COUNT(*) FROM bridge_memory_link "
+            "WHERE link_syntax = 'markdown' AND NOT is_resolved"
+        ).fetchone()[0] == 0
+
+    def test_a_relink_only_run_reports_the_work_it_did(self, conn, indexed_root):
+        """A DELETE + INSERT + link_count UPDATE across the corpus recorded as
+        zero work is how an operator upgrading concludes memory did nothing --
+        especially now that the gotchas doc points them at this exact step."""
+        self._import_with_wiki_links_only(conn, indexed_root)
+        run_memory_import(conn, projects_root=indexed_root)
+
+        row = conn.execute(
+            "SELECT rows_inserted, rows_updated FROM fact_etl_steps "
+            "WHERE step_name = 'dim_memory' ORDER BY started_at DESC LIMIT 1"
+        ).fetchone()
+        assert row[1] > 0, "relink work must be recorded somewhere non-zero"
 
     def test_relinking_does_not_open_a_spurious_version(self, conn, indexed_root):
         """The memory did not change -- our reading of it did. Opening a
@@ -994,10 +1040,32 @@ class TestRecordSource:
         from ccutils.etl.lineage import record_source_label
 
         run_memory_import(conn, projects_root=projects_root)
-        value = conn.execute(
-            "SELECT DISTINCT record_source FROM dim_memory"
-        ).fetchone()[0]
-        assert record_source_label(value) == value
+        # Every distinct value, both tables -- fetchone() validates one
+        # arbitrary row and would pass over a table holding a mix.
+        for table in ("dim_memory", "bridge_memory_link"):
+            for (value,) in conn.execute(
+                f"SELECT DISTINCT record_source FROM {table}"
+            ).fetchall():
+                assert record_source_label(value) == value
+
+    def test_legacy_record_source_is_backfilled_on_open(self, tmp_path, projects_root):
+        """Rows written before the label changed carry the run sentinel, which
+        is not in the allow-list -- so record_source_label() raises on them and
+        any filter on the new value silently misses them."""
+        from ccutils.etl.lineage import record_source_label
+
+        conn = create_star_schema(tmp_path / "legacy.duckdb")
+        run_memory_import(conn, projects_root=projects_root)
+        conn.execute("UPDATE dim_memory SET record_source = '<auto-memory>'")
+        conn.execute("UPDATE bridge_memory_link SET record_source = '<auto-memory>'")
+        conn.close()
+
+        conn = create_star_schema(tmp_path / "legacy.duckdb")
+        for table in ("dim_memory", "bridge_memory_link"):
+            for (value,) in conn.execute(
+                f"SELECT DISTINCT record_source FROM {table}"
+            ).fetchall():
+                assert record_source_label(value) == value
 
 
 class TestAgentLinkIsolation:

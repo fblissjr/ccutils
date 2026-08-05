@@ -16,8 +16,11 @@ Version identity is ``(memory_id, version_num)``, NOT ``(memory_id,
 content_hash)``: a memory reverted to earlier text repeats its hash, and
 keying on content would silently drop the revert.
 
-Idempotent. Re-running with nothing changed on disk inserts no rows and
-closes none.
+Idempotent in terms of VERSIONS: re-running with nothing changed on disk
+inserts no rows and closes none. It may still rewrite derived edges -- when
+the parser's link contract has widened since the rows were written, the first
+re-run rebuilds `bridge_memory_link` and `link_count` for the affected
+memories without opening a version. See `_sync_links`.
 """
 
 from __future__ import annotations
@@ -109,7 +112,7 @@ def run_memory_import(
         if resolve_kwargs is not None:
             kwargs = {**kwargs, **resolve_kwargs()}
         with run.step("dim_memory", kind="stage") as counts:
-            written = import_memories(conn, run=run, **kwargs)
+            written = import_memories(conn, run=run, counts=counts, **kwargs)
             counts.rows_inserted = written
         run.complete(sessions_seen=0, sessions_inserted=0, sessions_updated=0)
         return written
@@ -122,6 +125,13 @@ def run_memory_import(
     except Exception as e:
         run.fail(str(e) or type(e).__name__)
         return 0
+    except BaseException as e:
+        # Anything else (asyncio.CancelledError, a harness Exit): mark and
+        # re-raise. Without this the run row sits at 'running' with a NULL
+        # completed_at forever -- the untraceable state this wrapper exists
+        # to prevent.
+        run.fail(str(e) or type(e).__name__)
+        raise
 
 
 def _memory_id(mem: MemoryFile) -> str:
@@ -209,6 +219,7 @@ def import_memories(
     agent_repo_paths: Sequence[str | Path] = (),
     now: datetime | None = None,
     run: EtlRun | None = None,
+    counts=None,
 ) -> int:
     """Load auto memory into dim_memory. Returns the number of versions written.
 
@@ -225,6 +236,11 @@ def import_memories(
             subagent memory.
         now: Injected clock for the SCD boundary; defaults to UTC now. Tests
             pass it so ``valid_from`` / ``valid_to`` are deterministic.
+        counts: Optional ``StepCounts`` to fill. Relink-only runs write zero
+            NEW versions but may rewrite edges across the whole corpus; without
+            this the step records zero work and an operator upgrading concludes
+            memory did nothing -- the opposite of what the gotchas doc tells
+            them to check.
         run: The ``EtlRun`` this import belongs to. Supplied by
             :func:`run_memory_import`, which every real caller goes through;
             rows are stamped with its id and version key so a Type 2 row can
@@ -244,6 +260,7 @@ def import_memories(
     seen_ids: set[str] = set()
     inbound: list[tuple] = []
     links: list[tuple] = []
+    relinked = 0
 
     for mem in found:
         memory_id = _memory_id(mem)
@@ -264,8 +281,10 @@ def import_memories(
             # Re-derive rather than open a version: the memory did not change,
             # our reading of it did, and asserting an edit that never happened
             # would corrupt the history for every memory in the corpus at once.
-            _sync_links(conn, memory_key=existing[0], memory_id=memory_id,
-                        mem=mem, run=run)
+            relinked += _sync_links(
+                conn, memory_key=existing[0], memory_id=memory_id,
+                mem=mem, run=run,
+            )
             continue
 
         version_num = max_versions.get(memory_id, 0) + 1
@@ -342,6 +361,14 @@ def import_memories(
     )
 
     if not inbound:
+        # Nothing versioned, but _sync_links may have rewritten edges. Those
+        # rows are inserted unresolved, so the resolvers must still run or the
+        # index graph stays dead on exactly the upgrade this path serves.
+        if relinked:
+            _resolve_project_and_session_keys(conn)
+            _resolve_link_targets(conn)
+        if counts is not None:
+            counts.rows_updated = relinked
         return 0
 
     _insert_versions(conn, inbound, run)
@@ -349,6 +376,8 @@ def import_memories(
     _resolve_project_and_session_keys(conn)
     _resolve_link_targets(conn)
     insert_missing_dim_dates(conn, "dim_memory", "modified_at")
+    if counts is not None:
+        counts.rows_updated = relinked
     return len(inbound)
 
 
@@ -370,7 +399,7 @@ def _link_rows(mem: MemoryFile, memory_key: str, memory_id: str) -> list[tuple]:
     ]
 
 
-def _sync_links(conn, *, memory_key: str, memory_id: str, mem: MemoryFile, run) -> None:
+def _sync_links(conn, *, memory_key: str, memory_id: str, mem: MemoryFile, run) -> int:
     """Re-derive a current version's edges when the PARSER, not the memory, changed.
 
     Compares the stored edge set against what the current parser extracts and
@@ -383,6 +412,12 @@ def _sync_links(conn, *, memory_key: str, memory_id: str, mem: MemoryFile, run) 
     ``link_count`` is updated with them -- it is a denormalised copy of the
     edge count, and leaving it stale would make the column disagree with the
     bridge table it summarises.
+
+    Returns the number of edges rewritten (0 when already in sync). The caller
+    MUST run the resolvers when this is non-zero: rows are inserted with
+    ``target_memory_id`` NULL and resolution happens separately, so a relink
+    that skipped it would leave every index edge present-but-unresolved --
+    which is indistinguishable from the bug this path exists to fix.
     """
     wanted = _link_rows(mem, memory_key, memory_id)
     stored = conn.execute(
@@ -394,7 +429,7 @@ def _sync_links(conn, *, memory_key: str, memory_id: str, mem: MemoryFile, run) 
     # Compare on the columns the parser produces; the key columns are derived
     # from (memory_key, ordinal) and cannot differ independently.
     if [(r[5], r[6], r[7], r[8]) for r in wanted] == [tuple(r) for r in stored]:
-        return
+        return 0
 
     conn.execute("DELETE FROM bridge_memory_link WHERE memory_key = ?", [memory_key])
     _insert_links(conn, wanted, run)
@@ -402,6 +437,7 @@ def _sync_links(conn, *, memory_key: str, memory_id: str, mem: MemoryFile, run) 
         "UPDATE dim_memory SET link_count = ? WHERE memory_key = ?",
         [len(wanted), memory_key],
     )
+    return len(wanted)
 
 
 def _close_version(conn, memory_key: str, stamp: datetime) -> None:
