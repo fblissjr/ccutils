@@ -172,6 +172,8 @@ Subagent transcripts are first-class sessions: agent files carry their parent's 
 - `dim_prompt` -- user prompts from the Claude Code prompt-history JSONL, linked to sessions by `sessionId`.
 - `dim_memory` + `bridge_memory_link` -- Claude Code **auto memory**: the markdown Claude writes to itself per project, plus subagent memory in all three scopes. A **Type 2 SCD**, because Claude Code overwrites memory files in place and keeps no history of its own -- one row per (memory file, content version), so re-ingesting does not destroy what the memory said before. Deleted memories are closed, not erased. `bridge_memory_link` carries the link graph in both forms Claude actually writes -- `[[wiki-links]]` between topic files and the `[Title](file.md)` entries by which `MEMORY.md` indexes them -- kept apart by `link_syntax`, dangling links included. Query `semantic_memory` / `semantic_memory_links` for the current state, `dim_memory` for the history.
 
+> The JSON export mirrors the warehouse, so it includes `dim_memory` — auto-memory bodies and all. That is the same treatment `fact_messages` already gives full transcript text, but worth knowing before you move an export somewhere else.
+
 **Not yet populated (DDL stubs only):** `fact_content_blocks`, `fact_code_blocks`, `fact_entity_mentions`, `fact_tool_input_params`. `fact_session_embeddings` is populated only by `--embed` runs (empty otherwise). `fact_turn_durations` / `fact_stop_events` are subsumed by `fact_system_events`; `fact_tool_calls` by `fact_tool_uses` + `fact_tool_results`.
 
 ```sql
