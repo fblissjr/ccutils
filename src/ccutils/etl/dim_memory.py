@@ -554,7 +554,7 @@ def _resolve_link_targets(conn) -> None:
     The two syntaxes resolve differently because they name different things.
 
     A ``markdown`` target is a FILE NAME the author wrote as a path
-    (``[Title](batch-import-notes.md)``), so it matches ``file_name`` exactly.
+    (``[Title](index_entry.md)``), so it matches ``file_name`` exactly.
     Running it through the name/stem matching below would be wrong in both
     directions: it could match a memory whose frontmatter ``name`` merely
     resembles the filename, and it would ignore the one unambiguous thing
@@ -563,14 +563,14 @@ def _resolve_link_targets(conn) -> None:
     A ``wiki`` target is an identifier, and both naming styles in the corpus
     are honoured: it may be written as the frontmatter ``name`` or as the
     file stem, and in a real corpus those routinely disagree
-    (``feedback_timeout_defaults.md`` carries
-    ``name: timeout-defaults-not-retries``), so a link may legitimately
+    (``notes_archive.md`` carries
+    ``name: archive-notes``), so a link may legitimately
     point at either.
 
     Wiki matching is modulo separator -- ``-`` and ``_`` are the same
     identifier in different clothes, and corpora mix them freely
-    (``[[feedback-timeout-defaults]]`` referring to
-    ``feedback_timeout_defaults.md``). That is still an EXACT match on a
+    (``[[notes-archive]]`` referring to
+    ``notes_archive.md``). That is still an EXACT match on a
     normalised string, not fuzzy matching: prefixes and substrings are
     deliberately NOT matched, because a link whose text resembles a memory
     without naming it is authoring drift, and guessing would invent edges
