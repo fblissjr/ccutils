@@ -47,6 +47,13 @@ filter: `semantic_sessions`, `semantic_tool_calls`, `semantic_decisions`,
   `SUM(CASE WHEN is_error THEN 1 ELSE 0 END)`, which routes NULL correctly.
   (Do not rely on "only Bash writes FALSE" — a `Workflow` result writes it too,
   which is harmless since FALSE and absent are equivalent.)
+- **`semantic_etl_runs.rows_inserted` is 0 for the auto-memory run, and that is
+  not a failure.** The rollup sums only `step_kind = 'upsert'` steps, which are
+  fact populators; memory is a dimension, so counting it there would inflate
+  every fact total. The real count lives one grain down --
+  `SELECT rows_inserted FROM fact_etl_steps WHERE step_name = 'dim_memory'`.
+  Same applies to any future non-fact step. Filter `run_kind = 'global_source'`
+  to find these runs.
 - `dim_memory` is a **Type 2 SCD** — one row per (memory file, content
   version), not one per file. **Any query that is not about history must
   filter `WHERE is_current`**, or a memory edited five times counts five
