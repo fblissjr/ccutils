@@ -32,8 +32,8 @@ from ccutils.parsers.memory import (
 
 FULL = """\
 ---
-name: check-exit-codes
-description: "Piping a validator into tail reports the filter's status, not the check's"
+name: guard-rail-ordering
+description: "Ordering a guard rail after the mutation lets a bad write land first"
 metadata:
   node_type: memory
   type: feedback
@@ -41,9 +41,9 @@ metadata:
   modified: 2026-07-30T03:57:12.156Z
 ---
 
-Never verify a gate by piping it into `tail`.
+Run guard rails before the mutation, not after.
 
-Related: [[signal-honesty]] and [[derive-at-write-time]].
+Related: [[timeout-defaults]] and [[cache-key-derivation]].
 """
 
 FLAT = """\
@@ -59,7 +59,7 @@ Body of the older-format memory.
 NO_FRONTMATTER = """\
 # project memory
 
-An index with no frontmatter at all. Links to [[check-exit-codes]].
+An index with no frontmatter at all. Links to [[guard-rail-ordering]].
 """
 
 
@@ -71,12 +71,12 @@ def write(tmp_path, name: str, text: str):
 
 class TestFrontmatterParsing:
     def test_nested_metadata_fields_are_extracted(self, tmp_path):
-        path = write(tmp_path, "check-exit-codes.md", FULL)
+        path = write(tmp_path, "guard-rail-ordering.md", FULL)
         m = parse_memory_file(path, scope="project", owner_key="-work-proj")
 
         assert isinstance(m, MemoryFile)
-        assert m.memory_name == "check-exit-codes"
-        assert m.description.startswith("Piping a validator")
+        assert m.memory_name == "guard-rail-ordering"
+        assert m.description.startswith("Ordering a guard rail")
         assert m.memory_type == "feedback"
         assert m.node_type == "memory"
         assert m.origin_session_id == "sess-A"
@@ -119,10 +119,10 @@ class TestFrontmatterParsing:
         assert m.body_text.strip().startswith("# project memory")
 
     def test_body_excludes_the_frontmatter_block(self, tmp_path):
-        path = write(tmp_path, "check-exit-codes.md", FULL)
+        path = write(tmp_path, "guard-rail-ordering.md", FULL)
         m = parse_memory_file(path, scope="project", owner_key="p")
         assert "originSessionId" not in m.body_text
-        assert m.body_text.strip().startswith("Never verify a gate")
+        assert m.body_text.strip().startswith("Run guard rails before")
 
 
 class TestWikiLinks:
@@ -130,8 +130,8 @@ class TestWikiLinks:
         path = write(tmp_path, "a.md", FULL)
         m = parse_memory_file(path, scope="project", owner_key="p")
         assert [(x.target, x.syntax) for x in m.links] == [
-            ("signal-honesty", "wiki"),
-            ("derive-at-write-time", "wiki"),
+            ("timeout-defaults", "wiki"),
+            ("cache-key-derivation", "wiki"),
         ]
 
     def test_links_inside_fenced_code_are_ignored(self, tmp_path):
@@ -162,14 +162,14 @@ class TestMarkdownIndexLinks:
         path = write(
             tmp_path,
             "MEMORY.md",
-            "# index\n\n- [Cowork transcripts](cowork-local.md) -- hook text\n",
+            "# index\n\n- [Batch import notes](batch-import-notes.md) -- hook text\n",
         )
         m = parse_memory_file(path, scope="project", owner_key="p")
         assert m.links == [
             MemoryLink(
-                target="cowork-local.md",
+                target="batch-import-notes.md",
                 syntax="markdown",
-                text="Cowork transcripts",
+                text="Batch import notes",
             )
         ]
 
@@ -237,7 +237,7 @@ class TestContentHash:
 
     def test_hash_changes_when_body_changes(self, tmp_path):
         a = write(tmp_path, "a.md", FULL)
-        b = write(tmp_path, "b.md", FULL.replace("Never verify", "Always verify"))
+        b = write(tmp_path, "b.md", FULL.replace("before the mutation", "after the mutation"))
         ha = parse_memory_file(a, scope="project", owner_key="p").content_hash
         hb = parse_memory_file(b, scope="project", owner_key="p").content_hash
         assert ha != hb
@@ -246,7 +246,7 @@ class TestContentHash:
         """description is meaning, not a write stamp -- it is what recall
         matches on, so a change to it is a new version."""
         a = write(tmp_path, "a.md", FULL)
-        b = write(tmp_path, "b.md", FULL.replace("Piping a validator", "Piping a check"))
+        b = write(tmp_path, "b.md", FULL.replace("lets a bad write land first", "lets a bad write land silently"))
         ha = parse_memory_file(a, scope="project", owner_key="p").content_hash
         hb = parse_memory_file(b, scope="project", owner_key="p").content_hash
         assert ha != hb

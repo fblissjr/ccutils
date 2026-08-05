@@ -215,7 +215,7 @@ ORDER BY versions DESC;
 -- What one memory used to say (point-in-time read)
 SELECT version_num, valid_from, valid_to, body_text
 FROM dim_memory
-WHERE file_name = 'feedback_signal_honesty.md'
+WHERE file_name = 'feedback_timeout_defaults.md'
 ORDER BY version_num;
 
 -- Memory volume by type and project

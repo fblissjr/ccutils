@@ -25,8 +25,8 @@ from ccutils.etl.dim_memory import import_memories, run_memory_import
 
 FEEDBACK = """\
 ---
-name: check-exit-codes
-description: "Piping a validator into tail reports the filter's status"
+name: guard-rail-ordering
+description: "Ordering a guard rail after the mutation lets a bad write land first"
 metadata:
   node_type: memory
   type: feedback
@@ -34,15 +34,15 @@ metadata:
   modified: 2026-07-30T03:57:12.156Z
 ---
 
-Never verify a gate by piping it into `tail`.
+Run guard rails before the mutation, not after.
 
-Related: [[signal-honesty]] and [[nothing-here]].
+Related: [[timeout-defaults]] and [[nothing-here]].
 """
 
 SIGNAL = """\
 ---
-name: signal-honesty
-description: do not touch what a check measures
+name: timeout-defaults
+description: prefer explicit timeouts to library defaults
 metadata:
   node_type: memory
   type: feedback
@@ -50,7 +50,7 @@ metadata:
   modified: 2026-07-24T10:00:00.000Z
 ---
 
-Body of signal honesty.
+Body of the timeout-defaults note.
 """
 
 INDEX = """\
@@ -89,8 +89,8 @@ def conn(tmp_path):
 def projects_root(tmp_path):
     d = tmp_path / "projects" / PROJECT_DIR / "memory"
     d.mkdir(parents=True)
-    (d / "check-exit-codes.md").write_text(FEEDBACK)
-    (d / "signal-honesty.md").write_text(SIGNAL)
+    (d / "guard-rail-ordering.md").write_text(FEEDBACK)
+    (d / "timeout-defaults.md").write_text(SIGNAL)
     (d / "MEMORY.md").write_text(INDEX)
     return tmp_path / "projects"
 
@@ -137,7 +137,7 @@ class TestFirstImport:
             "FROM dim_memory ORDER BY file_name"
         ).fetchall()
         assert [r[0] for r in rows] == [
-            "MEMORY.md", "check-exit-codes.md", "signal-honesty.md",
+            "MEMORY.md", "guard-rail-ordering.md", "timeout-defaults.md",
         ]
         assert all(r[1] == 1 and r[2] is True and r[3] is None for r in rows)
 
@@ -146,9 +146,9 @@ class TestFirstImport:
         row = conn.execute(
             "SELECT memory_name, memory_type, node_type, origin_session_id, "
             "is_index, has_frontmatter FROM dim_memory "
-            "WHERE file_name = 'check-exit-codes.md'"
+            "WHERE file_name = 'guard-rail-ordering.md'"
         ).fetchone()
-        assert row == ("check-exit-codes", "feedback", "memory", "sess-A", False, True)
+        assert row == ("guard-rail-ordering", "feedback", "memory", "sess-A", False, True)
 
     def test_index_file_is_flagged(self, conn, projects_root):
         import_memories(conn, projects_root=projects_root)
@@ -161,9 +161,9 @@ class TestFirstImport:
     def test_body_text_is_stored(self, conn, projects_root):
         import_memories(conn, projects_root=projects_root)
         body = conn.execute(
-            "SELECT body_text FROM dim_memory WHERE file_name = 'check-exit-codes.md'"
+            "SELECT body_text FROM dim_memory WHERE file_name = 'guard-rail-ordering.md'"
         ).fetchone()[0]
-        assert "Never verify a gate" in body
+        assert "Run guard rails before the mutation" in body
         assert "originSessionId" not in body
 
 
@@ -178,7 +178,7 @@ class TestKeyResolution:
     def test_session_key_resolves_from_origin_session_id(self, conn, projects_root):
         import_memories(conn, projects_root=projects_root)
         row = conn.execute(
-            "SELECT session_key FROM dim_memory WHERE file_name = 'check-exit-codes.md'"
+            "SELECT session_key FROM dim_memory WHERE file_name = 'guard-rail-ordering.md'"
         ).fetchone()
         assert row[0] == "sk-A"
 
@@ -189,7 +189,7 @@ class TestKeyResolution:
         import_memories(conn, projects_root=projects_root)
         row = conn.execute(
             "SELECT session_key, origin_session_id FROM dim_memory "
-            "WHERE file_name = 'signal-honesty.md'"
+            "WHERE file_name = 'timeout-defaults.md'"
         ).fetchone()
         assert row == (None, "sess-B")
 
@@ -207,35 +207,35 @@ class TestIdempotencyAndVersioning:
         content change would fill the history with versions that differ only
         by a timestamp."""
         import_memories(conn, projects_root=projects_root)
-        path = projects_root / PROJECT_DIR / "memory" / "check-exit-codes.md"
+        path = projects_root / PROJECT_DIR / "memory" / "guard-rail-ordering.md"
         path.write_text(
             FEEDBACK.replace("2026-07-30T03:57:12.156Z", "2026-08-05T09:00:00.000Z")
         )
         import_memories(conn, projects_root=projects_root)
         assert conn.execute(
-            "SELECT COUNT(*) FROM dim_memory WHERE file_name = 'check-exit-codes.md'"
+            "SELECT COUNT(*) FROM dim_memory WHERE file_name = 'guard-rail-ordering.md'"
         ).fetchone()[0] == 1
 
     def test_body_change_opens_a_new_version_and_closes_the_old(
         self, conn, projects_root
     ):
         import_memories(conn, projects_root=projects_root)
-        path = projects_root / PROJECT_DIR / "memory" / "check-exit-codes.md"
-        path.write_text(FEEDBACK.replace("Never verify", "Always verify"))
+        path = projects_root / PROJECT_DIR / "memory" / "guard-rail-ordering.md"
+        path.write_text(FEEDBACK.replace("before the mutation", "after the mutation"))
         import_memories(conn, projects_root=projects_root)
 
         rows = conn.execute(
             "SELECT version_num, is_current, valid_to IS NULL FROM dim_memory "
-            "WHERE file_name = 'check-exit-codes.md' ORDER BY version_num"
+            "WHERE file_name = 'guard-rail-ordering.md' ORDER BY version_num"
         ).fetchall()
         assert rows == [(1, False, False), (2, True, True)]
 
     def test_exactly_one_current_row_per_memory(self, conn, projects_root):
         import_memories(conn, projects_root=projects_root)
-        path = projects_root / PROJECT_DIR / "memory" / "check-exit-codes.md"
-        path.write_text(FEEDBACK.replace("Never verify", "Always verify"))
+        path = projects_root / PROJECT_DIR / "memory" / "guard-rail-ordering.md"
+        path.write_text(FEEDBACK.replace("before the mutation", "after the mutation"))
         import_memories(conn, projects_root=projects_root)
-        path.write_text(FEEDBACK.replace("Never verify", "Sometimes verify"))
+        path.write_text(FEEDBACK.replace("before the mutation", "during the mutation"))
         import_memories(conn, projects_root=projects_root)
 
         dupes = conn.execute(
@@ -248,16 +248,16 @@ class TestIdempotencyAndVersioning:
         """Content hashes repeat when a memory is reverted. Version identity
         must be (memory, version_num), not (memory, content) -- keying on
         content would silently drop the revert."""
-        path = projects_root / PROJECT_DIR / "memory" / "check-exit-codes.md"
+        path = projects_root / PROJECT_DIR / "memory" / "guard-rail-ordering.md"
         import_memories(conn, projects_root=projects_root)
-        path.write_text(FEEDBACK.replace("Never verify", "Always verify"))
+        path.write_text(FEEDBACK.replace("before the mutation", "after the mutation"))
         import_memories(conn, projects_root=projects_root)
         path.write_text(FEEDBACK)
         import_memories(conn, projects_root=projects_root)
 
         rows = conn.execute(
             "SELECT version_num, is_current FROM dim_memory "
-            "WHERE file_name = 'check-exit-codes.md' ORDER BY version_num"
+            "WHERE file_name = 'guard-rail-ordering.md' ORDER BY version_num"
         ).fetchall()
         assert rows == [(1, False), (2, False), (3, True)]
 
@@ -298,12 +298,12 @@ class TestIdempotencyAndVersioning:
         row keeps it queryable; deleting it would make the warehouse forget
         the memory ever existed."""
         import_memories(conn, projects_root=projects_root)
-        (projects_root / PROJECT_DIR / "memory" / "signal-honesty.md").unlink()
+        (projects_root / PROJECT_DIR / "memory" / "timeout-defaults.md").unlink()
         import_memories(conn, projects_root=projects_root)
 
         row = conn.execute(
             "SELECT is_current, valid_to IS NOT NULL FROM dim_memory "
-            "WHERE file_name = 'signal-honesty.md'"
+            "WHERE file_name = 'timeout-defaults.md'"
         ).fetchone()
         assert row == (False, True)
 
@@ -314,17 +314,17 @@ class TestLinkGraph:
         rows = conn.execute(
             "SELECT target_name, ordinal FROM bridge_memory_link bl "
             "JOIN dim_memory m USING (memory_key) "
-            "WHERE m.file_name = 'check-exit-codes.md' ORDER BY ordinal"
+            "WHERE m.file_name = 'guard-rail-ordering.md' ORDER BY ordinal"
         ).fetchall()
-        assert rows == [("signal-honesty", 0), ("nothing-here", 1)]
+        assert rows == [("timeout-defaults", 0), ("nothing-here", 1)]
 
     def test_link_resolves_to_a_sibling_memory(self, conn, projects_root):
         import_memories(conn, projects_root=projects_root)
         row = conn.execute(
             "SELECT bl.is_resolved, bl.target_memory_id = t.memory_id "
             "FROM bridge_memory_link bl "
-            "JOIN dim_memory t ON t.file_name = 'signal-honesty.md' "
-            "WHERE bl.target_name = 'signal-honesty'"
+            "JOIN dim_memory t ON t.file_name = 'timeout-defaults.md' "
+            "WHERE bl.target_name = 'timeout-defaults'"
         ).fetchone()
         assert row == (True, True)
 
@@ -334,35 +334,35 @@ class TestLinkGraph:
         the same identifier in different clothes, so matching modulo
         separator recovers real edges that an exact match drops."""
         d = projects_root / PROJECT_DIR / "memory"
-        (d / "feedback_signal_honesty.md").write_text(
-            SIGNAL.replace("name: signal-honesty", "name: signal-honesty-over-boards")
+        (d / "feedback_timeout_defaults.md").write_text(
+            SIGNAL.replace("name: timeout-defaults", "name: timeout-defaults-not-retries")
         )
         (d / "linker.md").write_text(
-            "---\nname: linker\n---\n\nsee [[feedback-signal-honesty]]\n"
+            "---\nname: linker\n---\n\nsee [[feedback-timeout-defaults]]\n"
         )
         import_memories(conn, projects_root=projects_root)
 
         row = conn.execute(
             "SELECT is_resolved, target_file_name FROM semantic_memory_links "
-            "WHERE target_name = 'feedback-signal-honesty'"
+            "WHERE target_name = 'feedback-timeout-defaults'"
         ).fetchone()
-        assert row == (True, "feedback_signal_honesty.md")
+        assert row == (True, "feedback_timeout_defaults.md")
 
     def test_a_near_miss_link_is_not_fuzzy_matched(self, conn, projects_root):
-        """[[signal]] is not [[signal-honesty]]. Resolving on prefixes or
+        """[[signal]] is not [[timeout-defaults]]. Resolving on prefixes or
         substrings would invent edges the author never wrote -- an unresolved
         row is the honest answer."""
         d = projects_root / PROJECT_DIR / "memory"
         (d / "linker.md").write_text(
-            "---\nname: linker\n---\n\nsee [[signal]] and [[signal-honesty-extra]]\n"
+            "---\nname: linker\n---\n\nsee [[signal]] and [[timeout-defaults-extra]]\n"
         )
         import_memories(conn, projects_root=projects_root)
 
         rows = conn.execute(
             "SELECT target_name, is_resolved FROM bridge_memory_link "
-            "WHERE target_name IN ('signal', 'signal-honesty-extra') ORDER BY 1"
+            "WHERE target_name IN ('signal', 'timeout-defaults-extra') ORDER BY 1"
         ).fetchall()
-        assert rows == [("signal", False), ("signal-honesty-extra", False)]
+        assert rows == [("signal", False), ("timeout-defaults-extra", False)]
 
     def test_dangling_link_is_kept_unresolved(self, conn, projects_root):
         """A [[link]] to a memory that was never written is real signal --
@@ -378,7 +378,7 @@ class TestLinkGraph:
     def test_links_are_rebuilt_for_the_new_version_only(self, conn, projects_root):
         """Each version owns its edges. The closed version keeps the edges it
         had, so the graph can be queried as of any point in time."""
-        path = projects_root / PROJECT_DIR / "memory" / "check-exit-codes.md"
+        path = projects_root / PROJECT_DIR / "memory" / "guard-rail-ordering.md"
         import_memories(conn, projects_root=projects_root)
         path.write_text(FEEDBACK.replace("[[nothing-here]]", "[[still-nothing]]"))
         import_memories(conn, projects_root=projects_root)
@@ -386,15 +386,15 @@ class TestLinkGraph:
         current = conn.execute(
             "SELECT bl.target_name FROM bridge_memory_link bl "
             "JOIN dim_memory m USING (memory_key) "
-            "WHERE m.file_name = 'check-exit-codes.md' AND m.is_current "
+            "WHERE m.file_name = 'guard-rail-ordering.md' AND m.is_current "
             "ORDER BY bl.ordinal"
         ).fetchall()
-        assert current == [("signal-honesty",), ("still-nothing",)]
+        assert current == [("timeout-defaults",), ("still-nothing",)]
 
         historical = conn.execute(
             "SELECT COUNT(*) FROM bridge_memory_link bl "
             "JOIN dim_memory m USING (memory_key) "
-            "WHERE m.file_name = 'check-exit-codes.md' AND NOT m.is_current"
+            "WHERE m.file_name = 'guard-rail-ordering.md' AND NOT m.is_current"
         ).fetchone()[0]
         assert historical == 2
 
@@ -410,8 +410,8 @@ class TestIndexLinks:
     def indexed(self, projects_root):
         (projects_root / PROJECT_DIR / "memory" / "MEMORY.md").write_text(
             "# project memory\n\n"
-            "- [Exit codes](check-exit-codes.md) -- pipes hide failures\n"
-            "- [Signal honesty](signal-honesty.md) -- do not touch the check\n"
+            "- [Exit codes](guard-rail-ordering.md) -- pipes hide failures\n"
+            "- [Signal honesty](timeout-defaults.md) -- do not touch the check\n"
             "- [Missing](never-written.md) -- not on disk\n"
         )
         return projects_root
@@ -424,8 +424,8 @@ class TestIndexLinks:
             "WHERE m.file_name = 'MEMORY.md' ORDER BY bl.ordinal"
         ).fetchall()
         assert rows == [
-            ("check-exit-codes.md", True, "markdown"),
-            ("signal-honesty.md", True, "markdown"),
+            ("guard-rail-ordering.md", True, "markdown"),
+            ("timeout-defaults.md", True, "markdown"),
             ("never-written.md", False, "markdown"),
         ]
 
@@ -435,19 +435,19 @@ class TestIndexLinks:
         import_memories(conn, projects_root=indexed)
         row = conn.execute(
             "SELECT link_text FROM bridge_memory_link "
-            "WHERE target_name = 'check-exit-codes.md'"
+            "WHERE target_name = 'guard-rail-ordering.md'"
         ).fetchone()
         assert row == ("Exit codes",)
 
     def test_markdown_target_resolves_on_file_name_not_memory_name(
         self, conn, indexed
     ):
-        """check-exit-codes.md carries `name: check-exit-codes`, but a
+        """guard-rail-ordering.md carries `name: guard-rail-ordering`, but a
         markdown target is a path the author wrote -- it must match the file
         name, so an index still resolves when the two disagree."""
         d = indexed / PROJECT_DIR / "memory"
         (d / "renamed_file.md").write_text(
-            FEEDBACK.replace("name: check-exit-codes", "name: totally-different")
+            FEEDBACK.replace("name: guard-rail-ordering", "name: totally-different")
         )
         (d / "MEMORY.md").write_text("# index\n\n- [R](renamed_file.md) -- x\n")
         import_memories(conn, projects_root=indexed)
@@ -467,14 +467,14 @@ class TestIndexLinks:
                 "GROUP BY link_syntax"
             ).fetchall()
         )
-        # 3 index entries + the 2 [[wiki]] links in check-exit-codes.md
+        # 3 index entries + the 2 [[wiki]] links in guard-rail-ordering.md
         assert counts == {"markdown": 3, "wiki": 2}
 
     def test_semantic_view_distinguishes_index_edges(self, conn, indexed):
         import_memories(conn, projects_root=indexed)
         row = conn.execute(
             "SELECT source_is_index, link_syntax FROM semantic_memory_links "
-            "WHERE target_name = 'signal-honesty.md'"
+            "WHERE target_name = 'timeout-defaults.md'"
         ).fetchone()
         assert row == (True, "markdown")
 
@@ -643,13 +643,13 @@ class TestEtlIntegration:
         """The whole point of provenance on a Type 2 row: two versions of one
         memory must name the two different runs that observed them."""
         run_memory_import(conn, projects_root=projects_root)
-        path = projects_root / PROJECT_DIR / "memory" / "check-exit-codes.md"
-        path.write_text(FEEDBACK.replace("Never verify", "Always verify"))
+        path = projects_root / PROJECT_DIR / "memory" / "guard-rail-ordering.md"
+        path.write_text(FEEDBACK.replace("before the mutation", "after the mutation"))
         run_memory_import(conn, projects_root=projects_root)
 
         runs = conn.execute(
             "SELECT version_num, etl_run_id FROM dim_memory "
-            "WHERE file_name = 'check-exit-codes.md' ORDER BY version_num"
+            "WHERE file_name = 'guard-rail-ordering.md' ORDER BY version_num"
         ).fetchall()
         assert len(runs) == 2
         assert runs[0][1] != runs[1][1]
@@ -782,14 +782,14 @@ class TestUpgradePath:
         warehouse would send every index edge down the identifier path and
         silently resolve none of them."""
         (projects_root / PROJECT_DIR / "memory" / "MEMORY.md").write_text(
-            "# index\n\n- [Exit codes](check-exit-codes.md) -- hook\n"
+            "# index\n\n- [Exit codes](guard-rail-ordering.md) -- hook\n"
         )
         conn = create_star_schema(self._narrow_warehouse(tmp_path))
         run_memory_import(conn, projects_root=projects_root)
 
         row = conn.execute(
             "SELECT link_syntax, is_resolved FROM bridge_memory_link "
-            "WHERE target_name = 'check-exit-codes.md'"
+            "WHERE target_name = 'guard-rail-ordering.md'"
         ).fetchone()
         assert row == ("markdown", True)
 
@@ -813,13 +813,13 @@ class TestScoping:
 
 class TestSemanticViews:
     def test_semantic_memory_exposes_only_current_versions(self, conn, projects_root):
-        path = projects_root / PROJECT_DIR / "memory" / "check-exit-codes.md"
+        path = projects_root / PROJECT_DIR / "memory" / "guard-rail-ordering.md"
         import_memories(conn, projects_root=projects_root)
-        path.write_text(FEEDBACK.replace("Never verify", "Always verify"))
+        path.write_text(FEEDBACK.replace("before the mutation", "after the mutation"))
         import_memories(conn, projects_root=projects_root)
 
         assert conn.execute(
-            "SELECT COUNT(*) FROM semantic_memory WHERE file_name = 'check-exit-codes.md'"
+            "SELECT COUNT(*) FROM semantic_memory WHERE file_name = 'guard-rail-ordering.md'"
         ).fetchone()[0] == 1
 
     def test_semantic_memory_carries_project_name(self, conn, projects_root):
@@ -833,6 +833,6 @@ class TestSemanticViews:
         import_memories(conn, projects_root=projects_root)
         row = conn.execute(
             "SELECT source_name, target_name, is_resolved FROM semantic_memory_links "
-            "WHERE target_name = 'signal-honesty'"
+            "WHERE target_name = 'timeout-defaults'"
         ).fetchone()
-        assert row == ("check-exit-codes", "signal-honesty", True)
+        assert row == ("guard-rail-ordering", "timeout-defaults", True)
