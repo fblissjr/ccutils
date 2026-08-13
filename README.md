@@ -267,6 +267,7 @@ hdiutil detach /Volumes/CCArchive
 The encrypted volume covers both the DuckDB file and the parquet lake (they're just files on it). Two caveats for a full-system export:
 
 - **`--private` is best-effort and not wired through the v0.15 ETL** (the flag is rejected on `duckdb`/`json`). On the render formats (html, markdown) it only masks cwd/home-prefixed paths in a subset of channels -- `tool_use` inputs (`file_path`/`command`/`content`/`path`) and string `tool_result` content. It does **not** sanitize message text, thinking blocks, non-message entries (e.g. `file-history-snapshot` paths), project directory names, or absolute paths from another machine/user pasted into content. When it can't resolve a working directory (agent transcripts, `.json`/claude.ai exports) it now prints a loud warning rather than silently no-opping. Treat `--private` as a convenience for local encrypted archives, not a guarantee for public sharing; review output before sharing. (Comprehensive channel-walking is a tracked follow-up.)
+- **The archive is machine-wide transcript data -- keep it out of your checkouts.** With no `-o` the output goes to `~/.ccutils/claude-archive`, which is home-anchored precisely so a default run never writes unredacted transcripts for every project on the machine into whatever repo you happened to be standing in. If you pass `-o` yourself, point it somewhere outside your worktrees (an encrypted volume as above, or any path a `git add -A` cannot reach).
 - **Tier 2 LLM facets cost real money at full-system scale.** `--with-llm-facets` runs one Haiku call per session -- pennies on a handful of sessions, but potentially dollars across hundreds. Omit it for a bulk archive run, or run it separately on a filtered subset.
 
 Portable alternative (any OS), encrypting the export as a single artifact with [age](https://github.com/FiloSottile/age):
@@ -280,7 +281,10 @@ tar czf - ./archive | age -r <recipient-key> > archive.tar.gz.age && rm -rf ./ar
 
 ```bash
 # Output
--o, --output PATH          Output directory or file
+-o, --output PATH          Output directory or file. Default:
+                           ~/.ccutils/claude-archive -- deliberately outside
+                           any checkout (single-file conversion with no -o
+                           still uses a temp dir)
 --format FORMAT            html, duckdb, json (+ both for all)
 --open                     Open result in browser
 

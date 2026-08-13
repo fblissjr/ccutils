@@ -5,6 +5,9 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Changed
+- **Archives no longer default into the current directory: with no `-o`, output goes to `~/.ccutils/claude-archive`.** Both entry points defaulted to `./claude-archive` (`ccutils all` via a click default, `ccutils` picker mode via a literal), so a default run started from inside a checkout deposited unredacted transcripts for *every* project on the machine into that worktree -- guarded by one `.gitignore` line here, and by nothing at all in any other repo. The data is machine-wide and the tool is routinely run from wherever the user happens to be standing, so cwd is the one place the default must never be. Both sites now resolve through `default_archive_output()` (`cli/utils.py`), which is home-anchored, absolute, and evaluated per call rather than at import so the current home directory is honored. `-o/--output` overrides exactly as before, and single-file conversion with no `-o` still uses a temp dir. The `.gitignore` entry stays as belt and braces. New tests (`tests/test_archive_output_default.py`) pin both entry points end to end -- archive absent from cwd AND present under the default, so the absence assertion cannot pass because the export silently did nothing; all four claim-bearing cases were verified red against the old cwd-relative default.
+
 ## [0.19.0]
 
 ### Fixed

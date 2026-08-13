@@ -38,6 +38,7 @@ from ..export import (
 )
 from .utils import (
     build_facet_extractor_or_exit,
+    default_archive_output,
     maybe_open_browser,
     run_embedding_pipeline,
     warn_private_best_effort,
@@ -51,7 +52,10 @@ from .utils import (
     "-o",
     "--output",
     type=click.Path(),
-    help="Output directory (default: ./claude-archive or temp dir for single file).",
+    help=(
+        "Output directory (default: ~/.ccutils/claude-archive, or a temp "  # path-privacy: ignore
+        "dir for single-file conversion)."
+    ),
 )
 @optgroup.option(
     "--format",
@@ -262,9 +266,12 @@ def _interactive_mode(output, output_format, open_browser, flat, expand_chains,
                     if agent_path not in selected:
                         selected.append(agent_path)
 
-    # Picker mode: default to ./claude-archive
+    # Picker mode: no -o lands outside any worktree (see
+    # default_archive_output -- the archive holds unredacted transcripts
+    # for every project on the machine and must never default into a
+    # checkout).
     if output is None:
-        output = Path("./claude-archive")
+        output = default_archive_output()
     output = Path(output)
 
     _run_export_pipeline(

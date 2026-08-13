@@ -16,6 +16,7 @@ from ..export import (
 )
 from .utils import (
     build_facet_extractor_or_exit,
+    default_archive_output,
     maybe_open_browser,
     run_embedding_pipeline,
     warn_private_best_effort,
@@ -34,8 +35,8 @@ from .utils import (
     "-o",
     "--output",
     type=click.Path(),
-    default="./claude-archive",
-    help="Output directory (default: ./claude-archive).",
+    default=None,
+    help="Output directory (default: ~/.ccutils/claude-archive).",  # path-privacy: ignore
 )
 @optgroup.option(
     "--format",
@@ -210,7 +211,10 @@ def all_cmd(
     if not source.exists():
         raise click.ClickException(f"Source directory not found: {source}")
 
-    output = Path(output)
+    # No -o: land outside any worktree (see default_archive_output --
+    # the archive holds unredacted transcripts for every project on the
+    # machine and must never default into a checkout).
+    output = Path(output) if output else default_archive_output()
 
     if not quiet:
         click.echo(f"Scanning {source}...")

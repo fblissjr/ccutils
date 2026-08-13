@@ -18,6 +18,23 @@ from ..api import (
 from ..etl.facets import AnthropicFacetExtractor
 
 
+def default_archive_output():
+    """Where an archive lands when the user passes no ``-o/--output``.
+
+    A generated archive contains unredacted Claude Code transcripts for
+    EVERY project on the machine, so the default location is a privacy
+    decision. It must never resolve inside a git worktree: a cwd-relative
+    default writes machine-wide transcript data into whatever checkout the
+    command was run from, one ``git add -A`` from being published, with a
+    single .gitignore line as the only guard. Home-anchored and absolute,
+    so it is the same directory wherever the tool is invoked from.
+
+    Resolved per call rather than at import so a changed home directory
+    (and test sandboxes) is honored. ``-o/--output`` overrides it as before.
+    """
+    return Path.home() / ".ccutils" / "claude-archive"
+
+
 def build_facet_extractor_or_exit(with_llm_facets: bool):
     """Resolve Anthropic credentials and construct an AnthropicFacetExtractor
     at the CLI boundary. CredentialsError surfaces as a helpful message +
