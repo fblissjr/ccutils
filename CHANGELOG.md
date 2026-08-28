@@ -5,6 +5,9 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+- **`ccutils session.jsonl` dropped the session's subagents, and opened an `index.html` it never wrote.** Both defects sat on the README's headline invocation. `_convert_file` built no `agent_map`, so the discovery fix in 0.19.1 never reached this path -- a session with four agent transcripts beside it exported one file and said nothing about the rest. It now attaches them exactly as the picker does, and `--no-subagents`, which was accepted here and did nothing, excludes them. Separately, the single-file branch wrote only `<stem>.html` while `maybe_open_browser` opens `<output>/index.html` unconditionally; with no `-o` the browser opens automatically, so the default invocation opened a file that was never created. An index is now written even for a lone session. Verified on a real session: one HTML file before, six with a working index after. The test that covered this path asserted exit code 0 and the string "Output:", which the broken behaviour satisfied exactly -- the new tests assert the files that must exist.
+
 ## [0.19.2]
 
 ### Fixed

@@ -186,6 +186,7 @@ def local_cmd(
         _convert_file(
             input_file, output, output_format, open_browser,
             include_thinking, private, facet_extractor,
+            include_subagents=not no_subagents,
         )
     else:
         # Interactive picker mode
@@ -197,8 +198,17 @@ def local_cmd(
 
 
 def _convert_file(input_file, output, output_format, open_browser,
-                   include_thinking, private, facet_extractor=None):
-    """Convert a single session file to the requested format."""
+                   include_thinking, private, facet_extractor=None,
+                   include_subagents=True):
+    """Convert a single session file to the requested format.
+
+    Subagents are attached here for the same reason the picker attaches
+    them: they are part of the session the user named. This path built no
+    agent_map at all, so a session with agent transcripts beside it exported
+    one file and said nothing -- and the 0.19.1 discovery fix, which made
+    those transcripts findable again, never reached the README's headline
+    invocation.
+    """
     json_file_path = Path(input_file)
     if not json_file_path.exists():
         raise click.ClickException(f"File not found: {input_file}")
@@ -209,14 +219,24 @@ def _convert_file(input_file, output, output_format, open_browser,
         output = Path(tempfile.gettempdir()) / f"claude-session-{json_file_path.stem}"
     output = Path(output)
 
+    session_files = [json_file_path]
+    agent_map = {}
+    if include_subagents:
+        agent_map = find_agent_sessions([json_file_path], recursive=True)
+        agents = agent_map.get(json_file_path, [])
+        if agents:
+            click.echo(f"Including {len(agents)} related agent session(s)")
+            session_files.extend(agents)
+
     _run_export_pipeline(
-        session_files=[json_file_path],
+        session_files=session_files,
         output=output,
         output_format=output_format,
         include_thinking=include_thinking,
         private=private,
         project_name=json_file_path.parent.name or "unknown",
         open_browser=open_browser,
+        agent_map=agent_map,
         facet_extractor=facet_extractor,
     )
 
@@ -394,17 +414,20 @@ def _run_export_pipeline(
     # github_repo is auto-detected by generate_html() from git push output
     # in the JSONL session data, or from the current working directory's git remote.
     if output_format == "html":
-        if len(session_files) == 1 and not agent_map:
-            generate_html(session_files[0], output, private=private,
-                          include_thinking=include_thinking)
-        else:
-            output.mkdir(parents=True, exist_ok=True)
-            for idx, session_file in enumerate(session_files, 1):
+        output.mkdir(parents=True, exist_ok=True)
+        for idx, session_file in enumerate(session_files, 1):
+            if len(session_files) > 1:
                 click.echo(f"[{idx}/{len(session_files)}] {session_file.name}")
-                # Flat: one self-contained file per session, no per-session dir.
-                generate_html(session_file, output, private=private,
-                              include_thinking=include_thinking)
-            generate_multi_session_index(output, session_files, agent_map=agent_map)
+            # Flat: one self-contained file per session, no per-session dir.
+            generate_html(session_file, output, private=private,
+                          include_thinking=include_thinking)
+        # An index is written even for a lone session: `--open` targets
+        # <output>/index.html unconditionally, and with no -o the browser
+        # opens automatically -- so the single-file branch, which wrote only
+        # <stem>.html, made the DEFAULT invocation open a file that was
+        # never created. That is the README's own quick-start.
+        generate_multi_session_index(output, session_files, agent_map=agent_map)
+        if len(session_files) > 1:
             click.echo(f"Generated {len(session_files)} session(s) with master index")
 
         click.echo(f"Output: {output.resolve()}")

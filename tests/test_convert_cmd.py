@@ -1,8 +1,42 @@
 """Tests for single-file conversion (positional arg to default command)."""
 
+import json
+
 from click.testing import CliRunner
 
 from ccutils.cli import cli
+
+
+def _session_with_subagents(tmp_path, n_agents=2):
+    """A parent transcript with agents in the real on-disk layout.
+
+    `<project>/<uuid>.jsonl` plus `<project>/<uuid>/subagents/agent-*.jsonl`
+    -- see docs/JSONL_CONTRACT.md claim 6. Agent entries carry the PARENT's
+    sessionId, which is why identity comes from the filename.
+    """
+    project = tmp_path / "-home-user-projects-demo"
+    project.mkdir(parents=True, exist_ok=True)
+
+    def entry(**over):
+        base = {
+            "type": "user", "uuid": "u1", "sessionId": "sess-parent",
+            "timestamp": "2026-01-15T10:00:00.000Z", "cwd": "/home/user/demo",
+            "message": {"role": "user", "content": "do the thing"},
+        }
+        base.update(over)
+        return json.dumps(base) + "\n"
+
+    parent = project / "sess-parent.jsonl"
+    parent.write_text(entry())
+
+    agents = project / "sess-parent" / "subagents"
+    agents.mkdir(parents=True, exist_ok=True)
+    for i in range(n_agents):
+        (agents / f"agent-a{i}.jsonl").write_text(
+            entry(uuid=f"au{i}", agentId=f"a{i}", isSidechain=True,
+                  message={"role": "user", "content": f"subtask {i}"})
+        )
+    return parent
 
 
 class TestFileConversionHTML:
@@ -27,6 +61,56 @@ class TestFileConversionHTML:
 
         assert result.exit_code == 0
         assert "Output:" in result.output
+
+    def test_writes_an_index_the_browser_can_open(
+        self, sample_session_file, output_dir
+    ):
+        """--open targets <output>/index.html, so one must exist.
+
+        The single-file branch wrote only <stem>.html, while
+        maybe_open_browser opens <output>/index.html unconditionally -- and
+        with no -o the browser is opened automatically, so the default path
+        was the broken one. This is the README's own quick-start example.
+
+        The previous test for this path asserted exit code 0 and the string
+        "Output:", which the broken behaviour satisfied exactly.
+        """
+        runner = CliRunner()
+        result = runner.invoke(
+            cli, [str(sample_session_file), "-o", str(output_dir)]
+        )
+
+        assert result.exit_code == 0, result.output
+        assert (output_dir / "index.html").exists()
+
+    def test_single_file_attaches_its_subagents(self, tmp_path, output_dir):
+        """The headline invocation must not silently drop subagents.
+
+        `_convert_file` built no agent_map, so the discovery fix in 0.19.1
+        never reached this path: a session with agent transcripts beside it
+        exported one file and said nothing.
+        """
+        parent = _session_with_subagents(tmp_path, n_agents=2)
+        runner = CliRunner()
+        result = runner.invoke(cli, [str(parent), "-o", str(output_dir)])
+
+        assert result.exit_code == 0, result.output
+        written = {f.name for f in output_dir.glob("*.html")}
+        assert "sess-parent.html" in written
+        assert "agent-a0.html" in written
+        assert "agent-a1.html" in written
+
+    def test_no_subagents_flag_actually_excludes_them(self, tmp_path, output_dir):
+        """--no-subagents was accepted on this path and did nothing."""
+        parent = _session_with_subagents(tmp_path, n_agents=2)
+        runner = CliRunner()
+        result = runner.invoke(
+            cli, [str(parent), "-o", str(output_dir), "--no-subagents"]
+        )
+
+        assert result.exit_code == 0, result.output
+        written = {f.name for f in output_dir.glob("*.html")}
+        assert written == {"sess-parent.html", "index.html"}
 
     def test_missing_file_errors(self, tmp_path):
         """Missing input file gives error."""
