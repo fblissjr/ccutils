@@ -291,13 +291,18 @@ def convert_cmd(
     facet_extractor = build_facet_extractor_or_exit(with_llm_facets)
 
     if paths:
-        # Convert exactly the files named.
-        for path in paths:
-            _convert_file(
-                path, output, output_format, open_browser,
-                include_thinking, private, facet_extractor,
-                include_subagents=not no_subagents,
-            )
+        # ONE pipeline call for all named files, not one per file. Running it
+        # per file pointed every run at the same -o: the html index was
+        # rewritten from the last file's session list so earlier transcripts
+        # became unreachable, the json export overwrote dimensions/ so only
+        # the last session survived, `fact_etl_batch_runs` got N rows for one
+        # invocation, the global sources ran N times, and with no -o a
+        # browser window opened per file.
+        _convert_files(
+            paths, output, output_format, open_browser,
+            include_thinking, private, facet_extractor,
+            include_subagents=not no_subagents,
+        )
     else:
         # Interactive picker mode
         _interactive_mode(
@@ -307,44 +312,52 @@ def convert_cmd(
         )
 
 
-def _convert_file(input_file, output, output_format, open_browser,
+def _convert_files(input_files, output, output_format, open_browser,
                    include_thinking, private, facet_extractor=None,
                    include_subagents=True):
-    """Convert a single session file to the requested format.
+    """Convert the named session files, in ONE pipeline run.
 
-    Subagents are attached here for the same reason the picker attaches
-    them: they are part of the session the user named. This path built no
+    All of them together, because the output is shared: one index, one
+    warehouse, one batch-run row. Converting them one at a time made each
+    run overwrite the previous one's shared artifacts.
+
+    Subagents are attached for the same reason the picker attaches them:
+    they are part of the session the user named. This path built no
     agent_map at all, so a session with agent transcripts beside it exported
-    one file and said nothing -- and the 0.19.1 discovery fix, which made
-    those transcripts findable again, never reached the README's headline
-    invocation.
+    one file and said nothing -- the 0.19.1 discovery fix never reached the
+    README's headline invocation.
     """
-    json_file_path = Path(input_file)
-    if not json_file_path.exists():
-        raise click.ClickException(f"File not found: {input_file}")
+    paths = [Path(f) for f in input_files]
+    for f in paths:
+        if not f.exists():
+            raise click.ClickException(f"File not found: {f}")
 
-    # Single file with no -o: use temp dir and auto-open browser
+    # No -o: a temp dir named after the first file, and auto-open. Only
+    # meaningful for a single file; with several it is still one shared dir,
+    # which is the point.
     if output is None:
         open_browser = True
-        output = Path(tempfile.gettempdir()) / f"claude-session-{json_file_path.stem}"
+        output = Path(tempfile.gettempdir()) / f"claude-session-{paths[0].stem}"
     output = Path(output)
 
-    session_files = [json_file_path]
+    session_files = list(paths)
     agent_map = {}
     if include_subagents:
-        agent_map = find_agent_sessions([json_file_path], recursive=True)
-        agents = agent_map.get(json_file_path, [])
-        if agents:
-            click.echo(f"Including {len(agents)} related agent session(s)")
-            session_files.extend(agents)
+        agent_map = find_agent_sessions(paths, recursive=True)
+        attached = [a for agents in agent_map.values() for a in agents
+                    if a not in session_files]
+        if attached:
+            click.echo(f"Including {len(attached)} related agent session(s)")
+            session_files.extend(attached)
 
     _run_export_pipeline(
         session_files=session_files,
+        requested_files=paths,
         output=output,
         output_format=output_format,
         include_thinking=include_thinking,
         private=private,
-        project_name=json_file_path.parent.name or "unknown",
+        project_name=paths[0].parent.name or "unknown",
         open_browser=open_browser,
         agent_map=agent_map,
         facet_extractor=facet_extractor,
@@ -495,6 +508,7 @@ def _run_export_pipeline(
     output_format,
     include_thinking,
     private,
+    requested_files=None,
     open_browser=False,
     project_name=None,
     agent_map=None,
@@ -530,6 +544,11 @@ def _run_export_pipeline(
 
     # github_repo is auto-detected by generate_html() from git push output
     # in the JSONL session data, or from the current working directory's git remote.
+    # What the user actually named, before subagents were attached. The
+    # `.md` single-file case must key on this: attaching agents must not
+    # change how `-o notes.md` is interpreted.
+    requested_files = list(requested_files or session_files)
+
     if output_format == "html":
         output.mkdir(parents=True, exist_ok=True)
         for idx, session_file in enumerate(session_files, 1):
@@ -556,7 +575,14 @@ def _run_export_pipeline(
         # with an explicit .md output path writes that file; everything
         # else writes one <session-stem>.md per session into the output
         # directory (no index pages).
-        if len(session_files) == 1 and output.suffix == ".md":
+        # The `.md` path is keyed on what the USER asked for, not on how
+        # many files the pipeline ended up with. Keying it on
+        # len(session_files) == 1 broke the moment single-file conversion
+        # started attaching subagents: `-o notes.md` fell into the directory
+        # branch, mkdir created a DIRECTORY named notes.md, and
+        # generate_markdown then opened it as a file -- IsADirectoryError,
+        # non-zero exit, stray directory left behind.
+        if output.suffix == ".md" and len(requested_files) == 1:
             md_path = generate_markdown(
                 session_files[0], output,
                 include_thinking=include_thinking, private=private,

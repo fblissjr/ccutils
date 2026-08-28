@@ -227,6 +227,21 @@ class TestHistoryIsScopedToTheWarehousesProjects:
         rows = conn.execute("SELECT project_path FROM dim_prompt").fetchall()
         assert rows == [("/home/user/projects/fb-claude-skills",)]
 
+    def test_encoding_collapses_dots_and_underscores_too(self):
+        """Claude Code replaces `/`, `.` AND `_` when naming a project dir.
+
+        A first cut replaced only `/`, so the encoded-match arm never fired
+        for any path containing a dot or an underscore, silently dropping
+        those projects' prompts from scoped builds. Verified on the real
+        corpus: a cwd ending `/evalroot/_run_d90fe13e` lives in a directory
+        ending `-evalroot--run-d90fe13e`.
+        """
+        from ccutils.etl.dim_prompt import _project_dir_name
+
+        assert _project_dir_name("/a/evalroot/_run_x") == "-a-evalroot--run-x"
+        assert _project_dir_name("/a/b/.claude/wt") == "-a-b--claude-wt"
+        assert _project_dir_name("/a/plain/path") == "-a-plain-path"
+
     def test_a_warehouse_covering_nothing_imports_nothing(self, conn, tmp_path):
         """An empty scope means NOTHING, never everything.
 

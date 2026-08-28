@@ -112,6 +112,46 @@ class TestFileConversionHTML:
         written = {f.name for f in output_dir.glob("*.html")}
         assert written == {"sess-parent.html", "index.html"}
 
+    def test_multiple_paths_share_one_index(self, tmp_path, output_dir):
+        """Several PATHS are ONE conversion, not N of them.
+
+        Running the pipeline per file pointed every run at the same -o: the
+        html index was rewritten from the last file's session list, so
+        earlier transcripts were written but unreachable. `--format json`
+        was worse -- dimensions/ was overwritten per file and only the last
+        session survived, exit 0. This is the command's own help example.
+        """
+        a = _session_with_subagents(tmp_path, n_agents=0)
+        b = tmp_path / "-home-user-projects-demo" / "second.jsonl"
+        b.write_text(a.read_text().replace("sess-parent", "second"))
+
+        result = CliRunner().invoke(
+            cli, [str(a), str(b), "-o", str(output_dir)]
+        )
+
+        assert result.exit_code == 0, result.output
+        index = (output_dir / "index.html").read_text()
+        assert "sess-parent.html" in index
+        assert "second.html" in index
+
+    def test_markdown_to_a_file_survives_attached_subagents(self, tmp_path):
+        """`-o notes.md` is keyed on what the USER asked for.
+
+        Keying it on len(session_files) == 1 broke the moment single-file
+        conversion started attaching subagents: mkdir created a DIRECTORY
+        named notes.md and generate_markdown then opened it as a file --
+        IsADirectoryError, non-zero exit, stray directory left behind.
+        """
+        parent = _session_with_subagents(tmp_path, n_agents=1)
+        out = tmp_path / "notes.md"
+
+        result = CliRunner().invoke(
+            cli, [str(parent), "--format", "markdown", "-o", str(out)]
+        )
+
+        assert result.exit_code == 0, result.output
+        assert out.is_file(), "output must be a FILE, not a directory"
+
     def test_missing_file_errors(self, tmp_path):
         """Missing input file gives error."""
         runner = CliRunner()

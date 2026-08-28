@@ -357,6 +357,7 @@ def generate_json_archive(
     private=False,
     facet_extractor=None,
     projects=None,
+    scope_history=False,
 ):
     """Generate a JSON archive for all sessions under ``source_folder``.
 
@@ -389,6 +390,10 @@ def generate_json_archive(
             facet_extractor=facet_extractor,
             output_format="json",
             projects=projects,
+            # Forward the scope: JSON is the most shareable output we
+            # produce, so a filtered build leaking machine-wide prompts
+            # here is the worst place for it.
+            scope_history=scope_history,
         )
 
         db_path = tmp_path / "archive.duckdb"

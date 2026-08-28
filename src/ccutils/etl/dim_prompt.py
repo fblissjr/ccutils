@@ -18,9 +18,25 @@ from ccutils.etl.utils import insert_missing_dim_dates
 from ccutils.parsers.history import iter_history_entries
 
 
+# Claude Code replaces `/`, `.` AND `_` with `-` when naming a project
+# directory. A first cut replaced only `/`, so the encoded-match arm never
+# fired for a path containing a dot or an underscore -- verified on the real
+# corpus, where a cwd ending `/evalroot/_run_d90fe13e` lives in a directory
+# ending `-evalroot--run-d90fe13e`.
+_DIR_NAME_SEPARATORS = str.maketrans({"/": "-", ".": "-", "_": "-"})
+
+
 def _project_dir_name(project_path: str) -> str:
-    """Claude Code's encoding of a real path: `/home/user/repo` -> `-home-user-repo`."""
-    return project_path.replace("/", "-")
+    """Claude Code's encoding of a real path into a project directory name.
+
+    Lossy and NOT injective: `/`, `.` and `_` all collapse to `-`, so
+    `/a/b`, `/a.b` and `/a_b` encode identically. Matching therefore runs
+    FORWARD (encode the entry, compare to the stored name) and never
+    backward, and the exact `dim_session.cwd` comparison is kept beside it
+    as the precise arm. The collapse means the encoded arm can over-match in
+    principle; the cwd arm cannot.
+    """
+    return project_path.translate(_DIR_NAME_SEPARATORS)
 
 
 def _covers_project(conn):
