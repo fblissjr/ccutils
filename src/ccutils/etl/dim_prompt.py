@@ -105,6 +105,33 @@ def import_history(conn, history_path: str | Path, *,
 
     covers = _covers_project(conn) if only_projects else None
 
+    if covers is not None:
+        # Scoping is a STATE of the warehouse, not a filter on this insert.
+        # dim_prompt is insert-only and both entry points default to the
+        # same output directory, so without this a full archive followed by
+        # a scoped build left every prompt on the machine in a warehouse
+        # that reported itself as scoped -- reachable by following the
+        # README's two commands in order.
+        #
+        # Safe to delete because dim_prompt is DERIVED: an unscoped run
+        # re-imports it from history.jsonl. Nothing else references
+        # prompt_key.
+        stale = [
+            row[0] for row in conn.execute(
+                "SELECT DISTINCT project_path FROM dim_prompt"
+            ).fetchall()
+        ]
+        drop = [pp for pp in stale if not covers(pp)]
+        if drop:
+            conn.execute(
+                "DELETE FROM dim_prompt WHERE project_path IN "
+                f"({','.join('?' * len(drop))})",
+                drop,
+            )
+        # A NULL project_path cannot be attributed to any project, so it
+        # cannot be shown to be in scope.
+        conn.execute("DELETE FROM dim_prompt WHERE project_path IS NULL")
+
     rows = []
     for entry in iter_history_entries(history_path):
         if covers is not None and not covers(entry.project_path):
@@ -176,7 +203,11 @@ def import_history(conn, history_path: str | Path, *,
             WHERE dp.prompt_key = md5(ip.prompt_key_input)
         )
         """
-    ).rowcount
+    # .fetchone()[0], not .rowcount: DuckDB's Python API leaves rowcount at
+    # -1 for DML and returns the affected count as a one-row result. This
+    # returned -1 for as long as it existed; nothing noticed until the count
+    # became a recorded step count.
+    ).fetchone()[0]
 
     conn.execute("DROP TABLE IF EXISTS _inbound_prompts")
     _backfill_prompt_dates(conn)

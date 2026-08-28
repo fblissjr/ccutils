@@ -5,6 +5,7 @@ import tempfile
 from pathlib import Path
 
 import click
+from click.core import ParameterSource
 import questionary
 from click_option_group import optgroup
 from rich.console import Console
@@ -206,6 +207,36 @@ def convert_cmd(
       ccutils --format duckdb -o ./w --llm-facets   # picked, with Tier 2 facets
     """
     include_thinking = not no_thinking
+
+    # A flag that cannot act in the chosen mode is an error, not a no-op --
+    # the same rule --embed and --llm-facets follow below. Checked against
+    # click's parameter SOURCE so a default never trips it: only a value the
+    # user actually typed counts.
+    ctx = click.get_current_context()
+
+    def _typed(name):
+        return ctx.get_parameter_source(name) == ParameterSource.COMMANDLINE
+
+    def _reject(names, mode, advice):
+        offenders = [n for n in names if _typed(n)]
+        if offenders:
+            flags = ", ".join("--" + n.replace("_", "-") for n in offenders)
+            raise click.UsageError(f"{flags} {mode}. {advice}")
+
+    if source is None:
+        # --dry-run is the one that matters most: ignored, it produces
+        # writes rather than nothing.
+        _reject(
+            ["dry_run", "jobs", "batch_size", "quiet", "no_search_index"],
+            "only applies to a --source run",
+            "Add --source to walk a directory, or drop the flag.",
+        )
+    if paths:
+        _reject(
+            ["flat", "expand_chains"],
+            "only applies to the interactive picker",
+            "Drop the PATHS to pick sessions, or drop the flag.",
+        )
 
     if paths and source is not None:
         raise click.UsageError(
@@ -413,8 +444,14 @@ def _interactive_mode(output, output_format, open_browser, flat, expand_chains,
     # default_archive_output -- the archive holds unredacted transcripts
     # for every project on the machine and must never default into a
     # checkout).
+    #
+    # ...but in a SUBDIRECTORY of it, not the archive root. A pick and a
+    # full `--source` archive are different outputs that both write
+    # `index.html`, so sharing a directory meant a two-session pick silently
+    # replaced the whole archive's master index with a two-card one. The
+    # transcripts survived; the way back to them did not.
     if output is None:
-        output = default_archive_output()
+        output = default_archive_output() / "picked"
     output = Path(output)
 
     _run_export_pipeline(
@@ -610,8 +647,12 @@ def _run_export_pipeline(
         # be its own surprise. Everything else is a directory holding
         # archive.duckdb + parquet_lake/, matching the batch path.
         if output.suffix == ".duckdb":
-            db_path = output
-            output_dir = output.parent
+            # Resolve first: a bare `-o archive.duckdb` has parent ".", which
+            # would put parquet_lake/ in the cwd -- the exact thing the
+            # directory rule above exists to stop, reinstated through the
+            # escape hatch.
+            db_path = output.resolve()
+            output_dir = db_path.parent
         else:
             output_dir = output
             db_path = output / "archive.duckdb"

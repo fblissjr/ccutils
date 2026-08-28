@@ -227,6 +227,35 @@ class TestHistoryIsScopedToTheWarehousesProjects:
         rows = conn.execute("SELECT project_path FROM dim_prompt").fetchall()
         assert rows == [("/home/user/projects/fb-claude-skills",)]
 
+    def test_scoping_removes_prompts_a_previous_unscoped_run_left(
+        self, conn, tmp_path
+    ):
+        """Scoping must be a STATE, not a filter on new inserts.
+
+        `import_history` is insert-only, and both the picker and `--source`
+        default to the SAME output directory. So the sequence a reader
+        follows straight from the README -- build a full archive, then build
+        a scoped one into the default location -- left every prompt on the
+        machine sitting in a warehouse that reports itself as scoped.
+
+        Deleting is safe here because dim_prompt is derived: the next
+        unscoped run re-imports from history.jsonl.
+        """
+        self._warehouse_covering(conn, "/home/user/projects/mine")
+        hist = self._history(
+            tmp_path, "/home/user/projects/mine", "/home/user/projects/other"
+        )
+
+        import_history(conn, hist, only_projects=False)
+        assert conn.execute("SELECT COUNT(*) FROM dim_prompt").fetchone()[0] == 2
+
+        import_history(conn, hist, only_projects=True)
+
+        rows = conn.execute("SELECT DISTINCT project_path FROM dim_prompt").fetchall()
+        assert rows == [("/home/user/projects/mine",)], (
+            "a scoped run must leave no out-of-scope prompt behind"
+        )
+
     def test_encoding_collapses_dots_and_underscores_too(self):
         """Claude Code replaces `/`, `.` AND `_` when naming a project dir.
 

@@ -110,14 +110,55 @@ def run_global_sources(conn, *, batch_run_id: str | None = None,
 
     run_post_session_reconciliation(conn, batch_run_id=batch_run_id)
 
-    try:
-        from .dim_prompt import import_history
-
-        import_history(conn, home / "history.jsonl",
-                       only_projects=scope_to_covered_projects)
-    except Exception:
-        # Optional: never fail a build because the global prompt history is
-        # missing or malformed.
-        pass
+    _run_history_import(
+        conn, home / "history.jsonl",
+        batch_run_id=batch_run_id,
+        only_projects=scope_to_covered_projects,
+    )
 
     _import_auto_memory(conn, batch_run_id=batch_run_id, claude_home=home)
+
+
+def _run_history_import(conn, history_path, *, batch_run_id, only_projects):
+    """Ingest history.jsonl as a RECORDED run, not a bare call.
+
+    CLAUDE.md has named this call out for a while -- "`dim_prompt` is still
+    un-wrapped, fix it when touched" -- and it was touched twice: once to
+    move it here, once to add scoping.
+
+    The old `except Exception: pass` lost the fact that history was meant to
+    be there. A warehouse whose import raised mid-parse, or whose scope
+    matched nothing because the encoder was wrong, looked exactly like one
+    built on a machine with no history.jsonl: empty `dim_prompt`, no row
+    saying so. The scoping change made that worse, because the swallowed
+    count was the only signal that scoping had worked.
+
+    Records rather than re-raises, matching `run_memory_import`: history is
+    additive, so losing it costs prompt rows and corrupts nothing else, and
+    an archive whose sessions all processed should still finish. What must
+    not happen is losing the fact that it was attempted.
+    """
+    from .dim_prompt import import_history
+    from .lineage import EtlRun
+
+    run = EtlRun.start(
+        conn,
+        source_path=str(history_path),
+        batch_run_id=batch_run_id,
+        description="prompt-history import",
+        run_kind="global_source",
+    )
+    try:
+        with run.step("dim_prompt", kind="stage") as counts:
+            counts.rows_inserted = import_history(
+                conn, history_path, only_projects=only_projects
+            )
+        run.complete(sessions_seen=0, sessions_inserted=0, sessions_updated=0)
+    except (KeyboardInterrupt, SystemExit) as e:
+        run.fail(str(e) or type(e).__name__)
+        raise
+    except Exception as e:
+        run.fail(str(e) or type(e).__name__)
+    except BaseException as e:
+        run.fail(str(e) or type(e).__name__)
+        raise

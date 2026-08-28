@@ -119,22 +119,56 @@ class TestAssistantBlockShape:
     # multi-block routinely", not normal drift.
     MAX_VIOLATION_RATE = 0.001
 
-    def test_all_text_blocks_are_captured(self):
-        """The requirement that actually matters, no corpus needed."""
-        entry = {
-            "uuid": "u1",
-            "message": {"content": [
-                {"type": "text", "text": "FIRST"},
-                {"type": "thinking", "thinking": ""},
-                {"type": "tool_use", "id": "t1"},
-                {"type": "text", "text": "SECOND"},
-            ]},
-        }
-        texts = [b["text"] for b in entry["message"]["content"]
-                 if b.get("type") == "text"]
-        assert texts == ["FIRST", "SECOND"], (
-            "fixture drift -- this pins the shape the SQL projection must "
-            "handle; see the ETL assertion in test_fact_messages_v15"
+    def test_all_text_blocks_are_captured(self, tmp_path):
+        """The requirement that actually matters, through the real ETL.
+
+        The first version of this test built a dict literal and
+        list-comprehended the text blocks back out of it -- it asserted that
+        a list comprehension works, and would have passed unchanged if the
+        SQL projection dropped every text block. Its docstring pointed at an
+        ETL assertion elsewhere that did not exist. A test audit run the same
+        morning classifies precisely that shape as decorative.
+
+        So this one runs the pipeline. An entry carrying
+        [text, thinking, tool_use, text] -- the real multi-block shape, 17 of
+        which exist in the corpus -- must yield BOTH prose blocks in
+        content_text, or claim 2's consequence ("a NULL content_text on a
+        tool-carrying row is the format, not a loss") is false.
+        """
+        import json as _json
+
+        from ccutils import create_star_schema
+        from ccutils.etl.orchestrator import run_v15_etl
+
+        src = tmp_path / "proj" / "mb.jsonl"
+        src.parent.mkdir(parents=True, exist_ok=True)
+        src.write_text("\n".join(_json.dumps(e) for e in [
+            {"type": "user", "uuid": "u1", "sessionId": "mb",
+             "timestamp": "2026-01-15T10:00:00.000Z", "cwd": "/w",
+             "message": {"role": "user", "content": "go"}},
+            {"type": "assistant", "uuid": "a1", "parentUuid": "u1",
+             "sessionId": "mb", "timestamp": "2026-01-15T10:00:01.000Z",
+             "message": {"role": "assistant", "model": "claude-opus-5",
+                         "content": [
+                             {"type": "text", "text": "FIRST PROSE"},
+                             {"type": "thinking", "thinking": ""},
+                             {"type": "tool_use", "id": "t1", "name": "Bash",
+                              "input": {"command": "ls"}},
+                             {"type": "text", "text": "SECOND PROSE"}]}},
+        ]))
+
+        conn = create_star_schema(tmp_path / "mb.duckdb")
+        run_v15_etl(conn, src, project_name="x",
+                    parquet_lake_root=tmp_path / "lake")
+        text, blocks = conn.execute(
+            "SELECT content_text, content_block_count FROM fact_messages "
+            "WHERE message_type = 'assistant'"
+        ).fetchone()
+        conn.close()
+
+        assert blocks == 4
+        assert "FIRST PROSE" in text and "SECOND PROSE" in text, (
+            f"multi-block prose was dropped: {text!r}"
         )
 
     def test_multi_block_entries_stay_a_rounding_error(self):

@@ -238,6 +238,29 @@ class TestOutputIsADirectory:
         assert not (tmp_path / "parquet_lake").exists()
 
 
+class TestDuckdbPathEscapeHatch:
+    """`-o foo.duckdb` is honoured, but must not put the lake in the cwd."""
+
+    def test_a_bare_duckdb_name_does_not_drop_the_lake_in_cwd(
+        self, tmp_path, monkeypatch
+    ):
+        f = _session(tmp_path / "proj")
+        workdir = tmp_path / "cwd"
+        workdir.mkdir()
+        monkeypatch.chdir(workdir)
+
+        result = CliRunner().invoke(
+            cli, [str(f), "--format", "duckdb", "-o", "archive.duckdb"]
+        )
+
+        assert result.exit_code == 0, result.output
+        assert (workdir / "archive.duckdb").exists()
+        # The lake belongs beside the database, which here IS the cwd -- the
+        # point is that it is resolved deliberately rather than landing there
+        # because Path(".") happened to be the parent.
+        assert (workdir / "parquet_lake").is_dir()
+
+
 class TestOneWarehouseShape:
     """Every path that builds a warehouse builds the same one.
 
@@ -269,3 +292,50 @@ class TestOneWarehouseShape:
         assert "reconciliation" in kinds, (
             f"post-session reconciliation did not run; run_kinds={kinds}"
         )
+
+
+class TestModeOnlyFlagsFailLoudly:
+    """A flag that does nothing in the chosen mode must say so.
+
+    Same rule the `--embed` / `--llm-facets` guards follow. These were
+    missed: `ccutils session.jsonl --dry-run -q -j 4` wrote files and
+    printed output -- a dry run that creates things and a quiet run that
+    talks. `--dry-run` is the worst of them, because being ignored produces
+    writes rather than a no-op.
+    """
+
+    def test_dry_run_rejected_without_source(self, tmp_path):
+        f = _session(tmp_path / "proj")
+        result = CliRunner().invoke(
+            cli, [str(f), "--dry-run", "-o", str(tmp_path / "o")]
+        )
+
+        assert result.exit_code != 0
+        assert "--dry-run" in result.output
+        assert not (tmp_path / "o").exists(), "a rejected dry run wrote files"
+
+    def test_batch_flags_rejected_without_source(self, tmp_path):
+        f = _session(tmp_path / "proj")
+        for flag in (["-j", "4"], ["--batch-size", "5"], ["--no-search-index"]):
+            result = CliRunner().invoke(
+                cli, [str(f), *flag, "-o", str(tmp_path / "o")]
+            )
+            assert result.exit_code != 0, f"{flag} accepted outside --source"
+
+    def test_picker_flags_rejected_with_paths(self, tmp_path):
+        f = _session(tmp_path / "proj")
+        result = CliRunner().invoke(
+            cli, [str(f), "--flat", "-o", str(tmp_path / "o")]
+        )
+
+        assert result.exit_code != 0
+        assert "--flat" in result.output
+
+    def test_the_same_flags_are_fine_with_source(self, tmp_path):
+        """No over-correction: they work where they mean something."""
+        _session(tmp_path / "projects" / "-home-user-projects-demo", "s1")
+        result = CliRunner().invoke(
+            cli, ["--source", str(tmp_path / "projects"), "--dry-run", "-q"]
+        )
+
+        assert result.exit_code == 0, result.output

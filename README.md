@@ -64,7 +64,7 @@ The default command. With no arguments, launches a two-phase interactive picker 
 Thinking blocks and subagent sessions are included by default.
 
 ```bash
-ccutils                                          # Interactive picker
+ccutils                                          # Interactive picker (writes to <archive>/picked/)
 ccutils session.jsonl                            # Convert one file, open in browser
 ccutils a.jsonl b.jsonl -o ./out                 # Convert several
 ccutils session.jsonl --format duckdb -o ./out   # v0.15 star schema DuckDB

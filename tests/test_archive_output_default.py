@@ -86,7 +86,12 @@ class TestAllCommandDefaultOutput:
 
 
 class TestLocalPickerDefaultOutput:
-    """Picker mode with no -o -- the other default site."""
+    """Picker mode with no -o -- the other default site.
+
+    Lands in a `picked/` subdirectory rather than the archive root: both
+    write `index.html`, so sharing the directory let a small pick replace a
+    full archive's master index.
+    """
 
     @pytest.fixture
     def picked_session(self, fake_home, monkeypatch):
@@ -117,5 +122,11 @@ class TestLocalPickerDefaultOutput:
             assert result.exit_code == 0, result.output
             assert not (Path(sandbox) / "claude-archive").exists()
 
+        # Under the home-anchored archive dir, in `picked/` -- NOT the
+        # archive root, which a `--source` build owns and whose index a
+        # pick would otherwise overwrite.
         archive = default_archive_output()
-        assert list(archive.glob("*.html"))
+        assert list((archive / "picked").glob("*.html"))
+        assert not list(archive.glob("*.html")), (
+            "a pick must not write into the archive root"
+        )
