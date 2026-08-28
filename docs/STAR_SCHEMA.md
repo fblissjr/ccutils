@@ -60,7 +60,7 @@ ETL observability follows the same grain-first discipline as the data itself:
 
 | Table | Grain | Written by |
 |---|---|---|
-| `fact_etl_batch_runs` | One CLI orchestration (`ccutils all` / `ccutils local` invocation) | `BatchRun` handle (`etl/lineage.py`); `complete()` derives every count from its children |
+| `fact_etl_batch_runs` | One CLI orchestration (`ccutils --source` / `ccutils` invocation) | `BatchRun` handle (`etl/lineage.py`); `complete()` derives every count from its children |
 | `fact_etl_runs` | One session ETL | `EtlRun` handle; carries `batch_run_id`, a CDC data window (`data_start_ts`/`data_end_ts` = min/max staged entry timestamp), and fact counts derived from its steps |
 | `fact_etl_steps` | One DAG node within a run | `lineage_upsert` self-records an `upsert:<table>` step (`step_kind='upsert'`) per fact populator with real DuckDB affected-row counts; `run_v15_etl` records the non-upsert stages (`write_parquet`, `load_staging`, `upsert_dimensions`, enrichment passes) as `step_kind='stage'` |
 
@@ -134,13 +134,13 @@ with `--embed` (`schemas/star/embeddings.py`, wired via
 
 ```bash
 # Generate star schema DuckDB from local sessions
-ccutils local --format duckdb -o ./analytics
+ccutils --format duckdb -o ./analytics
 
 # Or export to JSON directory structure
-ccutils local --format json -o ./star-export/
+ccutils --format json -o ./star-export/
 
 # Or generate from all sessions
-ccutils all --format duckdb -o ./analytics
+ccutils --source --format duckdb -o ./analytics
 
 # Launch the visual Data Explorer
 duckdb -ui ./analytics/archive.duckdb

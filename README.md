@@ -28,6 +28,12 @@ ccutils session.jsonl
 
 # Export to DuckDB (v0.15 star schema + four-tier ETL + Parquet lake)
 ccutils --format duckdb -o ./analytics
+
+# Everything on the machine, in one warehouse
+ccutils --source --format duckdb -o ./analytics
+
+# Open what you built
+ccutils open -o ./analytics
 ```
 
 ## Commands
@@ -278,11 +284,15 @@ tar czf - ./archive | age -r <recipient-key> > archive.tar.gz.age && rm -rf ./ar
 
 ```bash
 # Output
--o, --output PATH          Output directory or file. Default:
-                           ~/.ccutils/claude-archive -- deliberately outside
-                           any checkout (single-file conversion with no -o
-                           still uses a temp dir)
---format FORMAT            html, duckdb, json (+ both for all)
+-o, --output PATH          Output DIRECTORY, always. --format duckdb writes
+                           DIR/archive.duckdb + DIR/parquet_lake/ inside it.
+                           Default: ~/.ccutils/claude-archive -- deliberately
+                           outside any checkout (single-file conversion with
+                           no -o still uses a temp dir)
+-s, --source [PATH]        Convert every session under PATH instead of
+                           picking. With no value, the Claude projects dir.
+                           Mutually exclusive with PATHS
+--format FORMAT            html, markdown, duckdb, json (+ both with --source)
 --open                     Open result in browser
 
 # Content (included by default -- use flags to exclude)
@@ -291,24 +301,29 @@ tar czf - ./archive | age -r <recipient-key> > archive.tar.gz.age && rm -rf ./ar
                            clears the staging artifact (fact_messages already
                            excludes thinking by projection). Parquet lake is
                            unaffected -- delete it post-run if needed.
---no-subagents             Exclude related agent sessions (local)
+--no-subagents             Exclude related agent sessions
 --include-temp-sessions    Include sessions whose cwd is under the OS temp
                            directory (excluded by default -- typically
                            sandboxed/ephemeral tooling like eval harnesses,
                            not real projects)
 --private                  Sanitize file paths for sharing (html/markdown only; not wired through the v0.15 ETL)
 
+# Rejected rather than ignored
+# --embed and --llm-facets write to the star schema, so they are a hard
+# error on --format html/markdown rather than a silent no-op. --private is
+# a hard error on duckdb/json for the same reason.
+
 # Selection
---flat                     Flat single-list mode (local)
---expand-chains            Show individual sessions in resumed chains (local)
--p, --project TEXT         Filter by project name (local, all)
---dry-run                  Preview without converting (all)
+--flat                     Flat single-list mode (picker)
+--expand-chains            Show individual sessions in resumed chains (picker)
+-p, --project TEXT         Filter by project name
+--dry-run                  Preview without converting (--source)
 
-# Embeddings (local and all, star schema only)
+# Enrichment (star schema only)
 --embed [MODEL]            Run ColBERT embeddings (optionally specify model)
+--llm-facets               Extract Tier 2 LLM facets (F20 via Haiku)
 
-# Batch processing (all command)
--s, --source PATH          Source directory (default: ~/.claude/projects)
+# Batch processing (--source)
 -j, --jobs N               Parallel workers (default: 1)
 --batch-size N             Sessions per batch (default: 10)
 -q, --quiet                Suppress output except errors

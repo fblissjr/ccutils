@@ -2,7 +2,7 @@
 
 *Companion to `STAR_SCHEMA.md`. Defines the data, transforms, and pipeline layers that turn the v0.15 transcript archive into a queryable map of usage patterns. Use cases are derived from the data we capture, not the other way around.*
 
-**Status:** Steps 1-4.5 landed. DDL + Tier 1 registry, Tier 1 SQL populator (F01-F19, `src/ccutils/etl/fact_session_facets.py`), Tier 2 extractor protocol (`AnthropicFacetExtractor` + `CannedFacetExtractor`, `src/ccutils/etl/facets/`), F20 `task_description` populator end-to-end, CLI flags `--with-llm-facets` (local) / `--batch-llm-facets` (all). `FACET_SPECS` in `etl/facets/catalog.py` still holds only F20 -- F21+ are cataloged below as design, not yet implemented. Step 5 (embedding + clustering) not yet started; the `fact_facet_embeddings` table exists as a DDL stub (unpopulated), and `fact_clustering_run` / `dim_cluster` / `bridge_cluster_session` / `fact_cluster_metrics` described in §4 don't exist in the DDL yet. Awaiting first F20 sample run on a real corpus to inform the embedding-model choice.
+**Status:** Steps 1-4.5 landed. DDL + Tier 1 registry, Tier 1 SQL populator (F01-F19, `src/ccutils/etl/fact_session_facets.py`), Tier 2 extractor protocol (`AnthropicFacetExtractor` + `CannedFacetExtractor`, `src/ccutils/etl/facets/`), F20 `task_description` populator end-to-end, CLI flags `--llm-facets`. `FACET_SPECS` in `etl/facets/catalog.py` still holds only F20 -- F21+ are cataloged below as design, not yet implemented. Step 5 (embedding + clustering) not yet started; the `fact_facet_embeddings` table exists as a DDL stub (unpopulated), and `fact_clustering_run` / `dim_cluster` / `bridge_cluster_session` / `fact_cluster_metrics` described in §4 don't exist in the DDL yet. Awaiting first F20 sample run on a real corpus to inform the embedding-model choice.
 **Last updated:** 2026-08-05
 
 ---
@@ -288,7 +288,7 @@ populate_tier2_facets        (T02)   — gated by flag (default off); LLM cost
 populate_facet_embeddings    (T03)   — only embeddable facets
 ```
 
-Gating T02 behind a flag matters: most users will want to backfill in batch, not pay LLM cost per session at parse time. The orchestrator should accept `--with-llm-facets` (single-session) and `--batch-llm-facets` (corpus pass).
+Gating T02 behind a flag matters: most users will want to backfill in batch, not pay LLM cost per session at parse time. The orchestrator should accept `--llm-facets`.
 
 ### Corpus-wide pipeline (new — `run_facet_clustering(conn, ...)`)
 
@@ -315,7 +315,7 @@ compute_cluster_metrics      (T07)   — fact_cluster_metrics
 | Pipeline | Cadence | Trigger |
 |---|---|---|
 | Per-session Tier 1 facets | Inline with every `run_v15_etl` call | New session parsed |
-| Per-session Tier 2 facets | Inline if `--with-llm-facets`, else deferred | Flag |
+| Per-session Tier 2 facets | Inline if `--llm-facets`, else deferred | Flag |
 | Corpus-wide clustering | Nightly or on-demand | Cron / CLI |
 | Re-clustering after schema/prompt change | On-demand | CLI; bumped `prompt_version` triggers re-extract |
 

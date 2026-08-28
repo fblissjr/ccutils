@@ -82,5 +82,5 @@ call, so a bad reference fails fast. Filter `is_deleted = FALSE` in the view.
 ## 8. Verify
 
 `uv run pytest tests/ --confcutdir=tests` fully green (+1 skipped live-API),
-then an end-to-end smoke: `uv run ccutils all --format duckdb -o /tmp/etl-smoke`
+then an end-to-end smoke: `uv run ccutils --source --format duckdb -o /tmp/etl-smoke`
 against a fixture or real source, and query the new table.

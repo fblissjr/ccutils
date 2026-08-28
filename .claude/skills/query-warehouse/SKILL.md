@@ -14,7 +14,7 @@ find . -name '*.duckdb' -not -path '*/node_modules/*' 2>/dev/null
 No database? Build one (incremental — safe to re-run against the same file):
 
 ```bash
-uv run ccutils all --format duckdb -o ./analytics    # every session on disk
+uv run ccutils --source --format duckdb -o ./analytics    # every session on disk
 uv run ccutils --format duckdb -o ./analytics        # interactive picker
 ```
 

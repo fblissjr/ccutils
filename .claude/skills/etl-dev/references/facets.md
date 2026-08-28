@@ -11,7 +11,7 @@ via `OUTPUT_TYPE_TO_COL` in `etl/facets/extractor.py`). Design doc:
 | Tier | IDs | Produced by | Code |
 |---|---|---|---|
 | 1 | F01–F19 | SQL over existing facts, always on | `etl/fact_session_facets.py::populate_tier1_facets` |
-| 2 | F20–F30 | One Haiku call per session, opt-in (`--with-llm-facets` / `--batch-llm-facets`) | `etl/facets/` (catalog, extractor, populator) |
+| 2 | F20–F30 | One Haiku call per session, opt-in (`--llm-facets`) | `etl/facets/` (catalog, extractor, populator) |
 | 3 | F40+ | Corpus-wide clustering (not yet built) | — |
 
 ## Hard rules
@@ -66,5 +66,5 @@ seeds from. Ordering note: F01–F04 read the heuristic columns on
 
 Tier 2 is one Haiku call per session — pennies on a handful, dollars across
 hundreds. Never make it default-on, and keep `--format json` +
-`--batch-llm-facets` semantics (extraction into a discarded temp DB) loudly
+`--llm-facets` semantics (extraction into a discarded temp DB) loudly
 documented in help text.
