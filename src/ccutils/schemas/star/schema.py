@@ -260,7 +260,20 @@ def create_star_schema(db_path):
             custom_title VARCHAR,
             permission_mode VARCHAR,
             agent_type VARCHAR,
-            agent_description VARCHAR
+            agent_description VARCHAR,
+            -- Stated in the agent's .meta.json sidecar, not derived. See
+            -- docs/JSONL_CONTRACT.md claim 7: depth and parentage exist
+            -- nowhere else, because every agent inherits the ROOT's
+            -- sessionId and nested agents are flat siblings on disk.
+            spawn_depth INTEGER,
+            parent_agent_id VARCHAR,
+            spawn_tool_use_id VARCHAR,
+            agent_model VARCHAR,
+            is_fork BOOLEAN,
+            agent_name VARCHAR,
+            worktree_path VARCHAR,
+            worktree_branch VARCHAR,
+            stopped_by_user BOOLEAN
         )
     """
     )
@@ -2582,6 +2595,17 @@ def create_star_schema(db_path):
 # so every later column addition needs an entry here or old warehouses
 # break on the populator's INSERT. Append-only.
 _COLUMN_MIGRATIONS = [
+    # Stated sidecar fields (0.19.2). Removed wholesale at 1.0.0 along with
+    # the rest of this list -- see CLAUDE.md's no-migrations rule.
+    ("dim_session", "spawn_depth", "INTEGER"),
+    ("dim_session", "parent_agent_id", "VARCHAR"),
+    ("dim_session", "spawn_tool_use_id", "VARCHAR"),
+    ("dim_session", "agent_model", "VARCHAR"),
+    ("dim_session", "is_fork", "BOOLEAN"),
+    ("dim_session", "agent_name", "VARCHAR"),
+    ("dim_session", "worktree_path", "VARCHAR"),
+    ("dim_session", "worktree_branch", "VARCHAR"),
+    ("dim_session", "stopped_by_user", "BOOLEAN"),
     # R23: API-response identity. Both tables shipped keyed per JSONL entry,
     # which double-counted every response Claude Code split across entries.
     # Existing warehouses need the column before the next run can dedupe.

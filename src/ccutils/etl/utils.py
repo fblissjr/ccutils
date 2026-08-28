@@ -16,12 +16,22 @@ import re
 # from these (drifted copies of path rules are how the "subagents"
 # mis-attribution shipped): SUBAGENT_PATH_RE for Python matching (match on
 # Path(...).as_posix() so separators are uniform), the *_sql builders for
-# DuckDB. Layout: .../<parent-uuid>/subagents/agent-<id>.jsonl
-_SUBAGENT_TAIL = r"/subagents/agent-[^/]+\.jsonl$"
-_SUBAGENT_SESSION_ID_TAIL = r"/subagents/(agent-[^/]+)\.jsonl$"
+# DuckDB.
+#
+# Two layouts, per docs/JSONL_CONTRACT.md claim 6:
+#     .../<parent-uuid>/subagents/agent-<id>.jsonl
+#     .../<parent-uuid>/subagents/workflows/<wf-id>/agent-<id>.jsonl
+# so `subagents` is NOT necessarily the file's immediate parent. The
+# `(?:[^/]+/)*` allows any number of grouping directories below it; the
+# `agent-...$` anchor still pins the filename, and `<parent>` still binds
+# to the segment immediately before `/subagents/`. Requiring `subagents`
+# to be the direct parent silently ingested 34 workflow agents as ordinary
+# sessions -- no is_agent, no agent_id, no parent.
+_SUBAGENT_TAIL = r"/subagents/(?:[^/]+/)*agent-[^/]+\.jsonl$"
+_SUBAGENT_SESSION_ID_TAIL = r"/subagents/(?:[^/]+/)*(agent-[^/]+)\.jsonl$"
 
 SUBAGENT_PATH_RE = re.compile(
-    r"/(?P<parent>[^/]+)/subagents/agent-(?P<agent_id>[^/]+)\.jsonl$"
+    r"/(?P<parent>[^/]+)/subagents/(?:[^/]+/)*agent-(?P<agent_id>[^/]+)\.jsonl$"
 )
 
 

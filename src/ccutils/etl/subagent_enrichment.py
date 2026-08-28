@@ -3,7 +3,11 @@
 Subagent JSONL files live at:
     .../projects/<project>/<parent-session-uuid>/subagents/agent-<id>.jsonl
 
-with an optional sidecar .meta.json carrying agentType + description.
+and, for workflow-tool agents, one grouping directory deeper (see
+docs/JSONL_CONTRACT.md claim 6). An optional sidecar .meta.json states
+agentType, description, spawnDepth, parentAgentId, toolUseId, model,
+isFork, name, worktree path/branch and stoppedByUser -- all read, none
+re-derived.
 This populator examines the source_path of sessions currently in
 staging and, for each subagent layout it recognises, UPDATEs dim_session
 with is_agent / agent_id / parent_session_key + reads the sidecar to
@@ -47,24 +51,52 @@ def populate_subagent_dim_session(conn, *, run: EtlRun) -> None:
         agent_id = match.group("agent_id")
         parent_session_id = match.group("parent")
 
-        # Sidecar lookup: agent-<id>.meta.json next to the .jsonl
-        agent_type = None
-        agent_description = None
+        # Sidecar lookup: agent-<id>.meta.json next to the .jsonl. Every
+        # field here is STATED by Claude Code; none is re-derivable from the
+        # transcript. See docs/JSONL_CONTRACT.md claim 7.
+        meta = {}
         meta_path = Path(source_path).with_suffix(".meta.json")
         if meta_path.exists():
             try:
                 meta = json.loads(meta_path.read_text(encoding="utf-8"))
             except (OSError, json.JSONDecodeError):
                 meta = {}
-            agent_type = meta.get("agentType") or None
-            agent_description = meta.get("description") or None
+        if not isinstance(meta, dict):
+            meta = {}
+
+        # The parent is the agent that SPAWNED this one when the sidecar says
+        # so, and the root session otherwise. Deriving it from the transcript
+        # is impossible: every agent carries the root's sessionId, so a walk
+        # collapses the whole tree to depth 1 -- which is exactly what it did,
+        # on every row, while 235 agents on disk stated a parent.
+        #
+        # When spawn_depth says nested but no parentAgentId is present (6 of
+        # 241 real cases), fall back to the root rather than inventing an
+        # edge. The resulting disagreement between spawn_depth and
+        # depth_level is a true statement about what the source told us.
+        parent_agent_id = meta.get("parentAgentId") or None
+        if parent_agent_id:
+            parent_key = fetch_scalar(
+                conn, "SELECT md5(?)", ["agent-" + parent_agent_id]
+            )
+        else:
+            parent_key = fetch_scalar(conn, "SELECT md5(?)", [parent_session_id])
 
         updates.append(
             (
                 agent_id,
-                fetch_scalar(conn, "SELECT md5(?)", [parent_session_id]),
-                agent_type,
-                agent_description,
+                parent_key,
+                meta.get("agentType") or None,
+                meta.get("description") or None,
+                meta.get("spawnDepth"),
+                parent_agent_id,
+                meta.get("toolUseId") or None,
+                meta.get("model") or None,
+                meta.get("isFork"),
+                meta.get("name") or None,
+                meta.get("worktreePath") or None,
+                meta.get("worktreeBranch") or None,
+                meta.get("stoppedByUser"),
                 source_path,
             )
         )
@@ -79,12 +111,22 @@ def populate_subagent_dim_session(conn, *, run: EtlRun) -> None:
                 parent_session_key VARCHAR,
                 agent_type VARCHAR,
                 agent_description VARCHAR,
+                spawn_depth INTEGER,
+                parent_agent_id VARCHAR,
+                spawn_tool_use_id VARCHAR,
+                agent_model VARCHAR,
+                is_fork BOOLEAN,
+                agent_name VARCHAR,
+                worktree_path VARCHAR,
+                worktree_branch VARCHAR,
+                stopped_by_user BOOLEAN,
                 source_path VARCHAR
             )
             """
         )
         conn.executemany(
-            "INSERT INTO _inbound_subagents VALUES (?, ?, ?, ?, ?)",
+            "INSERT INTO _inbound_subagents VALUES "
+            "(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             updates,
         )
         conn.execute(
@@ -94,7 +136,16 @@ def populate_subagent_dim_session(conn, *, run: EtlRun) -> None:
                 agent_id = ins.agent_id,
                 parent_session_key = ins.parent_session_key,
                 agent_type = ins.agent_type,
-                agent_description = ins.agent_description
+                agent_description = ins.agent_description,
+                spawn_depth = ins.spawn_depth,
+                parent_agent_id = ins.parent_agent_id,
+                spawn_tool_use_id = ins.spawn_tool_use_id,
+                agent_model = ins.agent_model,
+                is_fork = ins.is_fork,
+                agent_name = ins.agent_name,
+                worktree_path = ins.worktree_path,
+                worktree_branch = ins.worktree_branch,
+                stopped_by_user = ins.stopped_by_user
             FROM _inbound_subagents ins
             JOIN stg_log_entries sle ON sle.source_path = ins.source_path
             WHERE ds.session_key = md5(sle.session_id)

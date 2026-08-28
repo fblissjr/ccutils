@@ -57,6 +57,153 @@ def _subagent_layout(tmp_path, parent_session_id, agent_id, *, with_meta=True):
     return agent_jsonl
 
 
+def _nested_layout(tmp_path, parent_session_id, agent_id, meta):
+    """A subagent at an arbitrary depth below `subagents/`, with a sidecar.
+
+    `meta` is written verbatim so a test can state exactly which fields the
+    sidecar carries -- including omitting `parentAgentId`, which 6 of 241
+    real nested agents do.
+    """
+    d = tmp_path / "projects" / "-Users-dev-myrepo" / parent_session_id / "subagents"
+    for extra in meta.pop("_subdirs", []):
+        d = d / extra
+    d.mkdir(parents=True, exist_ok=True)
+    f = d / f"agent-{agent_id}.jsonl"
+    lines = [
+        {"type": "user", "uuid": f"u-{agent_id}", "sessionId": parent_session_id,
+         "timestamp": "2026-04-19T10:00:00Z", "cwd": "/work",
+         "message": {"role": "user", "content": "task"}},
+    ]
+    f.write_text("\n".join(json.dumps(x) for x in lines))
+    (d / f"agent-{agent_id}.meta.json").write_text(json.dumps(meta))
+    return f
+
+
+def _root_session(tmp_path, session_id):
+    """The parent transcript. Depth is measured over a COMPLETE tree.
+
+    An agent whose root was pruned keeps depth_level = 0 by design -- there
+    is no root to walk to, and saying 0 is honest. A fixture that omits the
+    root is therefore testing the pruned case by accident.
+    """
+    d = tmp_path / "projects" / "-Users-dev-myrepo"
+    d.mkdir(parents=True, exist_ok=True)
+    return write_minimal_session(d / f"{session_id}.jsonl", session_id)
+
+
+class TestWorkflowNestedLayout:
+    """Workflow-tool agents sit a grouping directory deeper.
+
+    `<parent-uuid>/subagents/workflows/<wf-id>/agent-<id>.jsonl`. The path
+    regex required `subagents` to be the file's immediate parent, so these
+    were ingested as ordinary sessions -- no is_agent, no agent_id, no
+    parent. 34 such files exist on disk.
+    """
+
+    def test_workflow_agent_is_recognised(self, conn, tmp_path):
+        f = _nested_layout(
+            tmp_path, "parent-uuid-1", "wf1",
+            {"agentType": "Explore", "spawnDepth": 1, "_subdirs": ["workflows", "wf_c4e3"]},
+        )
+        run_v15_etl(conn, f, project_name="myrepo")
+
+        row = conn.execute(
+            "SELECT is_agent, agent_id, parent_session_key FROM dim_session "
+            "WHERE session_id = 'agent-wf1'"
+        ).fetchone()
+        assert row[0] is True
+        assert row[1] == "wf1"
+        assert row[2] == conn.execute("SELECT md5('parent-uuid-1')").fetchone()[0]
+
+
+class TestStatedSidecarFields:
+    """Every field the sidecar states is read, not re-derived.
+
+    Depth was walked from `sessionId`, which every agent inherits from the
+    ROOT -- so the walk structurally cannot produce a value above 1, and it
+    read 1 on every row while 235 agents carried a stated parent pointer.
+    """
+
+    def test_nested_agent_is_parented_to_its_spawner(self, conn, tmp_path):
+        parent_agent = _nested_layout(
+            tmp_path, "root-1", "aaa", {"agentType": "Explore", "spawnDepth": 1}
+        )
+        child_agent = _nested_layout(
+            tmp_path, "root-1", "bbb",
+            {"agentType": "Explore", "spawnDepth": 2, "parentAgentId": "aaa"},
+        )
+        run_v15_etl(conn, parent_agent, project_name="myrepo")
+        run_v15_etl(conn, child_agent, project_name="myrepo")
+
+        child_parent, = conn.execute(
+            "SELECT parent_session_key FROM dim_session WHERE session_id = 'agent-bbb'"
+        ).fetchone()
+        expected, = conn.execute("SELECT md5('agent-aaa')").fetchone()
+        assert child_parent == expected, (
+            "a nested agent must be parented to the agent that spawned it, "
+            "not to the root session whose sessionId it merely inherits"
+        )
+
+    def test_depth_reaches_two(self, conn, tmp_path):
+        run_v15_etl(conn, _root_session(tmp_path, "root-2"), project_name="myrepo")
+        run_v15_etl(conn, _nested_layout(
+            tmp_path, "root-2", "ccc", {"agentType": "Explore", "spawnDepth": 1}
+        ), project_name="myrepo")
+        run_v15_etl(conn, _nested_layout(
+            tmp_path, "root-2", "ddd",
+            {"agentType": "Explore", "spawnDepth": 2, "parentAgentId": "ccc"},
+        ), project_name="myrepo")
+
+        depth, = conn.execute(
+            "SELECT depth_level FROM dim_session WHERE session_id = 'agent-ddd'"
+        ).fetchone()
+        assert depth == 2
+
+    def test_stated_fields_are_stored(self, conn, tmp_path):
+        f = _nested_layout(tmp_path, "root-3", "eee", {
+            "agentType": "Explore",
+            "description": "look at the thing",
+            "spawnDepth": 1,
+            "toolUseId": "toolu_abc",
+            "model": "claude-haiku-4-5-20251001",
+            "isFork": True,
+            "name": "explorer",
+            "worktreePath": "/tmp/wt",
+            "worktreeBranch": "feat/x",
+            "stoppedByUser": True,
+        })
+        run_v15_etl(conn, f, project_name="myrepo")
+
+        row = conn.execute(
+            "SELECT spawn_depth, spawn_tool_use_id, agent_model, is_fork, "
+            "       agent_name, worktree_path, worktree_branch, stopped_by_user "
+            "FROM dim_session WHERE session_id = 'agent-eee'"
+        ).fetchone()
+        assert row == (1, "toolu_abc", "claude-haiku-4-5-20251001", True,
+                       "explorer", "/tmp/wt", "feat/x", True)
+
+    def test_nested_without_parent_pointer_stays_honest(self, conn, tmp_path):
+        """6 of 241 real nested agents state a depth but no parent.
+
+        Store the stated depth; do NOT invent a parent edge. `spawn_depth`
+        disagreeing with `depth_level` is a real, visible condition -- that
+        is what an audit check is for, not something to paper over.
+        """
+        run_v15_etl(conn, _root_session(tmp_path, "root-4"), project_name="myrepo")
+        f = _nested_layout(
+            tmp_path, "root-4", "fff", {"agentType": "Explore", "spawnDepth": 3}
+        )
+        run_v15_etl(conn, f, project_name="myrepo")
+
+        spawn_depth, parent_key, depth = conn.execute(
+            "SELECT spawn_depth, parent_session_key, depth_level "
+            "FROM dim_session WHERE session_id = 'agent-fff'"
+        ).fetchone()
+        assert spawn_depth == 3
+        assert parent_key == conn.execute("SELECT md5('root-4')").fetchone()[0]
+        assert depth == 1
+
+
 class TestSubagentDimSessionEnrichment:
     def test_is_agent_set_for_subagent_jsonl(self, conn, tmp_path):
         agent_jsonl = _subagent_layout(

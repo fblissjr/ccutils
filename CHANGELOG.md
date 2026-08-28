@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+- **Agent lineage was flattened: `depth_level` read 1 on every row while 235 agents on disk stated a parent the warehouse ignored.** Depth was derived by walking `sessionId`, and every agent inherits the ROOT session's `sessionId` (`docs/JSONL_CONTRACT.md` claim 1), so the walk structurally could not produce a value above 1 -- a sub-agent was attributed to the top-level session rather than to the agent that launched it, making fan-out uncountable and overstating what a root session launched. Nesting is stated, not derivable: of 241 agents with `spawnDepth > 1`, 235 carry `parentAgentId`, all resolving to a sidecar in the same directory whose own `spawnDepth` is exactly one less, and no depth-1 agent carries one. `parent_session_key` now comes from `parentAgentId` when stated and the root otherwise, and the existing depth walk produces correct depth as a consequence. Verified on a real 34-file tree: `depth_level` reaches 2 for the first time, one agent is parented to another agent, and stated `spawn_depth` agrees with walked `depth_level` on every row.
+- **Workflow-tool agents were ingested as ordinary sessions.** The ETL path rule required `subagents` to be the file's immediate parent, so the 34 agents at `<parent-uuid>/subagents/workflows/<wf-id>/agent-<id>.jsonl` got no `is_agent`, no `agent_id` and no parent -- the ETL-side counterpart of the discovery defect fixed in 0.19.1. `SUBAGENT_PATH_RE` and both SQL tail builders now allow grouping directories below `subagents`, from the one source in `etl/utils.py` that every consumer builds from.
+
+### Added
+- **Every field the agent sidecar states is now read rather than re-derived.** `dim_session` gains `spawn_depth`, `parent_agent_id`, `spawn_tool_use_id`, `agent_model`, `is_fork`, `agent_name`, `worktree_path`, `worktree_branch` and `stopped_by_user`. Two of these settle questions the roadmap had open: `agent_model` is stated on 313 sidecars, which falsifies the claim that the parent's `toolUseResult.resolvedModel` is the only place a subagent's model is recorded; and `spawn_tool_use_id` is the corroborating delegation join key that roadmap 0d asked for, present on 1,146. Where a sidecar states nesting but omits `parentAgentId` (6 of 241 real cases), the root stays the parent and no edge is invented -- `spawn_depth` disagreeing with `depth_level` is a true statement about what the source said, and is what an audit check is for.
+
 ## [0.19.1]
 
 ### Fixed
