@@ -816,4 +816,11 @@ class TestFileConversion:
         )
 
         assert result.exit_code == 0
-        assert len(list(html_output.glob("*.html"))) == 1
+        # The claim is "the named file was converted", which a count of
+        # files only ever approximated. Since 0.20.0 the html path also
+        # writes an index for a lone session, because `--open` targets
+        # <output>/index.html and the single-file branch never wrote one.
+        # Assert the transcript by name, and that nothing else was swept in.
+        written = {f.name for f in html_output.glob("*.html")}
+        assert written == {"test.html", "index.html"}
+        assert "Hello local" in (html_output / "test.html").read_text()
