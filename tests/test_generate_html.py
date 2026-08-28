@@ -745,7 +745,12 @@ class TestVersionOption:
 
 
 class TestOpenOption:
-    """Tests for the --open option."""
+    """Tests for the --open option.
+
+    The sibling test for `ccutils web --open` went with the command in
+    0.20.0; what it asserted -- that --open reaches webbrowser with a
+    file:// index URL -- is still covered here on the path that survives.
+    """
 
     def test_session_open_calls_webbrowser(self, output_dir, monkeypatch):
         """Test that session --open opens the browser."""
@@ -767,7 +772,7 @@ class TestOpenOption:
         runner = CliRunner()
         result = runner.invoke(
             cli,
-            ["convert", str(fixture_path), "-o", str(output_dir), "--open"],
+            [str(fixture_path), "-o", str(output_dir), "--open"],
         )
 
         assert result.exit_code == 0
@@ -775,51 +780,6 @@ class TestOpenOption:
         assert "index.html" in opened_urls[0]
         assert opened_urls[0].startswith("file://")
 
-    def test_import_open_calls_webbrowser(self, httpx_mock, output_dir, monkeypatch):
-        """Test that import --open opens the browser."""
-        from click.testing import CliRunner
-        from ccutils import cli
-        import webbrowser
-
-        # Load sample session to mock API response
-        fixture_path = Path(__file__).parent / "sample_session.json"
-        with open(fixture_path) as f:
-            session_data = json.load(f)
-
-        httpx_mock.add_response(
-            url="https://api.anthropic.com/v1/session_ingress/session/test-session-id",
-            json=session_data,
-        )
-
-        # Track webbrowser.open calls
-        opened_urls = []
-
-        def mock_open(url):
-            opened_urls.append(url)
-            return True
-
-        monkeypatch.setattr(webbrowser, "open", mock_open)
-
-        runner = CliRunner()
-        result = runner.invoke(
-            cli,
-            [
-                "web",
-                "test-session-id",
-                "--token",
-                "test-token",
-                "--org-uuid",
-                "test-org",
-                "-o",
-                str(output_dir),
-                "--open",
-            ],
-        )
-
-        assert result.exit_code == 0
-        assert len(opened_urls) == 1
-        assert "index.html" in opened_urls[0]
-        assert opened_urls[0].startswith("file://")
 
 
 class TestParseSessionFile:
@@ -1262,7 +1222,7 @@ class TestLocalSessionCLI:
         monkeypatch.setattr(questionary, "checkbox", MockCheckbox)
 
         runner = CliRunner()
-        result = runner.invoke(cli, ["local"])
+        result = runner.invoke(cli, [])
 
         assert result.exit_code == 0
         assert (
@@ -1339,7 +1299,7 @@ class TestLocalSessionCLI:
         monkeypatch.setattr(questionary, "checkbox", MockCheckbox)
 
         runner = CliRunner()
-        result = runner.invoke(cli, ["local"])
+        result = runner.invoke(cli, [])
 
         assert result.exit_code == 0
         assert "No sessions selected" in result.output
@@ -2334,7 +2294,7 @@ class TestNoThinkingIsHonouredByHtml:
         output disproved."""
         from click.testing import CliRunner
 
-        from ccutils.cli.local import local_cmd
+        from ccutils.cli.local import convert_cmd
 
         src = tmp_path / "projects" / "-Users-dev-p"
         src.mkdir(parents=True)
@@ -2343,7 +2303,7 @@ class TestNoThinkingIsHonouredByHtml:
 
         runner = CliRunner()
         for name, args in (("with", []), ("without", ["--no-thinking"])):
-            res = runner.invoke(local_cmd, [
+            res = runner.invoke(convert_cmd, [
                 str(src / "s1.jsonl"), "--format", "html",
                 "-o", str(tmp_path / name), *args,
             ])

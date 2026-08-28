@@ -334,7 +334,6 @@ class TestMarkdownCli:
         result = runner.invoke(
             cli,
             [
-                "all",
                 "-s",
                 str(mock_projects_dir),
                 "-o",
@@ -355,7 +354,6 @@ class TestMarkdownCli:
         result = runner.invoke(
             cli,
             [
-                "all",
                 "-s",
                 str(mock_projects_dir),
                 "-o",

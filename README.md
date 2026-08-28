@@ -32,15 +32,26 @@ ccutils --format duckdb -o ./analytics
 
 ## Commands
 
-| Command | Description |
-|---------|-------------|
-| `local` | Interactive picker + single-file conversion -- **default** (no subcommand needed) |
-| `all` | Batch convert all sessions (HTML archive, DuckDB, or JSON) |
-| `web` | Import from Claude API (auto-detects credentials from macOS keychain) |
-| `import` | Import Claude.ai account exports (Settings > Privacy > Export) |
-| `schema` | Inspect JSON structure without exposing content (safe to share publicly) |
+One command converts; two do the things that are not converting.
 
-### local (default)
+| Invocation | What it does |
+|---|---|
+| `ccutils` | Interactive picker -- **the default**, no subcommand needed |
+| `ccutils PATHS...` | Convert exactly the session files you name |
+| `ccutils --source` | Convert every session under a directory (the Claude projects dir by default) |
+| `ccutils import` | Import a Claude.ai account export (Settings > Privacy > Export) |
+| `ccutils open` | Open a built warehouse in the DuckDB SQL UI |
+
+Removed in 0.20.0, with no aliases: `local` and `all` were one operation
+split by scope, and the split is what let their behaviour drift apart --
+global post-loop sources ran on one path and not the other. `convert` was a
+hidden duplicate of `local` and is now the name of the single conversion
+command. `web` and `schema` were deleted outright: one read a different data
+source through an undocumented API, the other was a generic JSON
+introspector, and neither had a path to the warehouse. The old names fail
+with a pointer rather than silently redirecting.
+
+### Converting sessions (default)
 
 The default command. With no arguments, launches a two-phase interactive picker (projects then sessions). Pass a session file to convert it directly.
 
@@ -48,34 +59,35 @@ Thinking blocks and subagent sessions are included by default.
 
 ```bash
 ccutils                                          # Interactive picker
-ccutils session.jsonl                            # Convert file, open in browser
-ccutils session.jsonl --format duckdb -o .       # v0.15 star schema DuckDB
-ccutils session.jsonl --format markdown -o .     # One .md per session (quick sharing)
+ccutils session.jsonl                            # Convert one file, open in browser
+ccutils a.jsonl b.jsonl -o ./out                 # Convert several
+ccutils session.jsonl --format duckdb -o ./out   # v0.15 star schema DuckDB
+ccutils session.jsonl --format markdown -o ./out # One .md per session (quick sharing)
 ccutils --format duckdb -o ./analytics           # Pick sessions, star schema
 ccutils -p myproject                             # Filter by project name
-ccutils --flat                                   # Legacy single-list mode
+ccutils --flat                                   # Single-list picker mode
 ccutils --no-thinking --no-subagents             # Exclude thinking blocks / related agent sessions
-ccutils --format duckdb --embed -o .             # With ColBERT embeddings
-ccutils --format duckdb --with-llm-facets -o .   # + Tier 2 LLM facets (F20 via Haiku)
+ccutils --format duckdb --embed -o ./out         # With ColBERT embeddings
+ccutils --format duckdb --llm-facets -o ./out    # + Tier 2 LLM facets (F20 via Haiku)
 ```
 
-`--with-llm-facets` requires `ANTHROPIC_API_KEY` in the environment OR a `ccutils-anthropic` keychain entry (`security add-generic-password -s ccutils-anthropic -a $USER -w`). Star schema only.
+`--llm-facets` requires `ANTHROPIC_API_KEY` in the environment OR a `ccutils-anthropic` keychain entry (`security add-generic-password -s ccutils-anthropic -a $USER -w`). Star schema only.
 
-Note: pairing `--batch-llm-facets` with `--format json` runs the full LLM extraction against a temporary DuckDB that's discarded after the JSON export — you pay the API cost but don't get a queryable database to inspect the F20 outputs. If you want to see the extracted facets, use `--format duckdb` instead.
+Note: pairing `--llm-facets` with `--format json` runs the full LLM extraction against a temporary DuckDB that's discarded after the JSON export — you pay the API cost but don't get a queryable database to inspect the F20 outputs. If you want to see the extracted facets, use `--format duckdb` instead.
 
-### all
+### Converting everything
 
 Batch convert every session. Agents and thinking blocks included by default.
 
 ```bash
-ccutils all -o ./archive                         # Flat HTML archive: index + one file per session
-ccutils all --format markdown -o ./md-archive    # One .md per session, per-project tree
-ccutils all --format duckdb -o ./analytics       # v0.15 star schema for all sessions
-ccutils all --format duckdb --embed -o ./out     # With ColBERT embeddings
-ccutils all --format duckdb --batch-llm-facets -o ./out  # + Tier 2 LLM facets
-ccutils all -j 4 --batch-size 20 -o ./archive    # Parallel processing
-ccutils all --no-agents --no-thinking             # Exclude agents and thinking (any format)
-ccutils all --dry-run                            # Preview without converting
+ccutils --source -o ./archive                    # Flat HTML archive: index + one file per session
+ccutils --source --format markdown -o ./md-archive   # One .md per session, per-project tree
+ccutils --source --format duckdb -o ./analytics  # v0.15 star schema for all sessions
+ccutils --source --format duckdb --embed -o ./out    # With ColBERT embeddings
+ccutils --source --format duckdb --llm-facets -o ./out   # + Tier 2 LLM facets
+ccutils --source -j 4 --batch-size 20 -o ./archive   # Parallel processing
+ccutils --source --no-subagents --no-thinking    # Exclude agents and thinking (any format)
+ccutils --source --dry-run                       # Preview without converting
 ```
 
 ### import
@@ -88,37 +100,22 @@ ccutils import ./export --interactive            # Pick conversations
 ccutils import ./export --list                   # List without converting
 ```
 
-### web
-
-Import a session from the Claude API. Auto-detects credentials from macOS keychain.
-
-```bash
-ccutils web                                      # Interactive session picker
-ccutils web SESSION_ID -o ./transcript --open     # Convert specific session
-ccutils web --repo owner/name                    # Filter by GitHub repo
-```
-
 ### Exploring the warehouse
 
-There is no `explore` command. DuckDB ships its own local UI, which is a
-better SQL notebook than anything worth wrapping:
+DuckDB ships its own local UI, which is a better SQL notebook than anything
+worth wrapping, so `ccutils open` launches it rather than reimplementing it:
 
 ```bash
-duckdb -ui ./analytics/archive.duckdb
+ccutils open                      # the default archive
+ccutils open -o ./analytics       # a warehouse you built elsewhere
+duckdb -ui ./analytics/archive.duckdb   # or drive it yourself
 ```
+
+It launches; it does not build. With no warehouse there it says so and tells
+you the command that would create one.
 
 The first run fetches the `ui` extension (one-time, needs network). For a
 terminal UI instead, any DuckDB client works — point it at the same file.
-
-### schema
-
-Inspect JSON file structure without exposing content. Output is safe to share publicly or paste into AI assistants.
-
-```bash
-ccutils schema conversations.json
-ccutils schema ./my-claude-export/               # Inspect all files in directory
-ccutils schema ./export --json > schema.json     # Machine-readable output
-```
 
 ## Export Formats
 
@@ -136,7 +133,7 @@ silently returned zero results when opened from `file://`).
 
 ```bash
 ccutils -o ./transcript --open
-ccutils all -o ./archive                    # Flat archive: index + one file per session
+ccutils --source -o ./archive               # Flat archive: index + one file per session
 ```
 
 ### DuckDB Analytics (v0.15 star schema)
@@ -165,7 +162,7 @@ Subagent transcripts are first-class sessions: agent files carry their parent's 
 - **Core facts:** `fact_messages`, `fact_tool_uses`, `fact_tool_results` (R1 structured `toolUseResult` payloads: Edit `structured_patch`, Bash `exit_code` / `interrupted`, Read `num_lines`, Agent rollups), `fact_token_usage` (R11 cache split: `cache_creation_5m_tokens` + `cache_creation_1h_tokens`), `fact_session_summary`.
 - **Entry-type facts:** `fact_attachments`, `fact_progress_events`, `fact_system_events`, `fact_meta_events` (permission-mode time series), `fact_file_history_snapshots`, `fact_queue_operations`, `fact_pr_links`.
 - **Derived:** `fact_file_operations` + `bridge_session_file`, `fact_diagnostics`, `fact_plan_revisions` (structural outcome from `fact_tool_results.is_error`), `fact_agent_delegations` (cross-session linkage via `dim_session.agent_id`), `fact_errors`, `fact_tool_chain_steps`.
-- **Facets:** `fact_session_facets` Tier 1 (F01-F19, SQL-computed; always on). Tier 2 (F20+, LLM-extracted via Haiku) is opt-in via `--with-llm-facets` / `--batch-llm-facets`.
+- **Facets:** `fact_session_facets` Tier 1 (F01-F19, SQL-computed; always on). Tier 2 (F20+, LLM-extracted via Haiku) is opt-in via `--llm-facets`.
 
 **Populated after the per-session loop** (global sources, not per-session, so they are outside `run_v15_etl` and only the batch archive path reaches them):
 
@@ -248,7 +245,7 @@ ccutils --format json -o ./json-export/
 
 ## Archiving the full corpus (encrypted)
 
-`ccutils all` with no `--source` walks every project under your Claude config dir (the `--source` default) and writes a single `archive.duckdb` plus a `parquet_lake/` cache covering every session on the machine. ccutils does not do encryption itself -- that's an ops concern, kept out of the tool's scope -- but the export lands as plain files, so any encrypted-volume or encrypt-the-tarball approach works. On macOS the least-friction option is an encrypted sparse disk image: create it once, then mount → export → detach each run.
+`ccutils --source` with no value walks every project under your Claude config dir (the `--source` default) and writes a single `archive.duckdb` plus a `parquet_lake/` cache covering every session on the machine. ccutils does not do encryption itself -- that's an ops concern, kept out of the tool's scope -- but the export lands as plain files, so any encrypted-volume or encrypt-the-tarball approach works. On macOS the least-friction option is an encrypted sparse disk image: create it once, then mount → export → detach each run.
 
 ```bash
 # One-time: create a password-protected, AES-256 encrypted sparse image.
@@ -260,7 +257,7 @@ hdiutil create -size 5g -type SPARSE -encryption AES-256 \
 
 # Each run: mount (prompts for password), export everything, detach.
 hdiutil attach "$IMG"
-ccutils all --format duckdb -o /Volumes/CCArchive/$(date +%Y-%m-%d)
+ccutils --source --format duckdb -o /Volumes/CCArchive/$(date +%Y-%m-%d)
 hdiutil detach /Volumes/CCArchive
 ```
 
@@ -268,12 +265,12 @@ The encrypted volume covers both the DuckDB file and the parquet lake (they're j
 
 - **`--private` is best-effort and not wired through the v0.15 ETL** (the flag is rejected on `duckdb`/`json`). On the render formats (html, markdown) it only masks cwd/home-prefixed paths in a subset of channels -- `tool_use` inputs (`file_path`/`command`/`content`/`path`) and string `tool_result` content. It does **not** sanitize message text, thinking blocks, non-message entries (e.g. `file-history-snapshot` paths), project directory names, or absolute paths from another machine/user pasted into content. When it can't resolve a working directory (agent transcripts, `.json`/claude.ai exports) it now prints a loud warning rather than silently no-opping. Treat `--private` as a convenience for local encrypted archives, not a guarantee for public sharing; review output before sharing. (Comprehensive channel-walking is a tracked follow-up.)
 - **The archive is machine-wide transcript data -- keep it out of your checkouts.** With no `-o` the output goes to `~/.ccutils/claude-archive`, which is home-anchored precisely so a default run never writes unredacted transcripts for every project on the machine into whatever repo you happened to be standing in. If you pass `-o` yourself, point it somewhere outside your worktrees (an encrypted volume as above, or any path a `git add -A` cannot reach).
-- **Tier 2 LLM facets cost real money at full-system scale.** `--with-llm-facets` runs one Haiku call per session -- pennies on a handful of sessions, but potentially dollars across hundreds. Omit it for a bulk archive run, or run it separately on a filtered subset.
+- **Tier 2 LLM facets cost real money at full-system scale.** `--llm-facets` runs one Haiku call per session -- pennies on a handful of sessions, but potentially dollars across hundreds. Omit it for a bulk archive run, or run it separately on a filtered subset.
 
 Portable alternative (any OS), encrypting the export as a single artifact with [age](https://github.com/FiloSottile/age):
 
 ```bash
-ccutils all --format duckdb -o ./archive
+ccutils --source --format duckdb -o ./archive
 tar czf - ./archive | age -r <recipient-key> > archive.tar.gz.age && rm -rf ./archive
 ```
 
@@ -295,7 +292,6 @@ tar czf - ./archive | age -r <recipient-key> > archive.tar.gz.age && rm -rf ./ar
                            excludes thinking by projection). Parquet lake is
                            unaffected -- delete it post-run if needed.
 --no-subagents             Exclude related agent sessions (local)
---no-agents                Exclude agent-* session files (all)
 --include-temp-sessions    Include sessions whose cwd is under the OS temp
                            directory (excluded by default -- typically
                            sandboxed/ephemeral tooling like eval harnesses,

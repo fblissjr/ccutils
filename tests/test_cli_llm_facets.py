@@ -163,7 +163,7 @@ class TestLocalCommand:
         result = runner.invoke(
             cli,
             [str(sample_jsonl), "--format", "duckdb",
-             "-o", str(db_path), "--with-llm-facets"],
+             "-o", str(db_path), "--llm-facets"],
         )
         assert result.exit_code == 0, result.output
         assert isinstance(captured["facet_extractor"], _RecordingExtractor)
@@ -197,7 +197,7 @@ class TestLocalCommand:
         result = runner.invoke(
             cli,
             [str(sample_jsonl), "--format", "duckdb",
-             "-o", str(db_path), "--with-llm-facets"],
+             "-o", str(db_path), "--llm-facets"],
         )
         # Exit code 2 is the contract from build_facet_extractor_or_exit.
         assert result.exit_code == 2
@@ -242,9 +242,9 @@ class TestAllCommand:
         out = tmp_path / "out"
         result = runner.invoke(
             cli,
-            ["all", "--source", str(projects_root),
+            ["--source", str(projects_root),
              "--format", "duckdb", "-o", str(out),
-             "--batch-llm-facets", "--quiet"],
+             "--llm-facets", "--quiet"],
         )
         assert result.exit_code == 0, result.output
         assert isinstance(captured["facet_extractor"], _RecordingExtractor)
@@ -268,7 +268,7 @@ class TestAllCommand:
         out = tmp_path / "out"
         result = runner.invoke(
             cli,
-            ["all", "--source", str(projects_root),
+            ["--source", str(projects_root),
              "--format", "duckdb", "-o", str(out), "--quiet"],
         )
         assert result.exit_code == 0, result.output
@@ -313,9 +313,9 @@ class TestAllCommand:
         out = tmp_path / "out-json"
         result = runner.invoke(
             cli,
-            ["all", "--source", str(projects_root),
+            ["--source", str(projects_root),
              "--format", "json", "-o", str(out),
-             "--batch-llm-facets", "--quiet"],
+             "--llm-facets", "--quiet"],
         )
         assert result.exit_code == 0, result.output
         assert isinstance(captured["facet_extractor"], _RecordingExtractor)

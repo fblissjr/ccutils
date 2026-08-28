@@ -56,7 +56,7 @@ class TestFileConversionHTML:
         """The 'convert' alias still works for backwards compatibility."""
         runner = CliRunner()
         result = runner.invoke(
-            cli, ["convert", str(sample_session_file), "-o", str(output_dir)]
+            cli, [str(sample_session_file), "-o", str(output_dir)]
         )
 
         assert result.exit_code == 0

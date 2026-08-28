@@ -45,9 +45,22 @@ from .utils import (
 )
 
 
-@click.command("local")
-@click.argument("input_file", required=False, default=None, type=click.Path())
+@click.command("convert")
+@click.argument("paths", nargs=-1, type=click.Path())
 @optgroup.group("Output")
+@optgroup.option(
+    "-s",
+    "--source",
+    type=click.Path(),
+    default=None,
+    help=(
+        "Walk every session under this directory instead of picking. "
+        "Pass it with no value to use the Claude projects directory. "
+        "Mutually exclusive with PATHS."
+    ),
+    is_flag=False,
+    flag_value="__default__",
+)
 @optgroup.option(
     "-o",
     "--output",
@@ -120,9 +133,32 @@ from .utils import (
     flag_value="default",
     help="Run ColBERT embeddings (optionally specify model name).",
 )
+@optgroup.option(
+    "--dry-run",
+    is_flag=True,
+    help="Show what would be converted without creating files (--source only).",
+)
+@optgroup.group("Processing")
+@optgroup.option(
+    "-j", "--jobs", type=int, default=1,
+    help="Parallel workers (--source only, default: 1).",
+)
+@optgroup.option(
+    "--batch-size", type=int, default=10,
+    help="Sessions per batch (--source only, default: 10).",
+)
+@optgroup.option(
+    "-q", "--quiet", is_flag=True,
+    help="Suppress all output except errors.",
+)
+@optgroup.option(
+    "--no-search-index", is_flag=True,
+    help="Skip search index generation (--source only).",
+)
 @optgroup.group("Enrichment")
 @optgroup.option(
-    "--with-llm-facets",
+    "--llm-facets",
+    "with_llm_facets",
     is_flag=True,
     default=False,
     help=(
@@ -131,8 +167,9 @@ from .utils import (
         "ccutils-anthropic keychain entry. Star schema only."
     ),
 )
-def local_cmd(
-    input_file,
+def convert_cmd(
+    paths,
+    source,
     output,
     output_format,
     open_browser,
@@ -143,23 +180,38 @@ def local_cmd(
     no_subagents,
     include_temp_sessions,
     private,
+    dry_run,
+    jobs,
+    batch_size,
+    quiet,
+    no_search_index,
     embed,
     with_llm_facets,
 ):
     """Convert Claude Code sessions to HTML, Markdown, DuckDB, or JSON.
 
-    With no arguments, launches an interactive picker for local sessions.
-    Pass a session file to convert it directly.
+    Three modes, chosen by what you pass. No PATHS and no --source opens an
+    interactive picker. PATHS converts exactly those session files. --source
+    walks every session under a directory.
 
     \b
     Examples:
-      ccutils                                    # interactive picker
-      ccutils session.jsonl                      # convert file, open in browser
-      ccutils session.jsonl --format duckdb -o ./out  # star schema DuckDB
-      ccutils --format duckdb -o ./archive  # pick sessions, star schema
-      ccutils session.jsonl --format duckdb -o ./out --with-llm-facets
+      ccutils                                  # pick sessions interactively
+      ccutils session.jsonl                    # convert one file, open it
+      ccutils a.jsonl b.jsonl -o ./out         # convert several
+      ccutils --source -o ./archive            # everything, HTML archive
+      ccutils --source --format duckdb -o ./w  # everything, star schema
+      ccutils --source -p myproject -o ./out   # one project
+      ccutils --format duckdb -o ./w --llm-facets   # picked, with Tier 2 facets
     """
     include_thinking = not no_thinking
+
+    if paths and source is not None:
+        raise click.UsageError(
+            "PATHS and --source are alternatives: PATHS converts exactly the "
+            "files you name, --source walks every session under a directory. "
+            "Drop one."
+        )
 
     # Honesty guard: v0.15 has no PathSanitizer wiring yet, so --private
     # would silently produce a non-sanitized database on the duckdb/json
@@ -176,18 +228,51 @@ def local_cmd(
     if private:
         warn_private_best_effort()
 
+    if source is not None:
+        # Batch mode: every session under a directory. Delegates to the
+        # batch implementation rather than duplicating it -- one scan, one
+        # set of exporters, and it builds its own facet extractor, which is
+        # why this path must NOT build one too. Doing both constructed two
+        # extractors per invocation: two credential resolutions, and for a
+        # real one, two clients.
+        #
+        # `--source` with no value means the Claude projects directory,
+        # which the batch path resolves itself.
+        from .all import all_cmd
+
+        all_cmd.callback(
+            source=None if source == "__default__" else source,
+            output=output,
+            output_format=output_format,
+            open_browser=open_browser,
+            project_filter=project_filter,
+            dry_run=dry_run,
+            no_thinking=no_thinking,
+            no_agents=no_subagents,
+            include_temp_sessions=include_temp_sessions,
+            private=private,
+            jobs=jobs,
+            batch_size=batch_size,
+            quiet=quiet,
+            no_search_index=no_search_index,
+            embed=embed,
+            batch_llm_facets=with_llm_facets,
+        )
+        return
+
     # Build the Tier 2 facet extractor at the CLI boundary -- credential
     # failures exit cleanly here rather than as a stack trace from inside
-    # _run_export_pipeline. Returns None when --with-llm-facets is off.
+    # _run_export_pipeline. Returns None when --llm-facets is off.
     facet_extractor = build_facet_extractor_or_exit(with_llm_facets)
 
-    if input_file:
-        # Direct file conversion mode
-        _convert_file(
-            input_file, output, output_format, open_browser,
-            include_thinking, private, facet_extractor,
-            include_subagents=not no_subagents,
-        )
+    if paths:
+        # Convert exactly the files named.
+        for path in paths:
+            _convert_file(
+                path, output, output_format, open_browser,
+                include_thinking, private, facet_extractor,
+                include_subagents=not no_subagents,
+            )
     else:
         # Interactive picker mode
         _interactive_mode(
@@ -400,7 +485,7 @@ def _run_export_pipeline(
         agent_map: Agent session relationships (from interactive picker).
         embed: Embedding model name, "default", or None.
         facet_extractor: Pre-built FacetExtractor instance (or None).
-            Construction happens at the CLI boundary in local_cmd so
+            Construction happens at the CLI boundary in convert_cmd so
             credential errors exit cleanly before any work starts.
     """
     if agent_map is None:

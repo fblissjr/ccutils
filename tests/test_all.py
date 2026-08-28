@@ -564,9 +564,9 @@ class TestAllCommand:
     def test_all_command_exists(self):
         """Test that all command is registered."""
         runner = CliRunner()
-        result = runner.invoke(cli, ["all", "--help"])
+        result = runner.invoke(cli, ["convert", "--help"])
         assert result.exit_code == 0
-        assert "all" in result.output.lower() or "convert" in result.output.lower()
+        assert "convert" in result.output.lower()
 
     def test_all_dry_run(self, mock_projects_dir, output_dir):
         """Test dry-run mode shows what would be converted."""
@@ -574,7 +574,6 @@ class TestAllCommand:
         result = runner.invoke(
             cli,
             [
-                "all",
                 "--source",
                 str(mock_projects_dir),
                 "--output",
@@ -595,7 +594,6 @@ class TestAllCommand:
         result = runner.invoke(
             cli,
             [
-                "all",
                 "--source",
                 str(mock_projects_dir),
                 "--output",
@@ -614,7 +612,6 @@ class TestAllCommand:
         result = runner.invoke(
             cli,
             [
-                "all",
                 "--source",
                 str(mock_projects_dir),
                 "--output",
@@ -629,22 +626,27 @@ class TestAllCommand:
         # Flat: all projects share one directory -- 3 regular + 1 agent.
         assert len(transcripts) == 4
 
-    def test_all_no_agents_flag(self, mock_projects_dir, output_dir):
-        """Test --no-agents flag excludes agent sessions."""
+    def test_no_subagents_flag(self, mock_projects_dir, output_dir):
+        """One name for one behaviour.
+
+        `all` spelled it --no-agents and `local` spelled it --no-subagents;
+        merging the commands merged the flag. --no-subagents wins because
+        agent sessions ARE subagents, and the tombstone for `all` points at
+        the new surface rather than leaving the old spelling working.
+        """
         runner = CliRunner()
         result = runner.invoke(
             cli,
             [
-                "all",
                 "--source",
                 str(mock_projects_dir),
                 "--output",
                 str(output_dir),
-                "--no-agents",
+                "--no-subagents",
             ],
         )
 
-        assert result.exit_code == 0
+        assert result.exit_code == 0, result.output
         # Should NOT have agent directory in project-a
         transcripts = [p for p in output_dir.glob("*.html") if p.name != "index.html"]
         assert len(transcripts) == 3  # 3 regular, agent excluded
@@ -655,7 +657,6 @@ class TestAllCommand:
         result = runner.invoke(
             cli,
             [
-                "all",
                 "--source",
                 str(mock_projects_dir),
                 "--output",
@@ -679,7 +680,6 @@ class TestAllCommand:
         result = runner.invoke(
             cli,
             [
-                "all",
                 "--source",
                 str(mock_projects_dir),
                 "--output",
@@ -707,7 +707,6 @@ class TestDuckDBStarSchema:
         result = runner.invoke(
             cli,
             [
-                "all",
                 "--source",
                 str(mock_projects_dir),
                 "--output",
@@ -739,7 +738,6 @@ class TestDuckDBStarSchema:
         result = runner.invoke(
             cli,
             [
-                "all",
                 "--source",
                 str(mock_projects_dir),
                 "--output",
@@ -762,7 +760,6 @@ class TestDuckDBStarSchema:
         result = runner.invoke(
             cli,
             [
-                "all",
                 "--source",
                 str(mock_projects_dir),
                 "--output",
@@ -782,7 +779,6 @@ class TestDuckDBStarSchema:
         result = runner.invoke(
             cli,
             [
-                "all",
                 "--source",
                 str(mock_projects_dir),
                 "--output",

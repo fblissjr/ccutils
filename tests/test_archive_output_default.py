@@ -63,7 +63,7 @@ class TestAllCommandDefaultOutput:
         runner = CliRunner()
         with runner.isolated_filesystem() as sandbox:
             result = runner.invoke(
-                cli, ["all", "--source", str(mock_projects_dir)]
+                cli, ["--source", str(mock_projects_dir)]
             )
             assert result.exit_code == 0, result.output
             assert not (Path(sandbox) / "claude-archive").exists()
@@ -78,7 +78,7 @@ class TestAllCommandDefaultOutput:
         runner = CliRunner()
         result = runner.invoke(
             cli,
-            ["all", "--source", str(mock_projects_dir), "-o", str(explicit)],
+            ["--source", str(mock_projects_dir), "-o", str(explicit)],
         )
         assert result.exit_code == 0, result.output
         assert (explicit / "index.html").exists()
@@ -113,7 +113,7 @@ class TestLocalPickerDefaultOutput:
     def test_archive_lands_under_home_not_cwd(self, picked_session, fake_home):
         runner = CliRunner()
         with runner.isolated_filesystem() as sandbox:
-            result = runner.invoke(cli, ["local"])
+            result = runner.invoke(cli, [])
             assert result.exit_code == 0, result.output
             assert not (Path(sandbox) / "claude-archive").exists()
 

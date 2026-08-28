@@ -94,9 +94,8 @@ from .export import (
 from .cli import (
     cli,
     main,
-    local_cmd,
-    web_cmd,
-    all_cmd,
+    convert_cmd,
+    open_cmd,
     is_url,
     fetch_url_to_tempfile,
     resolve_credentials,
