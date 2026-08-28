@@ -194,7 +194,16 @@ def get_session_summary(filepath, max_length=200):
 
 
 def _get_jsonl_summary(filepath, max_length=200):
-    """Extract summary from JSONL file."""
+    """Extract summary from JSONL file.
+
+    On an agent transcript the delegated task arrives as a user entry
+    flagged ``isMeta``, so the isMeta skip below -- correct for a parent
+    session, where those entries are harness injections -- was throwing
+    away the one line that describes the agent. Those transcripts then
+    summarised to "(no summary)" and html/markdown curation dropped them.
+    Agent-ness comes from the file stem, per the subagent identity rule.
+    """
+    is_agent = Path(filepath).stem.startswith("agent-")
     try:
         with open(filepath, "r", encoding="utf-8") as f:
             for line in f:
@@ -222,7 +231,7 @@ def _get_jsonl_summary(filepath, max_length=200):
                     obj = json.loads(line)
                     if (
                         obj.get("type") == "user"
-                        and not obj.get("isMeta")
+                        and (is_agent or not obj.get("isMeta"))
                         and obj.get("message", {}).get("content")
                     ):
                         content = obj["message"]["content"]

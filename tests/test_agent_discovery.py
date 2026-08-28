@@ -11,137 +11,109 @@ from ccutils import (
     find_agent_sessions,
     generate_multi_session_index,
 )
+from ccutils.parsers.discovery import find_all_sessions, is_curated_out
+from ccutils.parsers.session import get_session_summary
+
+
+def _entry(**over):
+    """One JSONL line. Agent transcripts carry the PARENT's sessionId --
+    identity comes from the file stem (CLAUDE.md subagent contract)."""
+    base = {
+        "type": "user",
+        "uuid": "u-001",
+        "parentUuid": None,
+        "timestamp": "2025-01-15T10:00:00.000Z",
+        "message": {"role": "user", "content": "Hello"},
+    }
+    base.update(over)
+    return json.dumps(base) + "\n"
+
+
+def _write(path, **over):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(_entry(**over))
+    return path
 
 
 @pytest.fixture
 def session_dir(tmp_path):
-    """Create a directory structure with parent and agent sessions."""
-    # Parent session
-    parent = tmp_path / "abc123.jsonl"
-    parent.write_text(
-        json.dumps(
-            {
-                "type": "user",
-                "uuid": "user-001",
-                "parentUuid": None,
-                "sessionId": "abc123",
-                "timestamp": "2025-01-15T10:00:00.000Z",
-                "cwd": "/home/user/project",
-                "message": {"role": "user", "content": "Hello"},
-            }
-        )
-        + "\n"
-    )
+    """Parent and agents in the REAL on-disk layout.
 
-    # Agent session linked to parent
-    agent1 = tmp_path / "agent-xyz789.jsonl"
-    agent1.write_text(
-        json.dumps(
-            {
-                "type": "user",
-                "uuid": "agent-user-001",
-                "parentUuid": None,
-                "sessionId": "abc123",
-                "agentId": "xyz789",
-                "isSidechain": True,
-                "timestamp": "2025-01-15T10:05:00.000Z",
-                "message": {"role": "user", "content": "Agent task"},
-            }
-        )
-        + "\n"
-    )
+    ``<project>/<parent-uuid>.jsonl`` with the agents one directory down at
+    ``<project>/<parent-uuid>/subagents/agent-<id>.jsonl``. The previous
+    version of this fixture wrote the agents flat beside the parent, which
+    is the pre-2026 layout -- no such file exists on disk any more, and
+    every assertion here passed against a shape that had stopped existing.
+    """
+    project = tmp_path / "-home-user-projects-demo"
 
-    # Another agent session linked to same parent
-    agent2 = tmp_path / "agent-def456.jsonl"
-    agent2.write_text(
-        json.dumps(
-            {
-                "type": "user",
-                "uuid": "agent-user-002",
-                "parentUuid": None,
-                "sessionId": "abc123",
-                "agentId": "def456",
-                "isSidechain": True,
-                "timestamp": "2025-01-15T10:10:00.000Z",
-                "message": {"role": "user", "content": "Another agent task"},
-            }
-        )
-        + "\n"
-    )
+    parent = _write(project / "abc123.jsonl", sessionId="abc123",
+                    cwd="/home/user/project")
 
-    # Unrelated session
-    other = tmp_path / "other999.jsonl"
-    other.write_text(
-        json.dumps(
-            {
-                "type": "user",
-                "uuid": "other-001",
-                "parentUuid": None,
-                "sessionId": "other999",
-                "timestamp": "2025-01-15T11:00:00.000Z",
-                "message": {"role": "user", "content": "Different session"},
-            }
-        )
-        + "\n"
-    )
+    agents = project / "abc123" / "subagents"
+    agent1 = _write(agents / "agent-xyz789.jsonl", sessionId="abc123",
+                    agentId="xyz789", isSidechain=True,
+                    message={"role": "user", "content": "Agent task"})
+    agent2 = _write(agents / "agent-def456.jsonl", sessionId="abc123",
+                    agentId="def456", isSidechain=True,
+                    message={"role": "user", "content": "Another agent task"})
 
-    return tmp_path, parent, agent1, agent2, other
+    other = _write(project / "other999.jsonl", sessionId="other999",
+                   message={"role": "user", "content": "Different session"})
+
+    return project, parent, agent1, agent2, other
 
 
 @pytest.fixture
 def nested_agent_dir(tmp_path):
-    """Create a directory with nested agents (agent spawning agent)."""
-    # Parent session
-    parent = tmp_path / "parent123.jsonl"
-    parent.write_text(
-        json.dumps(
-            {
-                "type": "user",
-                "uuid": "user-001",
-                "sessionId": "parent123",
-                "timestamp": "2025-01-15T10:00:00.000Z",
-                "message": {"role": "user", "content": "Start"},
-            }
-        )
-        + "\n"
+    """An agent that spawned an agent, as the layout actually records it.
+
+    Measured against 300 real agent transcripts: every one carries its ROOT
+    parent's sessionId, and nested agents (sidecar ``spawnDepth`` up to 5)
+    sit FLAT in the same ``subagents/`` directory as their level-1 siblings.
+    The old fixture gave the level-2 agent ``sessionId: "agent-level1"`` and
+    a chain to walk; no such file exists.
+    """
+    project = tmp_path / "-home-user-projects-demo"
+    parent = _write(project / "parent123.jsonl", sessionId="parent123")
+
+    agents = project / "parent123" / "subagents"
+    agent_l1 = _write(agents / "agent-level1.jsonl", sessionId="parent123",
+                      agentId="level1", isSidechain=True,
+                      message={"role": "user", "content": "Level 1 agent"})
+    (agents / "agent-level1.meta.json").write_text(
+        json.dumps({"agentType": "Explore", "spawnDepth": 1})
     )
 
-    # Level 1 agent (child of parent)
-    agent_l1 = tmp_path / "agent-level1.jsonl"
-    agent_l1.write_text(
-        json.dumps(
-            {
-                "type": "user",
-                "uuid": "l1-001",
-                "sessionId": "parent123",
-                "agentId": "level1",
-                "isSidechain": True,
-                "timestamp": "2025-01-15T10:05:00.000Z",
-                "message": {"role": "user", "content": "Level 1 agent"},
-            }
-        )
-        + "\n"
+    agent_l2 = _write(agents / "agent-level2.jsonl", sessionId="parent123",
+                      agentId="level2", isSidechain=True,
+                      message={"role": "user", "content": "Level 2 agent"})
+    (agents / "agent-level2.meta.json").write_text(
+        json.dumps({"agentType": "Explore", "spawnDepth": 2})
     )
 
-    # Level 2 agent (child of level 1 agent)
-    # Note: sessionId matches the agent-level1 file stem
-    agent_l2 = tmp_path / "agent-level2.jsonl"
-    agent_l2.write_text(
-        json.dumps(
-            {
-                "type": "user",
-                "uuid": "l2-001",
-                "sessionId": "agent-level1",
-                "agentId": "level2",
-                "isSidechain": True,
-                "timestamp": "2025-01-15T10:10:00.000Z",
-                "message": {"role": "user", "content": "Level 2 agent"},
-            }
-        )
-        + "\n"
-    )
+    return project, parent, agent_l1, agent_l2
 
-    return tmp_path, parent, agent_l1, agent_l2
+
+@pytest.fixture
+def workflow_agent_dir(tmp_path):
+    """Workflow-tool agents nest one directory deeper.
+
+    ``<project>/<uuid>/subagents/workflows/<wf_id>/agent-<id>.jsonl``.
+    34 such files exist on disk; nothing in the pipeline knew the shape.
+    A ``journal.jsonl`` sits beside them and is not an agent transcript.
+    """
+    project = tmp_path / "-home-user-projects-demo"
+    parent = _write(project / "wfparent.jsonl", sessionId="wfparent")
+
+    wf = project / "wfparent" / "subagents" / "workflows" / "wf_c4e3dd50"
+    agent = _write(wf / "agent-w1.jsonl", sessionId="wfparent", agentId="w1",
+                   isSidechain=True,
+                   message={"role": "user", "content": "Workflow agent"})
+    journal = wf / "journal.jsonl"
+    journal.write_text(json.dumps({"type": "journal", "note": "step 1"}) + "\n")
+
+    return project, parent, agent, journal
 
 
 class TestExtractSessionMetadata:
@@ -237,95 +209,180 @@ class TestExtractSessionMetadata:
 
 
 class TestFindAgentSessions:
-    """Tests for find_agent_sessions function."""
+    """Attaching a session's subagent transcripts, against the real layout.
 
-    def test_finds_agents_for_parent(self, session_dir):
-        """Should find all agents linked to a parent session."""
+    Every assertion here was previously written against agents sitting flat
+    beside their parent. They all passed and the function returned nothing
+    on real data -- the picker path shipped with subagents silently absent.
+    """
+
+    def test_finds_agents_in_the_subagents_directory(self, session_dir):
         _, parent, agent1, agent2, _ = session_dir
 
         result = find_agent_sessions([parent])
 
         assert parent in result
-        assert len(result[parent]) == 2
-        assert agent1 in result[parent]
-        assert agent2 in result[parent]
+        assert set(result[parent]) == {agent1, agent2}
 
     def test_ignores_unrelated_sessions(self, session_dir):
-        """Should not include agents from unrelated sessions."""
         _, parent, _, _, other = session_dir
 
         result = find_agent_sessions([parent])
 
-        # other session's agents should not be included
         for agents in result.values():
             assert other not in agents
 
-    def test_multiple_parents(self, session_dir, tmp_path):
-        """Should handle multiple parent sessions."""
-        _, parent, agent1, agent2, other = session_dir
-
-        # Create an agent for the 'other' session
-        other_agent = tmp_path / "agent-other.jsonl"
-        other_agent.write_text(
-            json.dumps(
-                {
-                    "type": "user",
-                    "sessionId": "other999",
-                    "agentId": "other",
-                    "isSidechain": True,
-                    "message": {"content": "Other agent"},
-                }
-            )
-            + "\n"
+    def test_multiple_parents(self, session_dir):
+        project, parent, agent1, agent2, other = session_dir
+        other_agent = _write(
+            project / "other999" / "subagents" / "agent-other.jsonl",
+            sessionId="other999", agentId="other", isSidechain=True,
+            message={"role": "user", "content": "Other agent"},
         )
 
         result = find_agent_sessions([parent, other])
 
-        assert parent in result
-        assert other in result
-        assert len(result[parent]) == 2
-        assert len(result[other]) == 1
-        assert other_agent in result[other]
+        assert set(result[parent]) == {agent1, agent2}
+        assert result[other] == [other_agent]
 
-    def test_recursive_finds_nested_agents(self, nested_agent_dir):
-        """Should recursively find agents spawned by agents."""
+    def test_nested_agents_are_found(self, nested_agent_dir):
+        """A nested agent is a sibling file, not a deeper directory."""
         _, parent, agent_l1, agent_l2 = nested_agent_dir
 
         result = find_agent_sessions([parent], recursive=True)
 
-        # Should find both levels
-        all_agents = []
-        for agents in result.values():
-            all_agents.extend(agents)
+        assert set(result[parent]) == {agent_l1, agent_l2}
 
-        assert agent_l1 in all_agents
-        assert agent_l2 in all_agents
+    def test_recursive_false_returns_the_same_set(self, nested_agent_dir):
+        """`recursive` no longer selects anything, and says so.
 
-    def test_non_recursive_skips_nested(self, nested_agent_dir):
-        """Non-recursive mode should only find direct children."""
+        The old test asserted recursive=False returned level 1 only. The
+        layout cannot express that: every descendant sits flat in one
+        directory carrying the same sessionId, so depth is not derivable
+        from the files this function looks at. Retained as a no-op kwarg
+        rather than silently returning a subset that depth never defined.
+        Stated depth lives in the `.meta.json` `spawnDepth` sidecar; if a
+        depth filter is ever wanted, it belongs there.
+        """
         _, parent, agent_l1, agent_l2 = nested_agent_dir
 
-        result = find_agent_sessions([parent], recursive=False)
+        assert set(find_agent_sessions([parent], recursive=False)[parent]) == {
+            agent_l1,
+            agent_l2,
+        }
 
-        # Should only find level 1
-        assert parent in result
-        assert agent_l1 in result[parent]
-        # Level 2 should not be directly under parent
-        assert agent_l2 not in result[parent]
+    def test_workflow_agents_are_found(self, workflow_agent_dir):
+        """Workflow agents nest a directory deeper and must still attach."""
+        _, parent, agent, _journal = workflow_agent_dir
+
+        result = find_agent_sessions([parent])
+
+        assert result[parent] == [agent]
+
+    def test_workflow_journal_is_not_an_agent(self, workflow_agent_dir):
+        """journal.jsonl shares the directory and is not a transcript."""
+        _, parent, _agent, journal = workflow_agent_dir
+
+        assert journal not in find_agent_sessions([parent])[parent]
 
     def test_empty_list_returns_empty(self, session_dir):
-        """Empty input returns empty result."""
-        result = find_agent_sessions([])
-        assert result == {}
+        assert find_agent_sessions([]) == {}
 
     def test_session_with_no_agents(self, session_dir):
-        """Session with no agents returns empty list for that session."""
         _, _, _, _, other = session_dir
 
         result = find_agent_sessions([other])
 
-        assert other in result
         assert result[other] == []
+
+    def test_an_agent_path_has_no_agents_of_its_own(self, nested_agent_dir):
+        """Passing an agent file must not walk into a sibling's directory."""
+        _, _parent, agent_l1, _ = nested_agent_dir
+
+        assert find_agent_sessions([agent_l1])[agent_l1] == []
+
+
+class TestAgentTranscriptSummary:
+    """An agent's task prompt arrives as an `isMeta` user entry.
+
+    `_get_jsonl_summary` skips isMeta entries, which is right for a parent
+    session (they are harness injections) and wrong for an agent transcript,
+    where that entry IS the delegated task -- the most descriptive line in
+    the file. The consequence was not cosmetic: html and markdown exports
+    drop anything summarising to "(no summary)", so those agents vanished
+    from browsable output. Measured over a 400-file sample of real agent
+    transcripts, 23 summarised to "(no summary)"; 17 of them recover here.
+    """
+
+    def _agent_with_meta_prompt(self, tmp_path):
+        f = tmp_path / "-proj" / "s1" / "subagents" / "agent-a1.jsonl"
+        f.parent.mkdir(parents=True, exist_ok=True)
+        f.write_text(
+            json.dumps({
+                "type": "user", "isMeta": True, "isSidechain": True,
+                "sessionId": "s1", "agentId": "a1",
+                "timestamp": "2025-01-15T10:00:00.000Z",
+                "message": {"role": "user", "content": "Review the diff for bugs"},
+            }) + "\n"
+            + json.dumps({
+                "type": "attachment", "isSidechain": True, "sessionId": "s1",
+                "timestamp": "2025-01-15T10:00:01.000Z",
+            }) + "\n"
+        )
+        return f
+
+    def test_meta_task_prompt_becomes_the_summary(self, tmp_path):
+        agent = self._agent_with_meta_prompt(tmp_path)
+
+        assert get_session_summary(agent) == "Review the diff for bugs"
+
+    def test_such_an_agent_is_not_curated_out(self, tmp_path):
+        agent = self._agent_with_meta_prompt(tmp_path)
+
+        assert not is_curated_out(get_session_summary(agent))
+
+    def test_render_exports_keep_it(self, tmp_path):
+        """The end the user sees: default (curated) discovery keeps it."""
+        self._agent_with_meta_prompt(tmp_path)
+
+        found = find_all_sessions(tmp_path, include_agents=True)
+
+        stems = [s["path"].stem for p in found for s in p["sessions"]]
+        assert "agent-a1" in stems
+
+    def test_parent_sessions_still_skip_meta_entries(self, tmp_path):
+        """No regression: isMeta on a normal session is still not a summary."""
+        f = tmp_path / "-proj" / "s2.jsonl"
+        f.parent.mkdir(parents=True, exist_ok=True)
+        f.write_text(
+            json.dumps({
+                "type": "user", "isMeta": True, "sessionId": "s2",
+                "timestamp": "2025-01-15T10:00:00.000Z",
+                "message": {"role": "user", "content": "injected harness text"},
+            }) + "\n"
+            + json.dumps({
+                "type": "user", "sessionId": "s2",
+                "timestamp": "2025-01-15T10:00:01.000Z",
+                "message": {"role": "user", "content": "the real first prompt"},
+            }) + "\n"
+        )
+
+        assert get_session_summary(f) == "the real first prompt"
+
+    def test_a_warmup_agent_is_still_curated_out(self, tmp_path):
+        """Recovering real agents must not also un-hide warmup ones."""
+        f = tmp_path / "-proj" / "s3" / "subagents" / "agent-w.jsonl"
+        f.parent.mkdir(parents=True, exist_ok=True)
+        f.write_text(
+            json.dumps({
+                "type": "user", "isMeta": True, "isSidechain": True,
+                "sessionId": "s3", "agentId": "w",
+                "timestamp": "2025-01-15T10:00:00.000Z",
+                "message": {"role": "user", "content": "Warmup"},
+            }) + "\n"
+        )
+
+        assert is_curated_out(get_session_summary(f))
 
 
 class TestGenerateMultiSessionIndex:
@@ -366,6 +423,22 @@ class TestGenerateMultiSessionIndex:
         generate_multi_session_index(output_dir, [parent, agent1], agent_map=agent_map)
         html_out = (output_dir / "index.html").read_text()
         assert ">agent<" in html_out
+
+    def test_parents_are_not_labelled_agent(self, session_dir, tmp_path):
+        """agent_map keys are PARENTS, so a lookup against it must never
+        drive the agent label. The removed branch tested a stem against a
+        Path-keyed dict: dead as written, and wrong if repaired literally.
+        The `agent-` filename prefix is the only signal."""
+        _, parent, agent1, _, _ = session_dir
+        output_dir = tmp_path / "output"
+        output_dir.mkdir()
+        agent_map = {parent: [agent1]}
+        generate_multi_session_index(
+            output_dir, [parent, agent1], agent_map=agent_map
+        )
+        html_out = (output_dir / "index.html").read_text()
+        assert html_out.count(">agent<") == 1
+        assert html_out.count(">session<") == 1
 
     def test_is_self_contained(self, session_dir, tmp_path):
         """Styling and script are inlined and hash-pinned -- no siblings."""

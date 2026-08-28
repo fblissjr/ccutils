@@ -43,13 +43,22 @@ def project_dir_sql(col: str) -> str:
     the parent directory. Subagent files live at
     ``.../projects/<project>/<parent-uuid>/subagents/agent-<id>.jsonl`` --
     stripping only the filename would attribute every subagent to a synthetic
-    "subagents" project, so the pattern also strips any number of trailing
-    ``/<uuid>/subagents`` layers (nested delegation nests the layout).
+    "subagents" project.
+
+    Two steps, and the order matters. Drop the filename, then drop
+    everything from the first ``/<seg>/subagents`` onward. Cutting at the
+    FIRST such layer collapses nested delegation in one pass, and letting
+    the tail be any depth covers grouping directories below ``subagents``:
+    workflow-tool agents sit at
+    ``.../<parent-uuid>/subagents/workflows/<wf-id>/agent-<id>.jsonl``, and
+    the previous pattern -- which stripped only ``/<seg>/subagents`` layers
+    -- attributed those to a project named after the workflow id.
 
     Every populator that derives ``project_key`` MUST use this expression;
     drifted copies were how the "subagents" mis-attribution shipped.
     """
-    return f"regexp_replace({col}, '(/[^/]+/subagents)*/[^/]+$', '')"
+    without_file = f"regexp_replace({col}, '/[^/]+$', '')"
+    return f"regexp_replace({without_file}, '/[^/]+/subagents(/.*)?$', '')"
 
 
 def project_key_from_dir_sql(col: str) -> str:

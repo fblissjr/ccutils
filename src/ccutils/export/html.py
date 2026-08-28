@@ -979,6 +979,11 @@ def generate_multi_session_index(output_dir, session_files, agent_map=None,
     Kept as a distinct entry point because `local` has already rendered its
     transcripts and only needs the index; batch renders and indexes in one
     pass. Both go through _render_archive_index so the two cannot drift.
+
+    ``agent_map`` is accepted for call compatibility and does not affect the
+    output: its keys are parent sessions, so it never identified an agent in
+    the first place. The `agent-` filename prefix is the label's only source.
+    Retire the parameter with the CLI restructure, not before.
     """
     output_dir = Path(output_dir)
     cards = []
@@ -987,8 +992,6 @@ def generate_multi_session_index(output_dir, session_files, agent_map=None,
         stem = session_path.stem
         summary = get_session_summary(session_path) or stem
         label = "agent" if stem.startswith("agent-") else "session"
-        if agent_map and stem in agent_map:
-            label = "agent"
         data_search = f"{label} {stem} {summary}".lower()
         cards.append(_macros.session_card(f"{stem}.html", label, summary, "", data_search))
     agent_count = sum(1 for c in cards if 'role-label">agent<' in c)

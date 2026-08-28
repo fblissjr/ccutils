@@ -346,13 +346,37 @@ class TestProjectRuleEquivalence:
     this rule already shipped one mis-attribution bug; this test makes any
     future drift fail loud instead of silently splitting the taxonomy."""
 
-    LAYOUTS = [
-        "projA/sess1.jsonl",
-        "projA/parent-uuid-1/subagents/agent-x1.jsonl",
-        "projB/parent-uuid-2/subagents/agent-x2/subagents/agent-x3.jsonl",
-        "projC/archive/old-session.jsonl",
-        "subagents/coincidental.jsonl",
-    ]
+    # rel path -> the project directory it must attribute to, relative to
+    # tmp_path ("" = tmp_path itself, ".." = its parent).
+    EXPECTED = {
+        "projA/sess1.jsonl": "projA",
+        "projA/parent-uuid-1/subagents/agent-x1.jsonl": "projA",
+        "projB/parent-uuid-2/subagents/agent-x2/subagents/agent-x3.jsonl": "projB",
+        "projC/archive/old-session.jsonl": "projC/archive",
+        "subagents/coincidental.jsonl": "..",
+        # Workflow-tool agents nest a grouping directory below subagents.
+        # Both mirrors of the rule stripped only "/<seg>/subagents", so
+        # these attributed to a project named after the workflow id -- the
+        # exact mis-attribution the rule exists to prevent, and invisible
+        # to the equivalence check below because both copies were wrong
+        # the same way. Hence this expected-value oracle.
+        "projD/parent-uuid-4/subagents/workflows/wf_c4e3/agent-x4.jsonl": "projD",
+    }
+    LAYOUTS = list(EXPECTED)
+
+    def test_project_dir_is_the_expected_directory(self, tmp_path):
+        """An oracle independent of both implementations."""
+        import duckdb
+
+        from ccutils.etl.utils import project_dir_sql
+
+        conn = duckdb.connect()
+        for rel, expected in self.EXPECTED.items():
+            got = conn.execute(
+                f"SELECT {project_dir_sql('?')}", [str(tmp_path / rel)]
+            ).fetchone()[0]
+            assert got == str((tmp_path / expected).resolve()), rel
+        conn.close()
 
     def test_python_walkup_matches_project_dir_sql(self, tmp_path):
         import duckdb

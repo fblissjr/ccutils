@@ -74,95 +74,48 @@ def flatten_selected_sessions(selected):
 
 
 def find_agent_sessions(session_paths, recursive=True):
-    """Find all agent sessions related to given parent sessions.
+    """Find the subagent transcripts belonging to each given session.
 
-    Agent sessions are identified by:
-    - Filename pattern: agent-{agentId}.jsonl
-    - Contains sessionId field linking to parent session
-    - Has isSidechain: true flag
+    A session's agents live in a directory named after the session, not
+    beside it::
+
+        <project>/<parent-uuid>.jsonl
+        <project>/<parent-uuid>/subagents/agent-<id>.jsonl
+        <project>/<parent-uuid>/subagents/workflows/<wf-id>/agent-<id>.jsonl
+
+    so the search is rooted at ``<parent>/<stem>/subagents`` and walks down
+    from there -- workflow-tool agents nest one level deeper, and any future
+    grouping directory is covered by the same walk. This function previously
+    globbed the session's OWN directory, which is the pre-2026 layout: it
+    matched nothing on real data, and `local` exported no subagents at all.
+
+    Ownership comes from the directory, never from the transcript's
+    ``sessionId`` -- agent entries carry the PARENT's sessionId on every
+    line, so that field cannot distinguish one agent from another.
 
     Args:
-        session_paths: List of parent session Paths
-        recursive: If True, also discover agents spawned by agents
+        session_paths: List of parent session Paths.
+        recursive: Retained for compatibility and no longer selects
+            anything. Nested agents are siblings of their spawner in the
+            same ``subagents`` directory and carry the same root sessionId,
+            so depth is not derivable from the files scanned here. Stated
+            depth lives in each agent's ``.meta.json`` ``spawnDepth``.
 
     Returns:
-        Dict mapping parent session Path to list of agent session Paths.
-        When recursive=True, nested agents are flattened under the original parent.
+        Dict mapping each given session Path to its list of agent Paths.
     """
     if not session_paths:
         return {}
 
-    session_paths = [Path(p) for p in session_paths]
-    original_set = set(session_paths)
-    result = {p: [] for p in session_paths}
-
-    # Build a map of sessionId -> session_path for quick lookup
-    session_id_map = {}
-    for p in session_paths:
-        meta = extract_session_metadata(p)
-        if meta.get("sessionId"):
-            session_id_map[meta["sessionId"]] = p
-        # Also map by file stem
-        session_id_map[p.stem] = p
-
-    # Track which original parent each path traces back to
-    # (for recursive flattening)
-    root_parent_map = {p: p for p in session_paths}
-
-    # Get all directories containing the sessions
-    dirs = set(p.parent for p in session_paths)
-
-    # Find all agent files in those directories
-    agent_files = []
-    for d in dirs:
-        agent_files.extend(d.glob("agent-*.jsonl"))
-
-    # Multiple passes to handle recursive discovery
-    found_new = True
-    processed_agents = set()
-
-    while found_new:
-        found_new = False
-
-        for agent_path in agent_files:
-            if agent_path in processed_agents:
-                continue
-
-            meta = extract_session_metadata(agent_path)
-            parent_session_id = meta.get("sessionId")
-
-            if not parent_session_id:
-                processed_agents.add(agent_path)
-                continue
-
-            # Find the parent session
-            parent_path = session_id_map.get(parent_session_id)
-
-            if parent_path is not None:
-                processed_agents.add(agent_path)
-                found_new = True
-
-                # Find the root parent (original session, not an agent)
-                root_parent = root_parent_map.get(parent_path, parent_path)
-
-                # Add agent to the appropriate parent
-                if recursive and root_parent in original_set:
-                    # Flatten to original parent
-                    if agent_path not in result[root_parent]:
-                        result[root_parent].append(agent_path)
-                    # Track this agent's root parent
-                    root_parent_map[agent_path] = root_parent
-                else:
-                    # Non-recursive: add to immediate parent only
-                    if parent_path in result:
-                        if agent_path not in result[parent_path]:
-                            result[parent_path].append(agent_path)
-
-                # Register this agent in session_id_map so its children can find it
-                if recursive:
-                    agent_stem = agent_path.stem
-                    if agent_stem not in session_id_map:
-                        session_id_map[agent_stem] = agent_path
+    result = {}
+    for session_path in (Path(p) for p in session_paths):
+        agent_root = session_path.parent / session_path.stem / "subagents"
+        agents = (
+            sorted(f for f in agent_root.rglob("agent-*.jsonl") if f.is_file())
+            if agent_root.is_dir()
+            else []
+        )
+        result[session_path] = agents
 
     return result
 
@@ -417,9 +370,14 @@ def find_all_sessions(
             continue
 
         # Python mirror of etl/utils.py::project_dir_sql -- keep in sync.
+        # Cut at the LAST "subagents" segment each pass (a grouping dir may
+        # sit below it -- workflow agents live in subagents/workflows/<id>/)
+        # and loop for nested delegation.
         project_folder = session_file.parent
-        while project_folder.name == "subagents" and project_folder.parent != project_folder:
-            project_folder = project_folder.parent.parent
+        while "subagents" in project_folder.parts:
+            parts = project_folder.parts
+            cut = len(parts) - 1 - parts[::-1].index("subagents")
+            project_folder = Path(*parts[: cut - 1])
         project_key = project_folder.name
 
         # Skip projects that don't match filter
