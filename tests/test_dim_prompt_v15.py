@@ -206,7 +206,7 @@ class TestHistoryIsScopedToTheWarehousesProjects:
     def test_a_dashed_project_name_still_matches(self, conn, tmp_path):
         """The encoding is lossy in one direction only.
 
-        `-home-user-projects-fb-claude-skills` decodes to
+        `-home-user-projects-my-app-tools` decodes to
         `/home/user/projects/fb/claude/skills` -- a different, nonexistent
         path. A first cut decoded backward and silently dropped every prompt
         for any project whose name contains a dash. Encode FORWARD instead:
@@ -214,18 +214,18 @@ class TestHistoryIsScopedToTheWarehousesProjects:
         """
         conn.execute(
             "INSERT INTO dim_project (project_key, project_name, project_path) "
-            "VALUES ('pk', '-home-user-projects-fb-claude-skills', '/x')"
+            "VALUES ('pk', '-home-user-projects-my-app-tools', '/x')"
         )
         hist = self._history(
             tmp_path,
-            "/home/user/projects/fb-claude-skills",
+            "/home/user/projects/my-app-tools",
             "/home/user/projects/unrelated",
         )
 
         import_history(conn, hist, only_projects=True)
 
         rows = conn.execute("SELECT project_path FROM dim_prompt").fetchall()
-        assert rows == [("/home/user/projects/fb-claude-skills",)]
+        assert rows == [("/home/user/projects/my-app-tools",)]
 
     def test_scoping_removes_prompts_a_previous_unscoped_run_left(
         self, conn, tmp_path

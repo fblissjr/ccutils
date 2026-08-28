@@ -1,4 +1,4 @@
-# path-privacy: skip-file -- generic /Users/fred and /Users/dev placeholders only
+# path-privacy: skip-file -- generic /Users/dev placeholders only
 """Tests for session metadata extraction."""
 
 import json
@@ -56,10 +56,10 @@ class TestDeriveProjectName:
     """Tests for project name derivation from cwd."""
 
     def test_cwd_extracts_last_component(self):
-        assert derive_project_name("/Users/fred/workspace/ccutils", "") == "ccutils"
+        assert derive_project_name("/Users/dev/workspace/ccutils", "") == "ccutils"
 
     def test_cwd_with_trailing_slash(self):
-        assert derive_project_name("/Users/fred/workspace/ccutils/", "") == "ccutils"
+        assert derive_project_name("/Users/dev/workspace/ccutils/", "") == "ccutils"
 
     def test_none_cwd_falls_back_to_folder(self):
         # get_project_display_name strips -Users- prefix, "workspace" is not
@@ -279,7 +279,7 @@ class TestExtractRichMetadata:
             [
                 {
                     "type": "user",
-                    "cwd": "/Users/fred/workspace/myproject",
+                    "cwd": "/Users/dev/workspace/myproject",
                     "sessionId": "abc-123",
                     "gitBranch": "main",
                     "version": "2.1.17",
@@ -301,7 +301,7 @@ class TestExtractRichMetadata:
         meta = extract_rich_metadata(path, "project-folder")
 
         assert meta.session_id == "abc-123"
-        assert meta.cwd == "/Users/fred/workspace/myproject"
+        assert meta.cwd == "/Users/dev/workspace/myproject"
         assert meta.project_name == "myproject"
         assert meta.project_path == "project-folder"
         assert meta.git_branch == "main"

@@ -14,9 +14,9 @@ class PathSanitizer:
     """Sanitizes file paths and free text to remove sensitive path prefixes.
 
     Strategy:
-    - Paths under cwd: make relative (e.g. /Users/fred/project/src/main.py -> src/main.py)
+    - Paths under cwd: make relative (e.g. /Users/dev/project/src/main.py -> src/main.py)
     - cwd itself: becomes "."
-    - Paths under home dir: replace home prefix with ~ (e.g. /Users/fred/.claude -> ~/.claude)
+    - Paths under home dir: replace home prefix with ~ (e.g. /Users/dev/.claude -> ~/.claude)
     - System paths (e.g. /usr/local/bin/python): left as-is
     - Free text: ordered string replacement of cwd and home prefixes
 

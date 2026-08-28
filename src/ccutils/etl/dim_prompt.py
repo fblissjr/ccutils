@@ -46,7 +46,7 @@ def _covers_project(conn):
     what a history entry carries. `dim_project.project_name` is Claude Code's
     dashed encoding of one, so the entry's path is encoded FORWARD and
     compared -- never decoded backward, because the encoding is lossy:
-    `-home-user-fb-claude-skills` decodes to `/home/user/fb/claude/skills`, which
+    `-home-user-my-app-tools` decodes to `/home/user/my/app/tools`, which
     is a different, nonexistent path. Encoding forward is exact for names
     containing dashes; decoding is not.
 
