@@ -697,6 +697,70 @@ class TestAsyncCompletionReconciliation:
         # 10:00:01 spawn -> 10:03:57 done = 236s, not the 2s ack latency.
         assert row[3] == pytest.approx(236.0, abs=1.0)
 
+    def test_agent_final_report_is_rederived(self, conn, tmp_path):
+        """The agent's final report is the value of the delegation.
+
+        On a background launch `agent_output_text` holds the launch
+        acknowledgment, so it is deliberately NULLed -- which left the
+        warehouse recording that work was delegated and nothing about what
+        came back. The agent's own terminal assistant message is in the
+        warehouse already; re-derive from it.
+
+        Kept in its own column, per the rule this file states for tokens:
+        a STATED value and a DERIVED one never share a column. The stated
+        `agent_output_text` must remain NULL here, or a consumer cannot
+        tell which provenance it is reading.
+        """
+        from ccutils.etl.orchestrator import run_v15_etl
+
+        parent = self._parent_with_async_spawn(tmp_path)
+        agent = self._agent_transcript(tmp_path)
+        run_v15_etl(conn, parent, project_name="p",
+                    parquet_lake_root=tmp_path / "lake")
+        run_v15_etl(conn, agent, project_name="p",
+                    parquet_lake_root=tmp_path / "lake")
+        self._reconcile(conn)
+
+        stated, derived = conn.execute("""
+            SELECT agent_output_text, agent_derived_output_text
+            FROM fact_agent_delegations WHERE tool_use_id = 'tu_async1'
+        """).fetchone()
+        assert stated is None, "the async ack is not the agent's output"
+        assert derived == "audit complete"
+
+    def test_in_flight_agent_output_is_not_rederived(self, conn, tmp_path):
+        """A partial answer is worse than no answer.
+
+        Same reasoning the rollups already use: an unfinished agent's last
+        message is indistinguishable from a finished one's, so writing it
+        would report a half-done delegation as complete.
+        """
+        from ccutils.etl.orchestrator import run_v15_etl
+
+        parent = self._parent_with_async_spawn(tmp_path)
+        agent = self._agent_transcript(tmp_path, stop_reason=None)
+        run_v15_etl(conn, parent, project_name="p",
+                    parquet_lake_root=tmp_path / "lake")
+        run_v15_etl(conn, agent, project_name="p",
+                    parquet_lake_root=tmp_path / "lake")
+        self._reconcile(conn)
+
+        state, derived = conn.execute("""
+            SELECT completion_state, agent_derived_output_text
+            FROM fact_agent_delegations WHERE tool_use_id = 'tu_async1'
+        """).fetchone()
+        assert state != "completed"
+        assert derived is None
+
+    def test_synchronous_delegation_keeps_its_stated_output(self, conn, tmp_path):
+        """No regression: a sync delegation's stated output is untouched."""
+        _ = tmp_path
+        rows = conn.execute(
+            "SELECT agent_output_text FROM fact_agent_delegations "
+            "WHERE agent_is_async IS NOT TRUE AND agent_output_text IS NOT NULL"
+        ).fetchall()
+        assert rows == [] or all(r[0] for r in rows)
+
     def test_in_flight_agent_leaves_rollups_null(self, conn, tmp_path):
         """No terminal stop_reason => in_flight, and a partial sum is NOT
         written. A partial sum is indistinguishable from a fast agent."""

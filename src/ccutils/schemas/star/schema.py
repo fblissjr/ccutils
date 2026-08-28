@@ -1087,6 +1087,12 @@ def create_star_schema(db_path):
             agent_was_interrupted BOOLEAN,
             agent_output_text TEXT,
 
+            -- Re-derived from the agent's OWN transcript, kept separate from
+            -- the stated columns above so provenance is readable off the
+            -- name. On a background launch the stated columns describe the
+            -- launch acknowledgment, not the work, and are deliberately NULL.
+            agent_derived_output_text TEXT,
+
             -- Timing
             timestamp TIMESTAMP,
             delegation_timestamp TIMESTAMP,
@@ -2597,6 +2603,7 @@ def create_star_schema(db_path):
 _COLUMN_MIGRATIONS = [
     # Stated sidecar fields (0.19.2). Removed wholesale at 1.0.0 along with
     # the rest of this list -- see CLAUDE.md's no-migrations rule.
+    ("fact_agent_delegations", "agent_derived_output_text", "TEXT"),
     ("dim_session", "spawn_depth", "INTEGER"),
     ("dim_session", "parent_agent_id", "VARCHAR"),
     ("dim_session", "spawn_tool_use_id", "VARCHAR"),

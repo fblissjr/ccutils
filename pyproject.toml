@@ -1,6 +1,6 @@
 [project]
 name = "ccutils"
-version = "0.19.1"
+version = "0.19.2"
 description = "Claude Code transcript analytics: HTML/markdown transcripts and a DuckDB star-schema warehouse with full ETL lineage"
 readme = "README.md"
 license = "Apache-2.0"

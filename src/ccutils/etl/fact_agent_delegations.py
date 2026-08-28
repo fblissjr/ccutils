@@ -180,7 +180,16 @@ WITH agent_rollup AS (
             WHERE fm.message_type = 'assistant')      AS last_assistant_ts,
         MAX(fm.timestamp) FILTER (
             WHERE fm.message_type = 'assistant'
-              AND fm.stop_reason IS NOT NULL)         AS last_terminal_ts
+              AND fm.stop_reason IS NOT NULL)         AS last_terminal_ts,
+        -- The agent's final report. arg_max over the TERMINAL message
+        -- specifically, not simply the last assistant record: an agent
+        -- still working has a last message too and it reads exactly like a
+        -- finished one. Guarded again by completion_state below, on the
+        -- same reasoning as every other rollup here.
+        arg_max(fm.content_text, fm.timestamp) FILTER (
+            WHERE fm.message_type = 'assistant'
+              AND fm.stop_reason IS NOT NULL
+              AND fm.content_text IS NOT NULL)        AS terminal_text
     FROM fact_messages fm
     WHERE fm.is_deleted = FALSE
     GROUP BY fm.session_key
@@ -200,6 +209,7 @@ scored AS (
         ar.last_assistant_ts   AS ar_last_ts,
         ar.last_terminal_ts    AS ar_terminal_ts,
         ar.first_ts            AS ar_first_ts,
+        ar.terminal_text       AS ar_terminal_text,
         agt.tool_uses          AS ar_tool_uses,
         CASE
             -- No agent id at all AND no status AND the result is a STATED
@@ -304,6 +314,13 @@ SELECT
     -- partial sum is indistinguishable from a fast agent.
     CASE WHEN completion_state = 'completed' THEN ar_tokens
     END AS agent_derived_io_tokens,
+    -- The final report. For a background launch this is the ONLY record of
+    -- what the delegation produced: agent_output_text holds the launch
+    -- acknowledgment there and is deliberately NULL, which left the
+    -- warehouse recording that work was delegated and nothing about what
+    -- came back.
+    CASE WHEN completion_state = 'completed' THEN ar_terminal_text
+    END AS agent_derived_output_text,
     CASE WHEN completion_state = 'completed' AND agent_is_async IS TRUE
               THEN EXTRACT(EPOCH FROM (ar_last_ts - ar_first_ts)) * 1000
          WHEN completion_state = 'completed' THEN agent_total_duration_ms
@@ -352,7 +369,9 @@ def populate_delegation_completion(conn, *, run) -> None:
         # _PAYLOAD_COLS: that list is shared with the base populator, whose
         # inbound table has no such column.
         payload_cols=_PAYLOAD_COLS
-        + ["completion_state", "agent_derived_io_tokens"],
-        hash_cols=_HASH_COLS + ["completion_state", "agent_derived_io_tokens"],
+        + ["completion_state", "agent_derived_io_tokens",
+           "agent_derived_output_text"],
+        hash_cols=_HASH_COLS + ["completion_state", "agent_derived_io_tokens",
+                                "agent_derived_output_text"],
         timestamp_col="delegation_timestamp",
     )
