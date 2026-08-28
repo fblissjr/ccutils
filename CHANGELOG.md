@@ -5,6 +5,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.19.1]
+
 ### Fixed
 - **Subagent transcripts were missing from exports, in four separate ways.** `find_agent_sessions` globbed `agent-*.jsonl` in the session's *own* directory -- the pre-2026 layout. Agents have since lived one directory down, at `<project>/<parent-uuid>/subagents/agent-<id>.jsonl`, so the function matched nothing on real data and the picker path exported subagents for nobody, silently, with `--no-subagents` the only behaviour available. The search now roots at `<parent>/<stem>/subagents` and walks down from there. Ownership comes from the directory, never from the transcript's `sessionId` (agent entries carry the PARENT's on every line, so that field cannot tell two agents apart). Verified end to end: two real sessions that previously ingested 0 agent sessions and resolved 0 of their delegations now ingest 17 and resolve 7 of 7.
 - **`recursive=` on `find_agent_sessions` no longer claims to select anything.** It is retained as an accepted keyword and documented as a no-op: measured across 300 real transcripts, every agent carries its root parent's `sessionId` and nested agents (sidecar `spawnDepth` up to 5) sit flat beside their level-1 siblings, so depth is not derivable from the files this function reads. The old `recursive=False` path returned a subset that depth never defined. Stated depth lives in each agent's `.meta.json` `spawnDepth`.
