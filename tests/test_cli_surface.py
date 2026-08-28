@@ -149,3 +149,123 @@ class TestOpenCommand:
         CliRunner().invoke(cli, ["open", "-o", str(target)])
 
         assert not target.exists()
+
+
+class TestIgnoredFlagsFailLoudly:
+    """A flag that cannot do anything must say so, not exit 0.
+
+    `--private` already worked this way on duckdb/json and is the model.
+    These three did not: `--embed` was accepted and ignored on every render
+    format and on the single-file path in ANY format, and `--llm-facets`
+    on a render format went further -- it demanded an ANTHROPIC_API_KEY and
+    exited 2 before doing any work, blocking a valid HTML export on a
+    credential that format would never use.
+    """
+
+    def test_embed_rejected_on_html(self, tmp_path):
+        f = _session(tmp_path / "proj")
+        result = CliRunner().invoke(
+            cli, [str(f), "--format", "html", "--embed", "-o", str(tmp_path / "o")]
+        )
+
+        assert result.exit_code != 0
+        assert "--embed" in result.output
+
+    def test_embed_rejected_on_markdown(self, tmp_path):
+        f = _session(tmp_path / "proj")
+        result = CliRunner().invoke(
+            cli, [str(f), "--format", "markdown", "--embed", "-o", str(tmp_path / "o")]
+        )
+
+        assert result.exit_code != 0
+        assert "--embed" in result.output
+
+    def test_llm_facets_rejected_on_html_without_asking_for_credentials(
+        self, tmp_path, monkeypatch
+    ):
+        """The rejection must not depend on having a key.
+
+        With a key present the old code sailed past the check and silently
+        ignored the flag; without one it failed for the wrong reason. Assert
+        the format is what is rejected, with a key in the environment.
+        """
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-not-used-here")
+        f = _session(tmp_path / "proj")
+        result = CliRunner().invoke(
+            cli, [str(f), "--format", "html", "--llm-facets", "-o", str(tmp_path / "o")]
+        )
+
+        assert result.exit_code != 0
+        assert "--llm-facets" in result.output
+        assert "api key" not in result.output.lower()
+
+    def test_embed_still_accepted_on_duckdb(self, tmp_path):
+        """No over-correction: the flag works where it means something."""
+        f = _session(tmp_path / "proj")
+        result = CliRunner().invoke(
+            cli, [str(f), "--format", "duckdb", "-o", str(tmp_path / "o"),
+                  "--embed", "--dry-run"]
+        )
+
+        assert "--embed" not in result.output
+
+
+class TestOutputIsADirectory:
+    """`-o` names a directory everywhere.
+
+    It used to be a path stem for duckdb: `-o DIR/e` wrote `DIR/e.duckdb`
+    and dropped `parquet_lake/` in DIR -- two things beside the path the
+    user named rather than inside it.
+    """
+
+    def test_duckdb_lands_inside_the_named_directory(self, tmp_path):
+        f = _session(tmp_path / "proj")
+        out = tmp_path / "warehouse"
+        result = CliRunner().invoke(
+            cli, [str(f), "--format", "duckdb", "-o", str(out)]
+        )
+
+        assert result.exit_code == 0, result.output
+        assert (out / "archive.duckdb").exists()
+        assert not (tmp_path / "warehouse.duckdb").exists()
+
+    def test_parquet_lake_lands_inside_too(self, tmp_path):
+        f = _session(tmp_path / "proj")
+        out = tmp_path / "warehouse"
+        CliRunner().invoke(cli, [str(f), "--format", "duckdb", "-o", str(out)])
+
+        assert (out / "parquet_lake").is_dir()
+        assert not (tmp_path / "parquet_lake").exists()
+
+
+class TestOneWarehouseShape:
+    """Every path that builds a warehouse builds the same one.
+
+    Global post-loop sources ran only on the batch path, so a single-session
+    build had `fact_messages.prompt_id` populated pointing at an empty
+    `dim_prompt`. An external audit read that as an ETL defect; it was an
+    entry-point defect.
+    """
+
+    def test_single_session_runs_the_global_sources(self, tmp_path):
+        import duckdb
+
+        f = _session(tmp_path / "proj")
+        out = tmp_path / "warehouse"
+        result = CliRunner().invoke(
+            cli, [str(f), "--format", "duckdb", "-o", str(out)]
+        )
+        assert result.exit_code == 0, result.output
+
+        conn = duckdb.connect(str(out / "archive.duckdb"), read_only=True)
+        try:
+            runs = conn.execute(
+                "SELECT DISTINCT run_kind FROM fact_etl_runs "
+                "WHERE run_kind IS NOT NULL"
+            ).fetchall()
+        finally:
+            conn.close()
+        kinds = {r[0] for r in runs}
+        assert "reconciliation" in kinds, (
+            f"post-session reconciliation did not run; run_kinds={kinds}"
+        )

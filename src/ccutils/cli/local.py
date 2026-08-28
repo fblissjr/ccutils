@@ -30,7 +30,8 @@ from ..schemas.star import (
     export_star_schema_to_json,
 )
 from ..etl.lineage import BatchRun
-from ..etl.orchestrator import run_post_session_reconciliation, run_v15_etl
+from ..etl.global_sources import run_global_sources
+from ..etl.orchestrator import run_v15_etl
 from ..export import (
     generate_html,
     generate_markdown,
@@ -227,6 +228,30 @@ def convert_cmd(
         )
     if private:
         warn_private_best_effort()
+
+    # A flag that cannot do anything must say so. `--private` on duckdb/json
+    # has always failed this way and is the model; these two did not.
+    #
+    # `--embed` was accepted and ignored on every render format, exit 0, no
+    # message. `--llm-facets` was worse than ignored: the extractor was
+    # built before the format was dispatched, so an HTML export demanded an
+    # ANTHROPIC_API_KEY and exited 2 on a credential it would never use.
+    # Both checks come BEFORE any credential resolution, so the rejection is
+    # about the format and does not depend on having a key.
+    if output_format in ("html", "markdown"):
+        if embed:
+            raise click.UsageError(
+                f"--embed does nothing with --format {output_format}: "
+                "embeddings are written to the star schema, which the render "
+                "formats do not build. Use --format duckdb, or drop --embed."
+            )
+        if with_llm_facets:
+            raise click.UsageError(
+                f"--llm-facets does nothing with --format {output_format}: "
+                "Tier 2 facets are written to fact_session_facets, which the "
+                "render formats do not build. Use --format duckdb, or drop "
+                "--llm-facets."
+            )
 
     if source is not None:
         # Batch mode: every session under a directory. Delegates to the
@@ -442,11 +467,13 @@ def _etl_session_files(
             except Exception as exc:  # noqa: BLE001 -- isolate one bad file
                 failures.append((session_file, exc))
                 click.echo(f"  skipped {session_file.name}: {exc}", err=True)
-        # Cross-session passes, after every session is in. The batch path
-        # (export/duckdb_archive.py) calls the same function -- `local` and
-        # `all` diverging on post-ETL steps is a bug this project shipped
-        # once already, leaving derived tables empty on the `local` path.
-        run_post_session_reconciliation(conn, batch_run_id=batch.batch_run_id)
+        # Every global source, after every session is in -- the SAME call
+        # the batch path makes. This path used to run only the
+        # reconciliation third of it, so a single-session warehouse had
+        # dim_prompt and the memory tables empty while fact_messages
+        # carried prompt_id: an FK pointing at an empty dimension. One
+        # warehouse means one shape, so both paths call one function.
+        run_global_sources(conn, batch_run_id=batch.batch_run_id)
         batch.complete(expected_sessions=len(session_files))
     if failures:
         click.echo(
@@ -541,13 +568,26 @@ def _run_export_pipeline(
             click.echo(f"Output: {output.resolve()}")
 
     elif output_format == "duckdb":
-        db_path = (
-            output.with_suffix(".duckdb") if output.suffix != ".duckdb" else output
-        )
-        db_path.parent.mkdir(parents=True, exist_ok=True)
+        # -o names a DIRECTORY, here as everywhere else. It used to be a
+        # path stem: `-o DIR/e` wrote `DIR/e.duckdb` and dropped
+        # `parquet_lake/` in DIR -- two things beside the path the user
+        # named rather than inside it, and the lake in particular landed
+        # wherever the user happened to be standing.
+        #
+        # A path ending in `.duckdb` is still honoured, because typing one
+        # is the obvious thing to try and silently reinterpreting it would
+        # be its own surprise. Everything else is a directory holding
+        # archive.duckdb + parquet_lake/, matching the batch path.
+        if output.suffix == ".duckdb":
+            db_path = output
+            output_dir = output.parent
+        else:
+            output_dir = output
+            db_path = output / "archive.duckdb"
+        output_dir.mkdir(parents=True, exist_ok=True)
 
         conn = create_star_schema(db_path)
-        parquet_lake = output.parent / "parquet_lake"
+        parquet_lake = output_dir / "parquet_lake"
         _etl_session_files(
             conn, session_files,
             project_name=project_name,

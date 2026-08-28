@@ -14,6 +14,7 @@ from pathlib import Path
 
 import duckdb
 
+from ..etl.global_sources import run_global_sources
 from ..parsers import find_all_sessions
 from ..schemas import (
     create_star_schema,
@@ -48,52 +49,6 @@ _PROGRESS_TABLES = (
     "fact_tool_chain_steps",
     "fact_session_facets",
 )
-
-
-def _import_auto_memory(conn, *, batch_run_id: str | None = None) -> int:
-    """Ingest Claude Code auto memory for the projects this archive covers.
-
-    Scoped to the project directories already in ``dim_project`` so a
-    filtered run (``-p mitate``) does not pull in every other project's
-    memory from the same machine -- ``dim_project.project_name`` is the
-    encoded ``projects/`` directory name, which is exactly the memory
-    directory's owner.
-
-    Subagent memory declared ``memory: project`` / ``memory: local`` lives
-    in the repository rather than under the Claude home, so repo roots come
-    from the sessions themselves (``dim_session.cwd``). A session started in
-    a subdirectory of its repo will not surface that repo's committed agent
-    memory; the user-scope directory is always scanned.
-    """
-    from ..etl.dim_memory import run_memory_import
-
-    def _scope() -> dict:
-        """Resolve the import's arguments. Runs INSIDE the recorded run."""
-        claude_home = Path.home() / ".claude"
-        projects = {
-            row[0]
-            for row in conn.execute(
-                "SELECT DISTINCT project_name FROM dim_project "
-                "WHERE project_name IS NOT NULL"
-            ).fetchall()
-        }
-        repo_paths = [
-            row[0]
-            for row in conn.execute(
-                "SELECT DISTINCT cwd FROM dim_session WHERE cwd IS NOT NULL"
-            ).fetchall()
-        ]
-        return {
-            "projects_root": claude_home / "projects",
-            # Deliberately not `projects or None`: None means "every project
-            # on the machine", so an empty dim_project would invert the
-            # scoping and ingest everything. An empty set ingests nothing.
-            "only": projects,
-            "agent_user_root": claude_home / "agent-memory",
-            "agent_repo_paths": repo_paths,
-        }
-
-    return run_memory_import(conn, batch_run_id=batch_run_id, resolve_kwargs=_scope)
 
 
 def generate_duckdb_archive(
@@ -265,36 +220,9 @@ def generate_duckdb_archive(
                         stats,
                     )
 
-        # Cross-session reconciliation: a parent is normally ETL'd before the
-        # agent it spawned, so delegation rollups can only be derived once
-        # every session is in. NOT best-effort -- a silent failure here puts
-        # the warehouse back to reporting acknowledgment latencies as agent
-        # durations. cli/local.py calls the same function.
-        from ..etl.orchestrator import run_post_session_reconciliation
-
-        run_post_session_reconciliation(
-            conn, batch_run_id=batch.batch_run_id,
-        )
-
-        # history.jsonl is a global file (not per-session) so we ingest it
-        # once after the per-session loop, best-effort.
-        try:
-            from ..etl.dim_prompt import import_history
-
-            history_path = Path.home() / ".claude" / "history.jsonl"
-            import_history(conn, history_path)
-        except Exception:
-            # history ingestion is optional -- never fail the archive build
-            # because of it.
-            pass
-
-        # Auto memory lives per-repository, not per-session, so it is
-        # ingested once after the loop for the same reason as history --
-        # but as a RECORDED run, not a bare call. run_memory_import owns
-        # its own error handling: a failure lands as a failed
-        # fact_etl_runs row rather than vanishing, and the archive still
-        # completes because memory is additive.
-        _import_auto_memory(conn, batch_run_id=batch.batch_run_id)
+        # Every source that is global rather than per-session, in one
+        # call that both entry points make. See run_global_sources.
+        run_global_sources(conn, batch_run_id=batch.batch_run_id)
 
         # Per-session failures were isolated above (they land as failed
         # fact_etl_runs children and make the batch 'partial').
