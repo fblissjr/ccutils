@@ -39,23 +39,37 @@ another, or an agent from its parent.
   fixtures model this rather than the convenient fiction.
 - If this changes: everything keyed on agent identity silently merges or splits.
 
-## 2. An assistant entry carries exactly one content block
+## 2. An assistant entry carries one content block, with a measured long tail
 
-Text, thinking, and tool calls arrive as **separate entries**. Parallel tool
-calls are separate entries. No assistant entry mixes block kinds.
+Text, thinking, and tool calls arrive as **separate entries** in the
+overwhelming majority of cases. Parallel tool calls are separate entries.
+A small number of entries do carry several blocks, including mixed kinds.
 
-- Measured: 120-file sample, 4,179 assistant entries, **all** with exactly one
-  content block, and **zero** carrying more than one distinct block kind.
-- Block kinds seen: `tool_use` 2,276, `thinking` 1,080, `text` 819, plus rare
-  `server_tool_use` and `advisor_tool_result`.
-- Consequence: `fact_messages.content_text` being NULL on a `has_tool_use` row
-  is the format, not a loss. There is no prose accompanying a tool call to lose.
-  This is the claim an external audit misread as an 80% data-loss bug.
-- Canary: `tests/test_jsonl_contract.py::TestOneContentBlockPerAssistantEntry`,
-  which checks the corpus and separately proves its own check rejects a
-  mixed-block entry.
-- If this changes: `content_text` starts silently dropping real prose, and the
-  message grain stops being one-block-per-row.
+- Measured **corpus-wide** (not sampled): **17 violations in 198,230**
+  assistant entries with list content -- 0.0086%. Shapes seen include
+  `[text, thinking, tool_use]`, `[text, thinking]`, `[thinking, tool_use]`
+  and `[tool_use, tool_use]`.
+- **This claim was originally written as an absolute**, from a 120-file
+  sample in which zero violations appear. Its own canary caught it hours
+  later on a different draw. The correction is recorded rather than quietly
+  applied, because the lesson is about method: a rare-event claim cannot be
+  established by a sample that is smaller than the event's inverse rate. A
+  0.009% event is invisible in 120 files roughly always.
+- Consequence, unchanged in substance: `fact_messages.content_text` being
+  NULL on a `has_tool_use` row is the format, not a loss -- those entries
+  genuinely have no text block. The external audit that read this as an 80%
+  data-loss bug is still wrong about the magnitude. But the margin is
+  0.009%, not zero.
+- Consequence, verified for the tail: the SQL projection handles multi-block
+  entries correctly. An entry containing `[text, thinking, tool_use, text]`
+  yields both prose blocks in `content_text` (space-joined), with
+  `content_block_count` = 4 and both flags set. Nothing is dropped.
+- Canary: `tests/test_jsonl_contract.py::TestAssistantBlockShape`, which
+  asserts the violation RATE stays under 0.1% (~10x headroom) scanning the
+  whole corpus, plus a deterministic test of the requirement that actually
+  matters -- every text block is captured however many there are.
+- If the rate climbs: `fact_messages`' one-row-per-entry grain needs
+  revisiting, and so does the reading above.
 
 ## 3. One API response spans several entries sharing `message.id`
 

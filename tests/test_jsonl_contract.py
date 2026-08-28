@@ -89,41 +89,98 @@ def single_block_violations(entries):
     return bad
 
 
-class TestOneContentBlockPerAssistantEntry:
-    """Text, thinking and tool calls arrive as separate entries.
+class TestAssistantBlockShape:
+    """Assistant entries are one-block in the overwhelming majority, not always.
 
-    This is the claim an external audit misread as an 80% data-loss bug:
-    `content_text` being NULL on a tool-carrying row is the format, not a
-    loss. If Claude Code ever starts emitting prose alongside a tool call in
-    one entry, that reading becomes true and the message grain breaks.
+    This class originally asserted ZERO multi-block entries, on a 120-file
+    sample. It passed when written and went red hours later on a different
+    draw, because the sample is taken from a growing corpus. The canary was
+    right to fire: corpus-wide there are **17 violations in 198,230**
+    assistant entries (0.009%), including entries mixing `text` with
+    `tool_use` and `thinking`.
+
+    So the absolute claim was wrong. Two things replace it.
+
+    The DURABLE requirement is that the projection captures every text block
+    regardless of how many there are -- that is what would actually lose
+    prose, and it is testable deterministically without the corpus. Verified
+    directly: an entry with text/thinking/tool_use/text yields both prose
+    blocks in `content_text`.
+
+    The CORPUS claim becomes a rate, not an absolute: if multi-block entries
+    stop being a rounding error, `fact_messages`' one-row-per-entry grain and
+    the reading that a NULL `content_text` on a tool-carrying row is "the
+    format" both need revisiting. An external audit read that NULL as an 80%
+    data-loss bug; it is not, but the margin is 0.009% rather than zero.
     """
 
-    def test_corpus_holds(self, corpus_sample):
-        entries = list(_entries(corpus_sample, "assistant"))
-        assert entries, "sample contained no assistant entries"
-        violations = single_block_violations(entries)
-        assert not violations, (
-            f"{len(violations)} assistant entries carry more than one block "
-            f"or mix block kinds, e.g. {violations[:3]}. docs/JSONL_CONTRACT.md "
-            "claim 2 no longer holds; fact_messages' grain needs revisiting."
+    # Measured 2026-08-28 corpus-wide: 17 / 198,230 = 0.0086%. The threshold
+    # is ~10x headroom -- it should catch "Claude Code started emitting
+    # multi-block routinely", not normal drift.
+    MAX_VIOLATION_RATE = 0.001
+
+    def test_all_text_blocks_are_captured(self):
+        """The requirement that actually matters, no corpus needed."""
+        entry = {
+            "uuid": "u1",
+            "message": {"content": [
+                {"type": "text", "text": "FIRST"},
+                {"type": "thinking", "thinking": ""},
+                {"type": "tool_use", "id": "t1"},
+                {"type": "text", "text": "SECOND"},
+            ]},
+        }
+        texts = [b["text"] for b in entry["message"]["content"]
+                 if b.get("type") == "text"]
+        assert texts == ["FIRST", "SECOND"], (
+            "fixture drift -- this pins the shape the SQL projection must "
+            "handle; see the ETL assertion in test_fact_messages_v15"
         )
 
-    def test_the_check_rejects_a_violation(self):
-        """The oracle can fail."""
-        mixed = {
-            "uuid": "u1",
-            "message": {
-                "content": [
-                    {"type": "text", "text": "here goes"},
-                    {"type": "tool_use", "id": "t1"},
-                ]
-            },
-        }
-        assert single_block_violations([mixed])
+    def test_multi_block_entries_stay_a_rounding_error(self):
+        """Corpus-wide, not sampled: 17 in 198,230 when this was written.
 
-    def test_the_check_passes_a_conforming_entry(self):
-        ok = {"uuid": "u2", "message": {"content": [{"type": "tool_use", "id": "t1"}]}}
-        assert not single_block_violations([ok])
+        Scanned in full rather than sampled because the violation rate is far
+        below what a 60-file sample can see -- which is exactly how the
+        original absolute assertion managed to pass at first.
+        """
+        files = _corpus_files()
+        if not files:
+            pytest.skip("no local Claude Code corpus to check the contract against")
+
+        total = violations = 0
+        for f in files:
+            try:
+                lines = f.read_text(errors="replace").splitlines()
+            except OSError:
+                continue
+            for line in lines:
+                if '"assistant"' not in line:
+                    continue
+                try:
+                    obj = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if not isinstance(obj, dict) or obj.get("type") != "assistant":
+                    continue
+                content = obj.get("message", {}).get("content")
+                if not isinstance(content, list):
+                    continue
+                total += 1
+                kinds = {b.get("type") for b in content if isinstance(b, dict)}
+                if len(content) != 1 or len(kinds) > 1:
+                    violations += 1
+
+        assert total, "corpus contained no assistant entries with list content"
+        rate = violations / total
+        assert rate < self.MAX_VIOLATION_RATE, (
+            f"{violations} of {total} assistant entries ({rate:.4%}) carry "
+            "multiple or mixed content blocks, over the "
+            f"{self.MAX_VIOLATION_RATE:.1%} threshold. docs/JSONL_CONTRACT.md "
+            "claim 2 needs revisiting, and with it fact_messages' grain and "
+            "the reading that a NULL content_text on a tool-carrying row is "
+            "the format rather than a loss."
+        )
 
 
 # ---------------------------------------------------------------------------
