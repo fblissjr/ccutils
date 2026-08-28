@@ -78,7 +78,8 @@ def create_star_schema(db_path):
             error_message VARCHAR,
             batch_run_id VARCHAR,               -- FK fact_etl_batch_runs (NULL for standalone runs)
             data_start_ts TIMESTAMP,            -- CDC window: min entry timestamp staged this run
-            data_end_ts TIMESTAMP               -- CDC window: max entry timestamp staged this run
+            data_end_ts TIMESTAMP,              -- CDC window: max entry timestamp staged this run
+            run_kind VARCHAR                    -- session | reconciliation | global_source
         )
     """
     )
@@ -1092,6 +1093,16 @@ def create_star_schema(db_path):
             -- name. On a background launch the stated columns describe the
             -- launch acknowledgment, not the work, and are deliberately NULL.
             agent_derived_output_text TEXT,
+            agent_derived_io_tokens INTEGER,
+
+            -- Spawn-side facts about the delegation itself. NULL semantics
+            -- differ from the rollups above: agent_is_async says which shape
+            -- the tool result had, and completion_state says which of the
+            -- delegation's outcomes actually happened -- it is what the
+            -- reconciliation pass keys every rollup on.
+            agent_resolved_model VARCHAR,
+            agent_is_async BOOLEAN,
+            completion_state VARCHAR,
 
             -- Timing
             timestamp TIMESTAMP,

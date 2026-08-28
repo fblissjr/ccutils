@@ -875,3 +875,67 @@ class TestColumnMigrations:
             }
             assert column in cols, f"{table}.{column} not re-added by migration"
         conn.close()
+
+
+class TestCreateTableIsSelfSufficient:
+    """Every migrated column must ALSO exist in its table's CREATE.
+
+    Migrations run after the CREATEs on every `create_star_schema()` call, so
+    a column that lives only in `_COLUMN_MIGRATIONS` is invisibly fine today:
+    fresh warehouses get it from the ALTER, existing ones get it from the
+    ALTER, and nothing distinguishes the two.
+
+    1.0.0 deletes `_COLUMN_MIGRATIONS` wholesale under the no-migration rule.
+    Any column that exists only there disappears from every fresh warehouse
+    at that moment. Five did when this test was written --
+    `fact_agent_delegations.agent_resolved_model`, `.agent_is_async`,
+    `.completion_state`, `.agent_derived_io_tokens`, and
+    `fact_etl_runs.run_kind` -- and `completion_state` is the column the
+    entire delegation reconciliation pass keys on, so the failure would have
+    been "delegation outcomes silently stop working" rather than an error.
+
+    Delete this test and that trap can quietly grow again between now and the
+    deletion. The rule it encodes outlives `_COLUMN_MIGRATIONS`: a CREATE
+    statement should be a complete description of its table.
+    """
+
+    def _create_body(self, source: str, table: str) -> str:
+        marker = f"CREATE TABLE IF NOT EXISTS {table} ("
+        start = source.index(marker) + len(marker)
+        depth = 1
+        for i, ch in enumerate(source[start:], start):
+            if ch == "(":
+                depth += 1
+            elif ch == ")":
+                depth -= 1
+                if depth == 0:
+                    return source[start:i]
+        raise AssertionError(f"unbalanced CREATE for {table}")
+
+    def test_every_migrated_column_is_also_in_its_create(self):
+        import re
+        from pathlib import Path
+
+        import ccutils.schemas.star.schema as schema_mod
+
+        source = Path(schema_mod.__file__).read_text()
+        missing = []
+        for table, column, _type in schema_mod._COLUMN_MIGRATIONS:
+            body = self._create_body(source, table)
+            if not re.search(rf"^\s*{re.escape(column)}\s+\w", body, re.M):
+                missing.append(f"{table}.{column}")
+        assert not missing, (
+            "these columns exist ONLY in _COLUMN_MIGRATIONS and would vanish "
+            f"from fresh warehouses when it is deleted: {missing}. Add each "
+            "to its CREATE TABLE body."
+        )
+
+    def test_the_check_can_actually_fail(self):
+        """The oracle detects a column absent from a CREATE body."""
+        body = self._create_body(
+            "CREATE TABLE IF NOT EXISTS t (\n    a VARCHAR,\n    b INTEGER\n)", "t"
+        )
+        import re
+
+        assert re.search(r"^\s*a\s+\w", body, re.M)
+        assert not re.search(r"^\s*zzz_absent\s+\w", body, re.M)

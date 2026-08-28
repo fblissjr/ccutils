@@ -5,6 +5,9 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+- **Five columns existed only in `_COLUMN_MIGRATIONS` and in no `CREATE TABLE`, and would have vanished when that list is deleted.** `fact_agent_delegations.agent_resolved_model`, `.agent_is_async`, `.completion_state`, `.agent_derived_io_tokens` and `fact_etl_runs.run_kind`. This was invisible because migrations run after the CREATEs on every `create_star_schema()` call, so fresh and existing warehouses both got the column from the ALTER and nothing distinguished them. Since 1.0.0 deletes `_COLUMN_MIGRATIONS` wholesale under the no-migration rule, all five would have disappeared from every fresh warehouse at that moment -- and `completion_state` is the column the delegation reconciliation pass keys every rollup on, so the symptom would have been "delegation outcomes silently stop working" rather than an error. Each is now declared in its table's CREATE, with a test (`TestCreateTableIsSelfSufficient`) asserting the two stay in sync so a sixth cannot appear before the deletion. Both paths verified: a fresh warehouse gets all five from the CREATE, an older one still heals via the ALTER, and the column sets match.
+
 ## [0.20.0]
 
 ### Changed
