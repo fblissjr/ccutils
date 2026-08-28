@@ -281,7 +281,7 @@ class TestParquetLakeRetainsThinkingByDesign:
 
 
 class TestTier2WithNoThinkingExcludesThinkingFromExtractor:
-    """When `--with-llm-facets --no-thinking` are combined, the Tier 2
+    """When `--llm-facets --no-thinking` are combined, the Tier 2
     extractor's `SessionInputs` must not contain thinking text -- otherwise
     the LLM sees content the user explicitly opted out of, and the extracted
     facet (persisted to fact_session_facets.value_text) could echo it.

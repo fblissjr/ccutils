@@ -64,6 +64,7 @@ def generate_duckdb_archive(
     facet_extractor=None,
     output_format="duckdb",
     projects=None,
+    scope_history=False,
 ):
     """Generate a DuckDB archive for all sessions under ``source_folder``.
 
@@ -100,6 +101,11 @@ def generate_duckdb_archive(
         output_format: label recorded on the fact_etl_batch_runs row --
             "duckdb" for a direct archive, "json" when driven by
             generate_json_archive.
+        scope_history: keep dim_prompt to the projects this archive covers.
+            The CALLER decides, because it follows intent and `projects`
+            cannot signal it -- the CLI passes a pre-scanned list whether or
+            not `-p` was given. See run_global_sources for why scoping a
+            full-corpus build would lose rows rather than being a no-op.
         projects: optional pre-scanned project list (find_all_sessions
             output). Passing it avoids a second full tree walk AND is how
             the CLI's -p project filter reaches this path; None rescans
@@ -222,7 +228,12 @@ def generate_duckdb_archive(
 
         # Every source that is global rather than per-session, in one
         # call that both entry points make. See run_global_sources.
-        run_global_sources(conn, batch_run_id=batch.batch_run_id)
+        # Scope history iff the user asked for a subset. An unfiltered
+        # full-corpus run asked for everything, and scoping it would
+        # drop the ~11% of prompts whose project directory no longer
+        # exists or never had a session.
+        run_global_sources(conn, batch_run_id=batch.batch_run_id,
+                           scope_to_covered_projects=scope_history)
 
         # Per-session failures were isolated above (they land as failed
         # fact_etl_runs children and make the batch 'partial').

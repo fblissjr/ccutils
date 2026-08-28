@@ -345,6 +345,7 @@ def all_cmd(
             private=private,
             facet_extractor=facet_extractor,
             projects=projects,
+            scope_history=bool(project_filter),
         )
         if stats is None:
             stats = duckdb_stats

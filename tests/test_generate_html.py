@@ -2278,7 +2278,7 @@ class TestNoThinkingIsHonouredByHtml:
 
     Claim: this asserts the flag's EFFECT, not its acceptance. It shipped
     broken precisely because nothing did -- `generate_html` had no
-    `include_thinking` parameter at all, so `ccutils local --format html
+    `include_thinking` parameter at all, so `ccutils --format html
     --no-thinking` exited 0 and produced output byte-identical to the
     default, with every thinking block rendered. `export/markdown.py`
     honoured the same flag, so the two renderers silently disagreed.

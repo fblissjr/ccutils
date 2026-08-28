@@ -1,4 +1,4 @@
-"""CLI integration tests for --with-llm-facets / --batch-llm-facets.
+"""CLI integration tests for --llm-facets.
 
 Step 4 follow-up. Verifies the flags wire end-to-end:
   - Construct AnthropicFacetExtractor at the CLI boundary.
@@ -108,7 +108,7 @@ class TestLocalCommand:
     def test_default_does_not_construct_extractor(
         self, sample_jsonl, tmp_path, monkeypatch
     ):
-        # Without --with-llm-facets, the CLI must not touch
+        # Without --llm-facets, the CLI must not touch
         # resolve_anthropic_key or construct an extractor. Otherwise
         # users without an API key can't use the basic pipeline.
         called = []
@@ -132,7 +132,7 @@ class TestLocalCommand:
         )
         assert result.exit_code == 0, result.output
         assert called == [], (
-            "Credentials must NOT be resolved when --with-llm-facets is absent"
+            "Credentials must NOT be resolved when --llm-facets is absent"
         )
 
     def test_with_llm_facets_constructs_and_passes_extractor(
@@ -273,13 +273,13 @@ class TestAllCommand:
         )
         assert result.exit_code == 0, result.output
         assert called == [], (
-            "Credentials must NOT be resolved when --batch-llm-facets is absent"
+            "Credentials must NOT be resolved when --llm-facets is absent"
         )
 
     def test_json_star_format_forwards_extractor(
         self, sample_jsonl, tmp_path, monkeypatch, recorded_extractors
     ):
-        # R-6 from simplify review: --format json + --batch-llm-facets
+        # R-6 from simplify review: --format json + --llm-facets
         # goes through generate_json_archive, which delegates to
         # generate_duckdb_archive internally. Ensure the extractor
         # actually reaches that internal path.

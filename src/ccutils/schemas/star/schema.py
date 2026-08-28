@@ -84,7 +84,7 @@ def create_star_schema(db_path):
     """
     )
 
-    # fact_etl_batch_runs: one row per CLI orchestration (a `ccutils all`
+    # fact_etl_batch_runs: one row per CLI orchestration (a `ccutils`
     # or `ccutils local` invocation). Children in fact_etl_runs link back
     # via batch_run_id; complete() rolls their counts + CDC window up here.
     # Accumulating-snapshot audit table: rows are UPDATEd as the batch

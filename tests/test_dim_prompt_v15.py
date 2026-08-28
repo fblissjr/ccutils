@@ -5,7 +5,7 @@ Linked to dim_session via session_id when the history entry carries one.
 
 Stays minimal -- matches the dim_tool / dim_model pattern (no lineage
 block). Not part of run_v15_etl: history.jsonl is a global file, not
-per-session, so the populator is called explicitly (e.g. by `ccutils all`
+per-session, so the populator is called explicitly (e.g. by `ccutils --source`
 after the per-session loop).
 """
 
@@ -137,3 +137,105 @@ class TestDimPrompt:
         import_history(conn, tmp_path / "does_not_exist.jsonl")
         n = conn.execute("SELECT COUNT(*) FROM dim_prompt").fetchone()[0]
         assert n == 0
+
+
+class TestHistoryIsScopedToTheWarehousesProjects:
+    """A warehouse must not contain prompts from projects it does not cover.
+
+    `history.jsonl` is machine-wide. Importing it unscoped put every prompt
+    the user had ever typed into every warehouse: measured 2026-08-28, a
+    ONE-SESSION warehouse for one project held 11,606 prompts from 103
+    projects.
+
+    That contradicts the project's stated privacy boundary -- a shared
+    artifact is SCOPED, not scrubbed, so a wiki generated for named projects
+    must contain nothing else. `_import_auto_memory` already scopes this way
+    off `dim_project`; history did not, although every history entry already
+    carries the project path needed to do it.
+
+    Delete these and a scoped export silently becomes a machine-wide one,
+    which is the exact failure the scoping decision exists to prevent.
+    """
+
+    def _history(self, tmp_path, *projects):
+        f = tmp_path / "history.jsonl"
+        f.write_text("\n".join(json.dumps({
+            "display": f"prompt for {p}",
+            "timestamp": 1737000000000 + i,
+            "project": p,
+            "pastedContents": {},
+        }) for i, p in enumerate(projects)))
+        return f
+
+    def _warehouse_covering(self, conn, *cwds):
+        for i, cwd in enumerate(cwds):
+            conn.execute(
+                "INSERT INTO dim_project (project_key, project_name, project_path) "
+                "VALUES (?, ?, ?)",
+                [f"pk{i}", "-" + cwd.strip("/").replace("/", "-"), cwd],
+            )
+            conn.execute(
+                "INSERT INTO dim_session (session_key, session_id, cwd) "
+                "VALUES (?, ?, ?)", [f"sk{i}", f"s{i}", cwd],
+            )
+
+    def test_only_covered_projects_are_imported(self, conn, tmp_path):
+        self._warehouse_covering(conn, "/home/user/projects/mine")
+        hist = self._history(
+            tmp_path, "/home/user/projects/mine", "/home/user/projects/other"
+        )
+
+        import_history(conn, hist, only_projects=True)
+
+        rows = conn.execute(
+            "SELECT DISTINCT project_path FROM dim_prompt"
+        ).fetchall()
+        assert rows == [("/home/user/projects/mine",)]
+
+    def test_unscoped_import_still_takes_everything(self, conn, tmp_path):
+        """A full-corpus build loses nothing -- scoping only bites on filters."""
+        self._warehouse_covering(conn, "/home/user/projects/mine")
+        hist = self._history(
+            tmp_path, "/home/user/projects/mine", "/home/user/projects/other"
+        )
+
+        import_history(conn, hist, only_projects=False)
+
+        assert conn.execute("SELECT COUNT(*) FROM dim_prompt").fetchone()[0] == 2
+
+    def test_a_dashed_project_name_still_matches(self, conn, tmp_path):
+        """The encoding is lossy in one direction only.
+
+        `-home-user-projects-fb-claude-skills` decodes to
+        `/home/user/projects/fb/claude/skills` -- a different, nonexistent
+        path. A first cut decoded backward and silently dropped every prompt
+        for any project whose name contains a dash. Encode FORWARD instead:
+        that is exact.
+        """
+        conn.execute(
+            "INSERT INTO dim_project (project_key, project_name, project_path) "
+            "VALUES ('pk', '-home-user-projects-fb-claude-skills', '/x')"
+        )
+        hist = self._history(
+            tmp_path,
+            "/home/user/projects/fb-claude-skills",
+            "/home/user/projects/unrelated",
+        )
+
+        import_history(conn, hist, only_projects=True)
+
+        rows = conn.execute("SELECT project_path FROM dim_prompt").fetchall()
+        assert rows == [("/home/user/projects/fb-claude-skills",)]
+
+    def test_a_warehouse_covering_nothing_imports_nothing(self, conn, tmp_path):
+        """An empty scope means NOTHING, never everything.
+
+        `_import_auto_memory` carries this same warning: treating an empty
+        project set as "unfiltered" inverts the scoping and ingests the whole
+        machine, which is the worst possible reading of an empty set.
+        """
+        hist = self._history(tmp_path, "/home/user/projects/mine")
+
+        import_history(conn, hist, only_projects=True)
+
+        assert conn.execute("SELECT COUNT(*) FROM dim_prompt").fetchone()[0] == 0

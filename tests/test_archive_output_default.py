@@ -57,7 +57,7 @@ class TestDefaultArchiveOutput:
 
 
 class TestAllCommandDefaultOutput:
-    """`ccutils all` with no -o."""
+    """`ccutils --source` with no -o."""
 
     def test_archive_lands_under_home_not_cwd(self, mock_projects_dir, fake_home):
         runner = CliRunner()
@@ -86,7 +86,7 @@ class TestAllCommandDefaultOutput:
 
 
 class TestLocalPickerDefaultOutput:
-    """`ccutils local` picker mode with no -o -- the other default site."""
+    """Picker mode with no -o -- the other default site."""
 
     @pytest.fixture
     def picked_session(self, fake_home, monkeypatch):

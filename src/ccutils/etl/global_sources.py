@@ -20,7 +20,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-def _import_auto_memory(conn, *, batch_run_id: str | None = None) -> int:
+def _import_auto_memory(conn, *, batch_run_id: str | None = None,
+                        claude_home: Path | None = None) -> int:
     """Ingest Claude Code auto memory for the projects this archive covers.
 
     Scoped to the project directories already in ``dim_project`` so a
@@ -39,7 +40,7 @@ def _import_auto_memory(conn, *, batch_run_id: str | None = None) -> int:
 
     def _scope() -> dict:
         """Resolve the import's arguments. Runs INSIDE the recorded run."""
-        claude_home = Path.home() / ".claude"
+        home = Path(claude_home) if claude_home else Path.home() / ".claude"
         projects = {
             row[0]
             for row in conn.execute(
@@ -54,19 +55,21 @@ def _import_auto_memory(conn, *, batch_run_id: str | None = None) -> int:
             ).fetchall()
         ]
         return {
-            "projects_root": claude_home / "projects",
+            "projects_root": home / "projects",
             # Deliberately not `projects or None`: None means "every project
             # on the machine", so an empty dim_project would invert the
             # scoping and ingest everything. An empty set ingests nothing.
             "only": projects,
-            "agent_user_root": claude_home / "agent-memory",
+            "agent_user_root": home / "agent-memory",
             "agent_repo_paths": repo_paths,
         }
 
     return run_memory_import(conn, batch_run_id=batch_run_id, resolve_kwargs=_scope)
 
 
-def run_global_sources(conn, *, batch_run_id: str | None = None) -> None:
+def run_global_sources(conn, *, batch_run_id: str | None = None,
+                       claude_home: Path | None = None,
+                       scope_to_covered_projects: bool = False) -> None:
     """Run every global source, in dependency order.
 
     Ordering: reconciliation first, because it derives delegation rollups
@@ -79,18 +82,42 @@ def run_global_sources(conn, *, batch_run_id: str | None = None) -> None:
     duration, which is worse than no warehouse. History is best-effort and
     swallowed -- it is optional and unrecorded. Memory is additive and
     records its own failure as a failed run rather than vanishing.
+
+    ``claude_home`` is injected rather than read from ``Path.home()`` here so
+    a test can point the whole thing at a temp directory. Reading the real
+    home inside made every warehouse-building test depend on the developer's
+    machine state -- and slow, since it parsed a multi-megabyte history file.
+
+    ``scope_to_covered_projects`` keeps history to the projects the warehouse
+    already covers. The caller decides, because the answer follows INTENT:
+
+    - a subset build (named PATHS, the picker, or ``-p``) must not carry
+      other projects' prompts -- a one-session warehouse held 11,606 prompts
+      from 103 projects before this;
+    - a full-corpus build asked for everything, and scoping it is NOT the
+      no-op it looks like. Measured: forward-encoding matches 88.9% of
+      history entries to a project directory, so scoping a full build would
+      silently drop the other 11% -- prompts typed in directories that never
+      became a session, or whose project has since been pruned.
+
+    Hence the default is False: taking too much is a privacy problem only
+    where the user asked for a subset, whereas dropping rows is a data-loss
+    problem everywhere.
     """
     from .orchestrator import run_post_session_reconciliation
+
+    home = Path(claude_home) if claude_home else Path.home() / ".claude"
 
     run_post_session_reconciliation(conn, batch_run_id=batch_run_id)
 
     try:
         from .dim_prompt import import_history
 
-        import_history(conn, Path.home() / ".claude" / "history.jsonl")
+        import_history(conn, home / "history.jsonl",
+                       only_projects=scope_to_covered_projects)
     except Exception:
         # Optional: never fail a build because the global prompt history is
         # missing or malformed.
         pass
 
-    _import_auto_memory(conn, batch_run_id=batch_run_id)
+    _import_auto_memory(conn, batch_run_id=batch_run_id, claude_home=home)

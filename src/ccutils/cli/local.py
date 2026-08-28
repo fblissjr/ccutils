@@ -473,7 +473,12 @@ def _etl_session_files(
         # dim_prompt and the memory tables empty while fact_messages
         # carried prompt_id: an FK pointing at an empty dimension. One
         # warehouse means one shape, so both paths call one function.
-        run_global_sources(conn, batch_run_id=batch.batch_run_id)
+        # This entry point only ever builds a SUBSET -- named files or a
+        # picker selection -- so history is scoped to the projects the
+        # warehouse covers. Without it a one-session warehouse carried
+        # every prompt on the machine.
+        run_global_sources(conn, batch_run_id=batch.batch_run_id,
+                           scope_to_covered_projects=True)
         batch.complete(expected_sessions=len(session_files))
     if failures:
         click.echo(

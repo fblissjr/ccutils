@@ -1,7 +1,7 @@
 """Import Claude Code's prompt history (history.jsonl) into dim_prompt.
 
 Not part of run_v15_etl -- history.jsonl is a global file, not per-session,
-so this populator is called explicitly (e.g. by `ccutils all` after the
+so this populator is called explicitly (e.g. by `ccutils --source` after the
 per-session loop). Idempotent: prompt_key = md5(display_text || iso_timestamp)
 is stable across reloads, so re-importing the same history.jsonl produces
 no duplicates.
@@ -18,11 +18,66 @@ from ccutils.etl.utils import insert_missing_dim_dates
 from ccutils.parsers.history import iter_history_entries
 
 
-def import_history(conn, history_path: str | Path) -> int:
+def _project_dir_name(project_path: str) -> str:
+    """Claude Code's encoding of a real path: `/home/user/repo` -> `-home-user-repo`."""
+    return project_path.replace("/", "-")
+
+
+def _covers_project(conn):
+    """Predicate: does this warehouse cover the project a prompt came from?
+
+    Matched two ways, both EXACT. `dim_session.cwd` is a real path, which is
+    what a history entry carries. `dim_project.project_name` is Claude Code's
+    dashed encoding of one, so the entry's path is encoded FORWARD and
+    compared -- never decoded backward, because the encoding is lossy:
+    `-home-user-fb-claude-skills` decodes to `/home/user/fb/claude/skills`, which
+    is a different, nonexistent path. Encoding forward is exact for names
+    containing dashes; decoding is not.
+
+    No prefix or substring matching, per the resolver rule this project
+    already follows: a near-match invents a relationship the data never
+    stated, and here it would leak a neighbouring project's prompts into a
+    scoped artifact.
+    """
+    cwds = {
+        row[0] for row in conn.execute(
+            "SELECT DISTINCT cwd FROM dim_session WHERE cwd IS NOT NULL"
+        ).fetchall()
+    }
+    encoded = {
+        row[0] for row in conn.execute(
+            "SELECT DISTINCT project_name FROM dim_project "
+            "WHERE project_name IS NOT NULL"
+        ).fetchall()
+    }
+
+    def covers(project_path: str | None) -> bool:
+        if not project_path:
+            return False
+        return project_path in cwds or _project_dir_name(project_path) in encoded
+
+    return covers
+
+
+def import_history(conn, history_path: str | Path, *,
+                   only_projects: bool = False) -> int:
     """Load history.jsonl into dim_prompt. Returns the row count inserted.
 
     Missing or unreadable files are a no-op (returns 0) so callers can
     treat history ingestion as best-effort.
+
+    ``only_projects``: keep only prompts belonging to projects this warehouse
+    already covers. history.jsonl is MACHINE-WIDE, so importing it unscoped
+    put every prompt the user had ever typed into every warehouse -- measured
+    2026-08-28, a one-session warehouse held 11,606 prompts from 103
+    projects. That contradicts the rule that a shared artifact is scoped
+    rather than scrubbed.
+
+    Default False so a full-corpus build (which covers everything anyway)
+    keeps taking the lot and cross-project analysis is unaffected; the
+    scoping only bites where the user asked for a subset. An empty covered
+    set with ``only_projects=True`` imports NOTHING, never everything --
+    reading an empty scope as "unfiltered" would invert the whole point.
     """
     history_path = Path(history_path)
     if not history_path.exists():
@@ -32,8 +87,12 @@ def import_history(conn, history_path: str | Path) -> int:
         _backfill_prompt_dates(conn)
         return 0
 
+    covers = _covers_project(conn) if only_projects else None
+
     rows = []
     for entry in iter_history_entries(history_path):
+        if covers is not None and not covers(entry.project_path):
+            continue
         # Stable natural key: prompt + exact timestamp. Re-ingesting the
         # same line produces the same key.
         ts_iso = entry.timestamp.isoformat() if entry.timestamp else ""
