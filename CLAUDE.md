@@ -7,6 +7,7 @@ Always practice TDD: write a failing test, watch it fail, then make it pass. Com
 Reference docs (read these instead of expanding this file):
 
 - `README.md` -- CLI commands, export formats, defaults.
+- `docs/JSONL_CONTRACT.md` -- what the pipeline assumes about Claude Code's transcript format, each claim with the measurement behind it and the canary guarding it. **Read before writing any parser or fixture.** Upstream is unversioned and undocumented; four structural bugs and two wrong external audits came from assuming instead of checking.
 - `docs/STAR_SCHEMA.md` -- every table/view, lineage convention, run-metadata grains, populator order. Describes the warehouse **as built**.
 - `docs/ETL_ARCHITECTURE.md` -- the layering the ETL is **moving to**, and the three rules that decide where a new table/view/populator belongs. **DECIDED, NOT YET IMPLEMENTED**: existing populators do not conform, but anything added from now on should be born conforming. Sequenced migration in `internal/plans/etl_layer_rewrite.md`.
 - `docs/FACET_CLUSTER_PIPELINE.md` -- facet pipeline design + status.
