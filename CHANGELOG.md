@@ -5,6 +5,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.20.1]
+
 ### Fixed
 - **`--dry-run`, `-q`, `-j`, `--batch-size`, `--no-search-index` were accepted and ignored outside `--source`, and `--flat` / `--expand-chains` outside the picker.** `ccutils session.jsonl --dry-run -q` wrote files and printed output -- a dry run that creates things and a quiet run that talks. Ignoring `--dry-run` is the worst of the set, because it produces writes rather than a no-op. All now `UsageError`, matching `--embed` / `--llm-facets` / `--private`. Checked against click's parameter source, so a default never trips the guard.
 - **A scoped build left the prompts an earlier unscoped build had already inserted.** `import_history` is insert-only, and both the picker and `--source` default to the same directory, so building a full archive and then a scoped one -- the README's own two commands in order -- produced a warehouse that reported itself scoped while still holding every prompt on the machine. Scoping is now a state of the warehouse, not a filter on new inserts; out-of-scope and unattributable rows are removed. Safe because `dim_prompt` is derived and an unscoped run re-imports it.
