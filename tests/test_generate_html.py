@@ -195,6 +195,51 @@ class TestRenderFunctions:
         assert "<script>" not in result
         assert "&lt;script&gt;" in result
 
+    def test_template_interpolation_escapes_transcript_content(self, tmp_path):
+        """Jinja2 `autoescape` is load-bearing, and nothing tested it.
+
+        The tests above cover `render_markdown_text` -- the MARKDOWN channel,
+        which is safe because the renderer runs with `html=False` and escapes
+        raw HTML itself. Template interpolation is a SECOND, independent
+        channel: session ids, cwd, git branch, model names and tool inputs go
+        straight into templates, and only autoescape stands between an
+        attacker-controlled transcript and live markup.
+
+        Claim, verified by mutation: flipping `autoescape=True` to `False`
+        puts a raw `<script>alert(1)</script>` into the output HTML from this
+        exact fixture, and before this test the entire 162-test render suite
+        stayed green while it did. `nh3` does not help here -- it guards the
+        markdown channel, and the codebase's own comment calls it
+        defence-in-depth over a renderer already configured safe.
+
+        Delete this and the one control that actually escapes template
+        interpolation can be turned off silently.
+        """
+        payload = '"><script>alert(1)</script><x y="'
+        session = tmp_path / "proj" / "sess.jsonl"
+        session.parent.mkdir(parents=True, exist_ok=True)
+        session.write_text("\n".join(json.dumps(e) for e in [
+            {"type": "user", "uuid": "u1", "sessionId": payload,
+             "timestamp": "2026-01-15T10:00:00.000Z", "cwd": payload,
+             "gitBranch": payload,
+             "message": {"role": "user", "content": payload}},
+            {"type": "assistant", "uuid": "a1", "parentUuid": "u1",
+             "sessionId": "s", "timestamp": "2026-01-15T10:00:01.000Z",
+             "message": {"role": "assistant", "model": payload, "content": [
+                 {"type": "tool_use", "id": "t1", "name": payload,
+                  "input": {"file_path": payload}}]}},
+        ]))
+
+        out = tmp_path / "out"
+        out.mkdir()
+        generate_html(session, out)
+        html = next(out.glob("*.html")).read_text()
+
+        assert "<script>alert(1)</script>" not in html
+        # The content must still be VISIBLE, escaped -- an archive that
+        # silently drops what a prompt contained is its own defect.
+        assert "&lt;script&gt;" in html
+
     def test_render_markdown_text_neutralises_event_handlers(self):
         """An `onerror` attribute must never appear as markup.
 
