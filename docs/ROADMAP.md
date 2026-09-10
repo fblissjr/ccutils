@@ -194,13 +194,22 @@ they land.
 
 ### Open design questions
 
-- **Which table is authoritative for the agent rollup.** The seven
-  agent-rollup columns exist twice: `fact_tool_results` extracts them from
-  the parent's tool result at spawn time (NULL for async spawns), and
-  `fact_agent_delegations` re-derives them from the agent's own transcript.
-  Decide this first; the split shape for the rewrite's "retire the
-  reconciliation pass via a view" item follows from it, as does whether
-  `semantic_agent_delegations` survives the plain-join view deletion.
+- **Agent rollup provenance: DECIDED 2026-09-10.** `fact_tool_results` is
+  the only home for the stated rollup (`status`, `totalDurationMs`,
+  `totalTokens`, `totalToolUseCount`, `wasInterrupted`, `resolvedModel`).
+  `fact_agent_delegations` stops copying those columns and keeps only the
+  spawn-side identity (tool use id, parent and agent keys, timestamps, task
+  prompt, subagent type, `agent_is_async`). Every outcome value is derived
+  from the agent's own transcript under a `derived_` name, in a view rather
+  than the post-loop reconciliation pass, so it cannot go stale or be skipped
+  by one entry point. Consumers wanting the API's stated number join back to
+  `fact_tool_results`. Today `agent_total_duration_ms` and
+  `agent_total_tool_use_count` hold a stated value on sync rows and a derived
+  one on async rows under one name; the split ends that. Known cost to
+  measure first: sync delegations whose agent transcript was pruned lose
+  their outcome numbers, which `ccutils audit` should report as coverage.
+  Lands with the 1.3.0 rewrite; `semantic_agent_delegations` becomes the
+  derived view instead of being deleted.
 - **`recursive=` on `find_agent_sessions` is a documented no-op.** If a real
   depth selector is ever wanted, build it from the sidecar's stated
   `spawnDepth`.
@@ -249,6 +258,9 @@ if it is deleted.
 - **Hard CLI break, no aliases.** Removed names exit 2 with a pointer.
 - **A `SubagentStop` hook writing its own telemetry is rejected.** Every
   delegation value is recoverable from files at rest.
+- **The same value is stored once.** Stated values live where they are
+  stated (`fact_tool_results`); derived values carry a `derived_` name and
+  live in views. A fact never copies another fact's columns.
 - **`TaskCreate` is not an agent spawn.** `Agent` is the only tool name in
   the corpus carrying an agent rollup; `Task` is kept for older transcripts.
 
