@@ -148,18 +148,18 @@ class TestPlantedDefectsAreFound:
         assert findings
 
     def test_null_column_above_threshold(self, warehouse):
-        """Sixty Bash results, none with an exit code: the column is a
-        promise the source never keeps, and that is a finding."""
+        """Sixty-plus results and a column NULL on every one of them is a
+        promise the source never keeps, and that is a finding. (This is
+        the shape bash_exit_code had on 52,974 real rows before 1.0.0.)"""
         conn = _open(warehouse)
         conn.execute(
             "INSERT INTO fact_tool_results SELECT r.* REPLACE "
-            "('e' || i AS entry_id, 'toolu_' || i AS tool_use_id, 'Bash' AS tool_name, "
-            "NULL AS bash_exit_code) "
+            "('e' || i AS entry_id, 'toolu_' || i AS tool_use_id) "
             "FROM fact_tool_results r, range(60) t(i) LIMIT 60"
         )
         conn.close()
         findings, _ = _findings(warehouse, "null_column")
-        assert ("fact_tool_results", "bash_exit_code") in [
+        assert ("fact_tool_results", "webfetch_http_code") in [
             (f.object, f.detail) for f in findings
         ]
 

@@ -9,12 +9,6 @@ written by. There are no empty-by-design tables since 1.0.0. The one
 conditional table is `fact_session_embeddings` (rows only with `--embed`).
 Turn durations and stop events live in `fact_system_events` by `subtype`.
 
-## Unpopulated columns on populated tables
-
-`fact_messages.estimated_tokens`, `.response_time_seconds`,
-`.conversation_depth` are always NULL (DDL kept for compat). Use
-`input_tokens`/`output_tokens` and `fact_system_events` turn durations instead.
-
 ## Soft deletes
 
 Facts are never hard-deleted (`is_deleted`/`deleted_at`). Views that already

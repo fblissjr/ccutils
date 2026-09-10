@@ -114,6 +114,13 @@ def run_memory_import(
         with run.step("dim_memory", kind="stage", table="dim_memory") as counts:
             written = import_memories(conn, run=run, counts=counts, **kwargs)
             counts.rows_inserted = written
+        # Links are written inside the import; record them as their own
+        # step so etl.steps.table_name names every table this run wrote.
+        with run.step("bridge_memory_link", kind="stage", table="bridge_memory_link") as lc:
+            lc.rows_inserted = conn.execute(
+                "SELECT COUNT(*) FROM bridge_memory_link WHERE etl_run_id = ?",
+                [run.etl_run_id],
+            ).fetchone()[0]
         run.complete(sessions_seen=0, sessions_inserted=0, sessions_updated=0)
         return written
     except (KeyboardInterrupt, SystemExit) as e:

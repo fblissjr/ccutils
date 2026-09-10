@@ -122,7 +122,7 @@ def populate_fact_system_events(conn, *, run: EtlRun) -> None:
             -- stop_hook_summary
             json_extract(sle.system_payload_json, '$.hookCount')::INTEGER AS hook_count,
             json_extract(sle.system_payload_json, '$.preventedContinuation')::BOOLEAN AS prevented_continuation,
-            json_extract_string(sle.system_payload_json, '$.stopReason') AS stop_reason,
+            NULLIF(json_extract_string(sle.system_payload_json, '$.stopReason'), '') AS stop_reason,
             json_extract(sle.system_payload_json, '$.hasOutput')::BOOLEAN AS has_output,
             -- api_error
             json_extract(sle.system_payload_json, '$.error.status')::INTEGER AS error_status,
@@ -213,7 +213,11 @@ def populate_fact_file_history_snapshots(conn, *, run: EtlRun) -> None:
         SELECT
             sle.entry_id,
             sle.session_id,
-            TRY_CAST(sle.timestamp AS TIMESTAMP) AS timestamp,
+            -- The entry carries no timestamp; the snapshot inside it does.
+            COALESCE(
+                TRY_CAST(sle.timestamp AS TIMESTAMP),
+                TRY_CAST(json_extract_string(sle.meta_payload_json, '$.snapshot.timestamp') AS TIMESTAMP)
+            ) AS timestamp,
             json_extract_string(sle.meta_payload_json, '$.messageId') AS message_id_link,
             json_extract(sle.meta_payload_json, '$.isSnapshotUpdate')::BOOLEAN AS is_snapshot_update,
             CAST(json_extract(sle.meta_payload_json, '$.snapshot') AS VARCHAR) AS snapshot_json

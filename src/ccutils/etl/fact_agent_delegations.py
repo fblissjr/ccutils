@@ -34,7 +34,7 @@ _PAYLOAD_COLS = [
     "task_description", "task_prompt", "subagent_type",
     "agent_status", "agent_total_duration_ms",
     "agent_total_tokens", "agent_total_tool_use_count",
-    "agent_was_interrupted", "agent_output_text",
+    "agent_output_text",
     "agent_resolved_model", "agent_is_async",
 ]
 _HASH_COLS = [
@@ -46,7 +46,7 @@ _HASH_COLS = [
     "task_description", "task_prompt", "subagent_type",
     "agent_status", "agent_total_duration_ms",
     "agent_total_tokens", "agent_total_tool_use_count",
-    "agent_was_interrupted", "agent_output_text",
+    "agent_output_text",
     "agent_resolved_model", "agent_is_async",
 ]
 
@@ -117,7 +117,6 @@ def populate_fact_agent_delegations(conn, *, run: EtlRun) -> None:
             ftr.agent_total_duration_ms,
             ftr.agent_total_tokens,
             ftr.agent_total_tool_use_count,
-            ftr.agent_was_interrupted,
             ftr.agent_resolved_model,
             ftr.agent_is_async,
             -- Tool result content can be a list of blocks (Agent typically
@@ -277,7 +276,7 @@ SELECT
     parent_session_key, agent_session_key,
     timestamp, delegation_timestamp,
     task_description, task_prompt, subagent_type,
-    agent_was_interrupted, agent_resolved_model, agent_is_async,
+    agent_resolved_model, agent_is_async,
     agent_status, agent_output_text,
     completion_state,
     -- Rollups are written ONLY for a completed delegation. For in_flight the

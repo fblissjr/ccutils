@@ -516,16 +516,12 @@ def _create_objects(conn) -> None:
             has_tool_use BOOLEAN DEFAULT FALSE,
             has_tool_result BOOLEAN DEFAULT FALSE,
             has_thinking BOOLEAN DEFAULT FALSE,
-            word_count INTEGER,
-            estimated_tokens INTEGER,
             -- R23: which API response this entry belongs to. Several entries
             -- share one; the token columns above are populated on the first
             -- only, so a NULL there means either "continuation of this
             -- response" or "transcript predates usage capture" -- this column
             -- tells them apart.
             api_message_id VARCHAR,
-            response_time_seconds FLOAT,
-            conversation_depth INTEGER,
             content_text VARCHAR
         )
     """
@@ -562,7 +558,6 @@ def _create_objects(conn) -> None:
             -- Native
             tool_name VARCHAR NOT NULL,
             invoke_sequence_num INTEGER,
-            caller_type VARCHAR,
             input_json VARCHAR,
             input_summary VARCHAR,
             timestamp TIMESTAMP
@@ -835,10 +830,13 @@ def _create_objects(conn) -> None:
 
             -- Per-tool typed projections (NULL for tools without these fields)
             -- Bash / BashOutput
-            bash_exit_code INTEGER,
-            bash_interrupted BOOLEAN,
             bash_stdout_bytes INTEGER,
-            bash_duration_ms FLOAT,
+            -- Derived from the STATED failure signal (is_error + result text);
+            -- the payload never carries an exit code (0 of 52,974 Bash
+            -- results). Named derived_ so nobody reads them as stated.
+            derived_exit_code INTEGER,        -- from an "Exit code N" prefix; NULL otherwise
+            derived_failure_kind VARCHAR,     -- nonzero_exit | blocked_by_hook | permission_denied | user_rejected | sibling_errored | timeout | interrupted | model_unavailable | other
+            sandbox_disabled BOOLEAN,         -- stated: toolUseResult.dangerouslyDisableSandbox
             -- Edit / MultiEdit
             edit_user_modified BOOLEAN,
             edit_replace_all BOOLEAN,
@@ -863,7 +861,6 @@ def _create_objects(conn) -> None:
             agent_total_duration_ms FLOAT,
             agent_total_tokens INTEGER,
             agent_total_tool_use_count INTEGER,
-            agent_was_interrupted BOOLEAN,
             agent_subagent_type VARCHAR,
             agent_id VARCHAR,
             -- The model the subagent actually ran on, per toolUseResult.
@@ -922,7 +919,6 @@ def _create_objects(conn) -> None:
             unique_tools_used INTEGER,
             total_tool_results INTEGER,
             total_tool_errors INTEGER,
-            total_bash_interrupted INTEGER,
 
             -- From fact_system_events
             total_api_errors INTEGER,
@@ -1156,7 +1152,6 @@ def _create_objects(conn) -> None:
             agent_total_duration_ms FLOAT,
             agent_total_tokens INTEGER,
             agent_total_tool_use_count INTEGER,
-            agent_was_interrupted BOOLEAN,
             agent_output_text TEXT,
 
             -- Re-derived from the agent's OWN transcript, kept separate from
@@ -1787,12 +1782,8 @@ def _create_objects(conn) -> None:
             fm.timestamp,
             fm.content_text,
             fm.content_length,
-            fm.word_count,
-            fm.estimated_tokens,
             fm.has_tool_use,
             fm.has_thinking,
-            fm.response_time_seconds,
-            fm.conversation_depth,
             fm.message_type,
             dm.model_name,
             dm.model_family,
@@ -1824,15 +1815,14 @@ def _create_objects(conn) -> None:
             dt.tool_category,
             ftu.input_summary,
             ftu.input_json,
-            ftu.caller_type,
             ftu.timestamp AS invoke_timestamp,
             ftr.timestamp AS result_timestamp,
             ftr.is_error,
             ftr.result_content_text,
             ftr.result_payload_json,
-            ftr.bash_exit_code,
-            ftr.bash_interrupted,
-            ftr.bash_duration_ms,
+            ftr.derived_exit_code,
+            ftr.derived_failure_kind,
+            ftr.sandbox_disabled,
             ftr.edit_user_modified,
             ftr.read_num_lines,
             ftr.read_total_lines,
@@ -1930,7 +1920,6 @@ def _create_objects(conn) -> None:
             fad.seconds_to_completion,
             dti.time_of_day,
             fad.agent_total_tool_use_count,
-            fad.agent_was_interrupted,
             fad.agent_total_duration_ms,
             -- API-stated; NULL on async rows (the API never states one for a
             -- background launch). NOT comparable with agent_derived_io_tokens
@@ -2660,7 +2649,42 @@ TABLE_COVERAGE = {
 # (check, object, detail-or-None) -> reason. Keep this short: an entry here
 # is a defect the owner has looked at and chosen to live with, and the
 # reason must say why.
-AUDIT_EXCEPTIONS: dict[tuple[str, str, str | None], str] = {}
+AUDIT_EXCEPTIONS: dict[tuple[str, str, str | None], str] = {
+    ("fk_unresolved", "dim_session", "parent_session_key"):
+        "agent whose parent transcript was pruned upstream; the key names a real session and is kept",
+    ("fk_unresolved", "fact_agent_delegations", "agent_session_key"):
+        "agent transcript pruned upstream or never written; the key is derived from the stated agentId",
+    ("null_column", "fact_meta_events", "timestamp"):
+        "custom-title / agent-name / permission-mode entries carry no timestamp in the source",
+    ("null_column", "fact_meta_events", "date_key"):
+        "no source timestamp (see fact_meta_events.timestamp)",
+    ("null_column", "fact_meta_events", "time_key"):
+        "no source timestamp (see fact_meta_events.timestamp)",
+    ("null_column", "fact_session_facets", "prompt_version"):
+        "Tier 2 (LLM) facets only; NULL on every Tier 1 row",
+    ("null_column", "fact_session_facets", "extraction_metadata_json"):
+        "Tier 2 (LLM) facets only; NULL on every Tier 1 row",
+    ("single_valued_column", "dim_memory", "node_type"):
+        "stated in frontmatter; one value in this corpus",
+    ("single_valued_column", "fact_tool_results", "edit_user_modified"):
+        "stated (userModified); never true in this corpus",
+    ("single_valued_column", "fact_token_usage", "service_tier"):
+        "stated by the API; one plan in this corpus",
+    ("single_valued_column", "fact_token_usage", "speed"):
+        "stated by the API; one value in this corpus",
+    ("single_valued_column", "fact_token_usage", "server_tool_use_web_search_requests"):
+        "stated by the API; zero in this corpus",
+    ("single_valued_column", "fact_token_usage", "server_tool_use_web_fetch_requests"):
+        "stated by the API; zero in this corpus",
+    ("single_valued_column", "fact_system_events", "prevented_continuation"):
+        "stated; never true in this corpus",
+    ("single_valued_column", "fact_session_facets", "is_fallback"):
+        "Tier 2 only; false on every Tier 1 row",
+    ("single_valued_column", "fact_session_summary", "total_prevented_continuations"):
+        "sum of a stated flag that is never true in this corpus",
+    ("single_valued_column", "fact_session_summary", "current_permission_mode"):
+        "stated; one mode in this corpus",
+}
 
 
 def _seed_table_coverage(conn) -> None:

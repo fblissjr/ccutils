@@ -10,7 +10,6 @@ Sourced from:
   fact_token_usage           token tier rollups, api_response_count
   fact_tool_uses             total_tool_uses, unique_tools_used
   fact_tool_results          total_tool_results, total_tool_errors,
-                             total_bash_interrupted
   fact_system_events         api_errors, compactions, turn_durations,
                              stop_events, prevented_continuations
   fact_progress_events       totals + hook/bash variant counts
@@ -39,7 +38,7 @@ _PAYLOAD_COLS = [
     "total_cache_creation_total_tokens", "total_cache_read_tokens",
     "total_uncached_equivalent_tokens", "api_response_count",
     "total_tool_uses", "unique_tools_used",
-    "total_tool_results", "total_tool_errors", "total_bash_interrupted",
+    "total_tool_results", "total_tool_errors",
     "total_api_errors", "total_compactions",
     "total_turn_durations_ms", "turn_count",
     "total_stop_events", "total_prevented_continuations",
@@ -109,8 +108,7 @@ tool_result_rollup AS (
     SELECT
         session_id,
         COUNT(*) AS total_tool_results,
-        SUM(CASE WHEN is_error THEN 1 ELSE 0 END) AS total_tool_errors,
-        SUM(CASE WHEN bash_interrupted THEN 1 ELSE 0 END) AS total_bash_interrupted
+        SUM(CASE WHEN is_error THEN 1 ELSE 0 END) AS total_tool_errors
     FROM fact_tool_results
     WHERE is_deleted = FALSE
       AND session_id IN (SELECT DISTINCT session_id FROM etl.log_entries WHERE session_id IS NOT NULL)
@@ -211,7 +209,6 @@ SELECT
     COALESCE(tur.unique_tools_used, 0) AS unique_tools_used,
     COALESCE(trr.total_tool_results, 0) AS total_tool_results,
     COALESCE(trr.total_tool_errors, 0) AS total_tool_errors,
-    COALESCE(trr.total_bash_interrupted, 0) AS total_bash_interrupted,
 
     COALESCE(sr.total_api_errors, 0) AS total_api_errors,
     COALESCE(sr.total_compactions, 0) AS total_compactions,

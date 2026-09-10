@@ -359,11 +359,7 @@ One row per user/assistant entry.
 | has_tool_use | BOOLEAN | Message contains a tool_use block |
 | has_tool_result | BOOLEAN | Message contains a tool_result block |
 | has_thinking | BOOLEAN | Message contains a thinking block |
-| word_count | INTEGER | Word count |
 | content_text | VARCHAR | Message text content (thinking excluded regardless of `--no-thinking`) |
-| estimated_tokens | INTEGER | DDL column, not currently populated (always NULL) -- token estimation was removed with the legacy schema; use `input_tokens`/`output_tokens` |
-| response_time_seconds | FLOAT | DDL column, not currently populated (always NULL) |
-| conversation_depth | INTEGER | DDL column, not currently populated (always NULL) |
 
 There is no `content_json` or `context_management_json` column on this table (raw content-block JSON lives on the unpopulated `fact_content_blocks` DDL stub, not here).
 
@@ -383,7 +379,6 @@ One row per `tool_use` block emitted by the assistant.
 | timestamp | TIMESTAMP | Tool-use timestamp |
 | tool_name | VARCHAR | Denormalized tool name |
 | invoke_sequence_num | INTEGER | Position of this tool_use block within the assistant message |
-| caller_type | VARCHAR | `$.caller.type` from the block, when present |
 | input_json | VARCHAR | Raw input JSON (JSON-encoded string) |
 | input_summary | VARCHAR | First 200 chars of input_json, for quick scanning |
 
@@ -405,10 +400,10 @@ One row per `tool_use_id`. Combines the `tool_result` content with the entry-lev
 | is_error | BOOLEAN | Tri-state: TRUE / FALSE / NULL (R16) |
 | result_content_text | VARCHAR | Tool result text |
 | result_payload_json | VARCHAR | Raw entry-level `toolUseResult` payload (JSON-encoded string) |
-| bash_exit_code | INTEGER | Bash-specific |
-| bash_interrupted | BOOLEAN | Bash-specific |
+| derived_exit_code | INTEGER | DERIVED from an `Exit code N` prefix on a failed result; the payload never states one |
+| derived_failure_kind | VARCHAR | DERIVED from `is_error` + result text: nonzero_exit, blocked_by_hook, permission_denied, user_rejected, sibling_errored, timeout, interrupted, model_unavailable, other |
+| sandbox_disabled | BOOLEAN | Stated: `toolUseResult.dangerouslyDisableSandbox` |
 | bash_stdout_bytes | INTEGER | Bash-specific |
-| bash_duration_ms | FLOAT | Bash-specific |
 | edit_user_modified | BOOLEAN | Edit-specific |
 | edit_replace_all | BOOLEAN | Edit-specific |
 | edit_structured_patch_json | VARCHAR | Edit-specific (JSON-encoded string) |
@@ -426,7 +421,6 @@ One row per `tool_use_id`. Combines the `tool_result` content with the entry-lev
 | agent_total_duration_ms | FLOAT | Task/Agent rollup |
 | agent_total_tokens | INTEGER | Task/Agent rollup |
 | agent_total_tool_use_count | INTEGER | Task/Agent rollup |
-| agent_was_interrupted | BOOLEAN | Task/Agent rollup |
 | agent_subagent_type | VARCHAR | Task/Agent rollup |
 | agent_id | VARCHAR | Task/Agent rollup |
 
@@ -570,7 +564,6 @@ Task tool spawns + agent rollup metrics from R1 structured `toolUseResult` captu
 | agent_total_tokens | INTEGER | **API-stated only.** NULL on async rows -- the API never states one for a background launch. Do NOT compare with `agent_derived_io_tokens` |
 | agent_derived_io_tokens | INTEGER | Input+output summed from the agent's OWN transcript. A *different measure* from `agent_total_tokens`, not a fallback for it |
 | agent_total_tool_use_count | INTEGER | Stated for sync rows; re-derived for completed async rows (validated 188/188). NULL when the agent used no tools |
-| agent_was_interrupted | BOOLEAN | From toolUseResult rollup |
 | agent_output_text | TEXT | Agent result text. NULL on background launches (it held "Async agent launched successfully.") |
 | delegation_timestamp | TIMESTAMP | When agent was invoked |
 | completion_timestamp | TIMESTAMP | When agent completed. NULL unless `completion_state = 'completed'` |
@@ -640,7 +633,6 @@ One row per session. Aggregates over every fact above. Must populate last.
 | unique_tools_used | INTEGER | Distinct tools used |
 | total_tool_results | INTEGER | Tool result count |
 | total_tool_errors | INTEGER | Error count (fact_tool_results.is_error=TRUE) |
-| total_bash_interrupted | INTEGER | Bash invocations interrupted |
 | total_api_errors | INTEGER | From fact_system_events |
 | total_compactions | INTEGER | From fact_system_events |
 | total_turn_durations_ms | BIGINT | Sum of turn durations, from fact_system_events |
@@ -734,13 +726,13 @@ LIMIT 10;
 SELECT
   ftu.session_id,
   json_extract_string(ftu.input_json, '$.command') AS command,
-  ftr.bash_exit_code,
-  ftr.bash_interrupted,
+  ftr.derived_exit_code,
+  ftr.derived_failure_kind,
   ftr.timestamp
 FROM fact_tool_uses ftu
 JOIN fact_tool_results ftr USING (tool_use_id)
 WHERE ftu.tool_name = 'Bash'
-  AND (ftr.bash_exit_code <> 0 OR ftr.bash_interrupted = TRUE)
+  AND ftr.is_error
 ORDER BY ftr.timestamp DESC
 LIMIT 20;
 

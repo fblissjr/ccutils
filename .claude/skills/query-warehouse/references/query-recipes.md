@@ -51,11 +51,11 @@ FROM semantic_session_chains ORDER BY session_count DESC LIMIT 10;
 -- Bash invocations that failed or were interrupted
 SELECT ftu.session_id,
        json_extract_string(ftu.input_json, '$.command') AS command,
-       ftr.bash_exit_code, ftr.bash_interrupted, ftr.timestamp
+       ftr.derived_exit_code, ftr.derived_failure_kind, ftr.timestamp
 FROM fact_tool_uses ftu
 JOIN fact_tool_results ftr USING (tool_use_id)
 WHERE ftu.tool_name = 'Bash'
-  AND (ftr.bash_exit_code <> 0 OR ftr.bash_interrupted = TRUE)
+  AND ftr.is_error
   AND ftu.is_deleted = FALSE AND ftr.is_deleted = FALSE
 ORDER BY ftr.timestamp DESC LIMIT 20;
 

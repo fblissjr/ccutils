@@ -176,13 +176,12 @@ class TestFactAgentDelegations:
         _populate(conn, agent_session, tmp_path)
         row = conn.execute(
             """
-            SELECT agent_status, agent_was_interrupted
+            SELECT agent_status
             FROM fact_agent_delegations
             WHERE tool_use_id = 'tu_t2'
             """
         ).fetchone()
         assert row[0] == "interrupted"
-        assert row[1] is True
 
     def test_seconds_to_completion_computed(
         self, conn, agent_session, tmp_path

@@ -37,6 +37,8 @@ _STRUCTURAL_COLUMNS = {
     "deleted_at", "valid_to", "error_message", "is_deleted",
     "record_source", "created_by_version_key", "last_updated_by_version_key",
     "etl_run_id", "hash_diff", "created_at", "last_updated_at",
+    # Type 2 bookkeeping: identical on every row of a single-import build.
+    "valid_from", "is_current", "version_num",
 }
 
 
@@ -115,13 +117,17 @@ def check_natural_key_unique(conn):
 
 
 def check_api_response_grain(conn):
+    """One row per API response WITHIN a session. Across sessions the same
+    api_message_id legitimately recurs: a continued session replays its
+    history (706 ids across 1,403 rows on the corpus, every one inside a
+    session chain), which is a fact about the source, not a grain bug."""
     total, distinct = conn.execute(
-        "SELECT COUNT(*), COUNT(DISTINCT api_message_id) FROM fact_token_usage "
+        "SELECT COUNT(*), COUNT(DISTINCT (session_id, api_message_id)) FROM fact_token_usage "
         "WHERE is_deleted = FALSE AND api_message_id IS NOT NULL"
     ).fetchone()
     if total != distinct:
         yield Finding("api_response_grain", "fact_token_usage", "api_message_id",
-                      f"{total} rows for {distinct} API responses")
+                      f"{total} rows for {distinct} (session, API response) pairs")
 
 
 def check_stuck_runs(conn):
@@ -216,6 +222,9 @@ def check_null_columns(conn, tables):
 
 
 def check_single_valued_columns(conn, tables):
+    """A DENSE column (non-NULL on every live row) with one distinct value
+    discriminates nothing. Sparse columns with one value are normal: a
+    rare-event column is mostly NULL and one value when set."""
     for table in tables:
         cols = [c for c in _columns(conn, table) if c not in _STRUCTURAL_COLUMNS]
         if not cols:
@@ -223,17 +232,16 @@ def check_single_valued_columns(conn, tables):
         where = " WHERE is_deleted = FALSE" if "is_deleted" in _columns(conn, table) else ""
         row = conn.execute(
             "SELECT COUNT(*), "
-            + ", ".join(f"COUNT(DISTINCT {c})" for c in cols)
+            + ", ".join(f"COUNT(DISTINCT {c}), COUNT({c})" for c in cols)
             + f" FROM {table}{where}"
         ).fetchone()
         total = row[0]
-        for col, distinct in zip(cols, row[1:]):
-            if distinct == 1:
-                value = _scalar(conn, f"SELECT MIN({col}) FROM {table}{where} WHERE {col} IS NOT NULL"
-                                if not where else
-                                f"SELECT MIN({col}) FROM {table}{where} AND {col} IS NOT NULL")
+        for i, col in enumerate(cols):
+            distinct, non_null = row[1 + 2 * i], row[2 + 2 * i]
+            if distinct == 1 and non_null == total:
+                value = conn.execute(f"SELECT MIN({col}) FROM {table}").fetchone()[0]
                 yield Finding("single_valued_column", table, col,
-                              f"one distinct value ({value!r}) across {total} live rows")
+                              f"one distinct value ({value!r}) on every one of {total} live rows")
 
 
 def check_delegation_ground_truth(conn):

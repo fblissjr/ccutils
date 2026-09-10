@@ -214,7 +214,6 @@ class TestFactSessionSummaryDdl:
         for required in (
             "total_tool_uses", "unique_tools_used",
             "total_tool_results", "total_tool_errors",
-            "total_bash_interrupted",
         ):
             assert required in cols, f"Missing: {required}"
 
@@ -289,7 +288,7 @@ class TestPopulateFactSessionSummary:
         _populate_everything(conn, run)
         row = conn.execute(
             "SELECT total_tool_uses, unique_tools_used, total_tool_results, "
-            "total_tool_errors, total_bash_interrupted "
+            "total_tool_errors "
             "FROM fact_session_summary WHERE session_id = 'rich-s'"
         ).fetchone()
         # 2 tool_use blocks (tu_bash, tu_read)
@@ -300,8 +299,6 @@ class TestPopulateFactSessionSummary:
         assert row[2] == 2
         # tu_read errored (is_error=True)
         assert row[3] == 1
-        # No interrupted bash in this fixture
-        assert row[4] == 0
 
     def test_system_rollups(self, conn, rich_session, tmp_path):
         run = EtlRun.start(conn, source_path=str(rich_session))

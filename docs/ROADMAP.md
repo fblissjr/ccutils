@@ -15,11 +15,13 @@ machine that has it; nothing here depends on it.
 ## Where things stand
 
 - **Released:** 0.20.1, tagged 2026-08-28.
-- **In progress toward 1.0.0:** steps 1 through 6 below landed on
+- **In progress toward 1.0.0:** steps 1 through 7 below landed on
   2026-09-10 (migration machinery deleted, foreign warehouses refused,
   machinery moved to the `etl` schema, plain version string, coverage
-  layer with step-level table names, seven stub tables culled). Steps 7
-  and 8 remain, then the merges decided the same day (see Decisions).
+  layer with step-level table names, seven stub tables culled, `ccutils
+  audit` calibrated on a full-corpus build and its 46 findings fixed or
+  accepted with a reason). Step 8 remains, then the merges decided the
+  same day (see Decisions).
 - **Suite:** about 1,320 tests collected (`uv run pytest tests/ --confcutdir=tests`).
   Healthy state is all green plus one skipped live-API test.
 - **Working tree:** `uv.lock` carries an uncommitted regeneration. It is
@@ -56,7 +58,7 @@ Semver binds from 1.0.0 onward. No major bump without the owner's permission.
 One interlocking change, so one release. Warehouses written before it cannot
 be read after it; that is the whole point of the major bump.
 
-Do these in order. Steps 1 through 6 are DONE (2026-09-10); their text is
+Do these in order. Steps 1 through 7 are DONE (2026-09-10); their text is
 kept so the ordering argument survives.
 
 1. **Delete `src/ccutils/schemas/migrations/` and `tests/test_migrations.py`.**
@@ -112,6 +114,13 @@ they land.
 
 ### Fix at 1.0.0 or before
 
+- **Continued sessions replay their history.** 706 `api_message_id`
+  values recur across sessions in the same chain (1,403 rows), and the
+  same is true of every replayed message and tool call. Nothing marks a
+  replayed row, so per-project token sums double-count continuations.
+  Belongs with 1.1.0 decomposition: a derived `is_replay` on the entry
+  grain, computed from the chain, so aggregates can exclude it.
+
 - **`tests/test_fact_token_usage_v15.py` needs a grain oracle** asserting
   `count(*) = count(DISTINCT api_message_id)`. `lineage_upsert` cannot catch
   a grain regression there because the declared natural key is `entry_id`.
@@ -132,9 +141,6 @@ they land.
 - **`fact_agent_delegations.agent_total_tool_use_count` is NULL, not 0, when
   an agent used no tools** (LEFT JOIN over `fact_tool_uses`), conflating
   "used none" with "unknown".
-- **`fact_messages.response_time_seconds` and `conversation_depth` are
-  permanent NULLs**, marked TODO in the populator. Populate them or drop the
-  columns; the coverage layer must say which.
 
 ### 1.1.0
 

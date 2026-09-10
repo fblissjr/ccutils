@@ -106,6 +106,11 @@ def populate_dim_file(conn, *, run: EtlRun) -> None:
                 FROM fact_tool_results ftr
                 WHERE ftr.is_deleted = FALSE
                   AND ftr.read_file_path IS NOT NULL
+                UNION
+                -- Files named by LSP diagnostics that no tool touched.
+                SELECT DISTINCT fd.file_path AS file_path
+                FROM fact_diagnostics fd
+                WHERE fd.is_deleted = FALSE AND fd.file_path IS NOT NULL
             ),
             parsed AS (
                 SELECT

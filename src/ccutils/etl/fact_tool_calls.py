@@ -21,11 +21,11 @@ from ccutils.etl.utils import project_key_sql
 _USES_PAYLOAD_COLS = [
     "entry_id", "message_id",
     "project_key", "tool_key",
-    "tool_name", "invoke_sequence_num", "caller_type",
+    "tool_name", "invoke_sequence_num",
     "input_json", "input_summary", "timestamp",
 ]
 _USES_HASH_COLS = [
-    "tool_name", "invoke_sequence_num", "caller_type", "input_json",
+    "tool_name", "invoke_sequence_num", "input_json",
     "input_summary", "timestamp",
 ]
 
@@ -35,7 +35,7 @@ _RESULTS_PAYLOAD_COLS = [
     "project_key", "tool_key",
     "tool_name", "timestamp",
     "is_error", "result_content_text", "result_payload_json",
-    "bash_exit_code", "bash_interrupted", "bash_stdout_bytes", "bash_duration_ms",
+    "bash_stdout_bytes", "derived_exit_code", "derived_failure_kind", "sandbox_disabled",
     "edit_user_modified", "edit_replace_all", "edit_structured_patch_json",
     "read_num_lines", "read_total_lines", "read_file_path",
     "write_type",
@@ -43,13 +43,13 @@ _RESULTS_PAYLOAD_COLS = [
     "grep_mode", "grep_num_files",
     "webfetch_http_code", "webfetch_bytes",
     "agent_status", "agent_total_duration_ms", "agent_total_tokens",
-    "agent_total_tool_use_count", "agent_was_interrupted", "agent_subagent_type",
+    "agent_total_tool_use_count", "agent_subagent_type",
     "agent_id", "agent_resolved_model", "agent_is_async",
 ]
 _RESULTS_HASH_COLS = [
     "tool_name", "timestamp", "is_error",
     "result_content_text", "result_payload_json",
-    "bash_exit_code", "bash_interrupted", "bash_stdout_bytes", "bash_duration_ms",
+    "bash_stdout_bytes", "derived_exit_code", "derived_failure_kind", "sandbox_disabled",
     "edit_user_modified", "edit_replace_all", "edit_structured_patch_json",
     "read_num_lines", "read_total_lines", "read_file_path",
     "write_type",
@@ -57,7 +57,7 @@ _RESULTS_HASH_COLS = [
     "grep_mode", "grep_num_files",
     "webfetch_http_code", "webfetch_bytes",
     "agent_status", "agent_total_duration_ms", "agent_total_tokens",
-    "agent_total_tool_use_count", "agent_was_interrupted", "agent_subagent_type",
+    "agent_total_tool_use_count", "agent_subagent_type",
     "agent_id", "agent_resolved_model", "agent_is_async",
 ]
 
@@ -102,7 +102,6 @@ SELECT
     json_extract_string(block, '$.id') AS tool_use_id,
     json_extract_string(block, '$.name') AS tool_name,
     block_idx AS invoke_sequence_num,
-    json_extract_string(block, '$.caller.type') AS caller_type,
     CAST(json_extract(block, '$.input') AS VARCHAR) AS input_json
 FROM exploded
 
@@ -223,19 +222,13 @@ SELECT
     tool_use_result_json AS result_payload_json,
 
     -- Per-tool typed projections. NULL when the tool doesn't match.
-    -- Bash / BashOutput
-    CASE WHEN tool_name IN ('Bash', 'BashOutput')
-         THEN json_extract(tool_use_result_json, '$.exitCode')::INTEGER END
-        AS bash_exit_code,
-    CASE WHEN tool_name IN ('Bash', 'BashOutput')
-         THEN json_extract(tool_use_result_json, '$.interrupted')::BOOLEAN END
-        AS bash_interrupted,
+    -- Bash / BashOutput. The payload states stdout, stderr, interrupted,
+    -- isImage, noOutputExpected and (newer) dangerouslyDisableSandbox --
+    -- never an exit code or a duration (0 of 52,974 real results). Those
+    -- are derived below from the stated failure signal.
     CASE WHEN tool_name IN ('Bash', 'BashOutput')
          THEN length(json_extract_string(tool_use_result_json, '$.stdout')) END
         AS bash_stdout_bytes,
-    CASE WHEN tool_name IN ('Bash', 'BashOutput')
-         THEN json_extract(tool_use_result_json, '$.durationMs')::FLOAT END
-        AS bash_duration_ms,
 
     -- Edit / MultiEdit
     CASE WHEN tool_name IN ('Edit', 'MultiEdit')
@@ -301,9 +294,6 @@ SELECT
     CASE WHEN tool_name IN ('Agent', 'Task', 'TaskCreate')
          THEN json_extract(tool_use_result_json, '$.totalToolUseCount')::INTEGER END
         AS agent_total_tool_use_count,
-    CASE WHEN tool_name IN ('Agent', 'Task', 'TaskCreate')
-         THEN json_extract(tool_use_result_json, '$.wasInterrupted')::BOOLEAN END
-        AS agent_was_interrupted,
     CASE WHEN tool_name IN ('Agent', 'Task', 'TaskCreate')
          THEN json_extract_string(tool_use_result_json, '$.agentType') END
         AS agent_subagent_type,
@@ -388,13 +378,44 @@ def populate_fact_tool_uses(conn, *, run: EtlRun) -> None:
     )
 
 
+# Derived from the STATED failure signal. `is_error` is what the source
+# says; the error text carries the reason. 1,281 of 1,608 failed Bash calls
+# on the corpus start with "Exit code N"; the rest are hook blocks,
+# permission denials, user rejections, sibling failures, timeouts,
+# interruptions, or a model outage. Tool-agnostic on purpose: an Edit whose
+# string was not found classifies as 'other', not NULL.
+_DERIVED_RESULT_SQL = """
+    CASE WHEN is_error IS TRUE
+         THEN TRY_CAST(regexp_extract(result_content_text, '^\\s*Exit code (\\d+)', 1) AS INTEGER)
+    END AS derived_exit_code,
+    CASE WHEN is_error IS NOT TRUE THEN NULL
+         WHEN regexp_matches(result_content_text, '^\\s*Exit code \\d+') THEN 'nonzero_exit'
+         WHEN result_content_text ILIKE '%Sibling tool call errored%' THEN 'sibling_errored'
+         WHEN result_content_text ILIKE '%Blocked%' OR result_content_text ILIKE '%hook%' THEN 'blocked_by_hook'
+         WHEN result_content_text ILIKE '%Permission%denied%'
+           OR result_content_text ILIKE '%requires approval%'
+           OR result_content_text ILIKE '%auto-denied%' THEN 'permission_denied'
+         WHEN result_content_text ILIKE '%rejected%' OR result_content_text ILIKE '%doesn''t want%' THEN 'user_rejected'
+         WHEN result_content_text ILIKE '%timed out%' THEN 'timeout'
+         WHEN result_content_text ILIKE '%interrupted%' OR result_content_text ILIKE '%cancel%' THEN 'interrupted'
+         WHEN result_content_text ILIKE '%temporarily unavailable%' THEN 'model_unavailable'
+         ELSE 'other'
+    END AS derived_failure_kind,
+    COALESCE(TRY_CAST(json_extract(result_payload_json, '$.dangerouslyDisableSandbox') AS BOOLEAN), FALSE)
+        AS sandbox_disabled
+"""
+
+
 def populate_fact_tool_results(conn, *, run: EtlRun) -> None:
     """Project staging tool_result blocks (joined with toolUseResult payload)
     into fact_tool_results. tool_name resolved from staging within the
     populator -- decoupled from fact_tool_uses ordering.
     """
     conn.execute("DROP TABLE IF EXISTS _inbound_tool_results")
-    conn.execute(f"CREATE TEMP TABLE _inbound_tool_results AS {_PROJECT_RESULTS_SQL}")
+    conn.execute(
+        "CREATE TEMP TABLE _inbound_tool_results AS "
+        f"SELECT *, {_DERIVED_RESULT_SQL} FROM ({_PROJECT_RESULTS_SQL}) p"
+    )
 
     conn.execute("ALTER TABLE _inbound_tool_results ADD COLUMN project_key VARCHAR")
     conn.execute("ALTER TABLE _inbound_tool_results ADD COLUMN tool_key VARCHAR")

@@ -200,7 +200,7 @@ class TestFactToolUsesDdl:
         for required in (
             "tool_name", "tool_key", "session_key", "project_key",
             "date_key", "time_key", "invoke_sequence_num",
-            "caller_type", "input_json", "input_summary",
+            "input_json", "input_summary",
         ):
             assert required in cols, f"Missing: {required}"
 
@@ -223,8 +223,8 @@ class TestFactToolResultsDdl:
         cols = {c[0] for c in conn.execute("DESCRIBE fact_tool_results").fetchall()}
         for required in (
             # Bash
-            "bash_exit_code", "bash_interrupted", "bash_stdout_bytes",
-            "bash_duration_ms",
+            "bash_stdout_bytes", "derived_exit_code", "derived_failure_kind",
+            "sandbox_disabled",
             # Edit
             "edit_user_modified", "edit_replace_all",
             "edit_structured_patch_json",
@@ -241,7 +241,7 @@ class TestFactToolResultsDdl:
             # Agent
             "agent_status", "agent_total_duration_ms",
             "agent_total_tokens", "agent_total_tool_use_count",
-            "agent_was_interrupted", "agent_subagent_type",
+            "agent_subagent_type",
             # Generic
             "result_payload_json", "result_content_text",
             "tool_use_id", "tool_name",
@@ -296,15 +296,6 @@ class TestPopulateFactToolUses:
         parsed = json.loads(input_json)
         assert parsed["command"] == "ls -la"
 
-    def test_caller_type_captured(self, conn, tools_session, tmp_path):
-        run = EtlRun.start(conn, source_path=str(tools_session))
-        _stage(conn, tools_session, tmp_path, run)
-        populate_fact_tool_uses(conn, run=run)
-        row = conn.execute(
-            "SELECT caller_type FROM fact_tool_uses WHERE tool_use_id = 'tu_bash_1'"
-        ).fetchone()
-        assert row[0] == "direct"
-
     def test_session_id_degenerate(self, conn, tools_session, tmp_path):
         run = EtlRun.start(conn, source_path=str(tools_session))
         _stage(conn, tools_session, tmp_path, run)
@@ -332,15 +323,10 @@ class TestPopulateFactToolResults:
         _stage(conn, tools_session, tmp_path, run)
         populate_fact_tool_results(conn, run=run)
         row = conn.execute(
-            "SELECT bash_exit_code, bash_interrupted, bash_stdout_bytes, "
-            "bash_duration_ms, is_error "
+            "SELECT bash_stdout_bytes, is_error, derived_exit_code, derived_failure_kind "
             "FROM fact_tool_results WHERE tool_use_id = 'tu_bash_1'"
         ).fetchone()
-        assert row[0] == 0
-        assert row[1] is False
-        assert row[2] == len("file1\nfile2")
-        assert row[3] == 123
-        assert row[4] is False
+        assert row == (len("file1\nfile2"), False, None, None)
 
     def test_edit_structured_patch_captured(self, conn, tools_session, tmp_path):
         """R1: structuredPatch is the highest-value Edit field previously dropped."""
@@ -381,17 +367,6 @@ class TestPopulateFactToolResults:
         ).fetchone()[0]
         payload = json.loads(payload_json)
         assert payload["file"]["totalLines"] == 42
-
-    def test_bash_interrupted_captured(self, conn, bash_interrupted_session, tmp_path):
-        run = EtlRun.start(conn, source_path=str(bash_interrupted_session))
-        _stage(conn, bash_interrupted_session, tmp_path, run)
-        populate_fact_tool_results(conn, run=run)
-        row = conn.execute(
-            "SELECT bash_interrupted, is_error FROM fact_tool_results "
-            "WHERE tool_use_id = 'tu_x'"
-        ).fetchone()
-        assert row[0] is True
-        assert row[1] is True
 
     def test_error_string_result_captured(self, conn, error_string_result_session, tmp_path):
         """When toolUseResult is a plain `Error: ...` string (not a dict),

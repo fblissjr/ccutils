@@ -160,6 +160,34 @@ def _upsert_minimal_dimensions(conn, *, run) -> int:
             """
         )
 
+    # Session-scoped meta entries: the LAST custom-title / agent-name and
+    # permission-mode stated in the transcript. Both columns existed on
+    # dim_session since 0.13 and were NULL on every row -- the populator
+    # was lost in the 0.15 rebuild and the first ccutils audit run found it.
+    conn.execute(
+        """
+        UPDATE dim_session ds SET
+            custom_title = COALESCE(m.custom_title, m.agent_name, ds.custom_title),
+            permission_mode = COALESCE(m.permission_mode, m.user_permission_mode, ds.permission_mode)
+        FROM (
+            SELECT session_id,
+                   arg_max(json_extract_string(meta_payload_json, '$.customTitle'), sequence_num)
+                       FILTER (WHERE type = 'custom-title') AS custom_title,
+                   arg_max(json_extract_string(meta_payload_json, '$.agentName'), sequence_num)
+                       FILTER (WHERE type = 'agent-name') AS agent_name,
+                   arg_max(json_extract_string(meta_payload_json, '$.permission_mode'), sequence_num)
+                       FILTER (WHERE type = 'permission-mode') AS permission_mode,
+                   arg_max(json_extract_string(raw_json, '$.permissionMode'), sequence_num)
+                       FILTER (WHERE type = 'user'
+                               AND json_extract_string(raw_json, '$.permissionMode') IS NOT NULL)
+                       AS user_permission_mode
+            FROM etl.log_entries
+            GROUP BY session_id
+        ) m
+        WHERE ds.session_id = m.session_id
+        """
+    )
+
     with run.step("dim_project", table="dim_project") as st:
         # dim_project: surrogate from the session's project directory (walks up
         # past <uuid>/subagents layers -- see project_dir_sql). The dir is
@@ -389,6 +417,9 @@ def run_v15_etl(
             populate_bridge_session_file(conn, run=run)
             # fact_diagnostics flattens fact_attachments where type='diagnostics'
             populate_fact_diagnostics(conn, run=run)
+            # Diagnostics name files no tool ever touched; a second pass
+            # gives them a dim_file row so file_key resolves (idempotent).
+            populate_dim_file(conn, run=run)
             # fact_plan_revisions classifies ExitPlanMode outcomes from
             # fact_tool_results.is_error (R16 tri-state)
             populate_fact_plan_revisions(conn, run=run)
