@@ -20,8 +20,9 @@ machine that has it; nothing here depends on it.
   machinery moved to the `etl` schema, plain version string, coverage
   layer with step-level table names, seven stub tables culled, `ccutils
   audit` calibrated on a full-corpus build and its 46 findings fixed or
-  accepted with a reason). Step 8 remains, then the merges decided the
-  same day (see Decisions).
+  accepted with a reason). Step 8 (the reader's guide) also landed. What remains before tagging:
+  the merges decided the same day (see Decisions) and a clean gated audit
+  on a fresh full-corpus build.
 - **Suite:** about 1,320 tests collected (`uv run pytest tests/ --confcutdir=tests`).
   Healthy state is all green plus one skipped live-API test.
 - **Working tree:** `uv.lock` carries an uncommitted regeneration. It is
@@ -58,7 +59,7 @@ Semver binds from 1.0.0 onward. No major bump without the owner's permission.
 One interlocking change, so one release. Warehouses written before it cannot
 be read after it; that is the whole point of the major bump.
 
-Do these in order. Steps 1 through 7 are DONE (2026-09-10); their text is
+Do these in order. Steps 1 through 8 are DONE (2026-09-10); their text is
 kept so the ordering argument survives.
 
 1. **Delete `src/ccutils/schemas/migrations/` and `tests/test_migrations.py`.**

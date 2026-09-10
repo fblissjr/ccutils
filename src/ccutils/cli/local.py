@@ -676,6 +676,12 @@ def _run_export_pipeline(
         )
         if embed:
             run_embedding_pipeline(conn, embed_model)
+        # The reader's guide is generated from the warehouse and written
+        # beside it on every build, so an agent opening the directory cold
+        # finds the explanation next to the file.
+        from ..guide import write_guide
+
+        write_guide(conn, output_dir)
         conn.close()
 
         click.echo(f"Exported to {db_path}")

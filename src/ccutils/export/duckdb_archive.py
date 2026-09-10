@@ -242,6 +242,9 @@ def generate_duckdb_archive(
     final_row_count = _count_rows(conn)
     final_db_size = _get_db_size_mb(db_path)
 
+    from ccutils.guide import write_guide
+
+    write_guide(conn, output_dir)
     conn.close()
 
     return {

@@ -48,6 +48,7 @@ One command converts; two do the things that are not converting.
 | `ccutils import` | Import a Claude.ai account export (Settings > Privacy > Export) |
 | `ccutils open` | Open a built warehouse in the DuckDB SQL UI |
 | `ccutils audit` | Check a built warehouse for the defect classes that have shipped; exits nonzero on any finding |
+| `ccutils guide` | Regenerate the reader's guide (`README.md`) beside a warehouse; every duckdb build writes it |
 
 Removed in 0.20.0, with no aliases: `local` and `all` were one operation
 split by scope, and the split is what let their behaviour drift apart --
@@ -117,6 +118,15 @@ ccutils open                      # the default archive
 ccutils open -o ./analytics       # a warehouse you built elsewhere
 duckdb -ui ./analytics/archive.duckdb   # or drive it yourself
 ```
+
+### The reader's guide
+
+Every `--format duckdb` build writes a `README.md` beside `archive.duckdb`,
+generated from the warehouse itself: which projects and sessions it holds,
+every table and view with its status, row count and reason, the join paths
+present in the file, and the audit findings accepted with a reason. It is
+written for an agent opening the directory cold. `ccutils guide -o DIR`
+regenerates it.
 
 ### Auditing the warehouse
 
