@@ -85,7 +85,7 @@ from ccutils.etl.utils import (
 from ccutils.parsers.parquet_writer import write_session_to_parquet
 
 
-def _upsert_minimal_dimensions(conn) -> int:
+def _upsert_minimal_dimensions(conn, *, run) -> int:
     """Insert stub rows into dim_session / dim_project / dim_model / dim_tool
     for any surrogate key referenced by the staging table but not yet
     present in the dim. Skill anti-pattern note: dimensions are intended
@@ -98,179 +98,186 @@ def _upsert_minimal_dimensions(conn) -> int:
     staged session already existed) so the caller can report
     sessions_inserted vs sessions_updated honestly.
     """
-    # dim_session: surrogate from staging.session_id.
-    #
-    # We derive project_key from source_path's parent dir here so the FK
-    # is set on insert -- semantic_project_context / semantic_sessions
-    # join dim_session -> dim_project, and they go empty without it.
-    # first_timestamp / last_timestamp come straight from the staging
-    # min/max so date-range filtering on dim_session works immediately
-    # (without waiting on Phase D enrichment).
-    sessions_inserted = conn.execute(
-        f"""
-        INSERT INTO dim_session (
-            session_key, session_id, project_key,
-            cwd, git_branch, version, slug, entrypoint,
-            first_timestamp, last_timestamp
-        )
-        SELECT
-            md5(sle.session_id) AS session_key,
-            sle.session_id,
-            {project_key_sql("ANY_VALUE(sle.source_path)")} AS project_key,
-            ANY_VALUE(sle.cwd) AS cwd,
-            ANY_VALUE(sle.git_branch) AS git_branch,
-            ANY_VALUE(sle.version) AS version,
-            ANY_VALUE(sle.slug) AS slug,
-            ANY_VALUE(sle.entrypoint) AS entrypoint,
-            MIN(TRY_CAST(sle.timestamp AS TIMESTAMP)) AS first_timestamp,
-            MAX(TRY_CAST(sle.timestamp AS TIMESTAMP)) AS last_timestamp
-        FROM etl.log_entries sle
-        WHERE sle.session_id IS NOT NULL
-          AND NOT EXISTS (
-              SELECT 1 FROM dim_session ds
-              WHERE ds.session_key = md5(sle.session_id)
-          )
-        GROUP BY sle.session_id
-        """
-    ).fetchone()[0]
-
-    # Idempotent backfill: if a session already exists from a prior ETL run
-    # but lacks project_key / timestamps (legacy minimal-dim path), set them.
-    conn.execute(
-        f"""
-        UPDATE dim_session ds
-        SET project_key = COALESCE(ds.project_key, sub.project_key),
-            first_timestamp = COALESCE(ds.first_timestamp, sub.first_timestamp),
-            last_timestamp = COALESCE(ds.last_timestamp, sub.last_timestamp)
-        FROM (
+    with run.step("dim_session", table="dim_session") as st:
+        # dim_session: surrogate from staging.session_id.
+        #
+        # We derive project_key from source_path's parent dir here so the FK
+        # is set on insert -- semantic_project_context / semantic_sessions
+        # join dim_session -> dim_project, and they go empty without it.
+        # first_timestamp / last_timestamp come straight from the staging
+        # min/max so date-range filtering on dim_session works immediately
+        # (without waiting on Phase D enrichment).
+        st.rows_inserted = sessions_inserted = conn.execute(
+            f"""
+            INSERT INTO dim_session (
+                session_key, session_id, project_key,
+                cwd, git_branch, version, slug, entrypoint,
+                first_timestamp, last_timestamp
+            )
             SELECT
                 md5(sle.session_id) AS session_key,
+                sle.session_id,
                 {project_key_sql("ANY_VALUE(sle.source_path)")} AS project_key,
+                ANY_VALUE(sle.cwd) AS cwd,
+                ANY_VALUE(sle.git_branch) AS git_branch,
+                ANY_VALUE(sle.version) AS version,
+                ANY_VALUE(sle.slug) AS slug,
+                ANY_VALUE(sle.entrypoint) AS entrypoint,
                 MIN(TRY_CAST(sle.timestamp AS TIMESTAMP)) AS first_timestamp,
                 MAX(TRY_CAST(sle.timestamp AS TIMESTAMP)) AS last_timestamp
             FROM etl.log_entries sle
             WHERE sle.session_id IS NOT NULL
+              AND NOT EXISTS (
+                  SELECT 1 FROM dim_session ds
+                  WHERE ds.session_key = md5(sle.session_id)
+              )
             GROUP BY sle.session_id
-        ) sub
-        WHERE ds.session_key = sub.session_key
-          AND (ds.project_key IS NULL
-               OR ds.first_timestamp IS NULL
-               OR ds.last_timestamp IS NULL)
-        """
-    )
+            """
+        ).fetchone()[0]
 
-    # dim_project: surrogate from the session's project directory (walks up
-    # past <uuid>/subagents layers -- see project_dir_sql). The dir is
-    # computed once in the inner SELECT and reused everywhere.
-    conn.execute(
-        f"""
-        INSERT INTO dim_project (project_key, project_path, project_name)
-        SELECT
-            {project_key_from_dir_sql("sle.project_dir")} AS project_key,
-            sle.project_dir AS project_path,
-            -- project_name is the last path segment of project_path
-            regexp_extract(sle.project_dir, '([^/]+)$', 1) AS project_name
-        FROM (
-            SELECT DISTINCT {project_dir_sql("source_path")} AS project_dir
-            FROM etl.log_entries
-        ) sle
-        WHERE NOT EXISTS (
-            SELECT 1 FROM dim_project dp
-            WHERE dp.project_key = {project_key_from_dir_sql("sle.project_dir")}
+        # Idempotent backfill: if a session already exists from a prior ETL run
+        # but lacks project_key / timestamps (legacy minimal-dim path), set them.
+        conn.execute(
+            f"""
+            UPDATE dim_session ds
+            SET project_key = COALESCE(ds.project_key, sub.project_key),
+                first_timestamp = COALESCE(ds.first_timestamp, sub.first_timestamp),
+                last_timestamp = COALESCE(ds.last_timestamp, sub.last_timestamp)
+            FROM (
+                SELECT
+                    md5(sle.session_id) AS session_key,
+                    {project_key_sql("ANY_VALUE(sle.source_path)")} AS project_key,
+                    MIN(TRY_CAST(sle.timestamp AS TIMESTAMP)) AS first_timestamp,
+                    MAX(TRY_CAST(sle.timestamp AS TIMESTAMP)) AS last_timestamp
+                FROM etl.log_entries sle
+                WHERE sle.session_id IS NOT NULL
+                GROUP BY sle.session_id
+            ) sub
+            WHERE ds.session_key = sub.session_key
+              AND (ds.project_key IS NULL
+                   OR ds.first_timestamp IS NULL
+                   OR ds.last_timestamp IS NULL)
+            """
         )
-        """
-    )
 
-    # dim_model: from assistant message.model values
-    conn.execute(
-        """
-        INSERT INTO dim_model (model_key, model_name, model_base, model_family)
-        SELECT DISTINCT
-            md5(json_extract_string(sle.message_json, '$.model')) AS model_key,
-            json_extract_string(sle.message_json, '$.model') AS model_name,
+    with run.step("dim_project", table="dim_project") as st:
+        # dim_project: surrogate from the session's project directory (walks up
+        # past <uuid>/subagents layers -- see project_dir_sql). The dir is
+        # computed once in the inner SELECT and reused everywhere.
+        conn.execute(
+            f"""
+            INSERT INTO dim_project (project_key, project_path, project_name)
+            SELECT
+                {project_key_from_dir_sql("sle.project_dir")} AS project_key,
+                sle.project_dir AS project_path,
+                -- project_name is the last path segment of project_path
+                regexp_extract(sle.project_dir, '([^/]+)$', 1) AS project_name
+            FROM (
+                SELECT DISTINCT {project_dir_sql("source_path")} AS project_dir
+                FROM etl.log_entries
+            ) sle
+            WHERE NOT EXISTS (
+                SELECT 1 FROM dim_project dp
+                WHERE dp.project_key = {project_key_from_dir_sql("sle.project_dir")}
+            )
             """
-        + MODEL_BASE_SQL.format(col="json_extract_string(sle.message_json, '$.model')")
-        + """ AS model_base,
-            """
-        + MODEL_FAMILY_SQL.format(col="json_extract_string(sle.message_json, '$.model')")
-        + """ AS model_family
-        FROM etl.log_entries sle
-        WHERE sle.type = 'assistant'
-          AND json_extract_string(sle.message_json, '$.model') IS NOT NULL
-          AND NOT EXISTS (
-              SELECT 1 FROM dim_model dm
-              WHERE dm.model_key = md5(json_extract_string(sle.message_json, '$.model'))
-          )
-        """
-    )
+        )
 
-    # dim_tool: from every distinct tool_use.name across all assistant content.
-    # `cand` (not `tool_name`) is referenced inside the correlated NOT EXISTS
-    # subquery deliberately: dim_tool has its own `tool_name` column, so an
-    # unqualified `tool_name` there binds to dim_tool.tool_name instead of the
-    # candidate row -- once dim_tool has any row that self-reference is
-    # trivially true (every existing row satisfies tool_key = md5(tool_name)
-    # by construction), so NOT EXISTS goes permanently false and every tool
-    # introduced after the first session silently fails to insert.
-    conn.execute(
-        """
-        INSERT INTO dim_tool (tool_key, tool_name, tool_category)
-        SELECT DISTINCT
-            md5(cand.tool_name) AS tool_key,
-            cand.tool_name,
+    with run.step("dim_model", table="dim_model") as st:
+        # dim_model: from assistant message.model values
+        conn.execute(
             """
-        + TOOL_CATEGORY_SQL.format(col="cand.tool_name")
-        + """ AS tool_category
-        FROM (
+            INSERT INTO dim_model (model_key, model_name, model_base, model_family)
             SELECT DISTINCT
-                json_extract_string(b.block, '$.name') AS tool_name
-            FROM etl.log_entries sle,
-            LATERAL (
-                SELECT unnest(json_extract(sle.message_json, '$.content')::JSON[]) AS block
-            ) b
+                md5(json_extract_string(sle.message_json, '$.model')) AS model_key,
+                json_extract_string(sle.message_json, '$.model') AS model_name,
+                """
+            + MODEL_BASE_SQL.format(col="json_extract_string(sle.message_json, '$.model')")
+            + """ AS model_base,
+                """
+            + MODEL_FAMILY_SQL.format(col="json_extract_string(sle.message_json, '$.model')")
+            + """ AS model_family
+            FROM etl.log_entries sle
             WHERE sle.type = 'assistant'
-              AND json_type(sle.message_json, '$.content') = 'ARRAY'
-              AND json_extract_string(b.block, '$.type') = 'tool_use'
-        ) cand
-        WHERE cand.tool_name IS NOT NULL
-          AND NOT EXISTS (
-              SELECT 1 FROM dim_tool dt WHERE dt.tool_key = md5(cand.tool_name)
-          )
-        """
-    )
+              AND json_extract_string(sle.message_json, '$.model') IS NOT NULL
+              AND NOT EXISTS (
+                  SELECT 1 FROM dim_model dm
+                  WHERE dm.model_key = md5(json_extract_string(sle.message_json, '$.model'))
+              )
+            """
+        )
 
-    # Backfill model_base / model_family on rows written before the
-    # structural rule (they hold NULL / 'unknown'). Same reasoning as the
-    # tool_category backfill below.
-    conn.execute(
-        """
-        UPDATE dim_model SET
-            model_base = """
-        + MODEL_BASE_SQL.format(col="model_name")
-        + """,
-            model_family = """
-        + MODEL_FAMILY_SQL.format(col="model_name")
-        + """
-        WHERE model_base IS NULL OR model_family IS NULL
-           OR model_family = 'unknown'
-        """
-    )
+    with run.step("dim_tool", table="dim_tool") as st:
+        # dim_tool: from every distinct tool_use.name across all assistant content.
+        # `cand` (not `tool_name`) is referenced inside the correlated NOT EXISTS
+        # subquery deliberately: dim_tool has its own `tool_name` column, so an
+        # unqualified `tool_name` there binds to dim_tool.tool_name instead of the
+        # candidate row -- once dim_tool has any row that self-reference is
+        # trivially true (every existing row satisfies tool_key = md5(tool_name)
+        # by construction), so NOT EXISTS goes permanently false and every tool
+        # introduced after the first session silently fails to insert.
+        conn.execute(
+            """
+            INSERT INTO dim_tool (tool_key, tool_name, tool_category)
+            SELECT DISTINCT
+                md5(cand.tool_name) AS tool_key,
+                cand.tool_name,
+                """
+            + TOOL_CATEGORY_SQL.format(col="cand.tool_name")
+            + """ AS tool_category
+            FROM (
+                SELECT DISTINCT
+                    json_extract_string(b.block, '$.name') AS tool_name
+                FROM etl.log_entries sle,
+                LATERAL (
+                    SELECT unnest(json_extract(sle.message_json, '$.content')::JSON[]) AS block
+                ) b
+                WHERE sle.type = 'assistant'
+                  AND json_type(sle.message_json, '$.content') = 'ARRAY'
+                  AND json_extract_string(b.block, '$.type') = 'tool_use'
+            ) cand
+            WHERE cand.tool_name IS NOT NULL
+              AND NOT EXISTS (
+                  SELECT 1 FROM dim_tool dt WHERE dt.tool_key = md5(cand.tool_name)
+              )
+            """
+        )
 
-    # Backfill categories on rows that predate the categorization pass (every
-    # warehouse built before it holds 'unknown'). Scoped to 'unknown' so a
-    # future manual override of a category is not stomped on every run.
-    conn.execute(
-        """
-        UPDATE dim_tool SET tool_category = """
-        + TOOL_CATEGORY_SQL.format(col="tool_name")
-        + """
-        WHERE tool_category IS NULL OR tool_category = 'unknown'
-        """
-    )
+    with run.step("dim_model_backfill", table="dim_model") as st:
+        # Backfill model_base / model_family on rows written before the
+        # structural rule (they hold NULL / 'unknown'). Same reasoning as the
+        # tool_category backfill below.
+        conn.execute(
+            """
+            UPDATE dim_model SET
+                model_base = """
+            + MODEL_BASE_SQL.format(col="model_name")
+            + """,
+                model_family = """
+            + MODEL_FAMILY_SQL.format(col="model_name")
+            + """
+            WHERE model_base IS NULL OR model_family IS NULL
+               OR model_family = 'unknown'
+            """
+        )
 
-    # dim_date: one row per calendar date seen in staging. Without these
-    # rows all nine dim_date-joining semantic views return NULL dates.
-    insert_missing_dim_dates(conn, "etl.log_entries", "timestamp")
+    with run.step("dim_tool_backfill", table="dim_tool") as st:
+        # Backfill categories on rows that predate the categorization pass (every
+        # warehouse built before it holds 'unknown'). Scoped to 'unknown' so a
+        # future manual override of a category is not stomped on every run.
+        conn.execute(
+            """
+            UPDATE dim_tool SET tool_category = """
+            + TOOL_CATEGORY_SQL.format(col="tool_name")
+            + """
+            WHERE tool_category IS NULL OR tool_category = 'unknown'
+            """
+        )
+
+    with run.step("dim_date", table="dim_date") as st:
+        # dim_date: one row per calendar date seen in staging. Without these
+        # rows all nine dim_date-joining semantic views return NULL dates.
+        insert_missing_dim_dates(conn, "etl.log_entries", "timestamp")
 
     return sessions_inserted
 
@@ -350,18 +357,16 @@ def run_v15_etl(
             # step grain, excluded from run-level fact totals (complete()
             # only sums step_kind='upsert' steps). The load also returns
             # the session's CDC window so nothing rescans staging for it.
-            with run.step("load_staging") as st:
+            with run.step("load_staging", table="etl.log_entries") as st:
                 staged = load_session_to_staging(conn, log_path)
                 st.rows_read = st.rows_inserted = staged.rows
 
-            # Stub dimensions so fact FKs resolve
-            with run.step("upsert_dimensions") as st:
-                new_sessions = _upsert_minimal_dimensions(conn)
-                st.rows_inserted = new_sessions
+            # Stub dimensions so fact FKs resolve -- one step per table.
+            new_sessions = _upsert_minimal_dimensions(conn, run=run)
             # Subagent enrichment looks at the JSONL source_path + sidecar
             # .meta.json to set is_agent / agent_id / parent_session_key /
             # agent_type / agent_description on dim_session.
-            with run.step("subagent_enrichment"):
+            with run.step("subagent_enrichment", table="dim_session"):
                 populate_subagent_dim_session(conn, run=run)
 
             # Populate every v0.15 fact in order. fact_session_summary MUST be
@@ -396,13 +401,13 @@ def run_v15_etl(
             populate_fact_tool_chain_steps(conn, run=run)
             # dim_session enrichment runs after all facts so the classifiers
             # see complete metrics + file-extension data
-            with run.step("dim_session_heuristics"):
+            with run.step("dim_session_heuristics", table="dim_session"):
                 populate_dim_session_heuristics(
                     conn, run=run, include_thinking=include_thinking,
                 )
             # dim_session_chain groups sessions sharing a slug; rebuilt fresh
             # each run since adding a new session can re-aggregate the chain
-            with run.step("dim_session_chain"):
+            with run.step("dim_session_chain", table="dim_session_chain"):
                 populate_dim_session_chain(conn, run=run)
             # Tier 1 facets: 19 SQL-computed facets per session (F01..F19) into
             # fact_session_facets. Runs after every source fact / dim is in

@@ -167,7 +167,8 @@ class TestStepRecording:
                 [result["etl_run_id"]],
             ).fetchall()
         }
-        assert {"write_parquet", "load_staging", "upsert_dimensions"} <= names
+        assert {"write_parquet", "load_staging", "dim_session", "dim_project",
+                "dim_model", "dim_tool", "dim_date"} <= names
 
     def test_step_order_unique_and_increasing(self, conn, tmp_path):
         session = _write_session(tmp_path / "s1.jsonl", "step-s3")

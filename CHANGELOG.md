@@ -10,6 +10,8 @@ All notable changes to this project will be documented in this file.
 
 - **Run metadata and staging moved to an `etl` schema; the version key is a plain string.** `fact_etl_runs`, `fact_etl_batch_runs`, `fact_etl_steps`, `dim_etl_version`, `meta_schema_version` and `stg_log_entries` are now `etl.runs`, `etl.batch_runs`, `etl.steps`, `etl.versions`, `etl.schema_version` and `etl.log_entries`, so `main` holds only what a consumer should query and an agent opening the file cold sees dimensions, facts and views with nothing else in the list. `semantic_etl_runs` stays in `main` as the consumer surface. Every `version_key` (and `created_by_version_key` / `last_updated_by_version_key` on every row) is now `<ccutils_version>/<business_rules_version>`, readable as-is, instead of an md5 that had to be joined before it said anything. The JSON export gains an `etl/` directory mirroring those tables, staging excluded because it is per-run scratch. The schema fingerprint covers both schemas.
 
+- **Every step names the table it wrote.** `etl.steps.table_name` is filled by every step that writes a table, and the dimension upsert is split into one step per dimension instead of one `upsert_dimensions` step over four tables. "What did this warehouse ever write" is now a `GROUP BY` rather than a parse of `step_name`, which is what the coverage layer and `ccutils audit` compare declared coverage against.
+
 ### Documentation
 - **`docs/ROADMAP.md` is the single tracked status board.** The release sequence, the 1.0.0 step list, and every known-but-unfixed defect lived only in gitignored `internal/` notes, so a fresh checkout or a new session could not find where work left off. Consolidated, each open item re-verified against the code, and pointed to from `CLAUDE.md`.
 

@@ -111,7 +111,7 @@ def run_memory_import(
         # were all already processed.
         if resolve_kwargs is not None:
             kwargs = {**kwargs, **resolve_kwargs()}
-        with run.step("dim_memory", kind="stage") as counts:
+        with run.step("dim_memory", kind="stage", table="dim_memory") as counts:
             written = import_memories(conn, run=run, counts=counts, **kwargs)
             counts.rows_inserted = written
         run.complete(sessions_seen=0, sessions_inserted=0, sessions_updated=0)

@@ -198,8 +198,13 @@ class EtlRun:
         )
 
     @contextmanager
-    def step(self, step_name: str, *, kind: str = "stage"):
+    def step(self, step_name: str, *, kind: str = "stage", table: str | None = None):
         """Record one DAG node in etl.steps around the wrapped body.
+
+        `table` names the table the step writes, so "what did this run
+        write" is a GROUP BY over `etl.steps.table_name` rather than a parse
+        of step_name. Every step that writes a table must pass it; the only
+        legitimate None is a step that writes no table (write_parquet).
 
         Yields a StepCounts whose slots the body may fill (lineage_upsert
         fills all four; stage wrappers set what they cheaply know). On an
@@ -221,11 +226,11 @@ class EtlRun:
             """
             INSERT INTO etl.steps
                 (step_id, etl_run_id, batch_run_id, step_name, step_kind,
-                 step_order, status)
-            VALUES (?, ?, ?, ?, ?, ?, 'running')
+                 table_name, step_order, status)
+            VALUES (?, ?, ?, ?, ?, ?, ?, 'running')
             """,
             [step_id, self.etl_run_id, self.batch_run_id, step_name, kind,
-             self._step_seq],
+             table, self._step_seq],
         )
         counts = StepCounts()
         try:

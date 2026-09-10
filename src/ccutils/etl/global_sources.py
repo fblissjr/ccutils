@@ -149,7 +149,7 @@ def _run_history_import(conn, history_path, *, batch_run_id, only_projects):
         run_kind="global_source",
     )
     try:
-        with run.step("dim_prompt", kind="stage") as counts:
+        with run.step("dim_prompt", kind="stage", table="dim_prompt") as counts:
             counts.rows_inserted = import_history(
                 conn, history_path, only_projects=only_projects
             )

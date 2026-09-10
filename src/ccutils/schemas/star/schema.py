@@ -214,6 +214,7 @@ def _create_objects(conn) -> None:
             batch_run_id VARCHAR,               -- denormalized for direct batch rollup
             step_name VARCHAR NOT NULL,         -- 'upsert:<table>' or stage name (display)
             step_kind VARCHAR NOT NULL DEFAULT 'stage',  -- 'upsert' (facts) | 'stage'; rollup scoping key
+            table_name VARCHAR,                 -- the table this step wrote; NULL only for steps that write none (write_parquet)
             step_order INTEGER NOT NULL,        -- 1-based position within the run
             started_at TIMESTAMP NOT NULL DEFAULT current_timestamp,
             completed_at TIMESTAMP,
