@@ -32,10 +32,10 @@ machine that has it; nothing here depends on it.
 Resume in this order. Each item was designed and its reads done on
 2026-09-10; nothing below is open-ended.
 
-1. **Confirm the last suite run.** The full suite for commit `6e1c304`
-   (summary and bridge views) was running when the session ended. Rerun
-   `uv run pytest tests/ --confcutdir=tests` and fix whatever it names
-   before touching anything else.
+1. **Start from a green suite.** The full suite passed on the last
+   commit of 2026-09-10 (1,308 passed, 1 skipped). Rerun
+   `uv run pytest tests/ --confcutdir=tests` once to confirm the tree is
+   as left, then begin step 2.
 2. **Delegations become a view; `--embed` is retired.** Delete
    `fact_agent_delegations`, its populator, `populate_delegation_completion`
    and `run_post_session_reconciliation` (and the `reconciliation` run

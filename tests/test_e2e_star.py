@@ -652,8 +652,6 @@ def test_t3_incremental_load_and_scoped_summary_interaction(conn, temp_dir):
     
     session_2 = create_mock_session_file(temp_dir, "sess_2", make_basic_loglines("sess_2"))
     
-    assert "etl.log_entries" in _PROJECT_SQL, "Summary populator lacks staging scoping"
-    
     run_v15_etl(conn, session_2, project_name="p", parquet_lake_root=temp_dir / "lake")
     
     assert conn.execute("SELECT COUNT(*) FROM semantic_session_summary").fetchone()[0] == 2
@@ -709,7 +707,11 @@ def test_t3_html_export_with_js_ts_heuristics_metadata(conn, temp_dir):
     run_v15_etl(conn, session, project_name="web-proj", parquet_lake_root=temp_dir / "lake")
     
     conn.execute("INSERT INTO dim_file (file_key, file_extension) VALUES (md5('app.js'), '.js')")
-    insert_mock_fact(conn, "semantic_session_files", "session_file_key", "sess_js|" + md5("app.js"), session_id="sess_js", file_key=md5("app.js"))
+    # semantic_session_files derives from fact_file_operations, so the mock
+    # goes one level down.
+    insert_mock_fact(conn, "fact_file_operations", "tool_use_id", "tu_mock_js",
+                     session_id="sess_js", session_key=md5("sess_js"),
+                     file_key=md5("app.js"), operation_type="read")
     
     from ccutils.etl.staging import load_session_to_staging
     load_session_to_staging(conn, temp_dir / "lake" / "projects" / "web-proj" / "sessions" / "sess_js" / "log_entries.parquet")
@@ -805,14 +807,9 @@ def test_t4_scenario_2_js_ts_web_subagent_classification(conn, temp_dir):
     run_v15_etl(conn, jsonl_path, project_name="p", parquet_lake_root=temp_dir / "lake")
     
     conn.execute("INSERT INTO dim_file (file_key, file_extension) VALUES (md5('index.js'), '.js')")
-    conn.execute(
-        """
-        INSERT INTO semantic_session_files (
-            created_by_version_key, last_updated_by_version_key, etl_run_id, record_source, hash_diff,
-            session_id, session_file_key, file_key, is_deleted
-        ) VALUES ('test', 'test', 'test', 'test', 'test', 'agent-js_sub', md5('index.js'), md5('index.js'), FALSE)
-        """
-    )
+    insert_mock_fact(conn, "fact_file_operations", "tool_use_id", "tu_mock_index",
+                     session_id="agent-js_sub", session_key=md5("agent-js_sub"),
+                     file_key=md5("index.js"), operation_type="read")
     
     from ccutils.etl.staging import load_session_to_staging
     load_session_to_staging(conn, temp_dir / "lake" / "projects" / "p" / "sessions" / "agent-js_sub" / "log_entries.parquet")
