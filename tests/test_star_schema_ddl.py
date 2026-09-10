@@ -135,13 +135,13 @@ class TestCreateStarSchema:
             assert result is not None, f"missing {tbl}"
         conn.close()
 
-    def test_creates_fact_session_summary_table(self, output_dir):
-        """Test that fact_session_summary table is created."""
+    def test_creates_session_summary_view(self, output_dir):
+        """The per-session rollup is a view since 1.0.0."""
         db_path = output_dir / "test.duckdb"
         conn = create_star_schema(db_path)
 
         result = conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='table' AND name='fact_session_summary'"
+            "SELECT name FROM sqlite_master WHERE type='view' AND name='semantic_session_summary'"
         ).fetchone()
         assert result is not None
         conn.close()
@@ -399,14 +399,14 @@ class TestDimSessionMessageColumns:
 
 
 class TestFactSessionSummaryTimeKey:
-    """Tests for time_key on fact_session_summary."""
+    """Tests for time_key on semantic_session_summary."""
 
-    def test_fact_session_summary_has_time_key(self, output_dir):
-        """Test that fact_session_summary has time_key column."""
+    def test_session_summary_view_has_time_key(self, output_dir):
+        """Test that semantic_session_summary has time_key column."""
         db_path = output_dir / "test.duckdb"
         conn = create_star_schema(db_path)
 
-        columns = conn.execute("DESCRIBE fact_session_summary").fetchall()
+        columns = conn.execute("DESCRIBE semantic_session_summary").fetchall()
         column_names = [c[0] for c in columns]
         assert "time_key" in column_names
         conn.close()

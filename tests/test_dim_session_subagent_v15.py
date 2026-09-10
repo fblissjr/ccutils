@@ -358,7 +358,7 @@ class TestRealContractParentSessionId:
         assert counts == {"8e9f0a1b-real-parent": 2, "agent-def456": 2}
 
         summary_msgs = conn.execute(
-            "SELECT total_messages FROM fact_session_summary fss "
+            "SELECT total_messages FROM semantic_session_summary fss "
             "JOIN dim_session ds USING (session_key) "
             "WHERE ds.session_id = '8e9f0a1b-real-parent'"
         ).fetchone()[0]

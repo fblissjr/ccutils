@@ -45,7 +45,7 @@ payload_cols=[...], hash_cols=[...])`.
 - `hash_cols` = the mutable business columns. Omit one and changes to it never
   propagate; include a volatile per-run column and idempotency dies.
 - Aggregate facts whose inbound table has no `timestamp` column pass
-  `timestamp_col=` (e.g. `fact_session_summary` uses `first_timestamp`).
+  `timestamp_col=` (e.g. `semantic_session_summary` uses `first_timestamp`).
 - **Shared tables** (two populators writing one table, e.g.
   `fact_session_facets`) MUST pass `soft_delete_scope_sql` or each populator
   soft-deletes the other's rows.
@@ -57,7 +57,7 @@ payload_cols=[...], hash_cols=[...])`.
 ## 4. Wire into `etl/orchestrator.py::run_v15_etl`
 
 Insert at the right point in dependency order (see the populator-order list in
-`docs/STAR_SCHEMA.md`). `fact_session_summary` stays LAST. If your populator
+`docs/STAR_SCHEMA.md`). nothing has to run last any more: the summary is a view. If your populator
 reads another fact, it goes after that fact's populator.
 
 ## 5. Progress display

@@ -251,7 +251,7 @@ class TestBehavioralFacets:
     that tool mix alone cannot -- median output tokens 47,533 for edit-heavy
     authoring vs 2,849 for reading, and median thinking blocks 24 vs 0.
     F15 (tokens_in) had no output counterpart, and thinking was reachable
-    only via fact_session_summary, which Tier 1 must not depend on because
+    only via semantic_session_summary, which Tier 1 must not depend on because
     the summary populator runs last.
     """
 

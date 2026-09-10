@@ -4,7 +4,7 @@ The legacy heuristics module classified intent / complexity / outcome /
 domain per session using zero-dep keyword + scoring rules. v0.15 moves
 them under ccutils.etl.heuristics and runs them as a post-fact populator
 that UPDATEs dim_session in place. Inputs are pulled from the v0.15 facts
-(fact_messages, fact_tool_calls, fact_tool_calls, bridge_session_file +
+(fact_messages, fact_tool_calls, fact_tool_calls, semantic_session_files +
 dim_file) rather than from the legacy fact_tool_calls / fact_errors path.
 
 This unblocks the NULL columns in semantic_project_context /

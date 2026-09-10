@@ -67,7 +67,6 @@ class TestStarRelationships:
         assert ("fact_tool_calls", "session_key", "dim_session") in triples
         assert ("fact_session_facets", "facet_type_key", "dim_facet_type") in triples
         assert ("fact_agent_delegations", "agent_session_key", "dim_session") in triples
-        assert ("bridge_session_file", "file_key", "dim_file") in triples
 
     def test_no_self_pk_relationships(self, conn):
         # dim_session.parent_session_key -> dim_session.session_key is fine

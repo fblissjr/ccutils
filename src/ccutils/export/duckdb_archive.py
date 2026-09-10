@@ -32,7 +32,6 @@ _PROGRESS_TABLES = (
     "fact_messages",
     "fact_tool_calls",
     "fact_token_usage",
-    "fact_session_summary",
     "fact_attachments",
     "fact_progress_events",
     "fact_system_events",

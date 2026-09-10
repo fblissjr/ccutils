@@ -10,7 +10,7 @@ include the `is_deleted = FALSE` filter where it matters.
 SELECT ds.session_id, fss.total_input_tokens, fss.total_output_tokens,
        fss.total_cache_creation_5m_tokens, fss.total_cache_creation_1h_tokens,
        fss.total_cache_read_tokens, fss.total_uncached_equivalent_tokens
-FROM fact_session_summary fss
+FROM semantic_session_summary fss
 JOIN dim_session ds USING (session_key)
 WHERE fss.is_deleted = FALSE
 ORDER BY total_uncached_equivalent_tokens DESC LIMIT 20;
@@ -79,7 +79,7 @@ GROUP BY ALL HAVING COUNT(*) >= 5 ORDER BY freq DESC LIMIT 20;
 ```sql
 -- Most-modified files overall
 SELECT df.file_path, SUM(bsf.write_count + bsf.edit_count) AS modifications
-FROM bridge_session_file bsf JOIN dim_file df USING (file_key)
+FROM semantic_session_files bsf JOIN dim_file df USING (file_key)
 WHERE bsf.is_deleted = FALSE
 GROUP BY df.file_path ORDER BY modifications DESC LIMIT 20;
 

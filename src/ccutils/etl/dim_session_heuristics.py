@@ -12,7 +12,7 @@ re-running on unchanged source produces identical results.
 
 Run AFTER populate_fact_messages, populate_fact_tool_calls,
 populate_fact_file_operations, and
-populate_bridge_session_file. (These supply the metrics + the file
+the session-file view. (These supply the metrics + the file
 extensions.)
 """
 
@@ -93,10 +93,9 @@ def populate_dim_session_heuristics(
             SELECT bsf.session_id,
                    string_agg(DISTINCT df.file_extension, '|')
                        AS extensions_pipe
-            FROM bridge_session_file bsf
+            FROM semantic_session_files bsf
             JOIN dim_file df USING (file_key)
-            WHERE bsf.is_deleted = FALSE
-              AND df.file_extension IS NOT NULL
+            WHERE               df.file_extension IS NOT NULL
               AND bsf.session_id IN (SELECT session_id FROM staging_sessions)
             GROUP BY bsf.session_id
         )

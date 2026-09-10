@@ -183,26 +183,6 @@ def test_t1_ddl_create_table_if_not_exists_fact_messages(conn, temp_dir):
     assert row[0] == 1, "fact_messages was dropped and recreated, losing historical data"
 
 
-def test_t1_ddl_create_table_if_not_exists_bridge_session_file(conn, temp_dir):
-    """Test 3: Verify bridge_session_file DDL uses CREATE TABLE IF NOT EXISTS.
-    Ensures recreating the schema does not drop existing data in bridge_session_file.
-    """
-    conn.execute(
-        """
-        INSERT INTO bridge_session_file (
-            created_by_version_key, last_updated_by_version_key, etl_run_id, record_source, hash_diff,
-            session_id, session_file_key, file_key, is_deleted
-        ) VALUES ('test', 'test', 'test', 'test', 'test', 'sess123', 'sess123|file123', 'file123', FALSE)
-        """
-    )
-    
-    db_path = temp_dir / "test_e2e_star.duckdb"
-    create_star_schema(db_path)
-    
-    row = conn.execute("SELECT COUNT(*) FROM bridge_session_file WHERE file_key = 'file123'").fetchone()
-    assert row[0] == 1, "bridge_session_file was dropped and recreated, losing historical data"
-
-
 def test_t1_ddl_create_table_if_not_exists_fact_token_usage(conn, temp_dir):
     """Test 4: Verify fact_token_usage DDL uses CREATE TABLE IF NOT EXISTS.
     Ensures recreating the schema does not drop existing data in fact_token_usage.
@@ -221,26 +201,6 @@ def test_t1_ddl_create_table_if_not_exists_fact_token_usage(conn, temp_dir):
     
     row = conn.execute("SELECT COUNT(*) FROM fact_token_usage WHERE entry_id = 'tok123'").fetchone()
     assert row[0] == 1, "fact_token_usage was dropped and recreated, losing historical data"
-
-
-def test_t1_ddl_create_table_if_not_exists_fact_session_summary(conn, temp_dir):
-    """Test 5: Verify fact_session_summary DDL uses CREATE TABLE IF NOT EXISTS.
-    Ensures recreating the schema does not drop existing data in fact_session_summary.
-    """
-    conn.execute(
-        """
-        INSERT INTO fact_session_summary (
-            created_by_version_key, last_updated_by_version_key, etl_run_id, record_source, hash_diff,
-            session_id, is_deleted
-        ) VALUES ('test', 'test', 'test', 'test', 'test', 'sess123', FALSE)
-        """
-    )
-    
-    db_path = temp_dir / "test_e2e_star.duckdb"
-    create_star_schema(db_path)
-    
-    row = conn.execute("SELECT COUNT(*) FROM fact_session_summary WHERE session_id = 'sess123'").fetchone()
-    assert row[0] == 1, "fact_session_summary was dropped and recreated, losing historical data"
 
 
 def test_t1_incremental_load_retains_different_session_data(conn, temp_dir):
@@ -300,43 +260,6 @@ def test_t1_staging_unconditionally_cleared_log_entries(conn, temp_dir):
     count = conn.execute("SELECT COUNT(*) FROM etl.log_entries").fetchone()[0]
     assert count == 0, "etl.log_entries was not cleared at the end of the ETL run"
 
-
-def test_t1_session_summary_scoping_fact_messages(conn):
-    """Test 10: Verify fact_messages subquery inside fact_session_summary is scoped to staging sessions."""
-    from ccutils.etl.fact_session_summary import _PROJECT_SQL
-    expected_clause = "session_id in (select distinct session_id from etl.log_entries where session_id is not null)"
-    # Normalize whitespaces
-    sql_normalized = " ".join(_PROJECT_SQL.lower().split())
-    assert expected_clause in sql_normalized, "fact_messages query selection is not scoped to staging session_ids"
-
-
-def test_t1_session_summary_scoping_fact_token_usage(conn):
-    """Test 11: Verify fact_token_usage subquery inside fact_session_summary is scoped to staging sessions."""
-    from ccutils.etl.fact_session_summary import _PROJECT_SQL
-    expected_clause = "session_id in (select distinct session_id from etl.log_entries where session_id is not null)"
-    # Normalize whitespaces
-    sql_normalized = " ".join(_PROJECT_SQL.lower().split())
-    # The staging scope must be applied specifically to the fact_token_usage subquery selection
-    token_subquery_idx = sql_normalized.find("from fact_token_usage")
-    assert token_subquery_idx != -1, "Could not find fact_token_usage section in SQL"
-    
-    # Look for the staging scope within 300 characters after "from fact_token_usage"
-    subquery_snippet = sql_normalized[token_subquery_idx:token_subquery_idx + 300]
-    assert expected_clause in subquery_snippet, "fact_token_usage query selection is not scoped to staging session_ids"
-
-
-def test_t1_session_summary_scoping_fact_tool_uses(conn):
-    """Test 12: Verify fact_tool_calls subquery inside fact_session_summary is scoped to staging sessions."""
-    from ccutils.etl.fact_session_summary import _PROJECT_SQL
-    expected_clause = "session_id in (select distinct session_id from etl.log_entries where session_id is not null)"
-    sql_normalized = " ".join(_PROJECT_SQL.lower().split())
-    tool_uses_idx = sql_normalized.find("from fact_tool_calls")
-    assert tool_uses_idx != -1
-    subquery_snippet = sql_normalized[tool_uses_idx:tool_uses_idx + 300]
-    assert expected_clause in subquery_snippet, "fact_tool_calls query selection is not scoped to staging session_ids"
-
-
-# --- Feature 3: Heuristic & Depth Classifiers ---
 
 def test_t1_heuristics_uses_dim_session_depth_level(conn, temp_dir):
     """Test 13: Verify populate_dim_session_heuristics passes the actual depth_level from dim_session.
@@ -494,8 +417,8 @@ def test_t2_ddl_no_replace_applied_to_any_warehouse_table(temp_dir):
     matches = re.findall(r"create\s+or\s+replace\s+table\s+(\w+)", content, re.I)
     warehouse_tables = {
         "dim_session", "dim_project", "dim_model", "dim_tool", "dim_date", "dim_time",
-        "fact_messages", "fact_tool_calls", "fact_tool_calls", "fact_session_summary",
-        "fact_token_usage", "bridge_session_file", "fact_errors"
+        "fact_messages", "fact_tool_calls",
+        "fact_token_usage", "fact_errors"
     }
     
     offending_tables = warehouse_tables.intersection(matches)
@@ -608,52 +531,6 @@ def test_t2_staging_cleared_on_exception(conn, temp_dir):
     count = conn.execute("SELECT COUNT(*) FROM etl.log_entries").fetchone()[0]
     assert count == 0, "Staging was not cleared on ETL failure"
 
-
-def test_t2_session_summary_scoping_fact_tool_results(conn):
-    """Test 27: Verify fact_tool_calls subquery inside fact_session_summary is scoped to staging sessions."""
-    from ccutils.etl.fact_session_summary import _PROJECT_SQL
-    expected_clause = "session_id in (select distinct session_id from etl.log_entries where session_id is not null)"
-    sql_normalized = " ".join(_PROJECT_SQL.lower().split())
-    idx = sql_normalized.find("from fact_tool_calls")
-    assert idx != -1
-    subquery_snippet = sql_normalized[idx:idx + 300]
-    assert expected_clause in subquery_snippet, "fact_tool_calls subquery is not scoped"
-
-
-def test_t2_session_summary_scoping_fact_file_operations(conn):
-    """Test 28: Verify fact_file_operations subquery inside fact_session_summary is scoped to staging sessions."""
-    from ccutils.etl.fact_session_summary import _PROJECT_SQL
-    expected_clause = "session_id in (select distinct session_id from etl.log_entries where session_id is not null)"
-    sql_normalized = " ".join(_PROJECT_SQL.lower().split())
-    idx = sql_normalized.find("from fact_file_operations")
-    if idx != -1:
-        subquery_snippet = sql_normalized[idx:idx + 300]
-        assert expected_clause in subquery_snippet, "fact_file_operations subquery is not scoped"
-
-
-def test_t2_session_summary_scoping_fact_diagnostics(conn):
-    """Test 29: Verify fact_attachments subquery (for diagnostics) inside fact_session_summary is scoped to staging sessions."""
-    from ccutils.etl.fact_session_summary import _PROJECT_SQL
-    expected_clause = "session_id in (select distinct session_id from etl.log_entries where session_id is not null)"
-    sql_normalized = " ".join(_PROJECT_SQL.lower().split())
-    idx = sql_normalized.find("from fact_attachments")
-    assert idx != -1
-    subquery_snippet = sql_normalized[idx:idx + 300]
-    assert expected_clause in subquery_snippet, "fact_attachments subquery is not scoped"
-
-
-def test_t2_session_summary_scoping_fact_plan_revisions(conn):
-    """Test 30: Verify fact_plan_revisions subquery inside fact_session_summary is scoped to staging sessions."""
-    from ccutils.etl.fact_session_summary import _PROJECT_SQL
-    expected_clause = "session_id in (select distinct session_id from etl.log_entries where session_id is not null)"
-    sql_normalized = " ".join(_PROJECT_SQL.lower().split())
-    idx = sql_normalized.find("from fact_plan_revisions")
-    if idx != -1:
-        subquery_snippet = sql_normalized[idx:idx + 300]
-        assert expected_clause in subquery_snippet, "fact_plan_revisions subquery is not scoped"
-
-
-# --- Feature 3: Heuristic & Depth Classifiers ---
 
 def test_t2_heuristics_missing_depth_defaults_to_zero(conn, temp_dir):
     """Test 31: Verify dim_session_heuristics handles missing/NULL depth_level by defaulting to 0."""
@@ -775,12 +652,11 @@ def test_t3_incremental_load_and_scoped_summary_interaction(conn, temp_dir):
     
     session_2 = create_mock_session_file(temp_dir, "sess_2", make_basic_loglines("sess_2"))
     
-    from ccutils.etl.fact_session_summary import _PROJECT_SQL
     assert "etl.log_entries" in _PROJECT_SQL, "Summary populator lacks staging scoping"
     
     run_v15_etl(conn, session_2, project_name="p", parquet_lake_root=temp_dir / "lake")
     
-    assert conn.execute("SELECT COUNT(*) FROM fact_session_summary").fetchone()[0] == 2
+    assert conn.execute("SELECT COUNT(*) FROM semantic_session_summary").fetchone()[0] == 2
 
 
 def test_t3_subagent_depth_heuristics_and_incremental_load(conn, temp_dir):
@@ -833,7 +709,7 @@ def test_t3_html_export_with_js_ts_heuristics_metadata(conn, temp_dir):
     run_v15_etl(conn, session, project_name="web-proj", parquet_lake_root=temp_dir / "lake")
     
     conn.execute("INSERT INTO dim_file (file_key, file_extension) VALUES (md5('app.js'), '.js')")
-    insert_mock_fact(conn, "bridge_session_file", "session_file_key", "sess_js|" + md5("app.js"), session_id="sess_js", file_key=md5("app.js"))
+    insert_mock_fact(conn, "semantic_session_files", "session_file_key", "sess_js|" + md5("app.js"), session_id="sess_js", file_key=md5("app.js"))
     
     from ccutils.etl.staging import load_session_to_staging
     load_session_to_staging(conn, temp_dir / "lake" / "projects" / "web-proj" / "sessions" / "sess_js" / "log_entries.parquet")
@@ -931,7 +807,7 @@ def test_t4_scenario_2_js_ts_web_subagent_classification(conn, temp_dir):
     conn.execute("INSERT INTO dim_file (file_key, file_extension) VALUES (md5('index.js'), '.js')")
     conn.execute(
         """
-        INSERT INTO bridge_session_file (
+        INSERT INTO semantic_session_files (
             created_by_version_key, last_updated_by_version_key, etl_run_id, record_source, hash_diff,
             session_id, session_file_key, file_key, is_deleted
         ) VALUES ('test', 'test', 'test', 'test', 'test', 'agent-js_sub', md5('index.js'), md5('index.js'), FALSE)

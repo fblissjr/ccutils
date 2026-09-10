@@ -18,7 +18,6 @@ Pipeline:
             ->  populate_fact_file_history_snapshots
             ->  populate_fact_queue_operations
             ->  populate_fact_pr_links
-            ->  populate_fact_session_summary  (must run last; aggregates over all the above)
 
 The EtlRun lifecycle ensures any exception marks the run failed in
 etl.runs instead of leaving 'running' rows around.
@@ -46,7 +45,6 @@ from ccutils.etl.entry_type_facts import (
 )
 from ccutils.etl.facets import FacetExtractor
 from ccutils.etl.facets.populator import populate_tier2_facets
-from ccutils.etl.bridge_session_file import populate_bridge_session_file
 from ccutils.etl.dim_session_chain import populate_dim_session_chain
 from ccutils.etl.dim_session_heuristics import populate_dim_session_heuristics
 from ccutils.etl.fact_agent_delegations import (
@@ -62,7 +60,6 @@ from ccutils.etl.fact_plan_revisions import populate_fact_plan_revisions
 from ccutils.etl.subagent_enrichment import populate_subagent_dim_session
 from ccutils.etl.fact_messages import populate_fact_messages
 from ccutils.etl.fact_session_facets import populate_tier1_facets
-from ccutils.etl.fact_session_summary import populate_fact_session_summary
 from ccutils.etl.fact_token_usage import populate_fact_token_usage
 from ccutils.etl.fact_tool_calls import populate_fact_tool_calls
 from ccutils.etl.lineage import EtlRun
@@ -335,7 +332,7 @@ def run_v15_etl(
             Defaults to a sibling 'parquet_lake' dir next to session_path.
         facet_extractor: optional Tier 2 LLM-facet extractor. None (the
             default) disables Tier 2 entirely. When supplied, the Tier 2
-            populator runs after Tier 1 and before fact_session_summary
+            populator runs after Tier 1 and before semantic_session_summary
             so the summary roll-up still sees every facet.
         include_thinking: when False, `etl.log_entries` is cleared at the
             end of this call. `fact_messages.content_text` already excludes
@@ -391,7 +388,7 @@ def run_v15_etl(
             with run.step("subagent_enrichment", table="dim_session"):
                 populate_subagent_dim_session(conn, run=run)
 
-            # Populate every v0.15 fact in order. fact_session_summary MUST be
+            # Populate every v0.15 fact in order. semantic_session_summary MUST be
             # last -- it aggregates over the others.
             populate_fact_messages(conn, run=run)
             populate_fact_tool_calls(conn, run=run)
@@ -406,8 +403,6 @@ def run_v15_etl(
             # dim_file + fact_file_operations depend on fact_tool_calls
             populate_dim_file(conn, run=run)
             populate_fact_file_operations(conn, run=run)
-            # bridge_session_file aggregates fact_file_operations
-            populate_bridge_session_file(conn, run=run)
             # fact_diagnostics flattens fact_attachments where type='diagnostics'
             populate_fact_diagnostics(conn, run=run)
             # Diagnostics name files no tool ever touched; a second pass
@@ -430,7 +425,7 @@ def run_v15_etl(
                 populate_dim_session_chain(conn, run=run)
             # Tier 1 facets: 19 SQL-computed facets per session (F01..F19) into
             # fact_session_facets. Runs after every source fact / dim is in
-            # place; runs before fact_session_summary so summary stays the
+            # place; runs before semantic_session_summary so summary stays the
             # final aggregate roll-up.
             populate_tier1_facets(conn, run=run)
             # Tier 2 facets (LLM-extracted) only run when a FacetExtractor is
@@ -440,7 +435,6 @@ def run_v15_etl(
                     conn, run=run, extractor=facet_extractor,
                     include_thinking=include_thinking,
                 )
-            populate_fact_session_summary(conn, run=run)
 
             # No per-thinking staging cleanup here: `staging_scope` clears
             # etl.log_entries unconditionally at exit, so the raw message_json

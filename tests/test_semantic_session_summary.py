@@ -1,7 +1,7 @@
-"""Tests for fact_session_summary (Phase C5b).
+"""Tests for semantic_session_summary (Phase C5b).
 
 Session-level aggregate over all the v0.15 entry-type facts. Replaces the
-legacy fact_session_summary that joined to the old fact_messages /
+legacy semantic_session_summary that joined to the old fact_messages /
 fact_tool_calls shapes.
 
 Note on Kimball "facts don't join to facts": the aggregation happens IN
@@ -23,7 +23,6 @@ from ccutils.etl.entry_type_facts import (
     populate_fact_system_events,
 )
 from ccutils.etl.fact_messages import populate_fact_messages
-from ccutils.etl.fact_session_summary import populate_fact_session_summary
 from ccutils.etl.fact_token_usage import populate_fact_token_usage
 from ccutils.etl.fact_tool_calls import populate_fact_tool_calls
 from ccutils.etl.lineage import EtlRun
@@ -45,6 +44,10 @@ def _stage(conn, jsonl_path, tmp_path, run):
 
 
 def _populate_everything(conn, run):
+    # The view hangs off dim_session; the fixture must give it a row.
+    from ccutils.etl.orchestrator import _upsert_minimal_dimensions
+
+    _upsert_minimal_dimensions(conn, run=run)
     """Run every fact populator so the summary has something to roll up."""
     populate_fact_messages(conn, run=run)
     populate_fact_tool_calls(conn, run=run)
@@ -54,7 +57,6 @@ def _populate_everything(conn, run):
     populate_fact_system_events(conn, run=run)
     populate_fact_meta_events(conn, run=run)
     populate_fact_file_history_snapshots(conn, run=run)
-    populate_fact_session_summary(conn, run=run)
 
 
 @pytest.fixture
@@ -166,80 +168,12 @@ def rich_session(tmp_path):
     return jsonl
 
 
-class TestFactSessionSummaryDdl:
-    def test_table_exists(self, conn):
-        assert conn.execute(
-            "SELECT name FROM sqlite_master WHERE name='fact_session_summary'"
-        ).fetchone() is not None
-
-    def test_lineage_columns(self, conn):
-        cols = {c[0] for c in conn.execute("DESCRIBE fact_session_summary").fetchall()}
-        for required in (
-            "created_at", "last_updated_at",
-            "created_by_version_key", "last_updated_by_version_key",
-            "etl_run_id", "record_source", "hash_diff",
-            "is_deleted", "deleted_at",
-            "session_id",
-        ):
-            assert required in cols, f"Missing: {required}"
-
-    def test_message_rollups(self, conn):
-        cols = {c[0] for c in conn.execute("DESCRIBE fact_session_summary").fetchall()}
-        for required in (
-            "total_messages", "user_messages", "assistant_messages",
-            "total_thinking_blocks",
-        ):
-            assert required in cols, f"Missing: {required}"
-
-    def test_token_rollups_split_by_tier(self, conn):
-        """R11: cache_creation rollups split per pricing tier."""
-        cols = {c[0] for c in conn.execute("DESCRIBE fact_session_summary").fetchall()}
-        for required in (
-            "total_input_tokens", "total_output_tokens",
-            "total_cache_creation_5m_tokens",
-            "total_cache_creation_1h_tokens",
-            "total_cache_creation_total_tokens",
-            "total_cache_read_tokens",
-            "total_uncached_equivalent_tokens",
-            "api_response_count",
-        ):
-            assert required in cols, f"Missing: {required}"
-
-    def test_tool_rollups(self, conn):
-        cols = {c[0] for c in conn.execute("DESCRIBE fact_session_summary").fetchall()}
-        for required in (
-            "total_tool_uses", "unique_tools_used",
-            "total_tool_results", "total_tool_errors",
-        ):
-            assert required in cols, f"Missing: {required}"
-
-    def test_system_rollups(self, conn):
-        cols = {c[0] for c in conn.execute("DESCRIBE fact_session_summary").fetchall()}
-        for required in (
-            "total_api_errors", "total_compactions",
-            "total_turn_durations_ms", "turn_count",
-            "total_stop_events", "total_prevented_continuations",
-        ):
-            assert required in cols, f"Missing: {required}"
-
-    def test_other_rollups(self, conn):
-        cols = {c[0] for c in conn.execute("DESCRIBE fact_session_summary").fetchall()}
-        for required in (
-            "total_progress_events", "total_hook_progress_events",
-            "total_bash_progress_events",
-            "total_attachments", "total_diagnostics", "total_hook_successes",
-            "permission_mode_transition_count", "current_permission_mode",
-            "total_file_history_snapshots",
-        ):
-            assert required in cols, f"Missing: {required}"
-
-
-class TestPopulateFactSessionSummary:
+class TestSessionSummaryView:
     def test_one_row_per_session(self, conn, rich_session, tmp_path):
         run = EtlRun.start(conn, source_path=str(rich_session))
         _stage(conn, rich_session, tmp_path, run)
         _populate_everything(conn, run)
-        n = conn.execute("SELECT COUNT(*) FROM fact_session_summary").fetchone()[0]
+        n = conn.execute("SELECT COUNT(*) FROM semantic_session_summary").fetchone()[0]
         assert n == 1
 
     def test_message_counts(self, conn, rich_session, tmp_path):
@@ -248,7 +182,7 @@ class TestPopulateFactSessionSummary:
         _populate_everything(conn, run)
         row = conn.execute(
             "SELECT total_messages, user_messages, assistant_messages "
-            "FROM fact_session_summary WHERE session_id = 'rich-s'"
+            "FROM semantic_session_summary WHERE session_id = 'rich-s'"
         ).fetchone()
         # 3 user (u1, u2, u3) + 2 assistant (a1, a2) = 5
         assert row[0] == 5
@@ -264,7 +198,7 @@ class TestPopulateFactSessionSummary:
             "total_cache_creation_5m_tokens, total_cache_creation_1h_tokens, "
             "total_cache_creation_total_tokens, total_cache_read_tokens, "
             "total_uncached_equivalent_tokens, api_response_count "
-            "FROM fact_session_summary WHERE session_id = 'rich-s'"
+            "FROM semantic_session_summary WHERE session_id = 'rich-s'"
         ).fetchone()
         # a1: 10 input, 5 output, 80 5m, 20 1h, 500 read
         # a2: 3 input, 4 output, 0 5m, 0 1h, 700 read
@@ -285,7 +219,7 @@ class TestPopulateFactSessionSummary:
         row = conn.execute(
             "SELECT total_tool_uses, unique_tools_used, total_tool_results, "
             "total_tool_errors "
-            "FROM fact_session_summary WHERE session_id = 'rich-s'"
+            "FROM semantic_session_summary WHERE session_id = 'rich-s'"
         ).fetchone()
         # 2 tool_use blocks (tu_bash, tu_read)
         assert row[0] == 2
@@ -304,7 +238,7 @@ class TestPopulateFactSessionSummary:
             "SELECT total_api_errors, total_compactions, "
             "total_turn_durations_ms, turn_count, "
             "total_stop_events, total_prevented_continuations "
-            "FROM fact_session_summary WHERE session_id = 'rich-s'"
+            "FROM semantic_session_summary WHERE session_id = 'rich-s'"
         ).fetchone()
         assert row[0] == 1   # api_error
         assert row[1] == 1   # compact_boundary
@@ -323,7 +257,7 @@ class TestPopulateFactSessionSummary:
             "total_attachments, total_diagnostics, total_hook_successes, "
             "permission_mode_transition_count, current_permission_mode, "
             "total_file_history_snapshots "
-            "FROM fact_session_summary WHERE session_id = 'rich-s'"
+            "FROM semantic_session_summary WHERE session_id = 'rich-s'"
         ).fetchone()
         assert row[0] == 2  # 2 progress events
         assert row[1] == 1  # 1 hook_progress
@@ -342,37 +276,8 @@ class TestPopulateFactSessionSummary:
         _populate_everything(conn, run)
         row = conn.execute(
             "SELECT first_timestamp, last_timestamp, session_duration_seconds "
-            "FROM fact_session_summary WHERE session_id = 'rich-s'"
+            "FROM semantic_session_summary WHERE session_id = 'rich-s'"
         ).fetchone()
         assert row[0] is not None
         assert row[1] is not None
         assert row[2] > 0
-
-    def test_lineage_stamped(self, conn, rich_session, tmp_path):
-        run = EtlRun.start(conn, source_path=str(rich_session))
-        _stage(conn, rich_session, tmp_path, run)
-        _populate_everything(conn, run)
-        row = conn.execute(
-            "SELECT etl_run_id, record_source, hash_diff "
-            "FROM fact_session_summary WHERE session_id = 'rich-s'"
-        ).fetchone()
-        assert row[0] == run.etl_run_id
-        assert row[1] == "claude_code_jsonl"
-        assert len(row[2]) == 32
-
-
-class TestIdempotency:
-    def test_reetl_does_not_bump_last_updated_at(self, conn, rich_session, tmp_path):
-        run1 = EtlRun.start(conn, source_path=str(rich_session))
-        _stage(conn, rich_session, tmp_path, run1)
-        _populate_everything(conn, run1)
-        first = conn.execute(
-            "SELECT session_id, last_updated_at FROM fact_session_summary"
-        ).fetchall()
-        run2 = EtlRun.start(conn, source_path=str(rich_session))
-        _stage(conn, rich_session, tmp_path, run2)
-        _populate_everything(conn, run2)
-        second = conn.execute(
-            "SELECT session_id, last_updated_at FROM fact_session_summary"
-        ).fetchall()
-        assert first == second

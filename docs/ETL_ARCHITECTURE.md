@@ -59,7 +59,7 @@ this repo's history:
 - The natural-key fan-out that killed three sessions' ETL after every session
   had already been processed.
 - The scaffolding that exists only to manage the ordering: the
-  `fact_session_summary` runs LAST rule, the cross-session reconciliation
+  `semantic_session_summary` runs LAST rule, the cross-session reconciliation
   pass, and the "populators reading permanent facts must scope inbound to
   staged sessions" rule.
 
@@ -145,8 +145,8 @@ Rule 3 decides whether an object should exist. This decides how it is stored:
   is ~30–50 ms. There is no performance case for materialising it. Lineage
   columns on a fully-derived object answer a question about the cache, not
   about the data.
-  - `fact_session_summary` (49 columns, all derived) → view
-  - `bridge_session_file` → view. It earns *existence* (real aggregation:
+  - `semantic_session_summary` (49 columns, all derived) → view
+  - `semantic_session_files` → view. It earns *existence* (real aggregation:
     operation/read/write/edit counts, chars written, first/last timestamps per
     session-file) but not *storage*.
 - **Referenced by surrogate key → table.** `dim_session_chain` stays a table

@@ -4,7 +4,7 @@ description: Guided workflow for adding a new fact table to the star schema
 ---
 
 Follow this workflow to add a new fact table. Practice TDD throughout. Every
-v0.15 fact -- including cross-session aggregates like `bridge_session_file`
+v0.15 fact -- including cross-session aggregates like `semantic_session_files`
 and `fact_agent_delegations` -- is a per-session populator wired into
 `run_v15_etl`; there is no separate post-ETL pass (no `finalize_star_schema`,
 no `_extract_star_data`/`StarExtractionResult`/`_load_facts` -- that's
@@ -38,7 +38,7 @@ Full detail, pitfalls, and the `lineage_upsert` contract:
 inbound table from `etl.log_entries` (or scoped permanent facts), delegate to
 `lineage_upsert(conn, run=run, table=..., inbound_table=..., natural_key=...,
 payload_cols=[...], hash_cols=[...])`. Wire into `run_v15_etl` in dependency
-order (`fact_session_summary` stays LAST), then add to `_PROGRESS_TABLES` in
+order , then add to `_PROGRESS_TABLES` in
 `export/duckdb_archive.py`.
 
 ## Step 5: Consider a semantic view

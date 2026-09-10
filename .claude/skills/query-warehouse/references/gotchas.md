@@ -21,8 +21,8 @@ filter: `semantic_sessions`, `semantic_decisions`,
 
 - `fact_token_usage` has **no `message_id`** — join to `fact_messages` via
   `entry_id`, or `session_key` + `timestamp`.
-- `fact_session_summary` has **no `unique_files_touched`** — count distinct
-  files via `bridge_session_file` grouped by `session_key`.
+- `semantic_session_summary` has **no `unique_files_touched`** — count distinct
+  files via `semantic_session_files` grouped by `session_key`.
 - `fact_tool_calls.is_error` is stored **tri-state** (TRUE/FALSE/NULL), but
   NULL means **not an error**, not "unknown". Claude Code writes
   `is_error: true` on failure and encodes success either as `false` or by

@@ -850,80 +850,6 @@ def _create_objects(conn) -> None:
     )
 
 
-    # Grain: one row per session. Pre-aggregated rollups over the v0.15
-    # entry-type facts. Note on Kimball "facts don't join to facts": the
-    # aggregation joins happen IN the populator (ETL time); query consumers
-    # see one self-contained row per session and never join facts to facts.
-    conn.execute(
-        """
-        CREATE TABLE IF NOT EXISTS fact_session_summary (
-            created_at TIMESTAMP NOT NULL DEFAULT current_timestamp,
-            created_by_version_key VARCHAR NOT NULL,
-            last_updated_at TIMESTAMP NOT NULL DEFAULT current_timestamp,
-            last_updated_by_version_key VARCHAR NOT NULL,
-            etl_run_id VARCHAR NOT NULL,
-            record_source VARCHAR NOT NULL,
-            hash_diff VARCHAR NOT NULL,
-            is_deleted BOOLEAN NOT NULL DEFAULT FALSE,
-            deleted_at TIMESTAMP,
-
-            session_id VARCHAR NOT NULL,
-            session_key VARCHAR,
-            project_key VARCHAR,
-            date_key INTEGER,
-            time_key INTEGER,
-            first_timestamp TIMESTAMP,
-            last_timestamp TIMESTAMP,
-            session_duration_seconds DOUBLE,
-
-            -- From fact_messages
-            total_messages INTEGER,
-            user_messages INTEGER,
-            assistant_messages INTEGER,
-            total_thinking_blocks INTEGER,
-
-            -- From fact_token_usage (R11 split by pricing tier)
-            total_input_tokens BIGINT,
-            total_output_tokens BIGINT,
-            total_cache_creation_5m_tokens BIGINT,
-            total_cache_creation_1h_tokens BIGINT,
-            total_cache_creation_total_tokens BIGINT,
-            total_cache_read_tokens BIGINT,
-            total_uncached_equivalent_tokens BIGINT,
-            api_response_count INTEGER,
-
-            -- From fact_tool_calls
-            total_tool_uses INTEGER,
-            unique_tools_used INTEGER,
-            total_tool_results INTEGER,
-            total_tool_errors INTEGER,
-
-            -- From fact_system_events
-            total_api_errors INTEGER,
-            total_compactions INTEGER,
-            total_turn_durations_ms BIGINT,
-            turn_count INTEGER,
-            total_stop_events INTEGER,
-            total_prevented_continuations INTEGER,
-
-            -- From fact_progress_events / fact_attachments
-            total_progress_events INTEGER,
-            total_hook_progress_events INTEGER,
-            total_bash_progress_events INTEGER,
-            total_attachments INTEGER,
-            total_diagnostics INTEGER,
-            total_hook_successes INTEGER,
-
-            -- From fact_meta_events
-            permission_mode_transition_count INTEGER,
-            current_permission_mode VARCHAR,
-
-            -- From fact_file_history_snapshots
-            total_file_history_snapshots INTEGER
-        )
-    """
-    )
-
     conn.execute(
         """
         -- Grain: one row per file-touching tool call (Read/Write/Edit/MultiEdit
@@ -1145,44 +1071,6 @@ def _create_objects(conn) -> None:
     # Cross-Session Bridge Table
     # =========================================================================
 
-    conn.execute(
-        """
-        -- Grain: one row per (session, file) touched together. Aggregate
-        -- over fact_file_operations. Idempotent re-builds drop-and-reload.
-        CREATE TABLE IF NOT EXISTS bridge_session_file (
-            -- Lineage (every v0.15 fact carries this block)
-            created_at TIMESTAMP NOT NULL DEFAULT current_timestamp,
-            created_by_version_key VARCHAR NOT NULL,
-            last_updated_at TIMESTAMP NOT NULL DEFAULT current_timestamp,
-            last_updated_by_version_key VARCHAR NOT NULL,
-            etl_run_id VARCHAR NOT NULL,
-            record_source VARCHAR NOT NULL,
-            hash_diff VARCHAR NOT NULL,
-            is_deleted BOOLEAN NOT NULL DEFAULT FALSE,
-            deleted_at TIMESTAMP,
-
-            -- Degenerate
-            session_id VARCHAR NOT NULL,
-
-            -- Routing keys
-            session_file_key VARCHAR NOT NULL,
-            session_key VARCHAR,
-            file_key VARCHAR,
-            -- Derived from first_operation_timestamp for date/time-of-day filtering
-            date_key INTEGER,
-            time_key INTEGER,
-
-            -- Aggregate measures
-            first_operation_timestamp TIMESTAMP,
-            last_operation_timestamp TIMESTAMP,
-            operation_count INTEGER,
-            read_count INTEGER,
-            write_count INTEGER,
-            edit_count INTEGER,
-            total_chars_written INTEGER
-        )
-    """
-    )
 
     # =========================================================================
     # New Fact Tables (token usage, turn durations, diagnostics, stop events)
@@ -1514,7 +1402,7 @@ def _create_objects(conn) -> None:
         ("F31", "thinking_blocks", "int",
          "Count of assistant entries carrying a thinking block. Claude Code "
          "writes one content block per entry, so entries == blocks. Sourced "
-         "from fact_messages, not fact_session_summary, because the summary "
+         "from fact_messages, not semantic_session_summary, because the summary "
          "populator runs last."),
     ]
     conn.executemany(
@@ -1616,7 +1504,152 @@ def _create_objects(conn) -> None:
     # Semantic Views (15)
     # =========================================================================
 
-    # Updated for v0.15 fact_session_summary shape.
+    # =========================================================================
+    # Derived aggregates are VIEWS (1.0.0). semantic_session_summary and
+    # semantic_session_files were tables written LAST by every run and joined by
+    # six views; nothing in them was stated, all of it was a rollup of other
+    # facts. A view cannot go stale, cannot be skipped by one entry point,
+    # and stores nothing twice.
+    # =========================================================================
+    conn.execute(
+        """
+        CREATE OR REPLACE VIEW semantic_session_summary AS
+        WITH msg_rollup AS (
+            SELECT session_id,
+                   COUNT(*) AS total_messages,
+                   SUM(CASE WHEN message_type = 'user' THEN 1 ELSE 0 END) AS user_messages,
+                   SUM(CASE WHEN message_type = 'assistant' THEN 1 ELSE 0 END) AS assistant_messages,
+                   SUM(CASE WHEN has_thinking THEN 1 ELSE 0 END) AS total_thinking_blocks
+            FROM fact_messages WHERE is_deleted = FALSE GROUP BY session_id
+        ),
+        token_rollup AS (
+            SELECT session_id,
+                   SUM(COALESCE(input_tokens, 0)) AS total_input_tokens,
+                   SUM(COALESCE(output_tokens, 0)) AS total_output_tokens,
+                   SUM(COALESCE(cache_creation_5m_tokens, 0)) AS total_cache_creation_5m_tokens,
+                   SUM(COALESCE(cache_creation_1h_tokens, 0)) AS total_cache_creation_1h_tokens,
+                   SUM(COALESCE(cache_creation_total_tokens, 0)) AS total_cache_creation_total_tokens,
+                   SUM(COALESCE(cache_read_tokens, 0)) AS total_cache_read_tokens,
+                   SUM(COALESCE(total_uncached_equivalent_tokens, 0)) AS total_uncached_equivalent_tokens,
+                   COUNT(*) AS api_response_count
+            FROM fact_token_usage WHERE is_deleted = FALSE GROUP BY session_id
+        ),
+        tool_rollup AS (
+            SELECT session_id,
+                   COUNT(*) AS total_tool_uses,
+                   COUNT(DISTINCT tool_name) AS unique_tools_used,
+                   COUNT(result_entry_id) AS total_tool_results,
+                   SUM(CASE WHEN is_error THEN 1 ELSE 0 END) AS total_tool_errors
+            FROM fact_tool_calls WHERE is_deleted = FALSE GROUP BY session_id
+        ),
+        system_rollup AS (
+            SELECT session_id,
+                   SUM(CASE WHEN subtype = 'api_error' THEN 1 ELSE 0 END) AS total_api_errors,
+                   SUM(CASE WHEN subtype = 'compact_boundary' THEN 1 ELSE 0 END) AS total_compactions,
+                   SUM(CASE WHEN subtype = 'turn_duration' THEN COALESCE(duration_ms, 0) ELSE 0 END) AS total_turn_durations_ms,
+                   SUM(CASE WHEN subtype = 'turn_duration' THEN 1 ELSE 0 END) AS turn_count,
+                   SUM(CASE WHEN subtype = 'stop_hook_summary' THEN 1 ELSE 0 END) AS total_stop_events,
+                   SUM(CASE WHEN subtype = 'stop_hook_summary' AND prevented_continuation THEN 1 ELSE 0 END) AS total_prevented_continuations
+            FROM fact_system_events WHERE is_deleted = FALSE GROUP BY session_id
+        ),
+        progress_rollup AS (
+            SELECT session_id,
+                   COUNT(*) AS total_progress_events,
+                   SUM(CASE WHEN data_type = 'hook_progress' THEN 1 ELSE 0 END) AS total_hook_progress_events,
+                   SUM(CASE WHEN data_type = 'bash_progress' THEN 1 ELSE 0 END) AS total_bash_progress_events
+            FROM fact_progress_events WHERE is_deleted = FALSE GROUP BY session_id
+        ),
+        attachment_rollup AS (
+            SELECT session_id,
+                   COUNT(*) AS total_attachments,
+                   SUM(CASE WHEN attachment_type = 'diagnostics' THEN 1 ELSE 0 END) AS total_diagnostics,
+                   SUM(CASE WHEN attachment_type = 'hook_success' THEN 1 ELSE 0 END) AS total_hook_successes
+            FROM fact_attachments WHERE is_deleted = FALSE GROUP BY session_id
+        ),
+        meta_rollup AS (
+            SELECT session_id,
+                   SUM(CASE WHEN meta_type = 'permission-mode' THEN 1 ELSE 0 END) AS permission_mode_transition_count
+            FROM fact_meta_events WHERE is_deleted = FALSE GROUP BY session_id
+        ),
+        file_history_rollup AS (
+            SELECT session_id, COUNT(*) AS total_file_history_snapshots
+            FROM fact_file_history_snapshots WHERE is_deleted = FALSE GROUP BY session_id
+        )
+        SELECT
+            ds.session_id,
+            ds.session_key,
+            ds.project_key,
+            ds.first_timestamp,
+            ds.last_timestamp,
+            EXTRACT(EPOCH FROM (ds.last_timestamp - ds.first_timestamp))::DOUBLE AS session_duration_seconds,
+            CAST(strftime(ds.first_timestamp, '%Y%m%d') AS INTEGER) AS date_key,
+            CAST(strftime(ds.first_timestamp, '%H%M') AS INTEGER) AS time_key,
+            COALESCE(mr.total_messages, 0) AS total_messages,
+            COALESCE(mr.user_messages, 0) AS user_messages,
+            COALESCE(mr.assistant_messages, 0) AS assistant_messages,
+            COALESCE(mr.total_thinking_blocks, 0) AS total_thinking_blocks,
+            COALESCE(tr.total_input_tokens, 0) AS total_input_tokens,
+            COALESCE(tr.total_output_tokens, 0) AS total_output_tokens,
+            COALESCE(tr.total_cache_creation_5m_tokens, 0) AS total_cache_creation_5m_tokens,
+            COALESCE(tr.total_cache_creation_1h_tokens, 0) AS total_cache_creation_1h_tokens,
+            COALESCE(tr.total_cache_creation_total_tokens, 0) AS total_cache_creation_total_tokens,
+            COALESCE(tr.total_cache_read_tokens, 0) AS total_cache_read_tokens,
+            COALESCE(tr.total_uncached_equivalent_tokens, 0) AS total_uncached_equivalent_tokens,
+            COALESCE(tr.api_response_count, 0) AS api_response_count,
+            COALESCE(tur.total_tool_uses, 0) AS total_tool_uses,
+            COALESCE(tur.unique_tools_used, 0) AS unique_tools_used,
+            COALESCE(tur.total_tool_results, 0) AS total_tool_results,
+            COALESCE(tur.total_tool_errors, 0) AS total_tool_errors,
+            COALESCE(sr.total_api_errors, 0) AS total_api_errors,
+            COALESCE(sr.total_compactions, 0) AS total_compactions,
+            COALESCE(sr.total_turn_durations_ms, 0) AS total_turn_durations_ms,
+            COALESCE(sr.turn_count, 0) AS turn_count,
+            COALESCE(sr.total_stop_events, 0) AS total_stop_events,
+            COALESCE(sr.total_prevented_continuations, 0) AS total_prevented_continuations,
+            COALESCE(pr.total_progress_events, 0) AS total_progress_events,
+            COALESCE(pr.total_hook_progress_events, 0) AS total_hook_progress_events,
+            COALESCE(pr.total_bash_progress_events, 0) AS total_bash_progress_events,
+            COALESCE(ar.total_attachments, 0) AS total_attachments,
+            COALESCE(ar.total_diagnostics, 0) AS total_diagnostics,
+            COALESCE(ar.total_hook_successes, 0) AS total_hook_successes,
+            COALESCE(metar.permission_mode_transition_count, 0) AS permission_mode_transition_count,
+            ds.permission_mode AS current_permission_mode,
+            COALESCE(fhr.total_file_history_snapshots, 0) AS total_file_history_snapshots
+        FROM dim_session ds
+        LEFT JOIN msg_rollup mr ON mr.session_id = ds.session_id
+        LEFT JOIN token_rollup tr ON tr.session_id = ds.session_id
+        LEFT JOIN tool_rollup tur ON tur.session_id = ds.session_id
+        LEFT JOIN system_rollup sr ON sr.session_id = ds.session_id
+        LEFT JOIN progress_rollup pr ON pr.session_id = ds.session_id
+        LEFT JOIN attachment_rollup ar ON ar.session_id = ds.session_id
+        LEFT JOIN meta_rollup metar ON metar.session_id = ds.session_id
+        LEFT JOIN file_history_rollup fhr ON fhr.session_id = ds.session_id
+    """
+    )
+
+    conn.execute(
+        """
+        CREATE OR REPLACE VIEW semantic_session_files AS
+        SELECT
+            md5(ffo.session_id || '|' || ffo.file_key) AS session_file_key,
+            ffo.session_id,
+            ffo.session_key,
+            ffo.file_key,
+            MIN(ffo.timestamp) AS first_operation_timestamp,
+            MAX(ffo.timestamp) AS last_operation_timestamp,
+            COUNT(*) AS operation_count,
+            SUM(CASE WHEN ffo.operation_type = 'read' THEN 1 ELSE 0 END) AS read_count,
+            SUM(CASE WHEN ffo.operation_type = 'write' THEN 1 ELSE 0 END) AS write_count,
+            SUM(CASE WHEN ffo.operation_type = 'edit' THEN 1 ELSE 0 END) AS edit_count,
+            SUM(CASE WHEN ffo.operation_type IN ('write', 'edit')
+                     THEN COALESCE(ffo.file_size_chars, 0) ELSE 0 END) AS total_chars_written
+        FROM fact_file_operations ffo
+        WHERE ffo.is_deleted = FALSE AND ffo.session_id IS NOT NULL AND ffo.file_key IS NOT NULL
+        GROUP BY ffo.session_id, ffo.session_key, ffo.file_key
+    """
+    )
+
+    # Updated for the 1.0.0 semantic_session_summary view.
     conn.execute(
         """
         CREATE OR REPLACE VIEW semantic_sessions AS
@@ -1661,12 +1694,12 @@ def _create_objects(conn) -> None:
             dd.is_weekend,
             dti.hour,
             dti.time_of_day
-        FROM fact_session_summary fss
+        FROM semantic_session_summary fss
         LEFT JOIN dim_session ds ON fss.session_key = ds.session_key
         LEFT JOIN dim_project dp ON fss.project_key = dp.project_key
         LEFT JOIN dim_date dd ON fss.date_key = dd.date_key
         LEFT JOIN dim_time dti ON fss.time_key = dti.time_key
-        WHERE fss.is_deleted = FALSE
+        WHERE TRUE
     """
     )
 
@@ -1750,7 +1783,7 @@ def _create_objects(conn) -> None:
         FROM dim_session_chain dsc
         JOIN dim_session ds ON ds.chain_key = dsc.chain_key
         LEFT JOIN dim_project dp ON ds.project_key = dp.project_key
-        LEFT JOIN fact_session_summary fss ON ds.session_key = fss.session_key
+        LEFT JOIN semantic_session_summary fss ON ds.session_key = fss.session_key
     """
     )
 
@@ -1918,7 +1951,7 @@ def _create_objects(conn) -> None:
             MIN(bsf.first_operation_timestamp) AS first_seen,
             CAST(MAX(bsf.last_operation_timestamp) AS DATE) AS last_seen_date,
             MAX(bsf.last_operation_timestamp) AS last_seen
-        FROM bridge_session_file bsf
+        FROM semantic_session_files bsf
         JOIN dim_file df ON bsf.file_key = df.file_key
         GROUP BY df.file_path, df.file_name, df.file_extension, df.directory_path, df.language
         HAVING COUNT(DISTINCT bsf.session_key) > 1
@@ -2009,9 +2042,8 @@ def _create_objects(conn) -> None:
             FROM dim_session ds
             LEFT JOIN mix m ON m.session_id = ds.session_id
             LEFT JOIN runs r ON r.session_id = ds.session_id
-            LEFT JOIN fact_session_summary fss
+            LEFT JOIN semantic_session_summary fss
                    ON fss.session_id = ds.session_id
-                  AND fss.is_deleted = FALSE
             LEFT JOIN dim_project dp ON dp.project_key = ds.project_key
         )
         SELECT
@@ -2078,7 +2110,7 @@ def _create_objects(conn) -> None:
             fss.total_uncached_equivalent_tokens
         FROM dim_session ds
         JOIN dim_project dp ON ds.project_key = dp.project_key
-        LEFT JOIN fact_session_summary fss ON ds.session_key = fss.session_key
+        LEFT JOIN semantic_session_summary fss ON ds.session_key = fss.session_key
         LEFT JOIN dim_time dti ON fss.time_key = dti.time_key
         ORDER BY ds.first_timestamp DESC
     """
@@ -2098,7 +2130,7 @@ def _create_objects(conn) -> None:
             SUM(bsf.edit_count) AS total_edits,
             CAST(MAX(ds.first_timestamp) AS DATE) AS last_touched_date,
             MAX(ds.first_timestamp) AS last_touched
-        FROM bridge_session_file bsf
+        FROM semantic_session_files bsf
         JOIN dim_file df ON bsf.file_key = df.file_key
         JOIN dim_session ds ON bsf.session_key = ds.session_key
         JOIN dim_project dp ON ds.project_key = dp.project_key
@@ -2262,11 +2294,11 @@ def _create_objects(conn) -> None:
             fss.api_response_count,
             fss.total_api_errors,
             fss.total_compactions
-        FROM fact_session_summary fss
+        FROM semantic_session_summary fss
         LEFT JOIN dim_session ds ON fss.session_key = ds.session_key
         LEFT JOIN dim_project dp ON fss.project_key = dp.project_key
         LEFT JOIN dim_date dd ON fss.date_key = dd.date_key
-        WHERE fss.is_deleted = FALSE
+        WHERE TRUE
     """
     )
 
@@ -2291,7 +2323,7 @@ def _create_objects(conn) -> None:
             dd.full_date
         FROM dim_prompt dp
         LEFT JOIN dim_session ds ON dp.session_key = ds.session_key
-        LEFT JOIN fact_session_summary fss ON ds.session_key = fss.session_key
+        LEFT JOIN semantic_session_summary fss ON ds.session_key = fss.session_key
         LEFT JOIN dim_date dd ON dp.date_key = dd.date_key
     """
     )
@@ -2466,11 +2498,11 @@ TABLE_COVERAGE = {
     "fact_plan_revisions": ("table", "populated", "session", "ExitPlanMode outcomes with revision chain"),
     "fact_agent_delegations": ("table", "populated", "session", "Agent tool spawns with derived outcome (1.0.0: becoming semantic_agent_delegations, a view)"),
     "fact_session_facets": ("table", "populated", "session", "Tier 1 facets per session; Tier 2 rows only with --llm-facets"),
-    "fact_session_summary": ("table", "populated", "session", "per-session rollup, always populated last (1.0.0: becoming a view)"),
     "fact_session_embeddings": ("table", "conditional", "flag:--embed", "session vectors; rows only when the export ran with --embed"),
-    "bridge_session_file": ("table", "populated", "session", "session x file aggregate (1.0.0: becoming a view)"),
     "bridge_memory_link": ("table", "populated", "global_source", "memory link graph, wiki and markdown syntaxes, dangling links included"),
     # --- views
+    "semantic_session_summary": ("view", "keep", None, "per-session rollup over every fact; was a table written last by every run"),
+    "semantic_session_files": ("view", "keep", None, "session x file aggregate over fact_file_operations; was a bridge table"),
     "semantic_sessions": ("view", "keep", None, "session with project, chain, summary and classifier columns in one row"),
     "semantic_messages": ("view", "delete", None, "plain join, no logic"),
     "semantic_file_operations": ("view", "delete", None, "plain join, no logic"),
@@ -2514,8 +2546,6 @@ AUDIT_EXCEPTIONS: dict[tuple[str, str, str | None], str] = {
         "Tier 2 (LLM) facets only; NULL on every Tier 1 row",
     ("single_valued_column", "fact_session_facets", "is_fallback"):
         "Tier 2 only; false on every Tier 1 row",
-    ("single_valued_column", "fact_session_summary", "total_prevented_continuations"):
-        "sum of a stated flag that is never true in this corpus",
 }
 
 
@@ -2553,6 +2583,4 @@ NATURAL_KEYS = {
     "fact_agent_delegations": "delegation_key",
     "fact_plan_revisions": "revision_key",
     "fact_session_facets": "facet_row_key",
-    "fact_session_summary": "session_id",
-    "bridge_session_file": "session_file_key",
 }

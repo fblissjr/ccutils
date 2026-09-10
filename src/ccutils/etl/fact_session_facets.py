@@ -35,7 +35,7 @@ without subagents / PR links / plan revisions, rather than going
 missing. JSON facets emit an empty array when source is empty
 (F05/F06/F07/F09/F11).
 
-Run AFTER all source-fact populators; BEFORE populate_fact_session_summary
+Run AFTER all source-fact populators
 so the summary populator stays last as the aggregate roll-up.
 """
 
@@ -291,7 +291,7 @@ def populate_tier1_facets(conn, *, run: EtlRun) -> None:
         )""",
     )
 
-    # F15 sources from fact_token_usage rather than fact_session_summary so
+    # F15 sources from fact_token_usage rather than semantic_session_summary so
     # Tier 1 stays independent of summary populator order.
     _insert_facet(
         conn, "F15", "value_numeric",
@@ -337,7 +337,7 @@ def populate_tier1_facets(conn, *, run: EtlRun) -> None:
 
     # F30/F31 -- the behavioral pair. F15 (tokens_in) shipped without an
     # output counterpart, and thinking depth was reachable only through
-    # fact_session_summary, which Tier 1 must not depend on (it populates
+    # semantic_session_summary, which Tier 1 must not depend on (it populates
     # last). Both are emitted as raw counts, deliberately unnormalized and
     # unbucketed: any archetype thresholds belong in the analysis layer,
     # derived from the corpus distribution, not frozen into ETL.

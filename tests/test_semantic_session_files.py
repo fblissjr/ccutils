@@ -1,4 +1,4 @@
-"""Tests for the v0.15 bridge_session_file populator (Phase D).
+"""Tests for the v0.15 semantic_session_files populator (Phase D).
 
 Grain: one row per (session, file) the session touched. Aggregate over
 fact_file_operations -- read/write/edit counts and the timestamp window
@@ -13,7 +13,6 @@ import json
 import pytest
 
 from ccutils import create_star_schema
-from ccutils.etl.bridge_session_file import populate_bridge_session_file
 from ccutils.etl.fact_file_operations import (
     populate_dim_file,
     populate_fact_file_operations,
@@ -168,10 +167,9 @@ class TestBridgeSessionFile:
         _populate_session(conn, a, tmp_path)
         _populate_session(conn, b, tmp_path)
         run = EtlRun.start(conn, source_path="bridge")
-        populate_bridge_session_file(conn, run=run)
         # Session A touches 2 files (a.py, b.md). Session B touches 1 (a.py).
         # Bridge should have 3 rows total.
-        n = conn.execute("SELECT COUNT(*) FROM bridge_session_file").fetchone()[0]
+        n = conn.execute("SELECT COUNT(*) FROM semantic_session_files").fetchone()[0]
         assert n == 3
 
     def test_counts_per_operation_type(
@@ -181,13 +179,12 @@ class TestBridgeSessionFile:
         _populate_session(conn, a, tmp_path)
         _populate_session(conn, b, tmp_path)
         run = EtlRun.start(conn, source_path="bridge")
-        populate_bridge_session_file(conn, run=run)
 
         # Session A + /work/a.py: 2 reads, 0 writes, 0 edits
         row = conn.execute(
             """
             SELECT operation_count, read_count, write_count, edit_count
-            FROM bridge_session_file bsf
+            FROM semantic_session_files bsf
             JOIN dim_file df USING (file_key)
             WHERE bsf.session_id = 'sessA' AND df.file_path = '/work/a.py'
             """
@@ -198,47 +195,9 @@ class TestBridgeSessionFile:
         row = conn.execute(
             """
             SELECT operation_count, read_count, write_count, edit_count
-            FROM bridge_session_file bsf
+            FROM semantic_session_files bsf
             JOIN dim_file df USING (file_key)
             WHERE bsf.session_id = 'sessB' AND df.file_path = '/work/a.py'
             """
         ).fetchone()
         assert row == (1, 0, 0, 1)
-
-    def test_lineage_block_populated(
-        self, conn, two_session_jsonls, tmp_path
-    ):
-        a, _ = two_session_jsonls
-        _populate_session(conn, a, tmp_path)
-        run = EtlRun.start(conn, source_path="bridge")
-        populate_bridge_session_file(conn, run=run)
-        row = conn.execute(
-            """
-            SELECT created_at, last_updated_at, etl_run_id, record_source,
-                   hash_diff, is_deleted
-            FROM bridge_session_file LIMIT 1
-            """
-        ).fetchone()
-        assert row[0] is not None
-        assert row[1] is not None
-        assert row[2] is not None
-        assert row[3] == "claude_code_jsonl"
-        assert row[4] is not None
-        assert row[5] is False
-
-    def test_idempotent_rebuild(self, conn, two_session_jsonls, tmp_path):
-        """Bridge is recomputed from fact_file_operations on each run.
-        Re-running on unchanged source must be a no-op."""
-        a, b = two_session_jsonls
-        _populate_session(conn, a, tmp_path)
-        _populate_session(conn, b, tmp_path)
-        run = EtlRun.start(conn, source_path="bridge")
-        populate_bridge_session_file(conn, run=run)
-        first = conn.execute(
-            "SELECT last_updated_at FROM bridge_session_file ORDER BY 1"
-        ).fetchall()
-        populate_bridge_session_file(conn, run=run)
-        second = conn.execute(
-            "SELECT last_updated_at FROM bridge_session_file ORDER BY 1"
-        ).fetchall()
-        assert first == second

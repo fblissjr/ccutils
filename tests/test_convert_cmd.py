@@ -228,7 +228,7 @@ class TestFileConversionDuckDB:
 
         # v0.15-only fact tables that must exist after a star ETL.
         for expected in ("etl.versions", "main.fact_messages",
-                         "main.fact_session_summary", "main.fact_session_facets",
+                         "main.fact_session_facets",
                          "main.dim_facet_type"):
             assert expected in tables, (
                 f"Expected v0.15 table {expected} missing -- "

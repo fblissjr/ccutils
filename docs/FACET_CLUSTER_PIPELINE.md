@@ -31,7 +31,7 @@ Inventory of the v0.15 facts and dimensions, with the fields relevant to facet e
 | `fact_messages` | First user message text, last assistant message text, message counts, stop_reason, prompt_id |
 | `fact_tool_calls` | tool_name, timestamps, input_json, typed result columns, is_error (tri-state), derived_failure_kind, chain position |
 | `fact_token_usage` | per-API-response token breakdown, cache hits, model name |
-| `fact_session_summary` | aggregate tokens/cost/duration/tool counts per session |
+| `semantic_session_summary` | aggregate tokens/cost/duration/tool counts per session |
 | `fact_file_operations` | file paths, file extensions, operation counts (no LOC-delta column yet -- see F08 note below) |
 | `fact_attachments` | attachment subtypes (23 variants) |
 | `fact_pr_links` | PR URLs referenced |
@@ -62,7 +62,7 @@ These are cheap, deterministic, and run inline with the existing `run_v15_etl()`
 | ID | Facet | Type | Reads from | Notes / why we want it |
 |---|---|---|---|---|
 | F01 | `session_intent` | enum | `fact_messages` first user msg | Already exists; keep regex version as fallback |
-| F02 | `session_complexity` | enum | `fact_session_summary` | Already exists |
+| F02 | `session_complexity` | enum | `semantic_session_summary` | Already exists |
 | F03 | `session_outcome` | enum | `fact_messages` last asst msg + `fact_tool_calls` error rate | Already exists |
 | F04 | `session_domain` | enum | `fact_file_operations` extensions | Already exists |
 | F05 | `error_signature` | text[] | `fact_tool_calls.derived_failure_kind` | Ordered list — error progression within session |
@@ -75,7 +75,7 @@ These are cheap, deterministic, and run inline with the existing `run_v15_etl()`
 | F12 | `duration_seconds` | int | `dim_session` first/last | — |
 | F13 | `agent_depth` | int | `dim_session` parent_session_key chain | 0 = primary; >0 = subagent |
 | F14 | `human_message_count` | int | `fact_messages` | — |
-| F15 | `tokens_in` / `tokens_out` / `cost_usd` | num | `fact_session_summary` | Already aggregated. **Implemented as a single value**: current populator emits only summed `input_tokens` from `fact_token_usage` (deliberately independent of `fact_session_summary`'s populator order); `tokens_out` and `cost_usd` are not computed anywhere in the codebase yet -- there is no USD pricing calculation at all |
+| F15 | `tokens_in` / `tokens_out` / `cost_usd` | num | `semantic_session_summary` | Already aggregated. **Implemented as a single value**: current populator emits only summed `input_tokens` from `fact_token_usage` (deliberately independent of `semantic_session_summary`'s populator order); `tokens_out` and `cost_usd` are not computed anywhere in the codebase yet -- there is no USD pricing calculation at all |
 | F16 | `local_hour` / `local_dow` | enum | `dim_time` | For temporal patterns |
 | F17 | `had_subagents` | bool | `fact_agent_delegations` count | — |
 | F18 | `pr_referenced` | bool | `fact_pr_links` | Was a PR opened/referenced in-session |
@@ -252,7 +252,7 @@ Each transform is a single populator function, idempotent on natural keys, follo
 | ID | Transform | Input | Output | Method | Cost |
 |---|---|---|---|---|---|
 | T01 | Compute Tier 1 facets | existing facts | `fact_session_facets` (Tier 1 rows) | SQL aggregations | free |
-| T02 | Extract Tier 2 facets per session | `fact_session_summary` + first/last messages from `fact_messages` | `fact_session_facets` (Tier 2 rows, text values) | Haiku prompt per facet × session, batched | ~$0.0005-0.001 per session per facet |
+| T02 | Extract Tier 2 facets per session | `semantic_session_summary` + first/last messages from `fact_messages` | `fact_session_facets` (Tier 2 rows, text values) | Haiku prompt per facet × session, batched | ~$0.0005-0.001 per session per facet |
 | T03 | Embed text facets | `fact_session_facets` where `embedding IS NULL` and facet is embeddable | `fact_session_facets.embedding` | sentence-transformers (local) or ColBERT (existing optional dep) | local CPU/GPU |
 | T04 | Cluster (base level) | embeddings from T03 for chosen facet (typically F20) | `dim_cluster` (level=0) + `bridge_cluster_session` | k-means or HDBSCAN | local CPU |
 | T05 | Describe each base cluster | `dim_cluster` + N exemplar sessions per cluster from `bridge_cluster_session` | `dim_cluster.title` + `summary` | Haiku prompt with privacy guardrails | ~$0.01 per cluster |

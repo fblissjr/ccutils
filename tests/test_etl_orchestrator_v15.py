@@ -75,9 +75,8 @@ class TestRunV15Etl:
         for table in (
             "fact_messages",
             "fact_tool_calls",
-            "fact_tool_calls",
             "fact_token_usage",
-            "fact_session_summary",
+            "semantic_session_summary",
         ):
             n = conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
             assert n > 0, f"Expected rows in {table}"
@@ -104,7 +103,7 @@ class TestRunV15Etl:
         )
         row = conn.execute(
             "SELECT total_messages, total_tool_uses, total_tool_results "
-            "FROM fact_session_summary WHERE session_id = 'basic-s'"
+            "FROM semantic_session_summary WHERE session_id = 'basic-s'"
         ).fetchone()
         # 2 user + 1 assistant = 3 messages
         assert row[0] == 3
@@ -119,8 +118,7 @@ class TestRunV15Etl:
             parquet_lake_root=tmp_path / "lake",
         )
         first = {}
-        for table in ("fact_messages", "fact_tool_calls", "fact_tool_calls",
-                      "fact_token_usage", "fact_session_summary"):
+        for table in ("fact_messages", "fact_tool_calls", "fact_token_usage"):
             first[table] = conn.execute(
                 f"SELECT last_updated_at FROM {table} ORDER BY 1"
             ).fetchall()

@@ -12,7 +12,7 @@ response as several assistant entries -- a response with thinking + text
 `message.id` and the same `usage` object. Keying on entry_id alone made
 every such response count 2-3 times: on a real 6-session corpus, 7,088
 usage-bearing entries stood for 3,449 responses and
-fact_session_summary.total_output_tokens over-reported by 2.47x. The
+semantic_session_summary.total_output_tokens over-reported by 2.47x. The
 QUALIFY below keeps the first entry of each response.
 
 The dedupe key is `message.id` (present on 100% of usage-bearing lines

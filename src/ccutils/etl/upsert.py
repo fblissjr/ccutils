@@ -87,7 +87,7 @@ def lineage_upsert(
             caller has already done that work.
         timestamp_col: column on the inbound table from which to derive
             date_key and time_key. Defaults to "timestamp"; aggregate
-            populators (fact_session_summary uses "first_timestamp")
+            populators (semantic_session_summary uses "first_timestamp")
             override.
         record_source: provenance label stamped on inserted rows.
         soft_delete_scope_sql: optional extra WHERE clause for the

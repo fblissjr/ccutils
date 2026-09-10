@@ -195,9 +195,9 @@ Subagent transcripts are first-class sessions: agent files carry their parent's 
 
 - **Machinery, in the `etl` schema:** `etl.versions`, `etl.batch_runs`, `etl.runs`, `etl.steps`, `etl.schema_version` (plus transient `etl.log_entries` staging). `main` holds only dimensions, facts and views.
 - **Dimensions:** `dim_session` (with intent/complexity/outcome/domain enrichment + subagent linkage), `dim_project`, `dim_tool`, `dim_model`, `dim_file`, `dim_session_chain`, `dim_facet_type` (facet registry).
-- **Core facts:** `fact_messages`, `fact_tool_calls` (one row per tool use: the call, its typed `toolUseResult` payload, the derived failure kind, and its position in the agentic run), `fact_token_usage` (R11 cache split: `cache_creation_5m_tokens` + `cache_creation_1h_tokens`), `fact_session_summary`.
+- **Core facts:** `fact_messages`, `fact_tool_calls` (one row per tool use: the call, its typed `toolUseResult` payload, the derived failure kind, and its position in the agentic run), `fact_token_usage` (R11 cache split: `cache_creation_5m_tokens` + `cache_creation_1h_tokens`), `semantic_session_summary`.
 - **Entry-type facts:** `fact_attachments`, `fact_progress_events`, `fact_system_events`, `fact_meta_events` (permission-mode time series), `fact_file_history_snapshots`, `fact_queue_operations`, `fact_pr_links`.
-- **Derived:** `fact_file_operations` + `bridge_session_file`, `fact_diagnostics`, `fact_plan_revisions` (structural outcome from `fact_tool_calls.is_error`), `fact_agent_delegations` (cross-session linkage via `dim_session.agent_id`).
+- **Derived:** `fact_file_operations` (+ the `semantic_session_files` view), `fact_diagnostics`, `fact_plan_revisions` (structural outcome from `fact_tool_calls.is_error`), `fact_agent_delegations` (cross-session linkage via `dim_session.agent_id`).
 - **Facets:** `fact_session_facets` Tier 1 (F01-F19, SQL-computed; always on). Tier 2 (F20+, LLM-extracted via Haiku) is opt-in via `--llm-facets`.
 
 **Populated after the per-session loop** (global sources, not per-session, so they are outside `run_v15_etl` and only the batch archive path reaches them):
@@ -219,7 +219,7 @@ SELECT
   fss.total_cache_creation_1h_tokens,
   fss.total_cache_read_tokens,
   fss.total_uncached_equivalent_tokens
-FROM fact_session_summary fss
+FROM semantic_session_summary fss
 JOIN dim_session ds USING (session_key)
 ORDER BY total_uncached_equivalent_tokens DESC
 LIMIT 20;

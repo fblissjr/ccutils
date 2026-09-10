@@ -61,7 +61,7 @@ healthy). Commit test + implementation + docs together.
   never `**kwargs` — a shim once silently dropped `--private`.
 - Orchestration lives in `etl/orchestrator.py::run_v15_etl`; DDL single source
   of truth is `schemas/star/schema.py::create_star_schema()`;
-  `fact_session_summary` always populates LAST.
+  the summary is a view.
 - Parser models (`parsers/models.py`): `pydantic.alias_generators.to_camel`
   breaks on all-caps abbreviations — use explicit `Field(alias=...)`.
   Stdlib `json` is the convention; do not introduce orjson.
