@@ -198,6 +198,36 @@ they land.
   F32/F33, and decide whether `fact_agentic_runs` is materialized before any
   Tier 2 run-grain facet.
 
+### 1.2.0: commit attribution, as specified by a downstream consumer
+
+Filed 2026-09-10 by a sibling research project that uses the warehouse as
+evidence for "which session made this commit". Git cannot answer it: every
+commit carries the same author, and commit trailers naming sessions are
+out for public repos. The transcript is the only record, so the join lives
+here and stays local.
+
+- **`fact_commits` from transcripts alone.** One row per git commit
+  invocation: session key (subagents included), tool use id, timestamp,
+  subject, success, is_amend. Parse the command, do not grep: sessions
+  commit as `git -c commit.gpgsign=false commit -F - <<'EOF'` with the
+  subject on the heredoc's first line, so a naive match found 13 of about
+  200 calls. Hash from the result when present (`-q` suppresses it). Flag
+  pushes and force-pushes (`--force-with-lease` appears).
+- **Optional `--git-repo <path>`.** Read that clone's reflog and log and
+  bind each call to the hash it produced: subject match plus a small time
+  window (author time at or just after the call; warehouse times are UTC,
+  git's are local with offset). Reflog also yields amends, commits an amend
+  replaced, and pushes no loaded transcript contains. An amended commit
+  keeps its original author timestamp, so anchor on the last successful
+  call that produced the landed hash, not the first.
+- **Acceptance test with a known answer.** One day, one branch, 78 commits
+  from 7 parallel sessions plus 19 subagent transcripts: per-session counts
+  24/15/15/9/7/6/2, zero unattributed, zero double-claimed; one commit
+  pushed by no loaded transcript, amended twice, then replaced on origin by
+  a force-push. The consumer holds the fixture.
+- **Depends on** the derived failure kind on tool calls (a hook-blocked
+  commit must read as blocked, not as NULL).
+
 ### Open design questions
 
 - **Agent rollup provenance: DECIDED 2026-09-10.** `fact_tool_results` is
