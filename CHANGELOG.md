@@ -5,6 +5,9 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Documentation
+- **`docs/ROADMAP.md` is the single tracked status board.** The release sequence, the 1.0.0 step list, and every known-but-unfixed defect lived only in gitignored `internal/` notes, so a fresh checkout or a new session could not find where work left off. Consolidated, each open item re-verified against the code, and pointed to from `CLAUDE.md`.
+
 ## [0.20.1]
 
 ### Fixed

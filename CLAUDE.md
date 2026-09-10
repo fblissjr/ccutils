@@ -7,9 +7,10 @@ Always practice TDD: write a failing test, watch it fail, then make it pass. Com
 Reference docs (read these instead of expanding this file):
 
 - `README.md` -- CLI commands, export formats, defaults.
+- `docs/ROADMAP.md` -- **the one tracked status board**: release sequence, the next concrete steps, every known-but-unfixed defect, open design questions, and decisions not to relitigate. Update it at the end of a session instead of a scratch note under `internal/`.
 - `docs/JSONL_CONTRACT.md` -- what the pipeline assumes about Claude Code's transcript format, each claim with the measurement behind it and the canary guarding it. **Read before writing any parser or fixture.** Upstream is unversioned and undocumented; four structural bugs and two wrong external audits came from assuming instead of checking.
 - `docs/STAR_SCHEMA.md` -- every table/view, lineage convention, run-metadata grains, populator order. Describes the warehouse **as built**.
-- `docs/ETL_ARCHITECTURE.md` -- the layering the ETL is **moving to**, and the three rules that decide where a new table/view/populator belongs. **DECIDED, NOT YET IMPLEMENTED**: existing populators do not conform, but anything added from now on should be born conforming. Sequenced migration in `internal/plans/etl_layer_rewrite.md`.
+- `docs/ETL_ARCHITECTURE.md` -- the layering the ETL is **moving to**, and the three rules that decide where a new table/view/populator belongs. **DECIDED, NOT YET IMPLEMENTED**: existing populators do not conform, but anything added from now on should be born conforming. Sequence and open items in `docs/ROADMAP.md`; per-item specs in the untracked `internal/plans/etl_layer_rewrite.md`.
 - `docs/FACET_CLUSTER_PIPELINE.md` -- facet pipeline design + status.
 - `.claude/skills/` -- task-scoped skills (`etl-dev`, `query-warehouse`, `render-exports`, `new-fact`, `new-dimension`, `test-schema`, `release`) with on-demand reference files; they load the detail above progressively, so prefer triggering the matching skill over re-reading the docs wholesale.
 
