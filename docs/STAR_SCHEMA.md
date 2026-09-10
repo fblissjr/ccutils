@@ -121,18 +121,25 @@ After the per-session loop, two global sources are best-effort populated, both o
 
 `src/ccutils/parsers/parquet_writer.py` writes one row per JSONL line to `log_entries.parquet`, stamped with `etl_run_id`, `parsed_at`, `parser_version`, `record_source`.
 
-### Not yet populated
+### Coverage
 
-The DDL still contains legacy tables that `run_v15_etl` does not populate (kept for backwards-compatibility with code that introspects the schema):
+`etl.table_coverage` is seeded on every open from `TABLE_COVERAGE` in
+`schemas/star/schema.py`: one row per table and view in `main` with
+`object_type`, `status`, `populated_by` and `reason`. A drift test pins the
+dict to the DDL, so nothing ships undeclared. Table statuses are
+`populated` (a step writes it on every run of its source) or `conditional`
+(written only when a flag is on; today only `fact_session_embeddings`, by
+`--embed`). There is no stub status: the seven tables that used to be
+declared empty (`fact_content_blocks`, `fact_code_blocks`,
+`fact_entity_mentions`, `fact_tool_input_params`, `fact_facet_embeddings`,
+`fact_turn_durations`, `fact_stop_events`) were deleted at 1.0.0; a table
+with no writer is not created. View statuses are `keep` (encodes logic a
+consumer would get wrong) or `delete` (a plain join scheduled for removal).
 
-- `fact_content_blocks`, `fact_code_blocks`, `fact_entity_mentions` -- granular content extracts, pending re-port.
-- `fact_turn_durations`, `fact_stop_events` -- subsumed by `fact_system_events` via its `subtype` discriminator.
-- `fact_tool_input_params` -- optional follow-on.
-- `fact_facet_embeddings` -- Tier 3 facet clustering (not yet built).
-
-`fact_session_embeddings` is NOT a stub: it is populated when the CLI runs
-with `--embed` (`schemas/star/embeddings.py`, wired via
-`cli/utils.py::run_embedding_pipeline`) and empty otherwise.
+The measured half is `etl.steps.table_name`: every step that writes a table
+names it, and the dimension stubs are one step per table. "What did this
+warehouse write" is `SELECT DISTINCT table_name FROM etl.steps`. `ccutils
+audit` compares the two.
 
 ---
 

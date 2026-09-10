@@ -177,7 +177,7 @@ Subagent transcripts are first-class sessions: agent files carry their parent's 
 
 > The JSON export mirrors the warehouse, so it includes `dim_memory` — auto-memory bodies and all. That is the same treatment `fact_messages` already gives full transcript text, but worth knowing before you move an export somewhere else.
 
-**Not yet populated (DDL stubs only):** `fact_content_blocks`, `fact_code_blocks`, `fact_entity_mentions`, `fact_tool_input_params`. `fact_session_embeddings` is populated only by `--embed` runs (empty otherwise). `fact_turn_durations` / `fact_stop_events` are subsumed by `fact_system_events`; `fact_tool_calls` by `fact_tool_uses` + `fact_tool_results`.
+**Coverage is declared in the warehouse itself.** `etl.table_coverage` lists every table and view in `main` with its status, what writes it, and why it exists. There are no empty-by-design tables: a table with no writer is not created. The one conditional table is `fact_session_embeddings`, populated only by `--embed` runs. `etl.steps.table_name` records what each run actually wrote, so `SELECT DISTINCT table_name FROM etl.steps` is the measured counterpart.
 
 ```sql
 -- Sessions ranked by uncached-equivalent token cost

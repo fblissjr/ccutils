@@ -122,17 +122,6 @@ class TestCreateStarSchema:
         assert result is not None
         conn.close()
 
-    def test_creates_fact_content_blocks_table(self, output_dir):
-        """Test that fact_content_blocks table is created."""
-        db_path = output_dir / "test.duckdb"
-        conn = create_star_schema(db_path)
-
-        result = conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='table' AND name='fact_content_blocks'"
-        ).fetchone()
-        assert result is not None
-        conn.close()
-
     def test_creates_fact_tool_uses_and_results_tables(self, output_dir):
         """v0.15 replaces legacy fact_tool_calls with fact_tool_uses + fact_tool_results."""
         db_path = output_dir / "test.duckdb"
@@ -674,23 +663,6 @@ class TestNewFactTables:
             assert col in columns, f"Missing column: {col}"
         conn.close()
 
-    def test_creates_fact_turn_durations_table(self, output_dir):
-        db_path = output_dir / "test.duckdb"
-        conn = create_star_schema(db_path)
-        result = conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='table' AND name='fact_turn_durations'"
-        ).fetchone()
-        assert result is not None
-        conn.close()
-
-    def test_fact_turn_durations_has_required_columns(self, output_dir):
-        db_path = output_dir / "test.duckdb"
-        conn = create_star_schema(db_path)
-        columns = [c[0] for c in conn.execute("DESCRIBE fact_turn_durations").fetchall()]
-        for col in ["turn_id", "session_key", "date_key", "time_key", "duration_ms", "message_count", "timestamp"]:
-            assert col in columns, f"Missing column: {col}"
-        conn.close()
-
     def test_creates_fact_diagnostics_table(self, output_dir):
         db_path = output_dir / "test.duckdb"
         conn = create_star_schema(db_path)
@@ -710,27 +682,6 @@ class TestNewFactTables:
         ]:
             assert col in columns, f"Missing column: {col}"
         conn.close()
-
-    def test_creates_fact_stop_events_table(self, output_dir):
-        db_path = output_dir / "test.duckdb"
-        conn = create_star_schema(db_path)
-        result = conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='table' AND name='fact_stop_events'"
-        ).fetchone()
-        assert result is not None
-        conn.close()
-
-    def test_fact_stop_events_has_required_columns(self, output_dir):
-        db_path = output_dir / "test.duckdb"
-        conn = create_star_schema(db_path)
-        columns = [c[0] for c in conn.execute("DESCRIBE fact_stop_events").fetchall()]
-        for col in [
-            "stop_event_id", "session_key", "stop_reason", "hook_count",
-            "has_output", "prevented_continuation", "timestamp",
-        ]:
-            assert col in columns, f"Missing column: {col}"
-        conn.close()
-
 
 class TestDimPromptTable:
     """Tests for dim_prompt table (history.jsonl data)."""

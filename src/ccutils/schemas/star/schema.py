@@ -109,6 +109,7 @@ def create_star_schema(db_path):
             )
 
     _create_objects(conn)
+    _seed_table_coverage(conn)
     if _stamped_by(conn) is None:
         conn.execute(
             "INSERT INTO etl.schema_version (schema_fingerprint, ccutils_version) "
@@ -234,6 +235,24 @@ def _create_objects(conn) -> None:
             schema_fingerprint VARCHAR NOT NULL, -- schema_fingerprint() at creation
             ccutils_version VARCHAR NOT NULL,    -- the ccutils that wrote it
             created_at TIMESTAMP NOT NULL DEFAULT current_timestamp
+        )
+    """
+    )
+
+    # What each object in `main` is for, and what writes it. Seeded from
+    # TABLE_COVERAGE on every open so it always reflects this code. This is
+    # the declared half of coverage; `etl.steps.table_name` is the measured
+    # half, and `ccutils audit` compares them. It replaces the stub list
+    # that used to live in a skill reference file, which two external
+    # auditors failed to find before reporting empty tables as ETL defects.
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS etl.table_coverage (
+            object_name VARCHAR NOT NULL,   -- table or view in main
+            object_type VARCHAR NOT NULL,   -- 'table' | 'view'
+            status VARCHAR NOT NULL,        -- table: 'populated' | 'conditional'; view: 'keep' | 'delete'
+            populated_by VARCHAR,           -- 'session' | 'global_source' | 'ddl_seed' | 'flag:<flag>' | NULL for views
+            reason VARCHAR NOT NULL         -- why it exists, or why it is conditional / to be deleted
         )
     """
     )
@@ -1073,55 +1092,6 @@ def _create_objects(conn) -> None:
     # Granular Fact Tables (3)
     # =========================================================================
 
-    conn.execute(
-        """
-        CREATE TABLE IF NOT EXISTS fact_content_blocks (
-            content_block_id VARCHAR,
-            message_id VARCHAR,
-            session_key VARCHAR,
-            block_type VARCHAR,
-            date_key INTEGER,
-            time_key INTEGER,
-            block_index INTEGER,
-            content_length INTEGER,
-            content_text TEXT,
-            content_json JSON
-        )
-    """
-    )
-
-    conn.execute(
-        """
-        CREATE TABLE IF NOT EXISTS fact_code_blocks (
-            code_block_id VARCHAR,
-            message_id VARCHAR,
-            session_key VARCHAR,
-            language VARCHAR,
-            date_key INTEGER,
-            time_key INTEGER,
-            block_index INTEGER,
-            line_count INTEGER,
-            char_count INTEGER,
-            code_text TEXT
-        )
-    """
-    )
-
-    conn.execute(
-        """
-        CREATE TABLE IF NOT EXISTS fact_entity_mentions (
-            mention_id VARCHAR,
-            message_id VARCHAR,
-            session_key VARCHAR,
-            entity_type VARCHAR,
-            entity_text VARCHAR,
-            entity_normalized VARCHAR,
-            context_snippet TEXT,
-            position_start INTEGER,
-            position_end INTEGER
-        )
-    """
-    )
 
     # =========================================================================
     # Agent Delegation Tracking
@@ -1365,19 +1335,6 @@ def _create_objects(conn) -> None:
     """
     )
 
-    conn.execute(
-        """
-        CREATE TABLE IF NOT EXISTS fact_turn_durations (
-            turn_id VARCHAR,
-            session_key VARCHAR,
-            date_key INTEGER,
-            time_key INTEGER,
-            duration_ms INTEGER,
-            message_count INTEGER,
-            timestamp TIMESTAMP
-        )
-    """
-    )
 
     conn.execute(
         """
@@ -1423,23 +1380,6 @@ def _create_objects(conn) -> None:
     """
     )
 
-    conn.execute(
-        """
-        CREATE TABLE IF NOT EXISTS fact_stop_events (
-            stop_event_id VARCHAR,
-            session_key VARCHAR,
-            date_key INTEGER,
-            time_key INTEGER,
-            stop_reason VARCHAR,
-            hook_count INTEGER,
-            has_output BOOLEAN,
-            prevented_continuation BOOLEAN,
-            hook_total_duration_ms INTEGER,
-            hook_error_count INTEGER,
-            timestamp TIMESTAMP
-        )
-    """
-    )
 
     # =========================================================================
     # Prompt History (from ~/.claude/history.jsonl)  # path-privacy: ignore
@@ -1589,19 +1529,6 @@ def _create_objects(conn) -> None:
     """
     )
 
-    conn.execute(
-        """
-        CREATE TABLE IF NOT EXISTS fact_tool_input_params (
-            param_id VARCHAR,
-            tool_call_id VARCHAR,
-            session_key VARCHAR,
-            param_key VARCHAR,
-            param_value_text VARCHAR,
-            param_value_number FLOAT,
-            param_value_bool BOOLEAN
-        )
-    """
-    )
 
     # =========================================================================
     # Facet & Cluster Pipeline (docs/FACET_CLUSTER_PIPELINE.md)
@@ -1609,13 +1536,9 @@ def _create_objects(conn) -> None:
     # dim_facet_type        - registry of facet definitions (Tier 1/2/3)
     # fact_session_facets   - one row per (session, facet, prompt_version);
     #                         typed value columns; NO embedding here.
-    # fact_facet_embeddings - one row per (session, facet, model, model_version);
-    #                         FLOAT[384] so DuckDB array_cosine_similarity works
-    #                         natively.
     #
-    # Embeddings are split off into their own table on purpose: keeps the EAV
-    # facet table lean for SQL scans, lets DuckDB native array ops work without
-    # a vector DB, and absorbs future model-version coexistence as new rows
+    # Facet embeddings (Tier 3 clustering) get their own table when Tier 3 is
+    # built -- born conforming then, not declared empty now.
     # rather than destructive overwrites of structured-value facets.
 
     # IMPORTANT: dim_facet_type uses CREATE IF NOT EXISTS, not CREATE OR
@@ -1772,41 +1695,6 @@ def _create_objects(conn) -> None:
         """
     )
 
-    conn.execute(
-        """
-        CREATE TABLE IF NOT EXISTS fact_facet_embeddings (
-            -- Lineage envelope
-            created_at TIMESTAMP NOT NULL DEFAULT current_timestamp,
-            created_by_version_key VARCHAR NOT NULL,
-            last_updated_at TIMESTAMP NOT NULL DEFAULT current_timestamp,
-            last_updated_by_version_key VARCHAR NOT NULL,
-            etl_run_id VARCHAR NOT NULL,
-            record_source VARCHAR NOT NULL,
-            hash_diff VARCHAR NOT NULL,
-            is_deleted BOOLEAN NOT NULL DEFAULT FALSE,
-            deleted_at TIMESTAMP,
-
-            -- Natural key (synthesized): md5(session_id || facet_type_key ||
-            -- embedding_model || embedding_model_version)
-            embedding_row_key VARCHAR NOT NULL,
-
-            -- Natural key parts + degenerate dims
-            session_key VARCHAR NOT NULL,
-            session_id VARCHAR NOT NULL,
-            facet_type_key VARCHAR NOT NULL,
-            embedding_model VARCHAR NOT NULL,
-            embedding_model_version VARCHAR NOT NULL,
-
-            -- (embedding_model, embedding_model_version) uniquely determines
-            -- dim, so no embedding_dim column is carried.
-            embedding FLOAT[384],
-
-            date_key INTEGER,
-            time_key INTEGER,
-            embedded_at TIMESTAMP NOT NULL DEFAULT current_timestamp
-        )
-        """
-    )
 
     # Reconcile dim_date from every session already in the warehouse.
     # Per-session ETL only inserts dim_date for the sessions it re-stages;
@@ -2680,6 +2568,85 @@ def _create_objects(conn) -> None:
             GROUP BY etl_run_id
         ) s ON r.etl_run_id = s.etl_run_id
     """
+    )
+
+
+
+# Declared coverage: every table and view in `main`, what writes it, and
+# why it exists. The drift test asserts the keys equal the DDL's objects, so
+# a table cannot ship without a declared status and a deleted one cannot
+# linger. Statuses -- table: 'populated' (a step writes it on every run of
+# its source) or 'conditional' (written only when a flag is on; empty
+# otherwise is "flag not used", not a defect); view: 'keep' (encodes logic
+# a consumer would get wrong: a derivation, an aggregation, a resolution) or
+# 'delete' (a plain join that saves nothing but typing -- scheduled for
+# removal, listed so the audit and the guide can say so). There is no
+# 'stub' status: a table with no writer is not created.
+TABLE_COVERAGE = {
+    # --- dimensions
+    "dim_session": ("table", "populated", "session", "one row per session, agent sessions included; parent_session_key / spawn_depth carry the delegation tree"),
+    "dim_project": ("table", "populated", "session", "one row per project directory the corpus covers"),
+    "dim_tool": ("table", "populated", "session", "one row per tool name seen, with tool_category"),
+    "dim_model": ("table", "populated", "session", "one row per model string seen; model_base strips context suffixes"),
+    "dim_file": ("table", "populated", "session", "one row per file path touched by a file tool"),
+    "dim_session_chain": ("table", "populated", "session", "sessions sharing a slug (continuations); dim_session.chain_key points here"),
+    "dim_date": ("table", "populated", "session", "one row per calendar date seen in staging"),
+    "dim_time": ("table", "populated", "ddl_seed", "1440 minute-of-day rows, seeded at creation"),
+    "dim_facet_type": ("table", "populated", "ddl_seed", "facet registry from etl.facets.catalog, seeded at creation; history-retaining"),
+    "dim_prompt": ("table", "populated", "global_source", "prompt history from history.jsonl, scoped to covered projects on subset builds"),
+    "dim_memory": ("table", "populated", "global_source", "Type 2 history of Claude Code auto-memory files"),
+    # --- facts
+    "fact_messages": ("table", "populated", "session", "one row per user/assistant JSONL entry"),
+    "fact_tool_uses": ("table", "populated", "session", "one row per tool_use block (1.0.0: merging with fact_tool_results into fact_tool_calls)"),
+    "fact_tool_results": ("table", "populated", "session", "one row per tool_result, typed payload columns (1.0.0: merging into fact_tool_calls)"),
+    "fact_tool_chain_steps": ("table", "populated", "session", "chain position per tool use (1.0.0: merging into fact_tool_calls)"),
+    "fact_errors": ("table", "populated", "session", "one row per failed tool result (1.0.0: becoming a view over fact_tool_calls)"),
+    "fact_token_usage": ("table", "populated", "session", "one row per API response (api_message_id), token and cache breakdown"),
+    "fact_system_events": ("table", "populated", "session", "one row per system entry, 20 typed columns across its subtypes"),
+    "fact_progress_events": ("table", "populated", "session", "one row per progress entry (hooks, agent progress)"),
+    "fact_attachments": ("table", "populated", "session", "one row per attachment entry (1.0.0: collapsing into fact_entry_events)"),
+    "fact_meta_events": ("table", "populated", "session", "custom-title / agent-name / permission-mode time series (1.0.0: collapsing into fact_entry_events)"),
+    "fact_queue_operations": ("table", "populated", "session", "queue operation entries (1.0.0: collapsing into fact_entry_events)"),
+    "fact_pr_links": ("table", "populated", "session", "PR link entries (1.0.0: collapsing into fact_entry_events)"),
+    "fact_file_history_snapshots": ("table", "populated", "session", "file-history-snapshot entries (1.0.0: collapsing into fact_entry_events)"),
+    "fact_file_operations": ("table", "populated", "session", "one row per file tool call; Bash-derived writes are NOT captured yet (1.1.0)"),
+    "fact_diagnostics": ("table", "populated", "session", "LSP diagnostics flattened from attachments"),
+    "fact_plan_revisions": ("table", "populated", "session", "ExitPlanMode outcomes with revision chain"),
+    "fact_agent_delegations": ("table", "populated", "session", "Agent tool spawns with derived outcome (1.0.0: becoming semantic_agent_delegations, a view)"),
+    "fact_session_facets": ("table", "populated", "session", "Tier 1 facets per session; Tier 2 rows only with --llm-facets"),
+    "fact_session_summary": ("table", "populated", "session", "per-session rollup, always populated last (1.0.0: becoming a view)"),
+    "fact_session_embeddings": ("table", "conditional", "flag:--embed", "session vectors; rows only when the export ran with --embed"),
+    "bridge_session_file": ("table", "populated", "session", "session x file aggregate (1.0.0: becoming a view)"),
+    "bridge_memory_link": ("table", "populated", "global_source", "memory link graph, wiki and markdown syntaxes, dangling links included"),
+    # --- views
+    "semantic_sessions": ("view", "keep", None, "session with project, chain, summary and classifier columns in one row"),
+    "semantic_messages": ("view", "delete", None, "plain join, no logic"),
+    "semantic_tool_calls": ("view", "keep", None, "use + result in one row; the shape fact_tool_calls will have"),
+    "semantic_file_operations": ("view", "delete", None, "plain join, no logic"),
+    "semantic_session_chains": ("view", "delete", None, "plain join, no logic"),
+    "semantic_agent_delegations": ("view", "keep", None, "the delegation edge: parent spawn call to child session, with derived completion_state"),
+    "semantic_plan_revisions": ("view", "delete", None, "plain join, no logic"),
+    "semantic_decisions": ("view", "keep", None, "plan outcomes classified per session"),
+    "semantic_file_evolution": ("view", "keep", None, "per-file operation sequence across sessions"),
+    "semantic_session_behavior": ("view", "keep", None, "behavioral feature vector with percentile ranks, no archetype label"),
+    "semantic_tool_patterns": ("view", "keep", None, "tool-to-tool transition counts over chain steps"),
+    "semantic_project_context": ("view", "delete", None, "plain join, no logic"),
+    "semantic_project_files": ("view", "keep", None, "files per project with operation rollups"),
+    "semantic_token_usage": ("view", "keep", None, "token usage by session with cache tiers"),
+    "semantic_context_growth": ("view", "keep", None, "context size over a session's turns"),
+    "semantic_cost_analysis": ("view", "keep", None, "cost rollup per project; cache_hit_rate_pct is known to discriminate nothing"),
+    "semantic_prompt_history": ("view", "keep", None, "prompts joined to the sessions they started"),
+    "semantic_memory": ("view", "keep", None, "current memory versions only"),
+    "semantic_memory_links": ("view", "keep", None, "links with both ends resolved to names"),
+    "semantic_etl_runs": ("view", "keep", None, "run-grain observability with step rollups"),
+}
+
+
+def _seed_table_coverage(conn) -> None:
+    conn.execute("DELETE FROM etl.table_coverage")
+    conn.executemany(
+        "INSERT INTO etl.table_coverage VALUES (?, ?, ?, ?, ?)",
+        [(name, *spec) for name, spec in TABLE_COVERAGE.items()],
     )
 
 

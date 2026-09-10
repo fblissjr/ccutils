@@ -15,10 +15,11 @@ machine that has it; nothing here depends on it.
 ## Where things stand
 
 - **Released:** 0.20.1, tagged 2026-08-28.
-- **In progress toward 1.0.0:** steps 1 through 5 below landed on
+- **In progress toward 1.0.0:** steps 1 through 6 below landed on
   2026-09-10 (migration machinery deleted, foreign warehouses refused,
-  machinery moved to the `etl` schema, plain version string). Steps 6
-  through 8 remain.
+  machinery moved to the `etl` schema, plain version string, coverage
+  layer with step-level table names, seven stub tables culled). Steps 7
+  and 8 remain, then the merges decided the same day (see Decisions).
 - **Suite:** about 1,320 tests collected (`uv run pytest tests/ --confcutdir=tests`).
   Healthy state is all green plus one skipped live-API test.
 - **Working tree:** `uv.lock` carries an uncommitted regeneration. It is
@@ -55,7 +56,7 @@ Semver binds from 1.0.0 onward. No major bump without the owner's permission.
 One interlocking change, so one release. Warehouses written before it cannot
 be read after it; that is the whole point of the major bump.
 
-Do these in order. Steps 1 through 5 are DONE (2026-09-10); their text is
+Do these in order. Steps 1 through 6 are DONE (2026-09-10); their text is
 kept so the ordering argument survives.
 
 1. **Delete `src/ccutils/schemas/migrations/` and `tests/test_migrations.py`.**

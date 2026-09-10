@@ -1,19 +1,13 @@
 # Query gotchas — read before joining raw facts
 
-## Empty-by-design tables (DDL stubs)
+## Which tables are populated
 
-`run_v15_etl` does NOT populate these; zero rows there means "not implemented",
-never "no activity":
-
-- `fact_content_blocks`, `fact_code_blocks`, `fact_entity_mentions`,
-  `fact_tool_input_params`, `fact_facet_embeddings`
-- `fact_turn_durations`, `fact_stop_events` — subsumed by `fact_system_events`
-  (`subtype = 'turn_duration'` / stop-hook subtypes)
-- `fact_tool_calls` — subsumed by `fact_tool_uses` + `fact_tool_results`
-  (`semantic_tool_calls` view provides the legacy shape)
-
-Conditionally populated: `fact_session_embeddings` has rows only when the
-export ran with `--embed`; empty otherwise (that's "flag not used", not a stub).
+Ask the warehouse, not this file: `SELECT * FROM etl.table_coverage` lists
+every table and view with its status, writer and reason, and
+`SELECT DISTINCT table_name FROM etl.steps` says what this file was actually
+written by. There are no empty-by-design tables since 1.0.0. The one
+conditional table is `fact_session_embeddings` (rows only with `--embed`).
+Turn durations and stop events live in `fact_system_events` by `subtype`.
 
 ## Unpopulated columns on populated tables
 

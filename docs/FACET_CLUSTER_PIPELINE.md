@@ -165,6 +165,8 @@ Natural key: (session_key, facet_type_key, prompt_version)
 
 ### `fact_facet_embeddings` — one row per session × facet × model × model_version
 
+> **Not in the DDL.** Deleted at 1.0.0 with the other never-written tables; it is created when Tier 3 is built, born conforming. The design below is the spec for that moment.
+
 Where the vectors live. `FLOAT[384]` locks in BGE-small-en-v1.5 as the default embedder and enables DuckDB-native cosine ops. `embedding_dim` is intentionally omitted — `(embedding_model, embedding_model_version)` uniquely determines the dim, so storing it would be redundant.
 
 ```

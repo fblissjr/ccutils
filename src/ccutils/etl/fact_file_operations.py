@@ -85,60 +85,61 @@ def populate_dim_file(conn, *, run: EtlRun) -> None:
     ]
     language_case = "CASE " + " ".join(case_parts) + " ELSE NULL END"
 
-    conn.execute(
-        f"""
-        INSERT INTO dim_file (
-            file_key, file_path, file_name, file_extension,
-            directory_path, language
-        )
-        WITH observed AS (
-            -- File paths from tool_use inputs (Read/Write/Edit/MultiEdit/NotebookEdit)
-            SELECT DISTINCT
-                json_extract_string(ftu.input_json, '$.file_path') AS file_path
-            FROM fact_tool_uses ftu
-            WHERE ftu.is_deleted = FALSE
-              AND json_extract_string(ftu.input_json, '$.file_path') IS NOT NULL
-            UNION
-            -- File paths from tool_result payloads (Read records file_path
-            -- even when the input was something else, e.g. a notebook read).
-            SELECT DISTINCT ftr.read_file_path AS file_path
-            FROM fact_tool_results ftr
-            WHERE ftr.is_deleted = FALSE
-              AND ftr.read_file_path IS NOT NULL
-        ),
-        parsed AS (
+    with run.step("dim_file", table="dim_file") as st:
+        st.rows_inserted = conn.execute(
+            f"""
+            INSERT INTO dim_file (
+                file_key, file_path, file_name, file_extension,
+                directory_path, language
+            )
+            WITH observed AS (
+                -- File paths from tool_use inputs (Read/Write/Edit/MultiEdit/NotebookEdit)
+                SELECT DISTINCT
+                    json_extract_string(ftu.input_json, '$.file_path') AS file_path
+                FROM fact_tool_uses ftu
+                WHERE ftu.is_deleted = FALSE
+                  AND json_extract_string(ftu.input_json, '$.file_path') IS NOT NULL
+                UNION
+                -- File paths from tool_result payloads (Read records file_path
+                -- even when the input was something else, e.g. a notebook read).
+                SELECT DISTINCT ftr.read_file_path AS file_path
+                FROM fact_tool_results ftr
+                WHERE ftr.is_deleted = FALSE
+                  AND ftr.read_file_path IS NOT NULL
+            ),
+            parsed AS (
+                SELECT
+                    file_path,
+                    regexp_extract(file_path, '([^/]+)$', 1) AS file_name,
+                    regexp_replace(file_path, '/[^/]+$', '') AS directory_path
+                FROM observed
+                WHERE file_path IS NOT NULL AND file_path <> ''
+            ),
+            typed AS (
+                SELECT
+                    file_path,
+                    file_name,
+                    directory_path,
+                    CASE
+                        WHEN file_name LIKE '%.%'
+                            THEN regexp_extract(file_name, '\\.([^.]+)$', 1)
+                        ELSE NULL
+                    END AS file_extension
+                FROM parsed
+            )
             SELECT
-                file_path,
-                regexp_extract(file_path, '([^/]+)$', 1) AS file_name,
-                regexp_replace(file_path, '/[^/]+$', '') AS directory_path
-            FROM observed
-            WHERE file_path IS NOT NULL AND file_path <> ''
-        ),
-        typed AS (
-            SELECT
+                md5(file_path) AS file_key,
                 file_path,
                 file_name,
+                file_extension,
                 directory_path,
-                CASE
-                    WHEN file_name LIKE '%.%'
-                        THEN regexp_extract(file_name, '\\.([^.]+)$', 1)
-                    ELSE NULL
-                END AS file_extension
-            FROM parsed
-        )
-        SELECT
-            md5(file_path) AS file_key,
-            file_path,
-            file_name,
-            file_extension,
-            directory_path,
-            {language_case} AS language
-        FROM typed
-        WHERE NOT EXISTS (
-            SELECT 1 FROM dim_file df WHERE df.file_key = md5(typed.file_path)
-        )
-        """
-    )
+                {language_case} AS language
+            FROM typed
+            WHERE NOT EXISTS (
+                SELECT 1 FROM dim_file df WHERE df.file_key = md5(typed.file_path)
+            )
+            """
+        ).fetchone()[0]
     # `run` accepted for signature symmetry with the fact populators;
     # dim_file matches the dim_tool / dim_model pattern (no lineage block).
 
