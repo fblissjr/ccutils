@@ -1,24 +1,30 @@
-# Schema migrations and release versioning
+# Schema changes and release versioning
 
-## Adding a column to a table that shipped in a release
+## There are no schema migrations
 
-`CREATE TABLE IF NOT EXISTS` never widens an existing table — a new column in
-the CREATE statement silently does nothing on existing databases. Append the
-column to `_COLUMN_MIGRATIONS` in `schemas/star/schema.py`. Mechanics:
+Since 1.0.0 the warehouse has no upgrade path. `create_star_schema`
+fingerprints every base table's shape (name, columns, types, order) on
+open and raises `SchemaMismatchError` when the file differs from what the
+current DDL creates; the CLI turns that into "rebuild". `meta_schema_version`
+is a one-row stamp (fingerprint + ccutils version), not a ledger.
 
-- Migrations run **after** the CREATEs and **before** view creation, so views
-  can reference migrated columns immediately.
-- Schema-level DDL history is tracked in `meta_schema_version` (distinct from
-  `dim_etl_version`, which tracks the business-rules/parser version).
-- Test: assert the column exists on a database created from an *old* DDL
-  snapshot, not just a fresh one.
+So adding, renaming or dropping a column on a shipped table is one edit:
+the `CREATE TABLE` in `schemas/star/schema.py`. Every existing warehouse is
+then refused and rebuilt. Do not add an `ALTER`, a backfill on open, or a
+repair: the whole documented upgrade-path bug class (ALTER carries no
+DEFAULT, NULL-blind predicates over rows written before a column existed, a
+content hash blind to a widened projection) existed only because one did.
+
+Test for a shape change: `tests/test_schema_refuses_foreign_warehouse.py`
+pins the contract; the column-list assertions in
+`tests/test_star_schema_ddl.py` pin each table.
 
 ## Renaming columns
 
 After any rename, grep two places or the suite/views break at a distance:
 
 1. The `semantic_` views in `schemas/star/schema.py` (view creation validates
-   column references on every `create_star_schema()` call — a stale reference
+   column references on every `create_star_schema()` call -- a stale reference
    fails there).
 2. The column-list assertions in `tests/test_star_schema_ddl.py`.
 
@@ -26,21 +32,23 @@ After any rename, grep two places or the suite/views break at a distance:
 
 `dim_facet_type` is the template: `CREATE TABLE IF NOT EXISTS` +
 `INSERT ... ON CONFLICT DO NOTHING`, so historical rows (old prompt_versions)
-survive re-seeding. Use the same pattern for any future dim that must keep
-history across DDL runs.
+survive re-seeding within one warehouse's life. Use the same pattern for any
+future dim that must keep history across ETL runs.
 
 ## Release / version bump
 
-Three places must move together — a stale one makes lineage rows from
+Three places must move together -- a stale one makes lineage rows from
 different contracts indistinguishable:
 
 1. `version` in `pyproject.toml`.
-2. `CHANGELOG.md` — promote `[Unreleased]` to the new version.
-3. `PARSER_VERSION` in `src/ccutils/_version.py` — it stamps every lineage row
-   (`dim_etl_version` / `record_source` chain), so bump it whenever parsing or
-   populator semantics changed, not just on release day.
+2. `CHANGELOG.md` -- promote `[Unreleased]` to the new version.
+3. `PARSER_VERSION` in `src/ccutils/_version.py` -- it stamps every lineage row
+   (`dim_etl_version` / `record_source` chain) and the `meta_schema_version`
+   stamp, so bump it whenever parsing or populator semantics changed, not just
+   on release day.
 
-Then tag `v0.X.0`. Semver; **no major bumps without permission**.
+Then tag `vX.Y.Z`. Semver binds from 1.0.0; **no major bumps without
+permission**.
 
 ## Removing a feature
 

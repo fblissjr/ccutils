@@ -333,27 +333,6 @@ class TestFactPlanRevisionsPlanFilePath:
         assert row[0] is None
 
 
-class TestFactPlanRevisionsMigration:
-    def test_existing_warehouse_gains_plan_file_path(self, tmp_path):
-        """The warehouse is persistent: CREATE TABLE IF NOT EXISTS never
-        widens an existing table, so create_star_schema must carry an
-        explicit ADD COLUMN migration for columns added after 0.17.0."""
-        db = tmp_path / "old.duckdb"
-        conn = create_star_schema(db)
-        # Simulate a pre-plan_file_path warehouse.
-        conn.execute("ALTER TABLE fact_plan_revisions DROP COLUMN plan_file_path")
-        conn.close()
-
-        conn = create_star_schema(db)
-        cols = {
-            r[0] for r in conn.execute(
-                "SELECT column_name FROM information_schema.columns "
-                "WHERE table_name = 'fact_plan_revisions'"
-            ).fetchall()
-        }
-        assert "plan_file_path" in cols
-
-
 class TestFactPlanRevisionsChain:
     def test_revision_number_starts_at_one_per_session(
         self, conn, superseded_session, tmp_path

@@ -27,9 +27,9 @@ Cover four things before writing any implementation:
 
 `CREATE TABLE IF NOT EXISTS` with the standard lineage block. `date_key` +
 `time_key` are REQUIRED — `lineage_upsert` derives them and the INSERT fails
-without them. If the table ships in a release and you later add a column, that
-goes through `_COLUMN_MIGRATIONS` (see `migrations-and-versioning.md`), so get
-the column set right now.
+without them. There are no migrations: a column added later is one edit to
+the CREATE, and every existing warehouse is refused and rebuilt (see
+`migrations-and-versioning.md`).
 
 ## 3. Populator `etl/fact_<x>.py`
 

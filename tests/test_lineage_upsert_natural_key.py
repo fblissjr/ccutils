@@ -166,11 +166,11 @@ class TestUpdateAddressesOneRowPerKey:
     """The UPDATE step must touch exactly one physical row per natural key.
 
     Claim: a natural key names ONE logical row. Matching `tgt.key = im.key`
-    alone addresses every physical row sharing the key -- including twins
-    `_repair_duplicate_natural_keys` soft-deleted on open -- and the SET
-    includes `is_deleted = FALSE`, so a single hash change resurrects all
-    of them. Observed on a real pre-fix warehouse: the open-time repair
-    soft-deleted 29 duplicate tool_use_ids; the next batch run added a new
+    alone addresses every physical row sharing the key -- including any
+    soft-deleted twin -- and the SET includes `is_deleted = FALSE`, so a
+    single hash change resurrects all of them. Observed on a real pre-1.0
+    warehouse: the (since deleted) open-time repair had soft-deleted 29
+    duplicate tool_use_ids; the next batch run added a new
     hash column, every row's hash changed, and all 29 twins came back live
     -- killing the run in `populate_delegation_completion`, after every
     session had been processed. A fresh rebuild can never catch this.
@@ -228,3 +228,27 @@ class TestUpdateAddressesOneRowPerKey:
             "WHERE tool_use_id = 'toolu_gone' AND NOT is_deleted"
         ).fetchone()[0]
         assert n == 1, "a returning key must revive its (only) soft-deleted row"
+
+
+class TestNaturalKeysMapCoversEveryUpsertTarget:
+    def test_natural_keys_map_covers_every_upsert_target(self):
+        """`NATURAL_KEYS` is the single source of truth the audit command
+        walks. If a populator declares a natural_key for a table absent from
+        it, or a different one, that table silently stops being checked.
+        """
+        import pathlib
+        import re
+
+        from ccutils.schemas.star.schema import NATURAL_KEYS
+
+        etl = pathlib.Path("src/ccutils/etl")
+        src = "\n".join(p.read_text() for p in etl.rglob("*.py"))
+        pairs = set(
+            re.findall(
+                r'table="(\w+)",\s*\n\s*inbound_table="[^"]+",\s*\n\s*natural_key="(\w+)"',
+                src,
+            )
+        )
+        assert pairs, "regex found no lineage_upsert call sites -- fix the test"
+        missing = {t: k for t, k in pairs if NATURAL_KEYS.get(t) != k}
+        assert not missing, f"NATURAL_KEYS disagrees with these populators: {missing}"

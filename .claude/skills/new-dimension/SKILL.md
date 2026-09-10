@@ -33,10 +33,9 @@ uniqueness). Run tests, confirm they fail.
 ## Step 3: Add DDL
 
 Add the `CREATE TABLE IF NOT EXISTS dim_<name>` statement in
-`src/ccutils/schemas/star/schema.py::create_star_schema()`. Get the column
-set right now -- a column added after the table ships in a release needs a
-`_COLUMN_MIGRATIONS` entry (`CREATE TABLE IF NOT EXISTS` never widens an
-existing table). See
+`src/ccutils/schemas/star/schema.py::_create_objects()`. There are no
+migrations: a column added after the table ships is one edit to the CREATE,
+and every existing warehouse is refused on open and rebuilt. See
 `.claude/skills/etl-dev/references/migrations-and-versioning.md`.
 
 ## Step 4: Add ETL population

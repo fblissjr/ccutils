@@ -706,94 +706,6 @@ class TestEtlIntegration:
         assert run_memory_import(conn, projects_root=projects_root) == 0
 
 
-class TestUpgradePath:
-    """A warehouse built before the provenance/link_syntax columns existed
-    must heal on open, not fail.
-
-    ``CREATE TABLE IF NOT EXISTS`` never widens an existing table, so the
-    narrow shape survives every subsequent create_star_schema() call unless
-    _COLUMN_MIGRATIONS re-adds the columns. This is not a cosmetic gap here:
-    the import writes those columns directly, so an un-migrated warehouse
-    fails outright rather than degrading.
-    """
-
-    def _narrow_warehouse(self, tmp_path):
-        """A database holding the memory tables as originally shipped."""
-        import duckdb
-
-        path = tmp_path / "old.duckdb"
-        conn = duckdb.connect(str(path))
-        conn.execute(
-            """
-            CREATE TABLE dim_memory (
-                memory_key VARCHAR, memory_id VARCHAR, project_key VARCHAR,
-                session_key VARCHAR, scope VARCHAR, owner_key VARCHAR,
-                owner_root VARCHAR, agent_scope VARCHAR, source_path VARCHAR,
-                file_name VARCHAR, memory_name VARCHAR, description TEXT,
-                memory_type VARCHAR, node_type VARCHAR,
-                origin_session_id VARCHAR, is_index BOOLEAN,
-                has_frontmatter BOOLEAN, body_text TEXT, content_hash VARCHAR,
-                body_chars INTEGER, body_lines INTEGER, link_count INTEGER,
-                modified_at TIMESTAMP, file_mtime TIMESTAMP,
-                version_num INTEGER, valid_from TIMESTAMP, valid_to TIMESTAMP,
-                is_current BOOLEAN, date_key INTEGER, time_key INTEGER
-            )
-            """
-        )
-        conn.execute(
-            """
-            CREATE TABLE bridge_memory_link (
-                memory_link_key VARCHAR, memory_key VARCHAR,
-                memory_id VARCHAR, project_key VARCHAR, scope VARCHAR,
-                owner_key VARCHAR, target_name VARCHAR,
-                target_memory_id VARCHAR, is_resolved BOOLEAN, ordinal INTEGER
-            )
-            """
-        )
-        conn.close()
-        return path
-
-    def test_narrow_warehouse_gains_the_columns_on_open(self, tmp_path):
-        path = self._narrow_warehouse(tmp_path)
-        conn = create_star_schema(path)
-        assert {
-            "created_at", "created_by_version_key", "etl_run_id", "record_source",
-        } <= cols(conn, "dim_memory")
-        assert {
-            "created_at", "created_by_version_key", "etl_run_id",
-            "record_source", "link_syntax", "link_text",
-        } <= cols(conn, "bridge_memory_link")
-
-    def test_import_succeeds_against_an_upgraded_warehouse(
-        self, tmp_path, projects_root
-    ):
-        """The end the migration exists for. Without it this raises on a
-        missing column instead of writing rows."""
-        conn = create_star_schema(self._narrow_warehouse(tmp_path))
-        assert run_memory_import(conn, projects_root=projects_root) == 3
-        assert conn.execute(
-            "SELECT COUNT(*) FROM dim_memory WHERE etl_run_id IS NOT NULL"
-        ).fetchone()[0] == 3
-
-    def test_markdown_links_resolve_on_an_upgraded_warehouse(
-        self, tmp_path, projects_root
-    ):
-        """link_syntax is branched on during resolution, so an un-migrated
-        warehouse would send every index edge down the identifier path and
-        silently resolve none of them."""
-        (projects_root / PROJECT_DIR / "memory" / "MEMORY.md").write_text(
-            "# index\n\n- [Exit codes](topic_one.md) -- hook\n"
-        )
-        conn = create_star_schema(self._narrow_warehouse(tmp_path))
-        run_memory_import(conn, projects_root=projects_root)
-
-        row = conn.execute(
-            "SELECT link_syntax, is_resolved FROM bridge_memory_link "
-            "WHERE target_name = 'topic_one.md'"
-        ).fetchone()
-        assert row == ("markdown", True)
-
-
 class TestParserContractUpgrade:
     """Findings from the v0.19.0 review. Each of these passes on a freshly
     built warehouse and fails on an upgraded one, which is why none was
@@ -942,61 +854,6 @@ class TestParserContractUpgrade:
         ).fetchone()[0] >= 1
 
 
-class TestMigratedWarehouseWrites:
-    """created_at comes from a table DEFAULT, and ALTER TABLE ADD COLUMN
-    carries no default -- so on a migrated warehouse the column exists but
-    every row written into it is NULL, silently diverging from a freshly
-    built one."""
-
-    def _narrow(self, tmp_path):
-        import duckdb
-
-        path = tmp_path / "narrow.duckdb"
-        conn = duckdb.connect(str(path))
-        conn.execute(
-            """
-            CREATE TABLE dim_memory (
-                memory_key VARCHAR, memory_id VARCHAR, project_key VARCHAR,
-                session_key VARCHAR, scope VARCHAR, owner_key VARCHAR,
-                owner_root VARCHAR, agent_scope VARCHAR, source_path VARCHAR,
-                file_name VARCHAR, memory_name VARCHAR, description TEXT,
-                memory_type VARCHAR, node_type VARCHAR,
-                origin_session_id VARCHAR, is_index BOOLEAN,
-                has_frontmatter BOOLEAN, body_text TEXT, content_hash VARCHAR,
-                body_chars INTEGER, body_lines INTEGER, link_count INTEGER,
-                modified_at TIMESTAMP, file_mtime TIMESTAMP,
-                version_num INTEGER, valid_from TIMESTAMP, valid_to TIMESTAMP,
-                is_current BOOLEAN, date_key INTEGER, time_key INTEGER
-            )
-            """
-        )
-        conn.execute(
-            """
-            CREATE TABLE bridge_memory_link (
-                memory_link_key VARCHAR, memory_key VARCHAR, memory_id VARCHAR,
-                project_key VARCHAR, scope VARCHAR, owner_key VARCHAR,
-                target_name VARCHAR, target_memory_id VARCHAR,
-                is_resolved BOOLEAN, ordinal INTEGER
-            )
-            """
-        )
-        conn.close()
-        return path
-
-    def test_created_at_is_populated_on_a_migrated_warehouse(
-        self, tmp_path, projects_root
-    ):
-        conn = create_star_schema(self._narrow(tmp_path))
-        run_memory_import(conn, projects_root=projects_root)
-
-        assert conn.execute(
-            "SELECT COUNT(*) FROM dim_memory WHERE created_at IS NULL"
-        ).fetchone()[0] == 0
-        assert conn.execute(
-            "SELECT COUNT(*) FROM bridge_memory_link WHERE created_at IS NULL"
-        ).fetchone()[0] == 0
-
-
 class TestInterruptAndGuarding:
     def test_keyboard_interrupt_is_not_swallowed(self, conn, projects_root):
         """Ctrl-C during a long archive build must reach the caller. Catching
@@ -1047,26 +904,6 @@ class TestRecordSource:
                 f"SELECT DISTINCT record_source FROM {table}"
             ).fetchall():
                 assert record_source_label(value) == value
-
-    def test_legacy_record_source_is_backfilled_on_open(self, tmp_path, projects_root):
-        """Rows written before the label changed carry the run sentinel, which
-        is not in the allow-list -- so record_source_label() raises on them and
-        any filter on the new value silently misses them."""
-        from ccutils.etl.lineage import record_source_label
-
-        conn = create_star_schema(tmp_path / "legacy.duckdb")
-        run_memory_import(conn, projects_root=projects_root)
-        conn.execute("UPDATE dim_memory SET record_source = '<auto-memory>'")
-        conn.execute("UPDATE bridge_memory_link SET record_source = '<auto-memory>'")
-        conn.close()
-
-        conn = create_star_schema(tmp_path / "legacy.duckdb")
-        for table in ("dim_memory", "bridge_memory_link"):
-            for (value,) in conn.execute(
-                f"SELECT DISTINCT record_source FROM {table}"
-            ).fetchall():
-                assert record_source_label(value) == value
-
 
 class TestAgentLinkIsolation:
     def test_markdown_link_does_not_cross_repositories(self, conn, tmp_path):

@@ -26,6 +26,7 @@ from ..tui import (
     render_project_table,
     render_session_table,
 )
+from ..schemas.star.schema import SchemaMismatchError
 from ..schemas.star import (
     create_star_schema,
     export_star_schema_to_json,
@@ -284,63 +285,68 @@ def convert_cmd(
                 "--llm-facets."
             )
 
-    if source is not None:
-        # Batch mode: every session under a directory. Delegates to the
-        # batch implementation rather than duplicating it -- one scan, one
-        # set of exporters, and it builds its own facet extractor, which is
-        # why this path must NOT build one too. Doing both constructed two
-        # extractors per invocation: two credential resolutions, and for a
-        # real one, two clients.
-        #
-        # `--source` with no value means the Claude projects directory,
-        # which the batch path resolves itself.
-        from .all import all_cmd
+    # Every path below may open an existing warehouse. A foreign schema
+    # is refused with a rebuild instruction, not a traceback.
+    try:
+        if source is not None:
+            # Batch mode: every session under a directory. Delegates to the
+            # batch implementation rather than duplicating it -- one scan, one
+            # set of exporters, and it builds its own facet extractor, which is
+            # why this path must NOT build one too. Doing both constructed two
+            # extractors per invocation: two credential resolutions, and for a
+            # real one, two clients.
+            #
+            # `--source` with no value means the Claude projects directory,
+            # which the batch path resolves itself.
+            from .all import all_cmd
 
-        all_cmd.callback(
-            source=None if source == "__default__" else source,
-            output=output,
-            output_format=output_format,
-            open_browser=open_browser,
-            project_filter=project_filter,
-            dry_run=dry_run,
-            no_thinking=no_thinking,
-            no_agents=no_subagents,
-            include_temp_sessions=include_temp_sessions,
-            private=private,
-            jobs=jobs,
-            batch_size=batch_size,
-            quiet=quiet,
-            no_search_index=no_search_index,
-            embed=embed,
-            batch_llm_facets=with_llm_facets,
-        )
-        return
+            all_cmd.callback(
+                source=None if source == "__default__" else source,
+                output=output,
+                output_format=output_format,
+                open_browser=open_browser,
+                project_filter=project_filter,
+                dry_run=dry_run,
+                no_thinking=no_thinking,
+                no_agents=no_subagents,
+                include_temp_sessions=include_temp_sessions,
+                private=private,
+                jobs=jobs,
+                batch_size=batch_size,
+                quiet=quiet,
+                no_search_index=no_search_index,
+                embed=embed,
+                batch_llm_facets=with_llm_facets,
+            )
+            return
 
-    # Build the Tier 2 facet extractor at the CLI boundary -- credential
-    # failures exit cleanly here rather than as a stack trace from inside
-    # _run_export_pipeline. Returns None when --llm-facets is off.
-    facet_extractor = build_facet_extractor_or_exit(with_llm_facets)
+        # Build the Tier 2 facet extractor at the CLI boundary -- credential
+        # failures exit cleanly here rather than as a stack trace from inside
+        # _run_export_pipeline. Returns None when --llm-facets is off.
+        facet_extractor = build_facet_extractor_or_exit(with_llm_facets)
 
-    if paths:
-        # ONE pipeline call for all named files, not one per file. Running it
-        # per file pointed every run at the same -o: the html index was
-        # rewritten from the last file's session list so earlier transcripts
-        # became unreachable, the json export overwrote dimensions/ so only
-        # the last session survived, `fact_etl_batch_runs` got N rows for one
-        # invocation, the global sources ran N times, and with no -o a
-        # browser window opened per file.
-        _convert_files(
-            paths, output, output_format, open_browser,
-            include_thinking, private, facet_extractor,
-            include_subagents=not no_subagents,
-        )
-    else:
-        # Interactive picker mode
-        _interactive_mode(
-            output, output_format, open_browser, flat, expand_chains,
-            project_filter, include_thinking, not no_subagents, private,
-            embed, facet_extractor, include_temp_sessions,
-        )
+        if paths:
+            # ONE pipeline call for all named files, not one per file. Running it
+            # per file pointed every run at the same -o: the html index was
+            # rewritten from the last file's session list so earlier transcripts
+            # became unreachable, the json export overwrote dimensions/ so only
+            # the last session survived, `fact_etl_batch_runs` got N rows for one
+            # invocation, the global sources ran N times, and with no -o a
+            # browser window opened per file.
+            _convert_files(
+                paths, output, output_format, open_browser,
+                include_thinking, private, facet_extractor,
+                include_subagents=not no_subagents,
+            )
+        else:
+            # Interactive picker mode
+            _interactive_mode(
+                output, output_format, open_browser, flat, expand_chains,
+                project_filter, include_thinking, not no_subagents, private,
+                embed, facet_extractor, include_temp_sessions,
+            )
+    except SchemaMismatchError as exc:
+        raise click.ClickException(str(exc)) from exc
 
 
 def _convert_files(input_files, output, output_format, open_browser,

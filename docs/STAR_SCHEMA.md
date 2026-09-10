@@ -52,7 +52,7 @@ Every v0.15 fact carries the same nine columns:
 
 `session_id` is also carried as a degenerate dimension on most facts so `SELECT * FROM fact_X WHERE session_id = '...'` works without a `dim_session` join.
 
-Schema-level DDL migrations are tracked in `meta_schema_version` (distinct from `dim_etl_version`, which tracks the business-rules / parser version).
+There are no schema migrations. `meta_schema_version` holds one row: the `schema_fingerprint` (an md5 over every base table's name, columns, types and order) and the `ccutils_version` that wrote the file. `create_star_schema` recomputes the fingerprint of the file's tables on every open and raises `SchemaMismatchError` if it differs from what the current DDL produces; the only remedy is a rebuild. `dim_etl_version` is separate: it tracks the business-rules / parser version per row, not the table shapes.
 
 ### Run metadata (three grains)
 

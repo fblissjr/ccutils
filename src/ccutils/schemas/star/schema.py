@@ -12,32 +12,113 @@ import duckdb
 from ccutils.schemas.star.utils import get_time_of_day
 
 
-def create_star_schema(db_path):
-    """Create DuckDB database with star schema for transcript analytics.
+class SchemaMismatchError(RuntimeError):
+    """The file holds a schema this version of ccutils did not write.
 
-    Authoritative table inventory lives in CLAUDE.md ("Star Schema Tables")
-    and docs/STAR_SCHEMA.md; per-populator wiring in etl/orchestrator.py.
-    Highlights:
-    - Core dimensions: session, project, tool, model, file, session_chain,
-      prompt, facet_type. dim_time is seeded here (1440 rows); dim_date rows
-      are inserted during ETL for every staged calendar date.
-    - v0.15 facts: messages, tool_uses + tool_results, token_usage, the
-      entry-type facts (attachments/progress/system/meta/...), file
-      operations, plan revisions, agent delegations, errors, chain steps,
-      session facets, session summary.
-    - Staging: stg_log_entries (Tier 2 of the four-tier pipeline).
-    - 16 semantic views (semantic_*), created after _apply_column_migrations
-      so views can reference migrated columns on pre-existing warehouses.
-
-    No hard PK/FK constraints - relies on soft business rules.
-
-    Args:
-        db_path: Path to the DuckDB database file
-
-    Returns:
-        duckdb.Connection to the database
+    Raised by `create_star_schema` before any object is created. There is no
+    upgrade path by design (CLAUDE.md, "No migrations from the past"): the
+    remedy is a rebuild, and the message says so.
     """
+
+
+def schema_fingerprint(conn) -> str:
+    """Hash of every base table's shape: name, columns, types, order.
+
+    Views are excluded because `CREATE OR REPLACE VIEW` refreshes them on
+    every open; data is excluded because a schema is a shape, not contents.
+    """
+    rows = conn.execute(
+        """
+        SELECT c.table_name, c.ordinal_position, c.column_name, c.data_type
+        FROM information_schema.columns c
+        JOIN information_schema.tables t
+          ON t.table_schema = c.table_schema AND t.table_name = c.table_name
+        WHERE t.table_type = 'BASE TABLE' AND c.table_schema = 'main'
+          AND c.table_name <> 'meta_schema_version'
+        ORDER BY 1, 2
+        """
+    ).fetchall()
+    return conn.execute(
+        "SELECT md5(?)", ["\n".join("|".join(map(str, r)) for r in rows)]
+    ).fetchone()[0]
+
+
+_EXPECTED_FINGERPRINT: str | None = None
+
+
+def expected_schema_fingerprint() -> str:
+    """Fingerprint of the schema this code's DDL produces, computed once per
+    process by building it in memory."""
+    global _EXPECTED_FINGERPRINT
+    if _EXPECTED_FINGERPRINT is None:
+        conn = duckdb.connect(":memory:")
+        _create_objects(conn)
+        _EXPECTED_FINGERPRINT = schema_fingerprint(conn)
+        conn.close()
+    return _EXPECTED_FINGERPRINT
+
+
+def _stamped_by(conn) -> str | None:
+    """ccutils version recorded in the stamp, or None if there is no stamp.
+    A pre-1.0 warehouse carries a migration ledger under the same table
+    name with no version row of this shape; that reads as None too."""
+    try:
+        row = conn.execute(
+            "SELECT ccutils_version FROM meta_schema_version "
+            "WHERE schema_fingerprint IS NOT NULL LIMIT 1"
+        ).fetchone()
+    except duckdb.Error:
+        return None
+    return row[0] if row else None
+
+
+def create_star_schema(db_path):
+    """Open (or create) a warehouse at `db_path` and return its connection.
+
+    A file that already holds base tables is checked before anything is
+    created: its table shapes must hash to exactly what this code's DDL
+    produces, or `SchemaMismatchError` is raised. No migrations, no repair;
+    the remedy is a rebuild. A fresh file or ":memory:" gets the full
+    schema and a one-row stamp in `meta_schema_version`.
+
+    Authoritative table inventory lives in docs/STAR_SCHEMA.md; per-populator
+    wiring in etl/orchestrator.py. No hard PK/FK constraints -- soft
+    business rules, asserted by `lineage_upsert` and (1.0.0) `ccutils audit`.
+    """
+    from ccutils._version import PARSER_VERSION
+
     conn = duckdb.connect(str(db_path))
+    existing = conn.execute(
+        "SELECT COUNT(*) FROM information_schema.tables "
+        "WHERE table_type = 'BASE TABLE' AND table_schema = 'main'"
+    ).fetchone()[0]
+    if existing:
+        actual = schema_fingerprint(conn)
+        if actual != expected_schema_fingerprint():
+            writer = _stamped_by(conn)
+            who = (
+                f"written by ccutils {writer}" if writer
+                else "written before ccutils 1.0.0, or not by ccutils"
+            )
+            conn.close()
+            raise SchemaMismatchError(
+                f"{db_path} holds a schema this version ({PARSER_VERSION}) "
+                f"did not write ({who}). There is no upgrade path: rebuild "
+                "it by deleting the file and running the export again."
+            )
+
+    _create_objects(conn)
+    if _stamped_by(conn) is None:
+        conn.execute(
+            "INSERT INTO meta_schema_version (schema_fingerprint, ccutils_version) "
+            "VALUES (?, ?)",
+            [expected_schema_fingerprint(), PARSER_VERSION],
+        )
+    return conn
+
+
+def _create_objects(conn) -> None:
+    """Every CREATE, in dependency order, plus seed rows. Idempotent."""
 
     # =========================================================================
     # Lineage + Meta Tables (Phase B of v0.15 rethink)
@@ -45,7 +126,8 @@ def create_star_schema(db_path):
     # dim_etl_version is the catalog of (ccutils_version, business_rules_version)
     # tuples; every fact row references one created_by_version_key and one
     # last_updated_by_version_key. fact_etl_runs records every batch.
-    # meta_schema_version tracks DDL-level migrations applied to this database.
+    # meta_schema_version is the one-row stamp create_star_schema checks on
+    # open: which fingerprint and ccutils version wrote this file.
 
     conn.execute(
         """
@@ -143,10 +225,9 @@ def create_star_schema(db_path):
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS meta_schema_version (
-            migration_id VARCHAR NOT NULL,      -- e.g., '20260419_0001_initial'
-            applied_at TIMESTAMP NOT NULL DEFAULT current_timestamp,
-            description VARCHAR,
-            ccutils_version VARCHAR
+            schema_fingerprint VARCHAR NOT NULL, -- schema_fingerprint() at creation
+            ccutils_version VARCHAR NOT NULL,    -- the ccutils that wrote it
+            created_at TIMESTAMP NOT NULL DEFAULT current_timestamp
         )
     """
     )
@@ -1721,15 +1802,6 @@ def create_star_schema(db_path):
         """
     )
 
-    # Column migrations must run after every CREATE TABLE and before the
-    # views: a view can reference a migrated column, and on a pre-existing
-    # warehouse the CREATE TABLE IF NOT EXISTS above did not add it.
-    _apply_column_migrations(conn)
-    # After migrations (so every column exists), before views. Heals a
-    # warehouse built before lineage_upsert began asserting natural-key
-    # uniqueness; a no-op on a clean one.
-    _repair_duplicate_natural_keys(conn)
-
     # Reconcile dim_date from every session already in the warehouse.
     # Per-session ETL only inserts dim_date for the sessions it re-stages;
     # this repairs a pre-0.17 warehouse (and sessions whose JSONL Claude
@@ -2604,121 +2676,11 @@ def create_star_schema(db_path):
     """
     )
 
-    return conn
-
-
-# Columns added AFTER a table first shipped in the persistent warehouse
-# (0.17.0+). CREATE TABLE IF NOT EXISTS never widens an existing table,
-# so every later column addition needs an entry here or old warehouses
-# break on the populator's INSERT. Append-only.
-_COLUMN_MIGRATIONS = [
-    # Stated sidecar fields (0.19.2). Removed wholesale at 1.0.0 along with
-    # the rest of this list -- see CLAUDE.md's no-migrations rule.
-    ("fact_agent_delegations", "agent_derived_output_text", "TEXT"),
-    ("dim_session", "spawn_depth", "INTEGER"),
-    ("dim_session", "parent_agent_id", "VARCHAR"),
-    ("dim_session", "spawn_tool_use_id", "VARCHAR"),
-    ("dim_session", "agent_model", "VARCHAR"),
-    ("dim_session", "is_fork", "BOOLEAN"),
-    ("dim_session", "agent_name", "VARCHAR"),
-    ("dim_session", "worktree_path", "VARCHAR"),
-    ("dim_session", "worktree_branch", "VARCHAR"),
-    ("dim_session", "stopped_by_user", "BOOLEAN"),
-    # R23: API-response identity. Both tables shipped keyed per JSONL entry,
-    # which double-counted every response Claude Code split across entries.
-    # Existing warehouses need the column before the next run can dedupe.
-    ("fact_token_usage", "api_message_id", "VARCHAR"),
-    ("fact_messages", "api_message_id", "VARCHAR"),
-    ("fact_plan_revisions", "plan_file_path", "VARCHAR"),
-    ("fact_etl_runs", "batch_run_id", "VARCHAR"),
-    ("fact_etl_runs", "data_start_ts", "TIMESTAMP"),
-    ("fact_etl_runs", "data_end_ts", "TIMESTAMP"),
-    # step_kind predates any release of fact_etl_steps, but pre-release
-    # warehouses built from this branch exist; widening is free.
-    ("fact_etl_steps", "step_kind", "VARCHAR"),
-    # dim_model shipped without model_base; CREATE TABLE IF NOT EXISTS never
-    # widens, so existing warehouses need the ALTER. Backfilled in
-    # _upsert_minimal_dimensions on the next run.
-    ("dim_model", "model_base", "VARCHAR"),
-    # resolvedModel capture postdates both tables shipping.
-    ("fact_tool_results", "agent_resolved_model", "VARCHAR"),
-    ("fact_agent_delegations", "agent_resolved_model", "VARCHAR"),
-    ("fact_tool_results", "agent_is_async", "BOOLEAN"),
-    ("fact_agent_delegations", "agent_is_async", "BOOLEAN"),
-    # completion_state: which of the delegation's outcomes actually happened.
-    # Needed because the parent-side result for a background spawn is a launch
-    # acknowledgment, so "has no metrics" conflates four different situations:
-    #   completed              -- agent finished; rollups re-derived from its
-    #                             own transcript and trustworthy
-    #   no_completion_recorded -- the agent's transcript records no
-    #                             completion. Rollups deliberately NULL: a
-    #                             partial sum is indistinguishable from a
-    #                             fast agent.
-    #   spawn_failed           -- the agent was never created (fork-inside-
-    #                             fork, depth limit, cancellation, validation
-    #                             error, user rejection). Requires a STATED
-    #                             is_error; without that gate the branch also
-    #                             swallowed a successful background launch
-    #                             that carried no agentId.
-    #   NULL                   -- not yet reconciled
-    # Every value is decidable from a stated fact. `no_completion_recorded`
-    # was called `in_flight_at_ingest`, which was not: it asserted the agent
-    # was still running, and of 101 rows carrying it 98 had ended mid-tool-
-    # loop a median of 15.7 days before the ETL ran. Naming the observation
-    # instead of the inference also retires the reason `abandoned` was
-    # withheld -- no staleness threshold is needed to say nothing was
-    # recorded. Measured limit: ~10% of agents that demonstrably finished
-    # still land here (19 of 188 whose parent saw a synchronous result), and
-    # two alternative predicates miss the same 19.
-    ("fact_agent_delegations", "completion_state", "VARCHAR"),
-    # agent_derived_io_tokens: the agent's own input+output token sum, from
-    # its transcript. Kept OUT of agent_total_tokens because the two are not
-    # the same measure. Ground truth (188 synchronous delegations carrying
-    # both a stated API rollup and an ingested transcript): duration matched
-    # 188/188 and tool count 188/188, but tokens matched 12/188 within 10%,
-    # per-row ratio p10 0.063 to p90 1.004. No formula reconciles them
-    # (in+out, out only, +cache_creation, +cache_read,
-    # total_uncached_equivalent, the 5m/1h splits); not a capture gap (median
-    # 23 assistant records, 23 with usage); not a nested rollup (all 188
-    # spawned none). Merging them made async delegations read 3x cheaper than
-    # sync (median 19,444 vs 61,362) while measuring 2x longer.
-    ("fact_agent_delegations", "agent_derived_io_tokens", "INTEGER"),
-    # run_kind scopes the batch rollup, exactly as step_kind scopes the fact
-    # rollup. fact_etl_runs used to be one-row-per-session by construction,
-    # so BatchRun.complete could count child rows as sessions. The
-    # cross-session reconciliation pass is a child run that is NOT a session;
-    # without this discriminator it inflated sessions_seen by one per batch.
-    ("fact_etl_runs", "run_kind", "VARCHAR"),
-    # dim_memory / bridge_memory_link shipped without run provenance and
-    # without link_syntax. Both tables landed in a commit before these
-    # columns existed, so a warehouse built from that commit has the narrow
-    # shape and CREATE TABLE IF NOT EXISTS will never widen it -- the import
-    # would fail on a missing column rather than degrade. The memory import
-    # is the first consumer of its own lineage columns, so a missed
-    # migration here breaks the populator outright instead of silently
-    # blanking a field.
-    ("dim_memory", "created_at", "TIMESTAMP"),
-    ("dim_memory", "created_by_version_key", "VARCHAR"),
-    ("dim_memory", "etl_run_id", "VARCHAR"),
-    ("dim_memory", "record_source", "VARCHAR"),
-    ("bridge_memory_link", "created_at", "TIMESTAMP"),
-    ("bridge_memory_link", "created_by_version_key", "VARCHAR"),
-    ("bridge_memory_link", "etl_run_id", "VARCHAR"),
-    ("bridge_memory_link", "record_source", "VARCHAR"),
-    # link_syntax distinguishes an index entry ([Title](file.md)) from a
-    # prose cross-reference ([[name]]). _resolve_link_targets branches on
-    # it, so on an un-migrated warehouse every markdown edge would fall
-    # through to identifier matching and silently fail to resolve.
-    ("bridge_memory_link", "link_syntax", "VARCHAR"),
-    ("bridge_memory_link", "link_text", "VARCHAR"),
-]
-
 
 # Every fact's declared natural key, mirroring the `natural_key=` argument
-# each populator passes to `lineage_upsert`. Single source of truth: the
-# repair below walks it, and roadmap 0a's audit command is meant to as well.
-# `tests/test_natural_key_repair_v15.py` fails if a populator declares a key
-# this map disagrees with, so the two cannot drift.
+# each populator passes to `lineage_upsert`. Single source of truth for
+# `ccutils audit`'s uniqueness check. `tests/test_lineage_upsert_natural_key.py`
+# fails if a populator declares a key this map disagrees with.
 NATURAL_KEYS = {
     "fact_messages": "entry_id",
     "fact_attachments": "entry_id",
@@ -2741,140 +2703,3 @@ NATURAL_KEYS = {
     "fact_session_summary": "session_id",
     "bridge_session_file": "session_file_key",
 }
-
-
-def _repair_duplicate_natural_keys(conn) -> int:
-    """Soft-delete rows violating a declared natural key. Returns the count.
-
-    Warehouses built before `lineage_upsert` began asserting uniqueness can
-    hold duplicates -- 6 of 13 facts did on a real 2,344-session corpus. Those
-    rows are not inert: several populators build their inbound batch by
-    reading a TARGET fact table, so a stale duplicate propagates into a new
-    inbound and trips the assertion.
-
-    The severe case is `populate_delegation_completion`, whose inbound is the
-    WHOLE `fact_agent_delegations` table and which runs from
-    `run_post_session_reconciliation` OUTSIDE any per-session try/except.
-    Without this repair, one stale duplicate killed an entire `ccutils all`
-    invocation after every session had already been processed. Reproduced on
-    a real pre-fix warehouse holding 3 duplicate `delegation_key` rows.
-
-    Soft-delete rather than DELETE: the losing row is retained under the
-    warehouse's own lineage convention, and every consumer already filters
-    `is_deleted`. Discarding data the operator never chose to lose would be a
-    worse cure than the disease.
-
-    NULL keys are skipped, matching `lineage_upsert`, which excludes them
-    from its own uniqueness check. Every natural-key column is NOT NULL at the
-    DDL level today, so this is defensive -- but the three places that reason
-    about key uniqueness must agree, or a future nullable key breaks whichever
-    one was overlooked.
-
-    The survivor is the lowest rowid. Do NOT read that as reproducible across
-    warehouses: DuckDB implements UPDATE as delete+reinsert, so a row's rowid
-    reflects its update history rather than insertion order, and
-    `lineage_upsert` updates rows routinely. The choice is arbitrary. It is
-    harmless only because the known duplicates are content-identical on every
-    extracted column -- if that ever stops being true, this needs a stated
-    rule, not a rowid.
-    """
-    repaired = 0
-    for table, key in NATURAL_KEYS.items():
-        # Cheap guard: skip the UPDATE entirely unless a violation exists.
-        # This runs on every connection, so the common (clean) path must not
-        # pay for a full rewrite.
-        has_dupes = conn.execute(
-            f"""
-            SELECT 1 FROM (
-                SELECT {key} FROM {table}
-                WHERE is_deleted = FALSE AND {key} IS NOT NULL
-                GROUP BY 1 HAVING COUNT(*) > 1
-            ) LIMIT 1
-            """
-        ).fetchone()
-        if not has_dupes:
-            continue
-        n = conn.execute(
-            f"""
-            UPDATE {table} SET is_deleted = TRUE,
-                               deleted_at = current_timestamp
-            WHERE is_deleted = FALSE
-              AND {key} IS NOT NULL
-              AND rowid NOT IN (
-                  SELECT MIN(rowid) FROM {table}
-                  WHERE is_deleted = FALSE AND {key} IS NOT NULL
-                  GROUP BY {key}
-              )
-            """
-        ).fetchone()[0]
-        repaired += n
-    return repaired
-
-
-def _apply_column_migrations(conn) -> None:
-    for table, column, col_type in _COLUMN_MIGRATIONS:
-        conn.execute(
-            f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {column} {col_type}"
-        )
-
-    # Backfills for migrated columns whose value is derivable from existing
-    # data. ALTER ADD COLUMN leaves pre-existing rows NULL -- without this,
-    # historical upsert steps silently vanish from every step_kind-scoped
-    # rollup while the stored fact_etl_runs counts still show them.
-    conn.execute(
-        """
-        UPDATE fact_etl_steps
-        SET step_kind = CASE
-            WHEN step_name LIKE 'upsert:%' THEN 'upsert'
-            ELSE 'stage'
-        END
-        WHERE step_kind IS NULL
-        """
-    )
-
-    # Every run recorded before run_kind existed was a per-session run --
-    # the reconciliation grain did not exist yet. Without this backfill the
-    # batch rollup (which filters run_kind = 'session') would report zero
-    # sessions for every historical batch.
-    conn.execute(
-        "UPDATE fact_etl_runs SET run_kind = 'session' WHERE run_kind IS NULL"
-    )
-
-    # Every bridge row written before link_syntax existed was a [[wiki]]
-    # link -- the markdown reader did not exist yet. Without this backfill
-    # they keep link_syntax NULL, and any predicate comparing against it is
-    # NULL-blind, so those rows drop out of link resolution permanently.
-    conn.execute(
-        "UPDATE bridge_memory_link SET link_syntax = 'wiki' WHERE link_syntax IS NULL"
-    )
-
-    # The memory import first stamped record_source with the RUN sentinel
-    # '<auto-memory>' rather than a provenance label. That value is not in
-    # lineage.py's _RECORD_SOURCES, so record_source_label() raises on it and
-    # any query filtering record_source = 'claude_code_memory' silently misses
-    # every row written before the fix. Same precedent as run_kind and
-    # link_syntax above: change the value, backfill the history.
-    for _memory_table in ("dim_memory", "bridge_memory_link"):
-        conn.execute(
-            f"UPDATE {_memory_table} SET record_source = 'claude_code_memory' "
-            "WHERE record_source = '<auto-memory>'"
-        )
-
-    # Reconcile pre-0.18 subagent-collapse corruption: the old contract
-    # keyed agent transcripts on their embedded (parent) sessionId, which
-    # mislabeled PARENT rows is_agent=TRUE with a SELF-referencing
-    # parent_session_key. Self-parenting is impossible under the current
-    # contract, so it is a reliable corruption signature; re-ETL never
-    # touches these columns on the parent (its path doesn't match the
-    # subagent layout), hence the one-time repair here.
-    conn.execute(
-        """
-        UPDATE dim_session
-        SET is_agent = FALSE,
-            agent_id = NULL,
-            parent_session_key = NULL,
-            agent_type = NULL,
-            agent_description = NULL
-        WHERE parent_session_key = session_key
-        """
-    )

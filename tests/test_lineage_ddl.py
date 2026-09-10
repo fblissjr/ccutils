@@ -58,12 +58,23 @@ class TestMetaSchemaVersion:
 
     def test_columns(self, conn):
         cols = [c[0] for c in conn.execute("DESCRIBE meta_schema_version").fetchall()]
-        for col in ("migration_id", "applied_at", "description", "ccutils_version"):
-            assert col in cols, f"Missing column: {col}"
+        assert set(cols) == {"schema_fingerprint", "ccutils_version", "created_at"}
+
+    def test_stamp_matches_the_live_schema(self, conn):
+        """The stamp is what create_star_schema compares against on open.
+        A stamp that disagrees with the file it sits in is a refusal
+        waiting to happen on the next open."""
+        from ccutils.schemas.star.schema import schema_fingerprint
+
+        stored = conn.execute(
+            "SELECT schema_fingerprint FROM meta_schema_version"
+        ).fetchone()[0]
+        assert stored == schema_fingerprint(conn)
 
     def test_distinct_from_dim_etl_version(self, conn):
-        """meta_schema_version (DDL migrations) and dim_etl_version (ETL
-        business-rules versioning) are separate concerns -- both must exist."""
+        """meta_schema_version (which DDL wrote this file) and
+        dim_etl_version (which business rules wrote each row) are separate
+        concerns -- both must exist."""
         ms = conn.execute("SELECT name FROM sqlite_master WHERE name='meta_schema_version'").fetchone()
         dv = conn.execute("SELECT name FROM sqlite_master WHERE name='dim_etl_version'").fetchone()
         assert ms is not None and dv is not None

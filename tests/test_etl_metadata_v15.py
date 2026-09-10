@@ -70,17 +70,6 @@ class TestEtlMetadataDdl:
         }
         assert {"batch_run_id", "data_start_ts", "data_end_ts"} <= cols
 
-    def test_fact_etl_runs_new_columns_are_migrations(self):
-        """Adding columns to a shipped table needs _COLUMN_MIGRATIONS entries
-        or pre-0.18 persistent warehouses break (CLAUDE.md DDL checklist)."""
-        from ccutils.schemas.star.schema import _COLUMN_MIGRATIONS
-
-        migrated = {
-            (t, c) for t, c, _ in _COLUMN_MIGRATIONS
-        }
-        for col in ("batch_run_id", "data_start_ts", "data_end_ts"):
-            assert ("fact_etl_runs", col) in migrated
-
     def test_semantic_etl_runs_view_exists(self, conn):
         conn.execute("SELECT * FROM semantic_etl_runs LIMIT 0")
 
@@ -467,28 +456,6 @@ class TestJsonExportCompleteness:
 
 
 class TestSecondReviewFixes:
-    def test_step_kind_backfilled_on_migrated_warehouse(self, tmp_path):
-        """A warehouse whose fact_etl_steps predates step_kind gets the
-        column backfilled from step_name on the next create_star_schema --
-        otherwise historical upsert steps vanish from every rollup."""
-        db = tmp_path / "migrate.duckdb"
-        old = create_star_schema(db)
-        old.execute("ALTER TABLE fact_etl_steps DROP COLUMN step_kind")
-        old.execute(
-            "INSERT INTO fact_etl_steps "
-            "(step_id, etl_run_id, step_name, step_order, status, rows_inserted) "
-            "VALUES ('s1', 'r1', 'upsert:fact_messages', 1, 'success', 5), "
-            "       ('s2', 'r1', 'load_staging', 2, 'success', 9)"
-        )
-        old.close()
-
-        migrated = create_star_schema(db)
-        kinds = dict(migrated.execute(
-            "SELECT step_name, step_kind FROM fact_etl_steps"
-        ).fetchall())
-        migrated.close()
-        assert kinds == {"upsert:fact_messages": "upsert", "load_staging": "stage"}
-
     def test_view_reports_zero_not_null_for_stage_only_runs(self, conn):
         run = EtlRun.start(conn, source_path="/x")
         with run.step("load_staging") as st:
@@ -517,28 +484,6 @@ class TestSecondReviewFixes:
         with pytest.raises(ValueError):
             with run.step("x", kind="upserts"):
                 pass
-
-
-class TestSelfLoopRepair:
-    def test_pre018_self_parented_rows_are_repaired(self, tmp_path):
-        """Pre-0.18 collapse corruption: parent rows mislabeled is_agent with
-        parent_session_key = own key. create_star_schema reconciles them."""
-        db = tmp_path / "repair.duckdb"
-        old = create_star_schema(db)
-        old.execute(
-            "INSERT INTO dim_session (session_key, session_id, is_agent, "
-            "agent_id, parent_session_key, agent_type) "
-            "VALUES (md5('p1'), 'p1', TRUE, 'stale', md5('p1'), 'Explore')"
-        )
-        old.close()
-
-        repaired = create_star_schema(db)
-        row = repaired.execute(
-            "SELECT is_agent, agent_id, parent_session_key, agent_type "
-            "FROM dim_session WHERE session_id = 'p1'"
-        ).fetchone()
-        repaired.close()
-        assert row == (False, None, None, None)
 
 
 class TestRunKindScoping:

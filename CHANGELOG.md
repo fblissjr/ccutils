@@ -5,6 +5,9 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Changed
+- **The migration machinery is gone; a warehouse this code did not write is refused.** `_COLUMN_MIGRATIONS` and its four backfills, `_repair_duplicate_natural_keys` on open, and the `schemas/migrations/` runner (which had zero call sites, and is why `meta_schema_version` never held a row) are deleted, along with the tests that guarded them. In their place `create_star_schema` fingerprints every base table's shape (name, columns, types, order) before creating anything and raises `SchemaMismatchError` when the file differs from what the current DDL produces; the CLI turns that into an exit-nonzero rebuild instruction naming the ccutils version that wrote the file. `meta_schema_version` is now that one-row stamp. This is the no-migration rule stated 2026-08-28 becoming a mechanism: the three upgrade-only defect classes documented in `CLAUDE.md` (ALTER carrying no DEFAULT, NULL-blind predicates over migrated columns, a content hash blind to a widened projection) are unreachable because the path they lived on no longer exists. The repair and the refusal land in the same change on purpose: the repair was the only safety net for warehouses built before `lineage_upsert` asserted natural keys, and deleting it first would have bricked them with no message. Every existing warehouse must be rebuilt once.
+
 ### Documentation
 - **`docs/ROADMAP.md` is the single tracked status board.** The release sequence, the 1.0.0 step list, and every known-but-unfixed defect lived only in gitignored `internal/` notes, so a fresh checkout or a new session could not find where work left off. Consolidated, each open item re-verified against the code, and pointed to from `CLAUDE.md`.
 

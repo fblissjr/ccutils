@@ -185,9 +185,10 @@ def lineage_upsert(
         # revival working -- the INSERT's NOT EXISTS matches deleted rows, so
         # this UPDATE is the only path back). Matching on the key alone
         # touches every physical twin sharing it, and the SET's
-        # `is_deleted = FALSE` then RESURRECTS duplicates that
-        # `_repair_duplicate_natural_keys` soft-deleted on open. Observed on
-        # a real pre-fix warehouse: a new hash column changed every row's
+        # `is_deleted = FALSE` then RESURRECTS any soft-deleted twin.
+        # Observed on a real pre-1.0 warehouse (where an open-time repair,
+        # since deleted, had soft-deleted 29 duplicate tool_use_id twins):
+        # a new hash column changed every row's
         # hash, one batch run revived all 29 repaired tool_use_id twins, and
         # the delegation-completion pass died on them after every session
         # had already been processed.

@@ -309,9 +309,10 @@ class TestFactFileOperationsPopulator:
 class TestSoftDeletedResultsDoNotFanOut:
     """A soft-deleted fact_tool_results twin must not join into the inbound.
 
-    The upgrade path creates exactly this state: `_repair_duplicate_natural_
-    keys` soft-deletes duplicate tool_use_id rows at open, then the next
-    batch run re-ETLs the session. The inbound here derives from
+    A soft-deleted twin is a row a previous run retired that shares a
+    tool_use_id with a live one (the pre-1.0 open-time repair produced
+    exactly this shape; a soft-delete-then-revive cycle can too). The
+    inbound here derives from
     fact_tool_uses JOIN fact_tool_results; without an is_deleted filter on
     the RESULTS side of the join, the repaired twin fans it out, the inbound
     carries a duplicate tool_use_id, and lineage_upsert kills the session.
