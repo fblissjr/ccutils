@@ -30,8 +30,7 @@ from ..etl.orchestrator import run_v15_etl
 # in particular dwarf fact_messages). Order doesn't matter (SUM).
 _PROGRESS_TABLES = (
     "fact_messages",
-    "fact_tool_uses",
-    "fact_tool_results",
+    "fact_tool_calls",
     "fact_token_usage",
     "fact_session_summary",
     "fact_attachments",
@@ -45,8 +44,6 @@ _PROGRESS_TABLES = (
     "fact_diagnostics",
     "fact_plan_revisions",
     "fact_agent_delegations",
-    "fact_errors",
-    "fact_tool_chain_steps",
     "fact_session_facets",
 )
 

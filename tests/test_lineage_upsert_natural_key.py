@@ -8,8 +8,8 @@ assertion both rows insert and the declared uniqueness quietly stops being
 true.
 
 Measured on a real 2,344-session corpus, 6 of 13 facts were violating their
-own declared key -- fact_tool_results 29, fact_file_operations 8,
-fact_tool_uses 7, fact_tool_chain_steps 7, fact_agent_delegations 3,
+own declared key -- fact_tool_calls 29, fact_file_operations 8,
+fact_tool_calls 7, fact_tool_calls 7, fact_agent_delegations 3,
 fact_errors 1.
 
 This file previously asserted the opposite: that the helper silently
@@ -62,7 +62,7 @@ def _upsert(conn):
     lineage_upsert(
         conn,
         run=run,
-        table="fact_tool_results",
+        table="fact_tool_calls",
         inbound_table="_inbound_x",
         natural_key="tool_use_id",
         payload_cols=PAYLOAD,
@@ -85,7 +85,7 @@ class TestNaturalKeyIsAsserted:
         msg = str(exc.value)
         # The message must be actionable: name the key and point at the fix.
         assert "tool_use_id" in msg
-        assert "fact_tool_results" in msg
+        assert "fact_tool_calls" in msg
         assert "projection" in msg.lower()
 
     def test_nothing_is_written_when_it_raises(self, conn):
@@ -100,7 +100,7 @@ class TestNaturalKeyIsAsserted:
         with pytest.raises(ValueError):
             _upsert(conn)
         n = conn.execute(
-            "SELECT COUNT(*) FROM fact_tool_results WHERE tool_use_id = 'toolu_dup'"
+            "SELECT COUNT(*) FROM fact_tool_calls WHERE tool_use_id = 'toolu_dup'"
         ).fetchone()[0]
         assert n == 0
 
@@ -118,14 +118,14 @@ class TestNaturalKeyIsAsserted:
         )
         run = _upsert(conn)
         keys = conn.execute(
-            "SELECT tool_use_id, COUNT(*) FROM fact_tool_results "
+            "SELECT tool_use_id, COUNT(*) FROM fact_tool_calls "
             "WHERE NOT is_deleted GROUP BY 1 ORDER BY 1"
         ).fetchall()
         assert keys == [("toolu_a", 1), ("toolu_b", 1), ("toolu_c", 1)]
 
         read, inserted = conn.execute(
             "SELECT rows_read, rows_inserted FROM etl.steps "
-            "WHERE etl_run_id = ? AND step_name = 'upsert:fact_tool_results'",
+            "WHERE etl_run_id = ? AND step_name = 'upsert:fact_tool_calls'",
             [run.etl_run_id],
         ).fetchone()
         assert (read, inserted) == (3, 3)
@@ -156,7 +156,7 @@ class TestNaturalKeyIsAsserted:
 
         inserted, updated = conn.execute(
             "SELECT rows_inserted, rows_updated FROM etl.steps "
-            "WHERE etl_run_id = ? AND step_name = 'upsert:fact_tool_results'",
+            "WHERE etl_run_id = ? AND step_name = 'upsert:fact_tool_calls'",
             [run2.etl_run_id],
         ).fetchone()
         assert (inserted, updated) == (0, 0)
@@ -180,10 +180,10 @@ class TestUpdateAddressesOneRowPerKey:
         """Simulate a repaired warehouse: a second physical row for `key`,
         soft-deleted by the repair, with a stale hash."""
         conn.execute(
-            "INSERT INTO fact_tool_results SELECT * REPLACE ("
+            "INSERT INTO fact_tool_calls SELECT * REPLACE ("
             "  ? AS entry_id, TRUE AS is_deleted, "
             "  current_timestamp AS deleted_at, 'stale-twin-hash' AS hash_diff)"
-            "FROM fact_tool_results WHERE tool_use_id = ?",
+            "FROM fact_tool_calls WHERE tool_use_id = ?",
             [twin_entry, key],
         )
 
@@ -197,7 +197,7 @@ class TestUpdateAddressesOneRowPerKey:
         _upsert(conn)
 
         live = conn.execute(
-            "SELECT entry_id, is_error FROM fact_tool_results "
+            "SELECT entry_id, is_error FROM fact_tool_calls "
             "WHERE tool_use_id = 'toolu_a' AND NOT is_deleted"
         ).fetchall()
         assert live == [("e1", True)], (
@@ -205,7 +205,7 @@ class TestUpdateAddressesOneRowPerKey:
             "a resurrected twin means the UPDATE addressed the key, not a row"
         )
         twin = conn.execute(
-            "SELECT is_deleted FROM fact_tool_results WHERE entry_id = 'e_twin'"
+            "SELECT is_deleted FROM fact_tool_calls WHERE entry_id = 'e_twin'"
         ).fetchone()[0]
         assert twin is True, "the repaired twin must stay soft-deleted"
 
@@ -216,7 +216,7 @@ class TestUpdateAddressesOneRowPerKey:
         _inbound(conn, [("toolu_gone", "s1", "e1", "m1", "Bash", TS, False)])
         _upsert(conn)
         conn.execute(
-            "UPDATE fact_tool_results SET is_deleted = TRUE, "
+            "UPDATE fact_tool_calls SET is_deleted = TRUE, "
             "deleted_at = current_timestamp WHERE tool_use_id = 'toolu_gone'"
         )
 
@@ -224,7 +224,7 @@ class TestUpdateAddressesOneRowPerKey:
         _upsert(conn)
 
         n = conn.execute(
-            "SELECT COUNT(*) FROM fact_tool_results "
+            "SELECT COUNT(*) FROM fact_tool_calls "
             "WHERE tool_use_id = 'toolu_gone' AND NOT is_deleted"
         ).fetchone()[0]
         assert n == 1, "a returning key must revive its (only) soft-deleted row"

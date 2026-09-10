@@ -1,6 +1,6 @@
 """A projection must emit the grain its populator declares.
 
-Claim: `fact_tool_uses` and `fact_tool_results` declare
+Claim: `fact_tool_calls` and `fact_tool_calls` declare
 `natural_key="tool_use_id"`, so their projections must produce ONE row per
 tool_use_id. They did not. A real Claude Code session records a single
 tool_use_id under two distinct entry uuids, so unnesting content blocks
@@ -88,7 +88,7 @@ class TestProjectionEmitsDeclaredGrain:
     def test_fact_tool_uses_one_row_per_tool_use_id(self, conn, tmp_path):
         self._run(conn, tmp_path)
         n = conn.execute(
-            "SELECT COUNT(*) FROM fact_tool_uses "
+            "SELECT COUNT(*) FROM fact_tool_calls "
             "WHERE tool_use_id = 'tu_dup' AND NOT is_deleted"
         ).fetchone()[0]
         assert n == 1
@@ -96,20 +96,19 @@ class TestProjectionEmitsDeclaredGrain:
     def test_fact_tool_results_one_row_per_tool_use_id(self, conn, tmp_path):
         self._run(conn, tmp_path)
         n = conn.execute(
-            "SELECT COUNT(*) FROM fact_tool_results "
+            "SELECT COUNT(*) FROM fact_tool_calls "
             "WHERE tool_use_id = 'tu_dup' AND NOT is_deleted"
         ).fetchone()[0]
         assert n == 1
 
     def test_downstream_facts_inherit_uniqueness(self, conn, tmp_path):
-        """`fact_file_operations` projects FROM `fact_tool_uses`, and
-        `fact_tool_chain_steps` from the same grain -- neither should need
+        """`fact_file_operations` projects FROM `fact_tool_calls`, and
+        `fact_tool_calls` from the same grain -- neither should need
         its own collapse once the source projection is correct."""
         self._run(conn, tmp_path)
         for table, key in (
             ("fact_file_operations", "tool_use_id"),
-            ("fact_tool_chain_steps", "chain_step_id"),
-            ("fact_errors", "error_id"),
+            ("fact_tool_calls", "tool_use_id"),
         ):
             dups = conn.execute(
                 f"SELECT COUNT(*) FROM (SELECT {key} FROM {table} "
@@ -123,14 +122,14 @@ class TestProjectionEmitsDeclaredGrain:
         nothing at all."""
         self._run(conn, tmp_path)
         row = conn.execute(
-            "SELECT tool_name, input_json FROM fact_tool_uses "
+            "SELECT tool_name, input_json FROM fact_tool_calls "
             "WHERE tool_use_id = 'tu_dup' AND NOT is_deleted"
         ).fetchone()
         assert row[0] == "Bash"
         assert "ls" in row[1]
 
         res = conn.execute(
-            "SELECT result_content_text, is_error FROM fact_tool_results "
+            "SELECT result_content_text, is_error FROM fact_tool_calls "
             "WHERE tool_use_id = 'tu_dup' AND NOT is_deleted"
         ).fetchone()
         assert res[0] == "ok"
@@ -176,7 +175,7 @@ class TestProjectionEmitsDeclaredGrain:
                     parquet_lake_root=tmp_path / "lake")
 
         row = conn.execute(
-            "SELECT input_json FROM fact_tool_uses "
+            "SELECT input_json FROM fact_tool_calls "
             "WHERE tool_use_id = 'tu_ord' AND NOT is_deleted"
         ).fetchall()
         assert len(row) == 1
@@ -260,6 +259,6 @@ class TestProjectionEmitsDeclaredGrain:
                     parquet_lake_root=tmp_path / "lake")
 
         ids = [r[0] for r in conn.execute(
-            "SELECT tool_use_id FROM fact_tool_uses WHERE NOT is_deleted "
+            "SELECT tool_use_id FROM fact_tool_calls WHERE NOT is_deleted "
             "ORDER BY tool_use_id").fetchall()]
         assert ids == ["tu_a", "tu_b"]

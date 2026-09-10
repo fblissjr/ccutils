@@ -1,8 +1,8 @@
-"""Tests for fact_tool_uses + fact_tool_results (Phase C chunk 3).
+"""Tests for fact_tool_calls + fact_tool_calls (Phase C chunk 3).
 
 Splits the legacy fact_tool_calls into:
-- fact_tool_uses: one row per tool_use content block
-- fact_tool_results: one row per tool_result block + the entry-level
+- fact_tool_calls: one row per tool_use content block
+- fact_tool_calls: one row per tool_result block + the entry-level
   toolUseResult structured payload, joined on tool_use_id.
 
 Captures the 14k-entry-archive data gap (R1): structured per-tool result
@@ -15,10 +15,7 @@ import json
 import pytest
 
 from ccutils import create_star_schema
-from ccutils.etl.fact_tool_calls import (
-    populate_fact_tool_results,
-    populate_fact_tool_uses,
-)
+from ccutils.etl.fact_tool_calls import populate_fact_tool_calls
 from ccutils.etl.lineage import EtlRun
 from ccutils.etl.staging import load_session_to_staging
 from ccutils.parsers.parquet_writer import write_session_to_parquet
@@ -154,7 +151,7 @@ def bash_interrupted_session(tmp_path):
 @pytest.fixture
 def error_string_result_session(tmp_path):
     """A tool that errored out -- toolUseResult is a plain `Error: ...` string
-    rather than a structured dict. We must still create a fact_tool_results
+    rather than a structured dict. We must still create a fact_tool_calls
     row with is_error=True and the error text in result_content_text."""
     jsonl = tmp_path / "err.jsonl"
     lines = [
@@ -181,11 +178,11 @@ def error_string_result_session(tmp_path):
 class TestFactToolUsesDdl:
     def test_table_exists(self, conn):
         assert conn.execute(
-            "SELECT name FROM sqlite_master WHERE name='fact_tool_uses'"
+            "SELECT name FROM sqlite_master WHERE name='fact_tool_calls'"
         ).fetchone() is not None
 
     def test_lineage_columns(self, conn):
-        cols = {c[0] for c in conn.execute("DESCRIBE fact_tool_uses").fetchall()}
+        cols = {c[0] for c in conn.execute("DESCRIBE fact_tool_calls").fetchall()}
         for required in (
             "created_at", "last_updated_at",
             "created_by_version_key", "last_updated_by_version_key",
@@ -196,7 +193,7 @@ class TestFactToolUsesDdl:
             assert required in cols, f"Missing: {required}"
 
     def test_native_columns(self, conn):
-        cols = {c[0] for c in conn.execute("DESCRIBE fact_tool_uses").fetchall()}
+        cols = {c[0] for c in conn.execute("DESCRIBE fact_tool_calls").fetchall()}
         for required in (
             "tool_name", "tool_key", "session_key", "project_key",
             "date_key", "time_key", "invoke_sequence_num",
@@ -208,19 +205,19 @@ class TestFactToolUsesDdl:
 class TestFactToolResultsDdl:
     def test_table_exists(self, conn):
         assert conn.execute(
-            "SELECT name FROM sqlite_master WHERE name='fact_tool_results'"
+            "SELECT name FROM sqlite_master WHERE name='fact_tool_calls'"
         ).fetchone() is not None
 
     def test_is_error_is_nullable_boolean(self, conn):
         """R16: tri-state preservation."""
         cols = dict(conn.execute(
             "SELECT column_name, data_type FROM information_schema.columns "
-            "WHERE table_name='fact_tool_results'"
+            "WHERE table_name='fact_tool_calls'"
         ).fetchall())
         assert cols["is_error"] == "BOOLEAN"
 
     def test_per_tool_typed_columns(self, conn):
-        cols = {c[0] for c in conn.execute("DESCRIBE fact_tool_results").fetchall()}
+        cols = {c[0] for c in conn.execute("DESCRIBE fact_tool_calls").fetchall()}
         for required in (
             # Bash
             "bash_stdout_bytes", "derived_exit_code", "derived_failure_kind",
@@ -253,10 +250,10 @@ class TestPopulateFactToolUses:
     def test_one_row_per_tool_use(self, conn, tools_session, tmp_path):
         run = EtlRun.start(conn, source_path=str(tools_session))
         _stage(conn, tools_session, tmp_path, run)
-        populate_fact_tool_uses(conn, run=run)
+        populate_fact_tool_calls(conn, run=run)
         ids = sorted(
             r[0] for r in conn.execute(
-                "SELECT tool_use_id FROM fact_tool_uses"
+                "SELECT tool_use_id FROM fact_tool_calls"
             ).fetchall()
         )
         assert ids == ["tu_bash_1", "tu_edit_1", "tu_read_1"]
@@ -264,9 +261,9 @@ class TestPopulateFactToolUses:
     def test_lineage_stamped(self, conn, tools_session, tmp_path):
         run = EtlRun.start(conn, source_path=str(tools_session))
         _stage(conn, tools_session, tmp_path, run)
-        populate_fact_tool_uses(conn, run=run)
+        populate_fact_tool_calls(conn, run=run)
         for row in conn.execute(
-            "SELECT etl_run_id, record_source, hash_diff FROM fact_tool_uses"
+            "SELECT etl_run_id, record_source, hash_diff FROM fact_tool_calls"
         ).fetchall():
             assert row[0] == run.etl_run_id
             assert row[1] == "claude_code_jsonl"
@@ -275,11 +272,11 @@ class TestPopulateFactToolUses:
     def test_tool_name_carried(self, conn, tools_session, tmp_path):
         run = EtlRun.start(conn, source_path=str(tools_session))
         _stage(conn, tools_session, tmp_path, run)
-        populate_fact_tool_uses(conn, run=run)
+        populate_fact_tool_calls(conn, run=run)
         rows = {
             r[0]: r[1]
             for r in conn.execute(
-                "SELECT tool_use_id, tool_name FROM fact_tool_uses"
+                "SELECT tool_use_id, tool_name FROM fact_tool_calls"
             ).fetchall()
         }
         assert rows["tu_bash_1"] == "Bash"
@@ -289,9 +286,9 @@ class TestPopulateFactToolUses:
     def test_input_json_preserved(self, conn, tools_session, tmp_path):
         run = EtlRun.start(conn, source_path=str(tools_session))
         _stage(conn, tools_session, tmp_path, run)
-        populate_fact_tool_uses(conn, run=run)
+        populate_fact_tool_calls(conn, run=run)
         input_json = conn.execute(
-            "SELECT input_json FROM fact_tool_uses WHERE tool_use_id = 'tu_bash_1'"
+            "SELECT input_json FROM fact_tool_calls WHERE tool_use_id = 'tu_bash_1'"
         ).fetchone()[0]
         parsed = json.loads(input_json)
         assert parsed["command"] == "ls -la"
@@ -299,9 +296,9 @@ class TestPopulateFactToolUses:
     def test_session_id_degenerate(self, conn, tools_session, tmp_path):
         run = EtlRun.start(conn, source_path=str(tools_session))
         _stage(conn, tools_session, tmp_path, run)
-        populate_fact_tool_uses(conn, run=run)
+        populate_fact_tool_calls(conn, run=run)
         n = conn.execute(
-            "SELECT COUNT(*) FROM fact_tool_uses WHERE session_id = 'tools-s'"
+            "SELECT COUNT(*) FROM fact_tool_calls WHERE session_id = 'tools-s'"
         ).fetchone()[0]
         assert n == 3
 
@@ -310,10 +307,10 @@ class TestPopulateFactToolResults:
     def test_one_row_per_tool_result(self, conn, tools_session, tmp_path):
         run = EtlRun.start(conn, source_path=str(tools_session))
         _stage(conn, tools_session, tmp_path, run)
-        populate_fact_tool_results(conn, run=run)
+        populate_fact_tool_calls(conn, run=run)
         ids = sorted(
             r[0] for r in conn.execute(
-                "SELECT tool_use_id FROM fact_tool_results"
+                "SELECT tool_use_id FROM fact_tool_calls"
             ).fetchall()
         )
         assert ids == ["tu_bash_1", "tu_edit_1", "tu_read_1"]
@@ -321,10 +318,10 @@ class TestPopulateFactToolResults:
     def test_bash_structural_columns(self, conn, tools_session, tmp_path):
         run = EtlRun.start(conn, source_path=str(tools_session))
         _stage(conn, tools_session, tmp_path, run)
-        populate_fact_tool_results(conn, run=run)
+        populate_fact_tool_calls(conn, run=run)
         row = conn.execute(
             "SELECT bash_stdout_bytes, is_error, derived_exit_code, derived_failure_kind "
-            "FROM fact_tool_results WHERE tool_use_id = 'tu_bash_1'"
+            "FROM fact_tool_calls WHERE tool_use_id = 'tu_bash_1'"
         ).fetchone()
         assert row == (len("file1\nfile2"), False, None, None)
 
@@ -332,10 +329,10 @@ class TestPopulateFactToolResults:
         """R1: structuredPatch is the highest-value Edit field previously dropped."""
         run = EtlRun.start(conn, source_path=str(tools_session))
         _stage(conn, tools_session, tmp_path, run)
-        populate_fact_tool_results(conn, run=run)
+        populate_fact_tool_calls(conn, run=run)
         row = conn.execute(
             "SELECT edit_user_modified, edit_replace_all, edit_structured_patch_json "
-            "FROM fact_tool_results WHERE tool_use_id = 'tu_edit_1'"
+            "FROM fact_tool_calls WHERE tool_use_id = 'tu_edit_1'"
         ).fetchone()
         assert row[0] is False
         assert row[1] is False
@@ -346,10 +343,10 @@ class TestPopulateFactToolResults:
     def test_read_typed_columns(self, conn, tools_session, tmp_path):
         run = EtlRun.start(conn, source_path=str(tools_session))
         _stage(conn, tools_session, tmp_path, run)
-        populate_fact_tool_results(conn, run=run)
+        populate_fact_tool_calls(conn, run=run)
         row = conn.execute(
             "SELECT read_num_lines, read_total_lines, read_file_path "
-            "FROM fact_tool_results WHERE tool_use_id = 'tu_read_1'"
+            "FROM fact_tool_calls WHERE tool_use_id = 'tu_read_1'"
         ).fetchone()
         assert row[0] == 1
         assert row[1] == 42
@@ -360,9 +357,9 @@ class TestPopulateFactToolResults:
         type-project columns for."""
         run = EtlRun.start(conn, source_path=str(tools_session))
         _stage(conn, tools_session, tmp_path, run)
-        populate_fact_tool_results(conn, run=run)
+        populate_fact_tool_calls(conn, run=run)
         payload_json = conn.execute(
-            "SELECT result_payload_json FROM fact_tool_results "
+            "SELECT result_payload_json FROM fact_tool_calls "
             "WHERE tool_use_id = 'tu_read_1'"
         ).fetchone()[0]
         payload = json.loads(payload_json)
@@ -374,11 +371,11 @@ class TestPopulateFactToolResults:
         lands in result_content_text."""
         run = EtlRun.start(conn, source_path=str(error_string_result_session))
         _stage(conn, error_string_result_session, tmp_path, run)
-        populate_fact_tool_results(conn, run=run)
+        populate_fact_tool_calls(conn, run=run)
         row = conn.execute(
             "SELECT is_error, result_content_text, "
             "read_num_lines, result_payload_json "
-            "FROM fact_tool_results WHERE tool_use_id = 'tu_err'"
+            "FROM fact_tool_calls WHERE tool_use_id = 'tu_err'"
         ).fetchone()
         assert row[0] is True
         assert "File not found" in row[1]
@@ -391,20 +388,20 @@ class TestIdempotency:
     def test_uses_reetl_is_no_op(self, conn, tools_session, tmp_path):
         run1 = EtlRun.start(conn, source_path=str(tools_session))
         _stage(conn, tools_session, tmp_path, run1)
-        populate_fact_tool_uses(conn, run=run1)
+        populate_fact_tool_calls(conn, run=run1)
         first_updates = {
             r[0]: r[1]
             for r in conn.execute(
-                "SELECT tool_use_id, last_updated_at FROM fact_tool_uses"
+                "SELECT tool_use_id, last_updated_at FROM fact_tool_calls"
             ).fetchall()
         }
         run2 = EtlRun.start(conn, source_path=str(tools_session))
         _stage(conn, tools_session, tmp_path, run2)
-        populate_fact_tool_uses(conn, run=run2)
+        populate_fact_tool_calls(conn, run=run2)
         second_updates = {
             r[0]: r[1]
             for r in conn.execute(
-                "SELECT tool_use_id, last_updated_at FROM fact_tool_uses"
+                "SELECT tool_use_id, last_updated_at FROM fact_tool_calls"
             ).fetchall()
         }
         assert first_updates == second_updates
@@ -412,20 +409,139 @@ class TestIdempotency:
     def test_results_reetl_is_no_op(self, conn, tools_session, tmp_path):
         run1 = EtlRun.start(conn, source_path=str(tools_session))
         _stage(conn, tools_session, tmp_path, run1)
-        populate_fact_tool_results(conn, run=run1)
+        populate_fact_tool_calls(conn, run=run1)
         first_updates = {
             r[0]: r[1]
             for r in conn.execute(
-                "SELECT tool_use_id, last_updated_at FROM fact_tool_results"
+                "SELECT tool_use_id, last_updated_at FROM fact_tool_calls"
             ).fetchall()
         }
         run2 = EtlRun.start(conn, source_path=str(tools_session))
         _stage(conn, tools_session, tmp_path, run2)
-        populate_fact_tool_results(conn, run=run2)
+        populate_fact_tool_calls(conn, run=run2)
         second_updates = {
             r[0]: r[1]
             for r in conn.execute(
-                "SELECT tool_use_id, last_updated_at FROM fact_tool_results"
+                "SELECT tool_use_id, last_updated_at FROM fact_tool_calls"
             ).fetchall()
         }
         assert first_updates == second_updates
+
+
+# ---------------------------------------------------------------------------
+# Chain position: one chain per human turn, not per assistant entry.
+# ---------------------------------------------------------------------------
+
+from ccutils.etl.fact_messages import populate_fact_messages
+
+
+@pytest.fixture
+def realistic_chain_session(tmp_path):
+    """Two agentic runs in the REAL JSONL shape: one content block per
+    assistant entry, parallel calls as separate entries. Run 1 = Read ->
+    Edit -> Bash, run 2 = Read."""
+    jsonl = tmp_path / "realistic.jsonl"
+
+    def assistant(uuid, parent, ts, tool_id, name, tool_input, req):
+        return {
+            "type": "assistant", "uuid": uuid, "parentUuid": parent,
+            "sessionId": "real-s", "timestamp": ts, "requestId": req,
+            "message": {"role": "assistant", "model": "claude-opus-4-7",
+                        "id": "msg_shared_1",
+                        "content": [{"type": "tool_use", "id": tool_id,
+                                     "name": name, "input": tool_input}]},
+        }
+
+    def result(uuid, parent, ts, tool_id, content, is_error=False):
+        block = {"type": "tool_result", "tool_use_id": tool_id, "content": content}
+        if is_error:
+            block["is_error"] = True
+        return {"type": "user", "uuid": uuid, "parentUuid": parent,
+                "sessionId": "real-s", "timestamp": ts,
+                "message": {"role": "user", "content": [block]}}
+
+    lines = [
+        {"type": "user", "uuid": "u1", "sessionId": "real-s",
+         "timestamp": "2026-04-19T10:00:00Z", "cwd": "/p",
+         "message": {"role": "user", "content": "do a multi-tool turn"}},
+        assistant("a1", "u1", "2026-04-19T10:00:01Z", "tu_rr", "Read", {"file_path": "/p/a.py"}, "r1"),
+        result("u2", "a1", "2026-04-19T10:00:02Z", "tu_rr", "data"),
+        assistant("a2", "u2", "2026-04-19T10:00:03Z", "tu_ee", "Edit",
+                  {"file_path": "/p/a.py", "old_string": "x", "new_string": "y"}, "r2"),
+        result("u3", "a2", "2026-04-19T10:00:04Z", "tu_ee", "ok"),
+        assistant("a3", "u3", "2026-04-19T10:00:05Z", "tu_bb", "Bash", {"command": "pytest"}, "r3"),
+        result("u4", "a3", "2026-04-19T10:00:06Z", "tu_bb", "Exit code 1\nfail", is_error=True),
+        {"type": "user", "uuid": "u5", "parentUuid": "u4", "sessionId": "real-s",
+         "timestamp": "2026-04-19T10:00:10Z", "message": {"role": "user", "content": "one more"}},
+        assistant("a4", "u5", "2026-04-19T10:00:11Z", "tu_rr2", "Read", {"file_path": "/p/b.py"}, "r4"),
+        result("u6", "a4", "2026-04-19T10:00:12Z", "tu_rr2", "data"),
+    ]
+    jsonl.write_text("\n".join(json.dumps(d) for d in lines))
+    return jsonl
+
+
+def _populate_calls(conn, jsonl_path, tmp_path):
+    run = EtlRun.start(conn, source_path=str(jsonl_path))
+    _stage(conn, jsonl_path, tmp_path, run)
+    populate_fact_messages(conn, run=run)
+    populate_fact_tool_calls(conn, run=run)
+    return run
+
+
+class TestAgenticRunGrain:
+    """A chain is the human-turn-delimited run, not the assistant entry.
+
+    Delete these and the chain grain can silently regress to one step per
+    entry, which makes prev/next_tool_key universally NULL and empties
+    semantic_tool_patterns and facet F07 without failing anything. That
+    shipped once: 71,175 of 71,216 steps at position 1.
+    """
+
+    def test_chain_spans_assistant_entries(self, conn, realistic_chain_session, tmp_path):
+        _populate_calls(conn, realistic_chain_session, tmp_path)
+        n = conn.execute("SELECT COUNT(DISTINCT chain_id) FROM fact_tool_calls").fetchone()[0]
+        assert n == 2, "one chain per human turn, not per entry"
+
+    def test_prev_next_linked_across_entries(self, conn, realistic_chain_session, tmp_path):
+        _populate_calls(conn, realistic_chain_session, tmp_path)
+        # tool_key is md5(tool_name) by construction; dim_tool is not
+        # populated by this narrow fixture, so compare keys directly.
+        row = conn.execute(
+            """
+            SELECT tool_name, prev_tool_key = md5('Read'), next_tool_key = md5('Bash')
+            FROM fact_tool_calls WHERE tool_use_id = 'tu_ee'
+            """
+        ).fetchone()
+        assert row == ("Edit", True, True)
+
+    def test_step_positions_run_the_length_of_the_run(self, conn, realistic_chain_session, tmp_path):
+        _populate_calls(conn, realistic_chain_session, tmp_path)
+        rows = conn.execute(
+            "SELECT step_position, tool_name FROM fact_tool_calls "
+            "WHERE tool_use_id IN ('tu_rr', 'tu_ee', 'tu_bb') ORDER BY step_position"
+        ).fetchall()
+        assert rows == [(1, "Read"), (2, "Edit"), (3, "Bash")]
+
+    def test_new_human_turn_starts_a_new_chain(self, conn, realistic_chain_session, tmp_path):
+        _populate_calls(conn, realistic_chain_session, tmp_path)
+        row = conn.execute(
+            "SELECT step_position, prev_tool_key, next_tool_key FROM fact_tool_calls "
+            "WHERE tool_use_id = 'tu_rr2'"
+        ).fetchone()
+        assert row == (1, None, None)
+
+    def test_time_since_prev_is_real_elapsed_time(self, conn, realistic_chain_session, tmp_path):
+        _populate_calls(conn, realistic_chain_session, tmp_path)
+        row = conn.execute(
+            "SELECT time_since_prev_seconds FROM fact_tool_calls WHERE tool_use_id = 'tu_ee'"
+        ).fetchone()
+        assert row[0] == pytest.approx(2.0)
+
+    def test_failed_call_carries_its_derived_failure(self, conn, realistic_chain_session, tmp_path):
+        """What fact_errors used to be: a filter, now a WHERE."""
+        _populate_calls(conn, realistic_chain_session, tmp_path)
+        rows = conn.execute(
+            "SELECT tool_use_id, derived_failure_kind, derived_exit_code "
+            "FROM fact_tool_calls WHERE is_error = TRUE"
+        ).fetchall()
+        assert rows == [("tu_bb", "nonzero_exit", 1)]

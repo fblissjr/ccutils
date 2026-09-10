@@ -130,28 +130,28 @@ class TestBashColumnsSayWhatTheSourceStates:
     derived."""
 
     def test_dropped_columns_are_gone(self, conn):
-        cols = {r[0] for r in conn.execute("DESCRIBE fact_tool_results").fetchall()}
+        cols = {r[0] for r in conn.execute("DESCRIBE fact_tool_calls").fetchall()}
         assert not {"bash_exit_code", "bash_duration_ms", "bash_interrupted",
                     "agent_was_interrupted"} & cols
         assert "caller_type" not in {
-            r[0] for r in conn.execute("DESCRIBE fact_tool_uses").fetchall()}
+            r[0] for r in conn.execute("DESCRIBE fact_tool_calls").fetchall()}
 
     def test_exit_code_is_derived_from_the_error_text(self, loaded):
         rows = dict(loaded.execute(
-            "SELECT tool_use_id, derived_exit_code FROM fact_tool_results"
+            "SELECT tool_use_id, derived_exit_code FROM fact_tool_calls"
         ).fetchall())
         assert rows == {"toolu_ok": None, "toolu_fail": 2, "toolu_blocked": None}
 
     def test_failure_kind_is_classified(self, loaded):
         rows = dict(loaded.execute(
-            "SELECT tool_use_id, derived_failure_kind FROM fact_tool_results"
+            "SELECT tool_use_id, derived_failure_kind FROM fact_tool_calls"
         ).fetchall())
         assert rows == {"toolu_ok": None, "toolu_fail": "nonzero_exit",
                         "toolu_blocked": "blocked_by_hook"}
 
     def test_sandbox_bypass_is_captured_as_stated(self, loaded):
         rows = dict(loaded.execute(
-            "SELECT tool_use_id, sandbox_disabled FROM fact_tool_results"
+            "SELECT tool_use_id, sandbox_disabled FROM fact_tool_calls"
         ).fetchall())
         assert rows == {"toolu_ok": False, "toolu_fail": False, "toolu_blocked": True}
 
@@ -170,3 +170,22 @@ class TestEveryWriterHasAStep:
         ).fetchall())
         assert steps.get("dim_memory")
         assert steps.get("bridge_memory_link") == 2
+
+
+class TestMemoryDatesResolve:
+    def test_memory_without_stated_modified_still_has_a_dim_date_row(self, conn, tmp_path):
+        """date_key falls back to the file mtime when frontmatter states no
+        `modified`; dim_date was seeded from modified_at only, so those
+        rows dangled (1 of 143 on the corpus)."""
+        from ccutils.etl.dim_memory import run_memory_import
+
+        root = tmp_path / "projects" / "-home-user-proj" / "memory"
+        root.mkdir(parents=True)
+        (root / "MEMORY.md").write_text("# index\n")
+        (root / "topic.md").write_text("---\nname: topic\n---\n\nbody\n")
+        run_memory_import(conn, projects_root=tmp_path / "projects")
+        dangling = conn.execute(
+            "SELECT COUNT(*) FROM dim_memory m WHERE m.date_key IS NOT NULL "
+            "AND NOT EXISTS (SELECT 1 FROM dim_date d WHERE d.date_key = m.date_key)"
+        ).fetchone()[0]
+        assert dangling == 0

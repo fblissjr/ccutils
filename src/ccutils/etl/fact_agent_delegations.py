@@ -1,9 +1,9 @@
-"""Populate fact_agent_delegations from fact_tool_uses + fact_tool_results.
+"""Populate fact_agent_delegations from fact_tool_calls.
 
 One row per Task tool_use (parent-side agent spawn). Captures the task
-input (description, prompt, subagent_type) from fact_tool_uses.input_json
+input (description, prompt, subagent_type) from fact_tool_calls.input_json
 and the agent rollup metrics (status, totalDurationMs, totalTokens,
-totalToolUseCount, wasInterrupted) from fact_tool_results.agent_*
+totalToolUseCount, wasInterrupted) from fact_tool_calls.agent_*
 columns -- the v0.15 R1 structured toolUseResult capture.
 
 parent_session_key is md5 of the parent session_id; agent_session_key is
@@ -12,7 +12,7 @@ up in dim_session so it does not depend on whether the agent's own
 transcript has been ETL'd yet. Either may point at a session absent from
 dim_session -- LEFT JOIN accordingly.
 
-Run AFTER populate_fact_tool_uses + populate_fact_tool_results.
+Run AFTER populate_fact_tool_calls.
 """
 
 from __future__ import annotations
@@ -85,7 +85,7 @@ def populate_fact_agent_delegations(conn, *, run: EtlRun) -> None:
             -- The key may point at a session that was never ingested (30 of
             -- 880 on the real corpus). That is the normal degenerate-key
             -- situation -- consumers LEFT JOIN dim_session already.
-            md5('agent-' || ftr.agent_id) AS agent_session_key,
+            md5('agent-' || ftu.agent_id) AS agent_session_key,
             ftu.timestamp,
             ftu.timestamp AS delegation_timestamp,
             -- On a background launch the tool result is an acknowledgment
@@ -99,11 +99,11 @@ def populate_fact_agent_delegations(conn, *, run: EtlRun) -> None:
             -- long-running delegations. Re-deriving the true values from
             -- the agent's own transcript is separate work -- see
             -- internal/plans/2026-08-01_agent_delegation_capture_gap.md.
-            CASE WHEN ftr.agent_is_async IS TRUE THEN NULL
-                 ELSE ftr.timestamp END AS completion_timestamp,
-            CASE WHEN ftr.agent_is_async IS TRUE THEN NULL
-                 WHEN ftr.timestamp IS NOT NULL THEN
-                     EXTRACT(EPOCH FROM (ftr.timestamp - ftu.timestamp))
+            CASE WHEN ftu.agent_is_async IS TRUE THEN NULL
+                 ELSE ftu.result_timestamp END AS completion_timestamp,
+            CASE WHEN ftu.agent_is_async IS TRUE THEN NULL
+                 WHEN ftu.result_timestamp IS NOT NULL THEN
+                     EXTRACT(EPOCH FROM (ftu.result_timestamp - ftu.timestamp))
             ELSE NULL END AS seconds_to_completion,
             json_extract_string(ftu.input_json, '$.description')
                 AS task_description,
@@ -111,34 +111,27 @@ def populate_fact_agent_delegations(conn, *, run: EtlRun) -> None:
                 AS task_prompt,
             COALESCE(
                 json_extract_string(ftu.input_json, '$.subagent_type'),
-                ftr.agent_subagent_type
+                ftu.agent_subagent_type
             ) AS subagent_type,
-            ftr.agent_status,
-            ftr.agent_total_duration_ms,
-            ftr.agent_total_tokens,
-            ftr.agent_total_tool_use_count,
-            ftr.agent_resolved_model,
-            ftr.agent_is_async,
+            ftu.agent_status,
+            ftu.agent_total_duration_ms,
+            ftu.agent_total_tokens,
+            ftu.agent_total_tool_use_count,
+            ftu.agent_resolved_model,
+            ftu.agent_is_async,
             -- Tool result content can be a list of blocks (Agent typically
             -- emits one text block); fall back to result_content_text when
             -- the parser flattened it to a plain string.
             -- Same reasoning: on a background launch this is the string
             -- "Async agent launched successfully...", not the agent's work.
-            CASE WHEN ftr.agent_is_async IS TRUE THEN NULL ELSE
+            CASE WHEN ftu.agent_is_async IS TRUE THEN NULL ELSE
                 COALESCE(
-                    ftr.result_content_text,
-                    CAST(json_extract(ftr.result_payload_json, '$.content')
+                    ftu.result_content_text,
+                    CAST(json_extract(ftu.result_payload_json, '$.content')
                          AS VARCHAR)
                 )
             END AS agent_output_text
-        FROM fact_tool_uses ftu
-        -- is_deleted in the ON clause: a repaired (soft-deleted) duplicate
-        -- result row must not fan the join out into a duplicate
-        -- delegation_key. See fact_file_operations for the upgrade-path
-        -- failure this caused.
-        LEFT JOIN fact_tool_results ftr
-               ON ftr.tool_use_id = ftu.tool_use_id
-              AND ftr.is_deleted = FALSE
+        FROM fact_tool_calls ftu
         WHERE ftu.is_deleted = FALSE
           AND ftu.tool_name IN ({tool_list})
           AND ftu.session_id IN (
@@ -195,7 +188,7 @@ WITH agent_rollup AS (
 ),
 agent_tools AS (
     SELECT session_key AS agent_session_key, COUNT(*) AS tool_uses
-    FROM fact_tool_uses WHERE is_deleted = FALSE GROUP BY session_key
+    FROM fact_tool_calls WHERE is_deleted = FALSE GROUP BY session_key
 ),
 scored AS (
     SELECT
@@ -262,10 +255,10 @@ scored AS (
     LEFT JOIN agent_rollup ar ON ar.agent_session_key = d.agent_session_key
     LEFT JOIN agent_tools  agt ON agt.agent_session_key = d.agent_session_key
     -- One row per (session, tool use) is guaranteed by the QUALIFY in
-    -- _PROJECT_RESULTS_SQL, which makes fact_tool_results unique on
+    -- _PROJECT_RESULTS_SQL, which makes fact_tool_calls unique on
     -- tool_use_id by construction. It is NOT guaranteed by lineage_upsert,
     -- which only asserts the key and no longer collapses duplicates.
-    LEFT JOIN fact_tool_results tr
+    LEFT JOIN fact_tool_calls tr
            ON tr.tool_use_id = d.tool_use_id
           AND tr.session_id = d.session_id
           AND tr.is_deleted = FALSE

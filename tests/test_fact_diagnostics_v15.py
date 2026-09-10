@@ -21,10 +21,7 @@ from ccutils.etl.entry_type_facts import populate_fact_attachments
 from ccutils.etl.fact_diagnostics import populate_fact_diagnostics
 from ccutils.etl.fact_file_operations import populate_dim_file
 from ccutils.etl.fact_messages import populate_fact_messages
-from ccutils.etl.fact_tool_calls import (
-    populate_fact_tool_results,
-    populate_fact_tool_uses,
-)
+from ccutils.etl.fact_tool_calls import populate_fact_tool_calls
 from ccutils.etl.lineage import EtlRun
 from ccutils.etl.staging import load_session_to_staging
 from ccutils.parsers.parquet_writer import write_session_to_parquet
@@ -120,8 +117,7 @@ def _populate(conn, jsonl_path, tmp_path):
     )
     load_session_to_staging(conn, log_path)
     populate_fact_messages(conn, run=run)
-    populate_fact_tool_uses(conn, run=run)
-    populate_fact_tool_results(conn, run=run)
+    populate_fact_tool_calls(conn, run=run)
     populate_fact_attachments(conn, run=run)
     populate_dim_file(conn, run=run)
     populate_fact_diagnostics(conn, run=run)

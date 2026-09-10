@@ -269,7 +269,7 @@ def test_t1_upsert_zero_rows_soft_deletes_old_records(conn, temp_dir):
     session_err = create_mock_session_file(temp_dir, "sess_err", make_basic_loglines("sess_err", tool_error=True))
     run_v15_etl(conn, session_err, project_name="test-project", parquet_lake_root=temp_dir / "lake")
     
-    err_rows = conn.execute("SELECT COUNT(*) FROM fact_errors WHERE session_id = 'sess_err' AND is_deleted = FALSE").fetchone()[0]
+    err_rows = conn.execute("SELECT COUNT(*) FROM fact_tool_calls WHERE is_error = TRUE AND session_id = 'sess_err' AND is_deleted = FALSE").fetchone()[0]
     assert err_rows > 0, "Expected active error row in fact_errors on first run"
     
     # 2. Run ETL on the same session but with NO errors -> populator yields 0 errors
@@ -277,11 +277,14 @@ def test_t1_upsert_zero_rows_soft_deletes_old_records(conn, temp_dir):
     run_v15_etl(conn, session_no_err, project_name="test-project", parquet_lake_root=temp_dir / "lake")
     
     # Assert that the error record was soft-deleted (is_deleted = TRUE)
-    active_errs = conn.execute("SELECT COUNT(*) FROM fact_errors WHERE session_id = 'sess_err' AND is_deleted = FALSE").fetchone()[0]
+    active_errs = conn.execute("SELECT COUNT(*) FROM fact_tool_calls WHERE is_error = TRUE AND session_id = 'sess_err' AND is_deleted = FALSE").fetchone()[0]
     assert active_errs == 0, "Old error record was not soft-deleted on rerun with 0 errors"
     
-    deleted_errs = conn.execute("SELECT COUNT(*) FROM fact_errors WHERE session_id = 'sess_err' AND is_deleted = TRUE").fetchone()[0]
-    assert deleted_errs > 0, "Expected error record to be soft-deleted"
+    # The call itself is one row at tool_use_id grain: it is UPDATED in
+    # place (is_error flips to FALSE), not soft-deleted -- the call still
+    # happened. What must vanish is the failure, and it has.
+    live_calls = conn.execute("SELECT COUNT(*) FROM fact_tool_calls WHERE session_id = 'sess_err' AND is_deleted = FALSE AND is_error IS NOT TRUE").fetchone()[0]
+    assert live_calls > 0, "Expected the call to survive with is_error cleared"
 
 
 # --- Feature 2: Staging & Summary Query Optimization ---
@@ -323,14 +326,14 @@ def test_t1_session_summary_scoping_fact_token_usage(conn):
 
 
 def test_t1_session_summary_scoping_fact_tool_uses(conn):
-    """Test 12: Verify fact_tool_uses subquery inside fact_session_summary is scoped to staging sessions."""
+    """Test 12: Verify fact_tool_calls subquery inside fact_session_summary is scoped to staging sessions."""
     from ccutils.etl.fact_session_summary import _PROJECT_SQL
     expected_clause = "session_id in (select distinct session_id from etl.log_entries where session_id is not null)"
     sql_normalized = " ".join(_PROJECT_SQL.lower().split())
-    tool_uses_idx = sql_normalized.find("from fact_tool_uses")
+    tool_uses_idx = sql_normalized.find("from fact_tool_calls")
     assert tool_uses_idx != -1
     subquery_snippet = sql_normalized[tool_uses_idx:tool_uses_idx + 300]
-    assert expected_clause in subquery_snippet, "fact_tool_uses query selection is not scoped to staging session_ids"
+    assert expected_clause in subquery_snippet, "fact_tool_calls query selection is not scoped to staging session_ids"
 
 
 # --- Feature 3: Heuristic & Depth Classifiers ---
@@ -491,7 +494,7 @@ def test_t2_ddl_no_replace_applied_to_any_warehouse_table(temp_dir):
     matches = re.findall(r"create\s+or\s+replace\s+table\s+(\w+)", content, re.I)
     warehouse_tables = {
         "dim_session", "dim_project", "dim_model", "dim_tool", "dim_date", "dim_time",
-        "fact_messages", "fact_tool_uses", "fact_tool_results", "fact_session_summary",
+        "fact_messages", "fact_tool_calls", "fact_tool_calls", "fact_session_summary",
         "fact_token_usage", "bridge_session_file", "fact_errors"
     }
     
@@ -525,25 +528,24 @@ def test_t2_upsert_empty_inbound_does_not_raise_exception(conn, temp_dir):
     run = EtlRun.start(conn, source_path=str(temp_dir / "empty.jsonl"))
     
     conn.execute("""
-        CREATE TEMP TABLE _inbound_errors_empty (
-            error_id VARCHAR,
+        CREATE TEMP TABLE _inbound_calls_empty (
             tool_use_id VARCHAR,
             session_id VARCHAR,
-            tool_key VARCHAR,
-            timestamp TIMESTAMP,
-            error_type VARCHAR,
-            error_message VARCHAR
+            entry_id VARCHAR,
+            message_id VARCHAR,
+            tool_name VARCHAR,
+            timestamp TIMESTAMP
         )
     """)
     
     try:
         lineage_upsert(
             conn, run=run,
-            table="fact_errors",
-            inbound_table="_inbound_errors_empty",
-            natural_key="error_id",
-            payload_cols=["tool_use_id", "tool_key", "timestamp", "error_type", "error_message"],
-            hash_cols=["tool_key", "error_type", "error_message"],
+            table="fact_tool_calls",
+            inbound_table="_inbound_calls_empty",
+            natural_key="tool_use_id",
+            payload_cols=["entry_id", "message_id", "tool_name", "timestamp"],
+            hash_cols=["tool_name"],
         )
     except Exception as e:
         pytest.fail(f"lineage_upsert failed on empty inbound table: {e}")
@@ -559,14 +561,14 @@ def test_t2_upsert_soft_delete_only_affects_matching_session(conn, temp_dir):
     sess_b = create_mock_session_file(temp_dir, "sess_b", make_basic_loglines("sess_b", tool_error=True))
     run_v15_etl(conn, sess_b, project_name="p", parquet_lake_root=temp_dir / "lake")
     
-    assert conn.execute("SELECT COUNT(*) FROM fact_errors WHERE session_id = 'sess_a' AND is_deleted = FALSE").fetchone()[0] > 0
-    assert conn.execute("SELECT COUNT(*) FROM fact_errors WHERE session_id = 'sess_b' AND is_deleted = FALSE").fetchone()[0] > 0
+    assert conn.execute("SELECT COUNT(*) FROM fact_tool_calls WHERE is_error = TRUE AND session_id = 'sess_a' AND is_deleted = FALSE").fetchone()[0] > 0
+    assert conn.execute("SELECT COUNT(*) FROM fact_tool_calls WHERE is_error = TRUE AND session_id = 'sess_b' AND is_deleted = FALSE").fetchone()[0] > 0
     
     sess_a_fixed = create_mock_session_file(temp_dir, "sess_a", make_basic_loglines("sess_a", tool_error=False))
     run_v15_etl(conn, sess_a_fixed, project_name="p", parquet_lake_root=temp_dir / "lake")
     
-    assert conn.execute("SELECT COUNT(*) FROM fact_errors WHERE session_id = 'sess_a' AND is_deleted = FALSE").fetchone()[0] == 0
-    assert conn.execute("SELECT COUNT(*) FROM fact_errors WHERE session_id = 'sess_b' AND is_deleted = FALSE").fetchone()[0] > 0
+    assert conn.execute("SELECT COUNT(*) FROM fact_tool_calls WHERE is_error = TRUE AND session_id = 'sess_a' AND is_deleted = FALSE").fetchone()[0] == 0
+    assert conn.execute("SELECT COUNT(*) FROM fact_tool_calls WHERE is_error = TRUE AND session_id = 'sess_b' AND is_deleted = FALSE").fetchone()[0] > 0
 
 
 def test_t2_incremental_load_empty_source_leaves_warehouse_intact(conn, temp_dir):
@@ -608,14 +610,14 @@ def test_t2_staging_cleared_on_exception(conn, temp_dir):
 
 
 def test_t2_session_summary_scoping_fact_tool_results(conn):
-    """Test 27: Verify fact_tool_results subquery inside fact_session_summary is scoped to staging sessions."""
+    """Test 27: Verify fact_tool_calls subquery inside fact_session_summary is scoped to staging sessions."""
     from ccutils.etl.fact_session_summary import _PROJECT_SQL
     expected_clause = "session_id in (select distinct session_id from etl.log_entries where session_id is not null)"
     sql_normalized = " ".join(_PROJECT_SQL.lower().split())
-    idx = sql_normalized.find("from fact_tool_results")
+    idx = sql_normalized.find("from fact_tool_calls")
     assert idx != -1
     subquery_snippet = sql_normalized[idx:idx + 300]
-    assert expected_clause in subquery_snippet, "fact_tool_results subquery is not scoped"
+    assert expected_clause in subquery_snippet, "fact_tool_calls subquery is not scoped"
 
 
 def test_t2_session_summary_scoping_fact_file_operations(conn):
@@ -859,12 +861,12 @@ def test_t3_zero_rows_soft_delete_and_unconditional_staging_clearance(conn, temp
     session = create_mock_session_file(temp_dir, "sess_combo", make_basic_loglines("sess_combo", tool_error=True))
     run_v15_etl(conn, session, project_name="p", parquet_lake_root=temp_dir / "lake")
     
-    assert conn.execute("SELECT COUNT(*) FROM fact_errors WHERE session_id = 'sess_combo' AND is_deleted = FALSE").fetchone()[0] > 0
+    assert conn.execute("SELECT COUNT(*) FROM fact_tool_calls WHERE is_error = TRUE AND session_id = 'sess_combo' AND is_deleted = FALSE").fetchone()[0] > 0
     
     session_fixed = create_mock_session_file(temp_dir, "sess_combo", make_basic_loglines("sess_combo", tool_error=False))
     run_v15_etl(conn, session_fixed, project_name="p", parquet_lake_root=temp_dir / "lake")
     
-    assert conn.execute("SELECT COUNT(*) FROM fact_errors WHERE session_id = 'sess_combo' AND is_deleted = FALSE").fetchone()[0] == 0
+    assert conn.execute("SELECT COUNT(*) FROM fact_tool_calls WHERE is_error = TRUE AND session_id = 'sess_combo' AND is_deleted = FALSE").fetchone()[0] == 0
     assert conn.execute("SELECT COUNT(*) FROM etl.log_entries").fetchone()[0] == 0
 
 
@@ -1015,12 +1017,12 @@ def test_t4_scenario_5_empty_populator_soft_delete(conn, temp_dir):
     sess_file = create_mock_session_file(temp_dir, "sess_sc5", make_basic_loglines("sess_sc5", tool_error=True))
     run_v15_etl(conn, sess_file, project_name="p", parquet_lake_root=temp_dir / "lake")
     
-    assert conn.execute("SELECT COUNT(*) FROM fact_errors WHERE session_id = 'sess_sc5' AND is_deleted = FALSE").fetchone()[0] > 0
+    assert conn.execute("SELECT COUNT(*) FROM fact_tool_calls WHERE is_error = TRUE AND session_id = 'sess_sc5' AND is_deleted = FALSE").fetchone()[0] > 0
     
     sess_file_fixed = create_mock_session_file(temp_dir, "sess_sc5", make_basic_loglines("sess_sc5", tool_error=False))
     run_v15_etl(conn, sess_file_fixed, project_name="p", parquet_lake_root=temp_dir / "lake")
     
-    assert conn.execute("SELECT COUNT(*) FROM fact_errors WHERE session_id = 'sess_sc5' AND is_deleted = FALSE").fetchone()[0] == 0
+    assert conn.execute("SELECT COUNT(*) FROM fact_tool_calls WHERE is_error = TRUE AND session_id = 'sess_sc5' AND is_deleted = FALSE").fetchone()[0] == 0
 
 
 def test_t4_scenario_6_e2e_cli_flow(conn, temp_dir):

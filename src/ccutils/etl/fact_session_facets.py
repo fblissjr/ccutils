@@ -15,8 +15,7 @@ orchestrator):
     dim_model
     dim_file
     fact_messages
-    fact_tool_uses, fact_tool_chain_steps
-    fact_errors
+    fact_tool_calls
     fact_file_operations
     fact_token_usage
     fact_agent_delegations, fact_pr_links, fact_plan_revisions
@@ -79,7 +78,7 @@ def _facet_type_key_sql(facet_id: str) -> str:
 def _facet_row_key_sql(facet_id: str) -> str:
     """Composite logical key (session_id, facet_id, prompt_version)
     collapsed to a single column so lineage_upsert can WHERE on it. Same
-    pattern as fact_errors.error_id."""
+    pattern the old fact_errors.error_id used."""
     return f"md5(scope.session_id || '|' || '{facet_id}' || '|' || '')"
 
 
@@ -161,13 +160,14 @@ def populate_tier1_facets(conn, *, run: EtlRun) -> None:
     _insert_facet(conn, "F03", "value_text", "scope.outcome")
     _insert_facet(conn, "F04", "value_text", "scope.domain")
 
-    # F05 -- ordered list of error_types; empty array when no errors.
+    # F05 -- ordered list of derived failure kinds; empty array when no errors.
     _insert_facet(
         conn, "F05", "value_json",
         """COALESCE(
-            (SELECT to_json(list(fe.error_type ORDER BY fe.timestamp))
-             FROM fact_errors fe
+            (SELECT to_json(list(fe.derived_failure_kind ORDER BY fe.result_timestamp))
+             FROM fact_tool_calls fe
              WHERE fe.is_deleted = FALSE
+               AND fe.is_error = TRUE
                AND fe.session_id = scope.session_id),
             to_json(CAST([] AS VARCHAR[]))
         )""",
@@ -180,7 +180,7 @@ def populate_tier1_facets(conn, *, run: EtlRun) -> None:
             (SELECT to_json(list({'tool': tool_name, 'count': ct}))
              FROM (
                 SELECT dt.tool_name, COUNT(*) AS ct
-                FROM fact_tool_uses ftu
+                FROM fact_tool_calls ftu
                 JOIN dim_tool dt USING (tool_key)
                 WHERE ftu.is_deleted = FALSE
                   AND ftu.session_id = scope.session_id
@@ -200,7 +200,7 @@ def populate_tier1_facets(conn, *, run: EtlRun) -> None:
                 SELECT
                     dt_curr.tool_name || '->' || dt_next.tool_name AS pair,
                     COUNT(*) AS ct
-                FROM fact_tool_chain_steps fcs
+                FROM fact_tool_calls fcs
                 JOIN dim_tool dt_curr ON fcs.tool_key = dt_curr.tool_key
                 JOIN dim_tool dt_next ON fcs.next_tool_key = dt_next.tool_key
                 WHERE fcs.is_deleted = FALSE
@@ -215,7 +215,7 @@ def populate_tier1_facets(conn, *, run: EtlRun) -> None:
     )
 
     # F08 emits a proxy (count of modifying ops). The real LOC delta lives
-    # inside fact_tool_results.edit_structured_patch_json and needs unpacking
+    # inside fact_tool_calls.edit_structured_patch_json and needs unpacking
     # into typed columns -- tracked as a follow-up (see dim_facet_type.notes).
     _insert_facet(
         conn, "F08", "value_numeric",

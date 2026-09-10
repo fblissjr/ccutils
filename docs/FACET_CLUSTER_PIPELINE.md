@@ -29,12 +29,10 @@ Inventory of the v0.15 facts and dimensions, with the fields relevant to facet e
 | Existing table | Fields relevant to facets |
 |---|---|
 | `fact_messages` | First user message text, last assistant message text, message counts, stop_reason, prompt_id |
-| `fact_tool_uses` | tool_name, timestamps, input_json |
-| `fact_tool_results` | tool result content, is_error (tri-state), num_lines/total_lines (Read), exit_code/interrupted (Bash), structured_patch (Edit), Agent rollup |
+| `fact_tool_calls` | tool_name, timestamps, input_json, typed result columns, is_error (tri-state), derived_failure_kind, chain position |
 | `fact_token_usage` | per-API-response token breakdown, cache hits, model name |
 | `fact_session_summary` | aggregate tokens/cost/duration/tool counts per session |
 | `fact_file_operations` | file paths, file extensions, operation counts (no LOC-delta column yet -- see F08 note below) |
-| `fact_errors` | error messages, error types |
 | `fact_attachments` | attachment subtypes (23 variants) |
 | `fact_pr_links` | PR URLs referenced |
 | `fact_plan_revisions` | plan content over time |
@@ -65,12 +63,12 @@ These are cheap, deterministic, and run inline with the existing `run_v15_etl()`
 |---|---|---|---|---|
 | F01 | `session_intent` | enum | `fact_messages` first user msg | Already exists; keep regex version as fallback |
 | F02 | `session_complexity` | enum | `fact_session_summary` | Already exists |
-| F03 | `session_outcome` | enum | `fact_messages` last asst msg + `fact_errors` rate | Already exists |
+| F03 | `session_outcome` | enum | `fact_messages` last asst msg + `fact_tool_calls` error rate | Already exists |
 | F04 | `session_domain` | enum | `fact_file_operations` extensions | Already exists |
-| F05 | `error_signature` | text[] | `fact_errors.error_type` | Ordered list — error progression within session |
-| F06 | `tool_mix` | json | `fact_tool_uses` histogram | Tool name → count; basis for "session shape" |
-| F07 | `tool_bigram_top3` | text[] | `fact_tool_chain_steps` | E.g. `["Read→Edit", "Edit→Bash", …]` — workflow signature |
-| F08 | `loc_delta` | int | `fact_file_operations` | Added minus removed. **Implemented as a proxy**: current populator emits a count of write/edit operations, not a true added-minus-removed delta -- that needs unpacking `fact_tool_results.edit_structured_patch_json`, tracked as a follow-up |
+| F05 | `error_signature` | text[] | `fact_tool_calls.derived_failure_kind` | Ordered list — error progression within session |
+| F06 | `tool_mix` | json | `fact_tool_calls` histogram | Tool name → count; basis for "session shape" |
+| F07 | `tool_bigram_top3` | text[] | `fact_tool_calls` chain columns | E.g. `["Read→Edit", "Edit→Bash", …]` — workflow signature |
+| F08 | `loc_delta` | int | `fact_file_operations` | Added minus removed. **Implemented as a proxy**: current populator emits a count of write/edit operations, not a true added-minus-removed delta -- that needs unpacking `fact_tool_calls.edit_structured_patch_json`, tracked as a follow-up |
 | F09 | `file_extensions_touched` | text[] | `fact_file_operations` | Distinct extensions; finer than `session_domain` |
 | F10 | `repo_slug` | text | `dim_project` | Stable across sessions in same repo |
 | F11 | `model_mix` | json | `fact_token_usage` × `dim_model` | Tokens per model; catches model-switch sessions |

@@ -51,24 +51,23 @@ FROM semantic_session_chains ORDER BY session_count DESC LIMIT 10;
 -- Bash invocations that failed or were interrupted
 SELECT ftu.session_id,
        json_extract_string(ftu.input_json, '$.command') AS command,
-       ftr.derived_exit_code, ftr.derived_failure_kind, ftr.timestamp
-FROM fact_tool_uses ftu
-JOIN fact_tool_results ftr USING (tool_use_id)
+       ftu.derived_exit_code, ftu.derived_failure_kind, ftu.result_timestamp
+FROM fact_tool_calls ftu
 WHERE ftu.tool_name = 'Bash'
-  AND ftr.is_error
-  AND ftu.is_deleted = FALSE AND ftr.is_deleted = FALSE
-ORDER BY ftr.timestamp DESC LIMIT 20;
+  AND ftu.is_error
+  AND ftu.is_deleted = FALSE
+ORDER BY ftu.result_timestamp DESC LIMIT 20;
 
--- Error taxonomy by tool
-SELECT dt.tool_name, fe.error_type, COUNT(*) AS n
-FROM fact_errors fe JOIN dim_tool dt USING (tool_key)
-WHERE fe.is_deleted = FALSE
+-- Failure taxonomy by tool
+SELECT dt.tool_name, fe.derived_failure_kind, COUNT(*) AS n
+FROM fact_tool_calls fe JOIN dim_tool dt USING (tool_key)
+WHERE fe.is_deleted = FALSE AND fe.is_error
 GROUP BY ALL ORDER BY n DESC LIMIT 20;
 
 -- Tool→tool transitions most likely to error
 SELECT t1.tool_name, t2.tool_name AS next_tool, COUNT(*) AS freq,
        SUM(CASE WHEN fcs.is_error THEN 1 ELSE 0 END) AS errors
-FROM fact_tool_chain_steps fcs
+FROM fact_tool_calls fcs
 JOIN dim_tool t1 ON fcs.tool_key = t1.tool_key
 JOIN dim_tool t2 ON fcs.next_tool_key = t2.tool_key
 WHERE fcs.is_deleted = FALSE

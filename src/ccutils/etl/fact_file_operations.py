@@ -7,11 +7,11 @@ Stays minimal -- matches dim_tool/dim_model: no lineage block, simple
 catalog.
 
 fact_file_operations is one row per file-touching tool call, joined from
-fact_tool_uses to fact_tool_results on tool_use_id. operation_type is
+fact_tool_calls. operation_type is
 inferred from the tool name. Carries the full v0.15 lineage block.
 
-Both populators expect fact_tool_uses and fact_tool_results to be
-populated already -- run them after populate_fact_tool_results in the
+Both populators expect fact_tool_calls to be populated already -- run
+them after populate_fact_tool_calls in the
 orchestrator.
 """
 
@@ -96,14 +96,14 @@ def populate_dim_file(conn, *, run: EtlRun) -> None:
                 -- File paths from tool_use inputs (Read/Write/Edit/MultiEdit/NotebookEdit)
                 SELECT DISTINCT
                     json_extract_string(ftu.input_json, '$.file_path') AS file_path
-                FROM fact_tool_uses ftu
+                FROM fact_tool_calls ftu
                 WHERE ftu.is_deleted = FALSE
                   AND json_extract_string(ftu.input_json, '$.file_path') IS NOT NULL
                 UNION
                 -- File paths from tool_result payloads (Read records file_path
                 -- even when the input was something else, e.g. a notebook read).
                 SELECT DISTINCT ftr.read_file_path AS file_path
-                FROM fact_tool_results ftr
+                FROM fact_tool_calls ftr
                 WHERE ftr.is_deleted = FALSE
                   AND ftr.read_file_path IS NOT NULL
                 UNION
@@ -179,11 +179,11 @@ def populate_fact_file_operations(conn, *, run: EtlRun) -> None:
             ftu.tool_key,
             COALESCE(
                 json_extract_string(ftu.input_json, '$.file_path'),
-                ftr.read_file_path
+                ftu.read_file_path
             ) AS file_path,
             md5(COALESCE(
                 json_extract_string(ftu.input_json, '$.file_path'),
-                ftr.read_file_path
+                ftu.read_file_path
             )) AS file_key,
             {op_case} AS operation_type,
             -- Only meaningful for write/edit (chars actually written). Other
@@ -192,15 +192,7 @@ def populate_fact_file_operations(conn, *, run: EtlRun) -> None:
                 THEN length(json_extract_string(ftu.input_json, '$.content'))
                 ELSE NULL
             END AS file_size_chars
-        FROM fact_tool_uses ftu
-        -- is_deleted belongs in the ON clause, not just on ftu: a repaired
-        -- (soft-deleted) duplicate result row would otherwise fan the join
-        -- out and hand lineage_upsert a duplicate tool_use_id. The upgrade
-        -- path hits exactly this -- repair soft-deletes twins at open, then
-        -- this populator re-runs over the same session.
-        LEFT JOIN fact_tool_results ftr
-               ON ftr.tool_use_id = ftu.tool_use_id
-              AND ftr.is_deleted = FALSE
+        FROM fact_tool_calls ftu
         WHERE ftu.is_deleted = FALSE
           AND ftu.tool_name IN ({tool_list})
           -- Scope to the session currently being ETL'd: prior sessions'

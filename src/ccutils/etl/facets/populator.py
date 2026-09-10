@@ -188,7 +188,7 @@ def _build_session_inputs(
         ),
         tool_counts AS (
             SELECT ftu.session_id, dt.tool_name, COUNT(*) AS ct
-            FROM fact_tool_uses ftu
+            FROM fact_tool_calls ftu
             JOIN dim_tool dt USING (tool_key)
             WHERE ftu.is_deleted = FALSE
               AND ftu.session_id IN (SELECT session_id FROM scope)

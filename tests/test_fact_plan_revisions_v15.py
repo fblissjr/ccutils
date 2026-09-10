@@ -6,7 +6,7 @@ The original rethink driver was that v0.14 classified plan-revision
 outcome by string-matching against tool_result text (truncated to 2000
 chars), even though structural signals existed: tool_use_id has a
 matching tool_result whose is_error tristate distinguishes accepted
-(False) from rejected (True) cleanly. v0.15's fact_tool_results carries
+(False) from rejected (True) cleanly. v0.15's fact_tool_calls carries
 is_error as a nullable BOOLEAN (R16), so the classification is now
 deterministic.
 
@@ -30,10 +30,7 @@ import pytest
 from ccutils import create_star_schema
 from ccutils.etl.fact_messages import populate_fact_messages
 from ccutils.etl.fact_plan_revisions import populate_fact_plan_revisions
-from ccutils.etl.fact_tool_calls import (
-    populate_fact_tool_results,
-    populate_fact_tool_uses,
-)
+from ccutils.etl.fact_tool_calls import populate_fact_tool_calls
 from ccutils.etl.lineage import EtlRun
 from ccutils.etl.staging import load_session_to_staging
 from ccutils.parsers.parquet_writer import write_session_to_parquet
@@ -171,8 +168,7 @@ def _populate(conn, jsonl_path, tmp_path):
         """
     )
     populate_fact_messages(conn, run=run)
-    populate_fact_tool_uses(conn, run=run)
-    populate_fact_tool_results(conn, run=run)
+    populate_fact_tool_calls(conn, run=run)
     populate_fact_plan_revisions(conn, run=run)
     return run
 
@@ -229,7 +225,7 @@ class TestFactPlanRevisionsOutcome:
         an explicit is_error: false -- the field is just absent. The v0.15
         populator falls back to matching the documented approval signature
         in result_content_text, but reads the FULL untruncated content
-        from fact_tool_results (unlike v0.14)."""
+        from fact_tool_calls (unlike v0.14)."""
         jsonl = tmp_path / "sig.jsonl"
         lines = [
             _user("u1", None, "sig-s", "2026-04-19T10:00:00Z", "plan"),

@@ -12,7 +12,7 @@ Turn durations and stop events live in `fact_system_events` by `subtype`.
 ## Soft deletes
 
 Facts are never hard-deleted (`is_deleted`/`deleted_at`). Views that already
-filter: `semantic_sessions`, `semantic_tool_calls`, `semantic_decisions`,
+filter: `semantic_sessions`, `semantic_decisions`,
 `semantic_token_usage`, `semantic_cost_analysis`. **Every raw-fact query needs
 `WHERE is_deleted = FALSE`**; for other views, check the view SQL in
 `src/ccutils/schemas/star/schema.py` before trusting counts.
@@ -23,7 +23,7 @@ filter: `semantic_sessions`, `semantic_tool_calls`, `semantic_decisions`,
   `entry_id`, or `session_key` + `timestamp`.
 - `fact_session_summary` has **no `unique_files_touched`** — count distinct
   files via `bridge_session_file` grouped by `session_key`.
-- `fact_tool_results.is_error` is stored **tri-state** (TRUE/FALSE/NULL), but
+- `fact_tool_calls.is_error` is stored **tri-state** (TRUE/FALSE/NULL), but
   NULL means **not an error**, not "unknown". Claude Code writes
   `is_error: true` on failure and encodes success either as `false` or by
   omitting the field; the API defines an absent `is_error` as false. Measured

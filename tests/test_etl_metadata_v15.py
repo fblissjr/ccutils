@@ -437,13 +437,13 @@ class TestJsonExportCompleteness:
         facts = {p.name for p in (out / "facts").glob("*.json")}
         for required in (
             "fact_messages.json",
-            "fact_tool_uses.json",
-            "fact_tool_results.json",
+            "fact_tool_calls.json",
+            "fact_tool_calls.json",
             "fact_attachments.json",
             "fact_session_facets.json",
         ):
             assert required in facts, f"missing {required}"
-        assert "fact_tool_calls.json" not in facts  # nonexistent table
+        assert "fact_tool_calls.json" in facts
 
         etl = {p.name for p in (out / "etl").glob("*.json")}
         assert {"runs.json", "batch_runs.json", "steps.json"} <= etl

@@ -113,7 +113,7 @@ the 20 semantic views, it sorts them cleanly:
 
 | Encodes logic — keep | What it encodes |
 |---|---|
-| `semantic_sessions`, `semantic_tool_calls`, `semantic_decisions`, `semantic_session_behavior`, `semantic_token_usage`, `semantic_context_growth`, `semantic_cost_analysis`, `semantic_etl_runs` | soft-delete filters |
+| `semantic_sessions`, `semantic_decisions`, `semantic_session_behavior`, `semantic_token_usage`, `semantic_context_growth`, `semantic_cost_analysis`, `semantic_etl_runs` | soft-delete filters |
 | `semantic_cost_analysis`, `semantic_tool_patterns` | tri-state `is_error`, corrected denominators |
 | `semantic_memory`, `semantic_memory_links`, `semantic_prompt_history` | `is_current` on a Type 2 SCD |
 | `semantic_context_growth` | window functions / dedupe |

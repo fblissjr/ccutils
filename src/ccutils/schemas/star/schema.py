@@ -527,10 +527,14 @@ def _create_objects(conn) -> None:
     """
     )
 
-    # Grain: one row per tool_use content block emitted by the assistant.
+    # Grain: one row per tool_use_id -- the assistant's tool_use block, its
+    # result (tool_result block + entry-level toolUseResult, typed per tool),
+    # and its position in the agentic run. One grain, one table; the three
+    # tables it replaces (uses, results, chain steps) and the filter over
+    # them (errors) were joined by every consumer.
     conn.execute(
         """
-        CREATE TABLE IF NOT EXISTS fact_tool_uses (
+        CREATE TABLE IF NOT EXISTS fact_tool_calls (
             -- Lineage
             created_at TIMESTAMP NOT NULL DEFAULT current_timestamp,
             created_by_version_key VARCHAR NOT NULL,
@@ -543,10 +547,10 @@ def _create_objects(conn) -> None:
             deleted_at TIMESTAMP,
 
             -- Degenerate dims
-            entry_id VARCHAR NOT NULL,
-            message_id VARCHAR NOT NULL,
-            session_id VARCHAR NOT NULL,
             tool_use_id VARCHAR NOT NULL,
+            session_id VARCHAR NOT NULL,
+            entry_id VARCHAR NOT NULL,          -- the assistant entry carrying the tool_use block
+            message_id VARCHAR NOT NULL,
 
             -- Dimension FKs
             session_key VARCHAR,
@@ -555,12 +559,68 @@ def _create_objects(conn) -> None:
             date_key INTEGER,
             time_key INTEGER,
 
-            -- Native
+            -- The use
             tool_name VARCHAR NOT NULL,
             invoke_sequence_num INTEGER,
-            input_json VARCHAR,
+            input_json TEXT,
             input_summary VARCHAR,
-            timestamp TIMESTAMP
+            timestamp TIMESTAMP,                -- invocation
+
+            -- The result (NULL when the session ended before one arrived)
+            result_entry_id VARCHAR,
+            result_message_id VARCHAR,
+            result_timestamp TIMESTAMP,
+            is_error BOOLEAN,
+            result_content_text VARCHAR,
+            result_payload_json VARCHAR,
+
+            -- Per-tool typed projections (NULL for tools without these fields)
+            -- Bash / BashOutput
+            bash_stdout_bytes INTEGER,
+            -- Derived from the STATED failure signal (is_error + result text);
+            -- the payload never carries an exit code (0 of 52,974 Bash
+            -- results). Named derived_ so nobody reads them as stated.
+            derived_exit_code INTEGER,        -- from an "Exit code N" prefix; NULL otherwise
+            derived_failure_kind VARCHAR,     -- nonzero_exit | blocked_by_hook | permission_denied | user_rejected | sibling_errored | timeout | interrupted | model_unavailable | other
+            sandbox_disabled BOOLEAN,         -- stated: toolUseResult.dangerouslyDisableSandbox
+            -- Edit / MultiEdit
+            edit_user_modified BOOLEAN,
+            edit_replace_all BOOLEAN,
+            edit_structured_patch_json VARCHAR,
+            -- Read
+            read_num_lines INTEGER,
+            read_total_lines INTEGER,
+            read_file_path VARCHAR,
+            -- Write
+            write_type VARCHAR,
+            -- Glob
+            glob_num_files INTEGER,
+            glob_truncated BOOLEAN,
+            -- Grep
+            grep_mode VARCHAR,
+            grep_num_files INTEGER,
+            -- WebFetch
+            webfetch_http_code INTEGER,
+            webfetch_bytes INTEGER,
+            -- Agent / Task (subagent rollup)
+            agent_status VARCHAR,
+            agent_total_duration_ms FLOAT,
+            agent_total_tokens INTEGER,
+            agent_total_tool_use_count INTEGER,
+            agent_subagent_type VARCHAR,
+            agent_id VARCHAR,
+            -- The model the subagent actually ran on, per toolUseResult.
+            agent_resolved_model VARCHAR,
+            -- TRUE when the result is a background-launch acknowledgment
+            -- rather than an outcome (Claude Code v2.1.198+ default).
+            agent_is_async BOOLEAN,
+
+            -- Position in the agentic run (one chain per human turn)
+            chain_id VARCHAR,
+            step_position INTEGER,
+            prev_tool_key VARCHAR,
+            next_tool_key VARCHAR,
+            time_since_prev_seconds DOUBLE
         )
     """
     )
@@ -789,87 +849,6 @@ def _create_objects(conn) -> None:
         """
     )
 
-    # Grain: one row per tool_result event -- combines the tool_result content
-    # block (truncated text) with the entry-level toolUseResult structured
-    # payload (typed per-tool columns + JSON catch-all).
-    conn.execute(
-        """
-        CREATE TABLE IF NOT EXISTS fact_tool_results (
-            -- Lineage
-            created_at TIMESTAMP NOT NULL DEFAULT current_timestamp,
-            created_by_version_key VARCHAR NOT NULL,
-            last_updated_at TIMESTAMP NOT NULL DEFAULT current_timestamp,
-            last_updated_by_version_key VARCHAR NOT NULL,
-            etl_run_id VARCHAR NOT NULL,
-            record_source VARCHAR NOT NULL,
-            hash_diff VARCHAR NOT NULL,
-            is_deleted BOOLEAN NOT NULL DEFAULT FALSE,
-            deleted_at TIMESTAMP,
-
-            -- Degenerate dims
-            entry_id VARCHAR NOT NULL,
-            message_id VARCHAR NOT NULL,
-            session_id VARCHAR NOT NULL,
-            tool_use_id VARCHAR NOT NULL,
-
-            -- Dimension FKs
-            session_key VARCHAR,
-            project_key VARCHAR,
-            tool_key VARCHAR,
-            date_key INTEGER,
-            time_key INTEGER,
-
-            -- Native
-            tool_name VARCHAR,
-            timestamp TIMESTAMP,
-            -- R16: tri-state nullable BOOLEAN
-            is_error BOOLEAN,
-            result_content_text VARCHAR,
-            result_payload_json VARCHAR,
-
-            -- Per-tool typed projections (NULL for tools without these fields)
-            -- Bash / BashOutput
-            bash_stdout_bytes INTEGER,
-            -- Derived from the STATED failure signal (is_error + result text);
-            -- the payload never carries an exit code (0 of 52,974 Bash
-            -- results). Named derived_ so nobody reads them as stated.
-            derived_exit_code INTEGER,        -- from an "Exit code N" prefix; NULL otherwise
-            derived_failure_kind VARCHAR,     -- nonzero_exit | blocked_by_hook | permission_denied | user_rejected | sibling_errored | timeout | interrupted | model_unavailable | other
-            sandbox_disabled BOOLEAN,         -- stated: toolUseResult.dangerouslyDisableSandbox
-            -- Edit / MultiEdit
-            edit_user_modified BOOLEAN,
-            edit_replace_all BOOLEAN,
-            edit_structured_patch_json VARCHAR,
-            -- Read
-            read_num_lines INTEGER,
-            read_total_lines INTEGER,
-            read_file_path VARCHAR,
-            -- Write
-            write_type VARCHAR,
-            -- Glob
-            glob_num_files INTEGER,
-            glob_truncated BOOLEAN,
-            -- Grep
-            grep_mode VARCHAR,
-            grep_num_files INTEGER,
-            -- WebFetch
-            webfetch_http_code INTEGER,
-            webfetch_bytes INTEGER,
-            -- Agent / Task (subagent rollup)
-            agent_status VARCHAR,
-            agent_total_duration_ms FLOAT,
-            agent_total_tokens INTEGER,
-            agent_total_tool_use_count INTEGER,
-            agent_subagent_type VARCHAR,
-            agent_id VARCHAR,
-            -- The model the subagent actually ran on, per toolUseResult.
-            agent_resolved_model VARCHAR,
-            -- TRUE when the result is a background-launch acknowledgment
-            -- rather than an outcome (Claude Code v2.1.198+ default).
-            agent_is_async BOOLEAN
-        )
-    """
-    )
 
     # Grain: one row per session. Pre-aggregated rollups over the v0.15
     # entry-type facts. Note on Kimball "facts don't join to facts": the
@@ -913,7 +892,7 @@ def _create_objects(conn) -> None:
             total_uncached_equivalent_tokens BIGINT,
             api_response_count INTEGER,
 
-            -- From fact_tool_uses / fact_tool_results
+            -- From fact_tool_calls
             total_tool_uses INTEGER,
             unique_tools_used INTEGER,
             total_tool_results INTEGER,
@@ -948,8 +927,7 @@ def _create_objects(conn) -> None:
     conn.execute(
         """
         -- Grain: one row per file-touching tool call (Read/Write/Edit/MultiEdit
-        -- /Glob/Grep/NotebookEdit/etc.). Derived from fact_tool_uses joined
-        -- to fact_tool_results on tool_use_id.
+        -- /Glob/Grep/NotebookEdit/etc.). Derived from fact_tool_calls.
         CREATE TABLE IF NOT EXISTS fact_file_operations (
             -- Lineage (every v0.15 fact carries this block)
             created_at TIMESTAMP NOT NULL DEFAULT current_timestamp,
@@ -982,87 +960,6 @@ def _create_objects(conn) -> None:
     """
     )
 
-    conn.execute(
-        """
-        -- Grain: one row per failed tool call. Derived from
-        -- fact_tool_results where is_error = TRUE. error_type is
-        -- classified by zero-dep regex rules in
-        -- ccutils.etl.heuristics.classify_error_type.
-        CREATE TABLE IF NOT EXISTS fact_errors (
-            -- Lineage (every v0.15 fact carries this block)
-            created_at TIMESTAMP NOT NULL DEFAULT current_timestamp,
-            created_by_version_key VARCHAR NOT NULL,
-            last_updated_at TIMESTAMP NOT NULL DEFAULT current_timestamp,
-            last_updated_by_version_key VARCHAR NOT NULL,
-            etl_run_id VARCHAR NOT NULL,
-            record_source VARCHAR NOT NULL,
-            hash_diff VARCHAR NOT NULL,
-            is_deleted BOOLEAN NOT NULL DEFAULT FALSE,
-            deleted_at TIMESTAMP,
-
-            -- Degenerate
-            error_id VARCHAR NOT NULL,
-            tool_use_id VARCHAR NOT NULL,
-            session_id VARCHAR NOT NULL,
-
-            -- Dimension FKs
-            session_key VARCHAR,
-            tool_key VARCHAR,
-            date_key INTEGER,
-            time_key INTEGER,
-
-            -- Native
-            error_type VARCHAR,
-            error_message TEXT,
-            timestamp TIMESTAMP
-        )
-    """
-    )
-
-    conn.execute(
-        """
-        -- Grain: one row per (session, tool_use, step_position) tuple
-        -- recording tool-sequence patterns. A "chain" is the contiguous
-        -- block of tool_uses emitted by a single assistant turn (one
-        -- message_id). prev_tool_key / next_tool_key let queries like
-        -- "after I Read, do I usually Edit?" work without window functions
-        -- on every query.
-        CREATE TABLE IF NOT EXISTS fact_tool_chain_steps (
-            -- Lineage (every v0.15 fact carries this block)
-            created_at TIMESTAMP NOT NULL DEFAULT current_timestamp,
-            created_by_version_key VARCHAR NOT NULL,
-            last_updated_at TIMESTAMP NOT NULL DEFAULT current_timestamp,
-            last_updated_by_version_key VARCHAR NOT NULL,
-            etl_run_id VARCHAR NOT NULL,
-            record_source VARCHAR NOT NULL,
-            hash_diff VARCHAR NOT NULL,
-            is_deleted BOOLEAN NOT NULL DEFAULT FALSE,
-            deleted_at TIMESTAMP,
-
-            -- Degenerate
-            chain_step_id VARCHAR NOT NULL,
-            tool_use_id VARCHAR NOT NULL,
-            session_id VARCHAR NOT NULL,
-
-            -- Dimension FKs
-            session_key VARCHAR,
-            tool_key VARCHAR,
-            date_key INTEGER,
-            time_key INTEGER,
-
-            -- Chain context
-            chain_id VARCHAR,
-            step_position INTEGER,
-            prev_tool_key VARCHAR,
-            next_tool_key VARCHAR,
-
-            -- Outcome of this tool
-            is_error BOOLEAN,
-            time_since_prev_seconds FLOAT,
-            timestamp TIMESTAMP
-        )
-    """
-    )
 
     # =========================================================================
     # Granular Dimensions (2)
@@ -1109,7 +1006,7 @@ def _create_objects(conn) -> None:
     conn.execute(
         """
         -- Grain: one row per Task tool_use (parent-side agent spawn).
-        -- Joins fact_tool_uses(Task) to fact_tool_results to get the
+        -- Reads fact_tool_calls (tool_name = Agent) to get the
         -- agent rollup metrics from the v0.15 toolUseResult capture (R1).
         --
         -- agent_session_key / parent_session_key are NULL for now -- the
@@ -1141,12 +1038,12 @@ def _create_objects(conn) -> None:
             date_key INTEGER,
             time_key INTEGER,
 
-            -- Task input (from fact_tool_uses.input_json)
+            -- Task input (from fact_tool_calls.input_json)
             task_description TEXT,
             task_prompt TEXT,
             subagent_type VARCHAR,
 
-            -- Agent rollup (from fact_tool_results.agent_* columns)
+            -- Agent rollup (from fact_tool_calls.agent_* columns)
             agent_status VARCHAR,
             agent_total_duration_ms FLOAT,
             agent_total_tokens INTEGER,
@@ -1185,7 +1082,7 @@ def _create_objects(conn) -> None:
     conn.execute(
         """
         -- Grain: one row per ExitPlanMode tool_use. Outcome is classified
-        -- from the v0.15 structural signal (fact_tool_results.is_error,
+        -- from the v0.15 structural signal (fact_tool_calls.is_error,
         -- tri-state nullable BOOLEAN) instead of string-matching against
         -- truncated tool_result content -- the original rethink driver.
         --
@@ -1232,7 +1129,7 @@ def _create_objects(conn) -> None:
             resolved_timestamp TIMESTAMP,
             seconds_to_resolution DOUBLE,
 
-            -- Outcome (structural classification from fact_tool_results.is_error)
+            -- Outcome (structural classification from fact_tool_calls.is_error)
             outcome VARCHAR,
             outcome_signal VARCHAR,
             -- Feedback message that followed a rejection (next user text)
@@ -1598,7 +1495,7 @@ def _create_objects(conn) -> None:
         ("F07", "tool_bigram_top3", "json", None),
         ("F08", "loc_delta", "int",
          "Proxy: count of write+edit operations. Literal LOC requires "
-         "unpacking fact_tool_results.edit_structured_patch_json."),
+         "unpacking fact_tool_calls.edit_structured_patch_json."),
         ("F09", "file_extensions_touched", "json", None),
         ("F10", "repo_slug", "text", None),
         ("F11", "model_mix", "json", None),
@@ -1802,49 +1699,6 @@ def _create_objects(conn) -> None:
     """
     )
 
-    # Backwards-compat view over the v0.15 fact_tool_uses + fact_tool_results
-    # split. Old queries that select tool_use_id, tool_name, is_error etc.
-    # keep working. New analytics should query the two facts directly.
-    conn.execute(
-        """
-        CREATE OR REPLACE VIEW semantic_tool_calls AS
-        SELECT
-            ftu.tool_use_id,
-            ftu.tool_name,
-            dt.tool_category,
-            ftu.input_summary,
-            ftu.input_json,
-            ftu.timestamp AS invoke_timestamp,
-            ftr.timestamp AS result_timestamp,
-            ftr.is_error,
-            ftr.result_content_text,
-            ftr.result_payload_json,
-            ftr.derived_exit_code,
-            ftr.derived_failure_kind,
-            ftr.sandbox_disabled,
-            ftr.edit_user_modified,
-            ftr.read_num_lines,
-            ftr.read_total_lines,
-            ftr.read_file_path,
-            ftr.webfetch_http_code,
-            ftr.agent_status,
-            ftr.agent_total_duration_ms,
-            ds.session_id,
-            ds.cwd,
-            dp.project_name,
-            dd.full_date,
-            dti.hour,
-            dti.time_of_day
-        FROM fact_tool_uses ftu
-        LEFT JOIN fact_tool_results ftr ON ftr.tool_use_id = ftu.tool_use_id
-        LEFT JOIN dim_tool dt ON ftu.tool_key = dt.tool_key
-        LEFT JOIN dim_session ds ON ftu.session_key = ds.session_key
-        LEFT JOIN dim_project dp ON ds.project_key = dp.project_key
-        LEFT JOIN dim_date dd ON ftu.date_key = dd.date_key
-        LEFT JOIN dim_time dti ON ftu.time_key = dti.time_key
-        WHERE ftu.is_deleted = FALSE
-    """
-    )
 
     conn.execute(
         """
@@ -2098,7 +1952,7 @@ def _create_objects(conn) -> None:
                 COUNT(*) FILTER (WHERE dt.tool_category = 'delegate') AS delegate_ops,
                 COUNT(*) FILTER (WHERE dt.tool_category = 'plan')     AS plan_ops,
                 COUNT(*) FILTER (WHERE dt.tool_category = 'mcp')      AS mcp_ops
-            FROM fact_tool_uses ftu
+            FROM fact_tool_calls ftu
             JOIN dim_tool dt USING (tool_key)
             WHERE ftu.is_deleted = FALSE
             GROUP BY ftu.session_id
@@ -2107,7 +1961,7 @@ def _create_objects(conn) -> None:
             SELECT session_id,
                    COUNT(DISTINCT chain_id) AS agentic_runs,
                    MEDIAN(time_since_prev_seconds) AS median_gap_seconds
-            FROM fact_tool_chain_steps
+            FROM fact_tool_calls
             WHERE is_deleted = FALSE
             GROUP BY session_id
         ),
@@ -2185,7 +2039,7 @@ def _create_objects(conn) -> None:
             AVG(ftcs.time_since_prev_seconds) AS avg_time_between,
             SUM(CASE WHEN ftcs.is_error THEN 1 ELSE 0 END) AS error_count,
             ROUND(SUM(CASE WHEN ftcs.is_error THEN 1 ELSE 0 END) * 100.0 / COUNT(*), 1) AS error_rate_pct
-        FROM fact_tool_chain_steps ftcs
+        FROM fact_tool_calls ftcs
         JOIN dim_tool dt1 ON ftcs.tool_key = dt1.tool_key
         LEFT JOIN dim_tool dt2 ON ftcs.next_tool_key = dt2.tool_key
         WHERE ftcs.next_tool_key IS NOT NULL
@@ -2573,7 +2427,6 @@ def _create_objects(conn) -> None:
     )
 
 
-
 # Declared coverage: every table and view in `main`, what writes it, and
 # why it exists. The drift test asserts the keys equal the DDL's objects, so
 # a table cannot ship without a declared status and a deleted one cannot
@@ -2599,10 +2452,7 @@ TABLE_COVERAGE = {
     "dim_memory": ("table", "populated", "global_source", "Type 2 history of Claude Code auto-memory files"),
     # --- facts
     "fact_messages": ("table", "populated", "session", "one row per user/assistant JSONL entry"),
-    "fact_tool_uses": ("table", "populated", "session", "one row per tool_use block (1.0.0: merging with fact_tool_results into fact_tool_calls)"),
-    "fact_tool_results": ("table", "populated", "session", "one row per tool_result, typed payload columns (1.0.0: merging into fact_tool_calls)"),
-    "fact_tool_chain_steps": ("table", "populated", "session", "chain position per tool use (1.0.0: merging into fact_tool_calls)"),
-    "fact_errors": ("table", "populated", "session", "one row per failed tool result (1.0.0: becoming a view over fact_tool_calls)"),
+    "fact_tool_calls": ("table", "populated", "session", "one row per tool_use_id: the use, its typed result, its derived failure, and its position in the agentic run; failed calls are WHERE is_error"),
     "fact_token_usage": ("table", "populated", "session", "one row per API response (api_message_id), token and cache breakdown"),
     "fact_system_events": ("table", "populated", "session", "one row per system entry, 20 typed columns across its subtypes"),
     "fact_progress_events": ("table", "populated", "session", "one row per progress entry (hooks, agent progress)"),
@@ -2623,7 +2473,6 @@ TABLE_COVERAGE = {
     # --- views
     "semantic_sessions": ("view", "keep", None, "session with project, chain, summary and classifier columns in one row"),
     "semantic_messages": ("view", "delete", None, "plain join, no logic"),
-    "semantic_tool_calls": ("view", "keep", None, "use + result in one row; the shape fact_tool_calls will have"),
     "semantic_file_operations": ("view", "delete", None, "plain join, no logic"),
     "semantic_session_chains": ("view", "delete", None, "plain join, no logic"),
     "semantic_agent_delegations": ("view", "keep", None, "the delegation edge: parent spawn call to child session, with derived completion_state"),
@@ -2698,11 +2547,8 @@ NATURAL_KEYS = {
     "fact_queue_operations": "entry_id",
     "fact_pr_links": "entry_id",
     "fact_token_usage": "entry_id",
-    "fact_tool_uses": "tool_use_id",
-    "fact_tool_results": "tool_use_id",
+    "fact_tool_calls": "tool_use_id",
     "fact_file_operations": "tool_use_id",
-    "fact_tool_chain_steps": "chain_step_id",
-    "fact_errors": "error_id",
     "fact_diagnostics": "diagnostic_id",
     "fact_agent_delegations": "delegation_key",
     "fact_plan_revisions": "revision_key",

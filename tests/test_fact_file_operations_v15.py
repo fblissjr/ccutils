@@ -1,8 +1,8 @@
 """Tests for the v0.15 fact_file_operations + dim_file populators (Phase D).
 
 Grain: one row per file-touching tool call (Read / Write / Edit / MultiEdit
-/ Glob / Grep / NotebookEdit / etc.). Derived from fact_tool_uses joined
-to fact_tool_results -- both must be populated first.
+/ Glob / Grep / NotebookEdit / etc.). Derived from fact_tool_calls joined
+to fact_tool_calls -- both must be populated first.
 
 dim_file is populated as a side effect: each distinct file_path observed
 in tool inputs gets a dim_file row with parsed name/extension/directory
@@ -24,10 +24,7 @@ from ccutils.etl.fact_file_operations import (
     populate_fact_file_operations,
 )
 from ccutils.etl.fact_messages import populate_fact_messages
-from ccutils.etl.fact_tool_calls import (
-    populate_fact_tool_results,
-    populate_fact_tool_uses,
-)
+from ccutils.etl.fact_tool_calls import populate_fact_tool_calls
 from ccutils.etl.lineage import EtlRun
 from ccutils.etl.staging import load_session_to_staging
 from ccutils.parsers.parquet_writer import write_session_to_parquet
@@ -42,7 +39,7 @@ def conn(tmp_path):
 def file_op_session(tmp_path):
     """A session with one Read, one Write, one Edit, one Glob.
 
-    Each tool_use is paired with its tool_result so fact_tool_results
+    Each tool_use is paired with its tool_result so fact_tool_calls
     can populate too.
     """
     jsonl = tmp_path / "fileops.jsonl"
@@ -162,7 +159,7 @@ def _populate(conn, jsonl_path, tmp_path):
         etl_run_id=run.etl_run_id, project_slug="test-project",
     )
     load_session_to_staging(conn, log_path)
-    # Minimal dims: dim_session + dim_tool referenced by fact_tool_uses.
+    # Minimal dims: dim_session + dim_tool referenced by fact_tool_calls.
     # We don't need to call _upsert_minimal_dimensions; the test exercises
     # just the file-ops populator path and the FKs are soft.
     conn.execute(
@@ -180,8 +177,7 @@ def _populate(conn, jsonl_path, tmp_path):
         """
     )
     populate_fact_messages(conn, run=run)
-    populate_fact_tool_uses(conn, run=run)
-    populate_fact_tool_results(conn, run=run)
+    populate_fact_tool_calls(conn, run=run)
     populate_dim_file(conn, run=run)
     populate_fact_file_operations(conn, run=run)
     return run
@@ -307,13 +303,13 @@ class TestFactFileOperationsPopulator:
 
 
 class TestSoftDeletedResultsDoNotFanOut:
-    """A soft-deleted fact_tool_results twin must not join into the inbound.
+    """A soft-deleted fact_tool_calls twin must not join into the inbound.
 
     A soft-deleted twin is a row a previous run retired that shares a
     tool_use_id with a live one (the pre-1.0 open-time repair produced
     exactly this shape; a soft-delete-then-revive cycle can too). The
     inbound here derives from
-    fact_tool_uses JOIN fact_tool_results; without an is_deleted filter on
+    fact_tool_calls JOIN fact_tool_calls; without an is_deleted filter on
     the RESULTS side of the join, the repaired twin fans it out, the inbound
     carries a duplicate tool_use_id, and lineage_upsert kills the session.
     Observed on a real pre-R23 warehouse: 2 sessions failed exactly here
@@ -331,10 +327,10 @@ class TestSoftDeletedResultsDoNotFanOut:
         # Plant the post-repair state: a second physical row for one
         # tool_use_id, soft-deleted, exactly as the repair leaves it.
         conn.execute(
-            "INSERT INTO fact_tool_results SELECT * REPLACE ("
+            "INSERT INTO fact_tool_calls SELECT * REPLACE ("
             "  'e_twin' AS entry_id, TRUE AS is_deleted,"
             "  current_timestamp AS deleted_at)"
-            "FROM fact_tool_results ORDER BY tool_use_id LIMIT 1"
+            "FROM fact_tool_calls ORDER BY tool_use_id LIMIT 1"
         )
 
         _populate(conn, file_op_session, tmp_path)  # must not raise

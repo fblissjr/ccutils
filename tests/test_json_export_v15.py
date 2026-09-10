@@ -58,19 +58,13 @@ class TestStarRelationships:
             assert rel["from_column"] in _column_names(conn, rel["from_table"]), rel
             assert rel["to_column"] in _column_names(conn, rel["to_table"]), rel
 
-    def test_no_legacy_fact_tool_calls_references(self, conn):
-        rels = star_relationships(conn)
-        assert not any(
-            "fact_tool_calls" in (r["from_table"], r["to_table"]) for r in rels
-        )
-
     def test_covers_populated_v15_facts(self, conn):
         triples = {
             (r["from_table"], r["from_column"], r["to_table"])
             for r in star_relationships(conn)
         }
-        assert ("fact_tool_uses", "tool_key", "dim_tool") in triples
-        assert ("fact_tool_results", "session_key", "dim_session") in triples
+        assert ("fact_tool_calls", "tool_key", "dim_tool") in triples
+        assert ("fact_tool_calls", "session_key", "dim_session") in triples
         assert ("fact_session_facets", "facet_type_key", "dim_facet_type") in triples
         assert ("fact_agent_delegations", "agent_session_key", "dim_session") in triples
         assert ("bridge_session_file", "file_key", "dim_file") in triples

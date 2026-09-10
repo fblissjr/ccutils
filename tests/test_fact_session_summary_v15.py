@@ -25,10 +25,7 @@ from ccutils.etl.entry_type_facts import (
 from ccutils.etl.fact_messages import populate_fact_messages
 from ccutils.etl.fact_session_summary import populate_fact_session_summary
 from ccutils.etl.fact_token_usage import populate_fact_token_usage
-from ccutils.etl.fact_tool_calls import (
-    populate_fact_tool_results,
-    populate_fact_tool_uses,
-)
+from ccutils.etl.fact_tool_calls import populate_fact_tool_calls
 from ccutils.etl.lineage import EtlRun
 from ccutils.etl.staging import load_session_to_staging
 from ccutils.parsers.parquet_writer import write_session_to_parquet
@@ -50,8 +47,7 @@ def _stage(conn, jsonl_path, tmp_path, run):
 def _populate_everything(conn, run):
     """Run every fact populator so the summary has something to roll up."""
     populate_fact_messages(conn, run=run)
-    populate_fact_tool_uses(conn, run=run)
-    populate_fact_tool_results(conn, run=run)
+    populate_fact_tool_calls(conn, run=run)
     populate_fact_token_usage(conn, run=run)
     populate_fact_attachments(conn, run=run)
     populate_fact_progress_events(conn, run=run)

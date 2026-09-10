@@ -382,7 +382,10 @@ def import_memories(
     _insert_links(conn, links, run)
     _resolve_project_and_session_keys(conn)
     _resolve_link_targets(conn)
-    insert_missing_dim_dates(conn, "dim_memory", "modified_at")
+    # date_key comes from `modified` when the frontmatter states it and
+    # from the file mtime otherwise, so dim_date needs both columns or a
+    # memory with no stated `modified` dangles.
+    insert_missing_dim_dates(conn, "dim_memory", "modified_at", "file_mtime")
     if counts is not None:
         counts.rows_updated = relinked
     return len(inbound)

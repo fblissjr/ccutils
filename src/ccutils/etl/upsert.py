@@ -76,7 +76,7 @@ def lineage_upsert(
             the `timestamp_col` -- session_key/date_key/time_key/hash_diff
             are derived from it.
         natural_key: column name used to match rows (e.g. 'entry_id' for
-            most entry-type facts; 'tool_use_id' for fact_tool_uses/results).
+            most entry-type facts; 'tool_use_id' for fact_tool_calls).
         payload_cols: columns copied from inbound -> target on INSERT/UPDATE.
             EXCLUDES lineage columns and natural_key + session_id (handled
             separately). Their VALUES are interpolated into SQL but the

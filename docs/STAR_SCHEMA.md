@@ -25,13 +25,13 @@ DuckDB:
     etl.log_entries                              (Tier 2 -- transient staging)
                   |
                   v  per-fact populators
-    fact_messages, fact_tool_uses, fact_tool_results,
+    fact_messages, fact_tool_calls,
     fact_token_usage, fact_attachments, fact_progress_events,
     fact_system_events, fact_meta_events,
     fact_file_history_snapshots, fact_queue_operations,
     fact_pr_links, fact_file_operations, fact_diagnostics,
-    fact_plan_revisions, fact_agent_delegations, fact_errors,
-    fact_tool_chain_steps, fact_session_facets,
+    fact_plan_revisions, fact_agent_delegations,
+    fact_session_facets,
     fact_session_summary                         (Tier 3 -- warehouse)
 ```
 
@@ -84,7 +84,7 @@ The orchestrator at `src/ccutils/etl/orchestrator.py` (`run_v15_etl`) runs per s
 2. Load Tier 2 staging from Parquet (`load_session_to_staging`, `etl/staging.py`). Returns a `StagingLoad` NamedTuple (`rows`, `data_start_ts`, `data_end_ts`) in one pass -- the row count feeds the `load_staging` step's counters and the CDC window feeds `EtlRun.complete()` without a second scan of staging.
 3. Upsert stub dimensions (`dim_session`, `dim_project`, `dim_tool`, `dim_model`). Subagent enrichment fills `is_agent` / `agent_id` / `parent_session_key` / `agent_type` / `agent_description` on `dim_session` immediately after (see "Subagent session identity" above).
 4. Run fact populators in dependency order:
-   - `fact_messages`, `fact_tool_uses`, `fact_tool_results`
+   - `fact_messages`, `fact_tool_calls` (use + result + chain position)
    - `fact_token_usage`
    - `fact_attachments`, `fact_progress_events`, `fact_system_events`, `fact_meta_events`
    - `fact_file_history_snapshots`, `fact_queue_operations`, `fact_pr_links`
@@ -93,8 +93,6 @@ The orchestrator at `src/ccutils/etl/orchestrator.py` (`run_v15_etl`) runs per s
    - `fact_diagnostics` (flattens fact_attachments where type='diagnostics')
    - `fact_plan_revisions` (ExitPlanMode outcome classification via R16 tri-state `is_error`)
    - `fact_agent_delegations` (Task tool spawns + agent rollup metrics)
-   - `fact_errors` (flattens fact_tool_results where is_error=TRUE)
-   - `fact_tool_chain_steps` (tool sequences per agentic run)
    - `dim_session` heuristic enrichment (intent / complexity / outcome / domain)
    - `dim_session_chain` (slug-grouped chain aggregate)
    - `fact_session_facets` Tier 1 (F01..F19, SQL-computed)
@@ -105,10 +103,10 @@ After the per-session loop, two global sources are best-effort populated, both o
 
 ### What v0.15 captures that v0.14 missed
 
-- **`toolUseResult` structured payload (R1)**: per-tool typed columns on `fact_tool_results` (Edit `structured_patch`, Bash `exit_code`/`interrupted`, Read `num_lines`/`total_lines`, Agent rollups including `total_duration_ms`), plus a JSON catch-all for unknown tools.
+- **`toolUseResult` structured payload (R1)**: per-tool typed columns on `fact_tool_calls` (Edit `structured_patch`, Bash `exit_code`/`interrupted`, Read `num_lines`/`total_lines`, Agent rollups including `total_duration_ms`), plus a JSON catch-all for unknown tools.
 - **Cache-token split (R11)**: `fact_token_usage` and `fact_session_summary` split `cache_creation_tokens` into `cache_creation_5m_tokens` (1.25x pricing) and `cache_creation_1h_tokens` (2x pricing). `total_uncached_equivalent_tokens` correctly = input + creation_total + read.
 - **API-response grain on token facts (R23)**: one Claude Code response is flushed as several assistant entries that each repeat the same `usage`; `fact_token_usage` dedupes to one row per response (`api_message_id`) and `fact_messages` populates its token columns only on the response's first entry, so SUMs bill each response once instead of 2-3 times.
-- **Tri-state `is_error` (R16)**: nullable BOOLEAN on `fact_tool_results` instead of coercing missing-vs-false.
+- **Tri-state `is_error` (R16)**: nullable BOOLEAN on `fact_tool_calls` instead of coercing missing-vs-false.
 - **All 12 entry types**: `file-history-snapshot`, `queue-operation`, `pr-link`, `last-prompt`, etc.
 - **All 7 system subtypes** on `fact_system_events` (turn_duration, stop_hook_summary, api_error, compact_boundary, local_command, away_summary, bridge_status).
 - **All 6 progress variants** on `fact_progress_events` (hook, bash, agent, query update, search results, MCP).
@@ -363,40 +361,27 @@ One row per user/assistant entry.
 
 There is no `content_json` or `context_management_json` column on this table (raw content-block JSON lives on the unpopulated `fact_content_blocks` DDL stub, not here).
 
-#### fact_tool_uses
-One row per `tool_use` block emitted by the assistant.
+#### fact_tool_calls
+One row per `tool_use_id`: the assistant's `tool_use` block, its result (the `tool_result` block plus the entry-level `toolUseResult` payload, typed per tool), and its position in the agentic run. Three tables keyed by the same id (`fact_tool_uses`, `fact_tool_results`, `fact_tool_chain_steps`) and a filter over them (`fact_errors`) were merged at 1.0.0: on the corpus every use had exactly one result and one chain step, and every consumer joined them. A failed call is `WHERE is_error = TRUE`; a use whose session ended before a result arrived keeps NULL result columns; a result with no use in the same session is dropped.
 
 | Column | Type | Description |
 |--------|------|-------------|
 | tool_use_id | VARCHAR | PK (Anthropic's `id`) |
-| entry_id | VARCHAR | Degenerate dim: JSONL entry id |
-| session_key | VARCHAR | FK to dim_session |
-| project_key | VARCHAR | FK to dim_project |
-| tool_key | VARCHAR | FK to dim_tool |
+| entry_id | VARCHAR | Degenerate dim: the assistant entry carrying the tool_use block |
 | message_id | VARCHAR | FK to fact_messages (assistant turn) |
-| date_key | INTEGER | FK to dim_date |
-| time_key | INTEGER | FK to dim_time |
-| timestamp | TIMESTAMP | Tool-use timestamp |
-| tool_name | VARCHAR | Denormalized tool name |
-| invoke_sequence_num | INTEGER | Position of this tool_use block within the assistant message |
-| input_json | VARCHAR | Raw input JSON (JSON-encoded string) |
-| input_summary | VARCHAR | First 200 chars of input_json, for quick scanning |
-
-#### fact_tool_results
-One row per `tool_use_id`. Combines the `tool_result` content with the entry-level `toolUseResult` structured payload (R1).
-
-| Column | Type | Description |
-|--------|------|-------------|
-| tool_use_id | VARCHAR | PK (FK to fact_tool_uses) |
-| entry_id | VARCHAR | Degenerate dim: JSONL entry id carrying this result |
-| message_id | VARCHAR | Degenerate dim: user entry carrying the tool_result block |
 | session_key | VARCHAR | FK to dim_session |
 | project_key | VARCHAR | FK to dim_project |
 | tool_key | VARCHAR | FK to dim_tool |
 | date_key | INTEGER | FK to dim_date |
 | time_key | INTEGER | FK to dim_time |
+| timestamp | TIMESTAMP | Invocation timestamp |
 | tool_name | VARCHAR | Denormalized tool name |
-| timestamp | TIMESTAMP | Result timestamp |
+| invoke_sequence_num | INTEGER | Position of this tool_use block within the assistant entry |
+| input_json | VARCHAR | Raw input JSON (JSON-encoded string) |
+| input_summary | VARCHAR | First 200 chars of input_json |
+| result_entry_id | VARCHAR | The user entry carrying the tool_result block (NULL if none arrived) |
+| result_message_id | VARCHAR | Same entry's uuid |
+| result_timestamp | TIMESTAMP | Result timestamp |
 | is_error | BOOLEAN | Tri-state: TRUE / FALSE / NULL (R16) |
 | result_content_text | VARCHAR | Tool result text |
 | result_payload_json | VARCHAR | Raw entry-level `toolUseResult` payload (JSON-encoded string) |
@@ -423,6 +408,13 @@ One row per `tool_use_id`. Combines the `tool_result` content with the entry-lev
 | agent_total_tool_use_count | INTEGER | Task/Agent rollup |
 | agent_subagent_type | VARCHAR | Task/Agent rollup |
 | agent_id | VARCHAR | Task/Agent rollup |
+| chain_id | VARCHAR | md5(session_id, run_index): one chain per human turn (agentic run) |
+| step_position | INTEGER | 1-indexed within the chain |
+| prev_tool_key | VARCHAR | FK to dim_tool; NULL at the start of a chain |
+| next_tool_key | VARCHAR | FK to dim_tool; NULL at the end of a chain |
+| time_since_prev_seconds | DOUBLE | Elapsed since the previous tool in the chain |
+
+**Chain grain: the agentic run.** A chain is the contiguous block of tool uses following one human turn, up to the next human turn, a human turn being a user message with real input (not a tool_result envelope, not meta). Do NOT partition on the assistant message: Claude Code writes one content block per assistant entry, so parallel calls are separate entries sharing an API message id, and partitioning on the entry put 71,175 of 71,216 steps at position 1.
 
 #### fact_token_usage
 Per-API-response token data from assistant messages.
@@ -478,11 +470,11 @@ Time-series for meta entries (permission-mode, custom-title, agent-name, last-pr
 Thin per-entry-type facts. Each has `entry_id` as its PK, `session_key`, a `timestamp`, a discriminator, and typed/JSON payload columns specific to the entry type. Use them to inspect rare entry types without re-parsing JSONL. See `src/ccutils/etl/entry_type_facts.py` for exact columns per table.
 
 #### fact_file_operations
-One row per file touch. Derived from `fact_tool_uses` + `fact_tool_results`.
+One row per file touch. Derived from `fact_tool_calls`.
 
 | Column | Type | Description |
 |--------|------|-------------|
-| tool_use_id | VARCHAR | PK (FK to fact_tool_uses); no separate surrogate id |
+| tool_use_id | VARCHAR | PK (FK to fact_tool_calls); no separate surrogate id |
 | session_key | VARCHAR | FK to dim_session |
 | file_key | VARCHAR | FK to dim_file |
 | tool_key | VARCHAR | FK to dim_tool |
@@ -515,7 +507,7 @@ M:N aggregate per (session, file).
 LSP diagnostics flattened from `fact_attachments` where `attachment_type='diagnostics'`. Columns: `diagnostic_id` (PK), `entry_id`, `session_key`, `file_key`, `date_key`, `time_key`, `file_path`, `severity` (Error/Warning/Info/Hint), `source` (Pyright, typescript, etc.), `code`, `message`, `range_start_line` / `range_start_col` / `range_end_line` / `range_end_col`, `timestamp`.
 
 #### fact_plan_revisions
-One row per `ExitPlanMode` tool invocation, linked into a per-session revision chain. Uses the structural `fact_tool_results.is_error` signal (R16 tri-state) with full-content approval-signature fallback when `is_error` is NULL.
+One row per `ExitPlanMode` tool invocation, linked into a per-session revision chain. Uses the structural `fact_tool_calls.is_error` signal (R16 tri-state) with full-content approval-signature fallback when `is_error` is NULL.
 
 | Column | Type | Description |
 |--------|------|-------------|
@@ -524,7 +516,7 @@ One row per `ExitPlanMode` tool invocation, linked into a per-session revision c
 | project_key | VARCHAR | FK to dim_project |
 | date_key | INTEGER | FK to dim_date |
 | time_key | INTEGER | FK to dim_time |
-| tool_use_id | VARCHAR | FK to fact_tool_uses |
+| tool_use_id | VARCHAR | FK to fact_tool_calls |
 | revision_number | INTEGER | 1 = first plan in session, 2 = second, ... |
 | parent_revision_key | VARCHAR | FK self; NULL for first plan in session |
 | plan_text | TEXT | Full plan text from `input_json.plan` |
@@ -547,7 +539,7 @@ Task tool spawns + agent rollup metrics from R1 structured `toolUseResult` captu
 | Column | Type | Description |
 |--------|------|-------------|
 | delegation_key | VARCHAR | PK |
-| tool_use_id | VARCHAR | FK to fact_tool_uses (the Task tool_use that spawned the agent) |
+| tool_use_id | VARCHAR | FK to fact_tool_calls (the Agent tool_use that spawned the agent) |
 | session_key | VARCHAR | FK to dim_session (parent session) |
 | parent_session_key | VARCHAR | FK to dim_session (parent) |
 | agent_session_key | VARCHAR | FK to dim_session (agent) -- NULL if agent session not yet ETL'd |
@@ -572,16 +564,6 @@ Task tool spawns + agent rollup metrics from R1 structured `toolUseResult` captu
 **Why the two token columns are separate.** 188 synchronous delegations carry both an API-stated rollup and an ingested agent transcript, which makes the async derivation scoreable against a known answer. Duration matched 188/188 and tool count 188/188 -- but tokens matched only 12/188 within 10%, with the per-row ratio spanning p10 0.063 to p90 1.004. No formula reconciles them (in+out, out alone, +cache_creation, +cache_read, `total_uncached_equivalent`, the 5m/1h splits); it is not a capture gap (median 23 assistant records, 23 carrying usage) and not a nested-agent rollup (all 188 spawned none). Summing them in one column made async delegations read 3x cheaper than synchronous ones (median 19,444 vs 61,362) while measuring 2x longer. Aggregate over one or the other, never across both.
 
 **Rollups are written only for `completed`.** A partial sum from an unfinished agent is indistinguishable from a fast one, so `no_completion_recorded` and `spawn_failed` rows carry NULL for every rollup. `no_completion_recorded` states exactly what is known -- the agent's transcript records no completion -- and deliberately makes no claim about liveness: of 101 rows under its former name `in_flight_at_ingest`, 98 had ended mid-tool-loop a median of 15.7 days before the ETL ran. It absorbs a measured ~10% false-negative rate (19 of 188 agents whose parent saw a synchronous result still fail the terminal-`stop_reason` test; two alternative predicates miss the same 19).
-
-#### fact_errors
-One row per `fact_tool_results.is_error=TRUE`. Columns: `error_id` (PK), `tool_use_id` (FK), `session_key`, `tool_key`, `error_type` (one of `permission_denied` / `file_not_found` / `syntax_error` / `timeout` / `import_error` / `tool_error`, classified via DuckDB regex CASE), `date_key`, `time_key`, `error_message`, `timestamp`.
-
-#### fact_tool_chain_steps
-Per (session, tool_use, step_position) with prev/next tool keys for adjacency-pattern queries. Columns: `chain_step_id` (PK), `session_key`, `date_key`, `time_key`, `chain_id` (groups steps in the same chain), `tool_use_id` (FK), `tool_key`, `step_position` (1-indexed within the chain), `prev_tool_key`, `next_tool_key`, `is_error`, `time_since_prev_seconds`, `timestamp`.
-
-**Chain grain: the agentic run.** A chain is the contiguous block of tool uses following one human turn, up to the next human turn -- a human turn being a user message that is not a tool-result carrier and not meta. `chain_id` is `md5(session_id || '|' || run_index)`, where `run_index` counts human turns at or before the tool use; tool uses preceding the first human turn keep `run_index = 0` rather than being dropped (resumed and agent transcripts can open mid-flight).
-
-Do NOT partition on the assistant message. Claude Code writes one content block per assistant entry -- parallel tool calls become separate entries sharing an API message id but carrying distinct uuids -- so `fact_tool_uses.message_id` (a per-entry uuid) puts every tool use in a chain of length 1. That shipped and stayed silent: on a 2,250-session corpus 71,175 of 71,216 steps were `step_position = 1` with NULL prev/next, leaving `semantic_tool_patterns` with 5 rows and facet F07 empty for 99.5% of sessions. `time_since_prev_seconds` is genuine elapsed time under this grain (median ~4.6s on the real corpus); it was universally NULL before.
 
 #### fact_session_facets
 One row per (session_key, facet_type_key). Tier 1 facets (F01-F19) populated via SQL; Tier 2 facets (F20+) populated via the LLM extractor when injected.
@@ -632,7 +614,7 @@ One row per session. Aggregates over every fact above. Must populate last.
 | total_tool_uses | INTEGER | Tool use count |
 | unique_tools_used | INTEGER | Distinct tools used |
 | total_tool_results | INTEGER | Tool result count |
-| total_tool_errors | INTEGER | Error count (fact_tool_results.is_error=TRUE) |
+| total_tool_errors | INTEGER | Error count (fact_tool_calls.is_error=TRUE) |
 | total_api_errors | INTEGER | From fact_system_events |
 | total_compactions | INTEGER | From fact_system_events |
 | total_turn_durations_ms | BIGINT | Sum of turn durations, from fact_system_events |
@@ -659,7 +641,6 @@ All views use the `semantic_` prefix and join facts with dimensions for easy que
 
 - `semantic_sessions` -- sessions + project info + summary metrics + heuristic classifications + date/time
 - `semantic_messages` -- messages with session, model, and time context
-- `semantic_tool_calls` -- legacy-compat UNION over `fact_tool_uses` + `fact_tool_results` (mimics the v0.14 `fact_tool_calls` shape)
 - `semantic_file_operations` -- file operations with file info, tool, and session context
 - `semantic_session_chains` -- chain aggregates across all member sessions
 - `semantic_agent_delegations` -- delegations with parent/agent session details
@@ -726,14 +707,13 @@ LIMIT 10;
 SELECT
   ftu.session_id,
   json_extract_string(ftu.input_json, '$.command') AS command,
-  ftr.derived_exit_code,
-  ftr.derived_failure_kind,
-  ftr.timestamp
-FROM fact_tool_uses ftu
-JOIN fact_tool_results ftr USING (tool_use_id)
+  ftu.derived_exit_code,
+  ftu.derived_failure_kind,
+  ftu.timestamp
+FROM fact_tool_calls ftu
 WHERE ftu.tool_name = 'Bash'
-  AND ftr.is_error
-ORDER BY ftr.timestamp DESC
+  AND ftu.is_error
+ORDER BY ftu.timestamp DESC
 LIMIT 20;
 
 -- Permission-mode time series for a session (R12 -- full history, not last-value)
@@ -778,7 +758,7 @@ SELECT t1.tool_name AS tool_name,
        t2.tool_name AS next_tool_name,
        COUNT(*) AS frequency,
        SUM(CASE WHEN fcs.is_error THEN 1 ELSE 0 END) AS error_count
-FROM fact_tool_chain_steps fcs
+FROM fact_tool_calls fcs
 JOIN dim_tool t1 ON fcs.tool_key = t1.tool_key
 JOIN dim_tool t2 ON fcs.next_tool_key = t2.tool_key
 GROUP BY t1.tool_name, t2.tool_name
@@ -812,7 +792,7 @@ output_dir/
     ...
   facts/                 # One JSON file per fact table
     fact_messages.json
-    fact_tool_uses.json
+    fact_tool_calls.json
     ...
   etl/                   # One JSON file per etl.* table (never log_entries)
     runs.json

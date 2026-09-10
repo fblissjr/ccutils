@@ -9,8 +9,7 @@ Pipeline:
             ->  upsert dim_session / dim_project / dim_model / dim_tool
                 (minimal stub rows so fact FKs join)
             ->  populate_fact_messages
-            ->  populate_fact_tool_uses
-            ->  populate_fact_tool_results
+            ->  populate_fact_tool_calls
             ->  populate_fact_token_usage
             ->  populate_fact_attachments
             ->  populate_fact_progress_events
@@ -55,22 +54,17 @@ from ccutils.etl.fact_agent_delegations import (
     populate_fact_agent_delegations,
 )
 from ccutils.etl.fact_diagnostics import populate_fact_diagnostics
-from ccutils.etl.fact_errors import populate_fact_errors
 from ccutils.etl.fact_file_operations import (
     populate_dim_file,
     populate_fact_file_operations,
 )
 from ccutils.etl.fact_plan_revisions import populate_fact_plan_revisions
-from ccutils.etl.fact_tool_chain_steps import populate_fact_tool_chain_steps
 from ccutils.etl.subagent_enrichment import populate_subagent_dim_session
 from ccutils.etl.fact_messages import populate_fact_messages
 from ccutils.etl.fact_session_facets import populate_tier1_facets
 from ccutils.etl.fact_session_summary import populate_fact_session_summary
 from ccutils.etl.fact_token_usage import populate_fact_token_usage
-from ccutils.etl.fact_tool_calls import (
-    populate_fact_tool_results,
-    populate_fact_tool_uses,
-)
+from ccutils.etl.fact_tool_calls import populate_fact_tool_calls
 from ccutils.etl.lineage import EtlRun
 from ccutils.etl.staging import load_session_to_staging
 from ccutils.etl.utils import (
@@ -400,8 +394,7 @@ def run_v15_etl(
             # Populate every v0.15 fact in order. fact_session_summary MUST be
             # last -- it aggregates over the others.
             populate_fact_messages(conn, run=run)
-            populate_fact_tool_uses(conn, run=run)
-            populate_fact_tool_results(conn, run=run)
+            populate_fact_tool_calls(conn, run=run)
             populate_fact_token_usage(conn, run=run)
             populate_fact_attachments(conn, run=run)
             populate_fact_progress_events(conn, run=run)
@@ -410,7 +403,7 @@ def run_v15_etl(
             populate_fact_file_history_snapshots(conn, run=run)
             populate_fact_queue_operations(conn, run=run)
             populate_fact_pr_links(conn, run=run)
-            # dim_file + fact_file_operations depend on fact_tool_uses + fact_tool_results
+            # dim_file + fact_file_operations depend on fact_tool_calls
             populate_dim_file(conn, run=run)
             populate_fact_file_operations(conn, run=run)
             # bridge_session_file aggregates fact_file_operations
@@ -421,15 +414,10 @@ def run_v15_etl(
             # gives them a dim_file row so file_key resolves (idempotent).
             populate_dim_file(conn, run=run)
             # fact_plan_revisions classifies ExitPlanMode outcomes from
-            # fact_tool_results.is_error (R16 tri-state)
+            # fact_tool_calls.is_error (R16 tri-state)
             populate_fact_plan_revisions(conn, run=run)
             # fact_agent_delegations captures Task tool spawns + agent rollup
             populate_fact_agent_delegations(conn, run=run)
-            # fact_errors flattens fact_tool_results where is_error=TRUE; must
-            # run before dim_session_heuristics so error_count is accurate.
-            populate_fact_errors(conn, run=run)
-            # fact_tool_chain_steps captures tool sequences per assistant turn
-            populate_fact_tool_chain_steps(conn, run=run)
             # dim_session enrichment runs after all facts so the classifiers
             # see complete metrics + file-extension data
             with run.step("dim_session_heuristics", table="dim_session"):

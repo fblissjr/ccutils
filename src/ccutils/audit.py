@@ -224,9 +224,15 @@ def check_null_columns(conn, tables):
 def check_single_valued_columns(conn, tables):
     """A DENSE column (non-NULL on every live row) with one distinct value
     discriminates nothing. Sparse columns with one value are normal: a
-    rare-event column is mostly NULL and one value when set."""
+    rare-event column is mostly NULL and one value when set. Foreign-key
+    columns are skipped: one project_key on a build scoped to one project
+    is scope, not a defect."""
     for table in tables:
-        cols = [c for c in _columns(conn, table) if c not in _STRUCTURAL_COLUMNS]
+        cols = [
+            c for c in _columns(conn, table)
+            if c not in _STRUCTURAL_COLUMNS and c not in _KEY_TARGETS
+            and c not in ("project_path", "project_name")
+        ]
         if not cols:
             continue
         where = " WHERE is_deleted = FALSE" if "is_deleted" in _columns(conn, table) else ""
@@ -253,7 +259,7 @@ def check_delegation_ground_truth(conn):
                COUNT(*) FILTER (WHERE d.agent_total_tool_use_count <> u.n)
         FROM fact_agent_delegations d
         JOIN (
-            SELECT session_key, COUNT(*) AS n FROM fact_tool_uses
+            SELECT session_key, COUNT(*) AS n FROM fact_tool_calls
             WHERE is_deleted = FALSE GROUP BY session_key
         ) u ON u.session_key = d.agent_session_key
         WHERE d.is_deleted = FALSE AND d.agent_is_async IS NOT TRUE

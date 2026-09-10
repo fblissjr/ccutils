@@ -19,10 +19,7 @@ from ccutils.etl.fact_file_operations import (
     populate_fact_file_operations,
 )
 from ccutils.etl.fact_messages import populate_fact_messages
-from ccutils.etl.fact_tool_calls import (
-    populate_fact_tool_results,
-    populate_fact_tool_uses,
-)
+from ccutils.etl.fact_tool_calls import populate_fact_tool_calls
 from ccutils.etl.lineage import EtlRun
 from ccutils.etl.staging import load_session_to_staging
 from ccutils.parsers.parquet_writer import write_session_to_parquet
@@ -158,8 +155,7 @@ def _populate_session(conn, jsonl_path, tmp_path, project_name="test-project"):
         """
     )
     populate_fact_messages(conn, run=run)
-    populate_fact_tool_uses(conn, run=run)
-    populate_fact_tool_results(conn, run=run)
+    populate_fact_tool_calls(conn, run=run)
     populate_dim_file(conn, run=run)
     populate_fact_file_operations(conn, run=run)
 

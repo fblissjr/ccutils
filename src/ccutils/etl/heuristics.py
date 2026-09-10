@@ -41,14 +41,6 @@ _FAILURE_PATTERN = re.compile(
     r"\b(error|failed|couldn't|cannot|unable)\b", re.I
 )
 
-# Error type: first match wins.
-_ERROR_RULES = [
-    ("permission_denied", re.compile(r"permission denied|EACCES", re.I)),
-    ("file_not_found", re.compile(r"not found|ENOENT|no such file", re.I)),
-    ("syntax_error", re.compile(r"syntax error|SyntaxError", re.I)),
-    ("timeout", re.compile(r"timeout|ETIMEDOUT", re.I)),
-    ("import_error", re.compile(r"ImportError|ModuleNotFoundError", re.I)),
-]
 
 
 def classify_intent(first_user_message: str | None) -> str:
@@ -127,20 +119,6 @@ def classify_outcome(
     if _FAILURE_PATTERN.search(last_assistant_text):
         return "failure"
     return "unknown"
-
-
-def classify_error_type(error_message: str | None) -> str:
-    """Classify a tool error message into one of a small set of categories.
-
-    Returns one of: permission_denied, file_not_found, syntax_error,
-    timeout, import_error, tool_error.
-    """
-    if not error_message:
-        return "tool_error"
-    for error_type, pattern in _ERROR_RULES:
-        if pattern.search(error_message):
-            return error_type
-    return "tool_error"
 
 
 def classify_domain(file_extensions: list[str]) -> str:

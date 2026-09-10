@@ -67,7 +67,7 @@ class TestForeignWarehouseIsRefused:
         db = tmp_path / "w.duckdb"
         _build(db)
         conn = duckdb.connect(str(db))
-        conn.execute("ALTER TABLE fact_errors ADD COLUMN stray VARCHAR")
+        conn.execute("ALTER TABLE fact_diagnostics ADD COLUMN stray VARCHAR")
         conn.close()
         self._reopen_expecting_refusal(db)
 
@@ -77,7 +77,7 @@ class TestForeignWarehouseIsRefused:
         db = tmp_path / "w.duckdb"
         _build(db)
         conn = duckdb.connect(str(db))
-        conn.execute("ALTER TABLE fact_errors DROP COLUMN error_type")
+        conn.execute("ALTER TABLE fact_diagnostics DROP COLUMN severity")
         conn.close()
         self._reopen_expecting_refusal(db)
 
@@ -101,7 +101,7 @@ class TestForeignWarehouseIsRefused:
         _build(db)
         conn = duckdb.connect(str(db))
         conn.execute("UPDATE etl.schema_version SET ccutils_version = '0.99.0'")
-        conn.execute("ALTER TABLE fact_errors ADD COLUMN stray VARCHAR")
+        conn.execute("ALTER TABLE fact_diagnostics ADD COLUMN stray VARCHAR")
         conn.close()
         with pytest.raises(SchemaMismatchError) as exc:
             create_star_schema(db)
@@ -132,7 +132,7 @@ class TestCliSurfacesRefusal:
         db = out / "archive.duckdb"
         _build(db)
         conn = duckdb.connect(str(db))
-        conn.execute("ALTER TABLE fact_errors ADD COLUMN stray VARCHAR")
+        conn.execute("ALTER TABLE fact_diagnostics ADD COLUMN stray VARCHAR")
         conn.close()
 
         result = CliRunner().invoke(

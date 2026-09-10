@@ -10,8 +10,8 @@ Scope: only sessions currently in staging are enriched -- prior sessions
 in dim_session retain their previous classification. Idempotent:
 re-running on unchanged source produces identical results.
 
-Run AFTER populate_fact_messages, populate_fact_tool_uses,
-populate_fact_tool_results, populate_fact_file_operations, and
+Run AFTER populate_fact_messages, populate_fact_tool_calls,
+populate_fact_file_operations, and
 populate_bridge_session_file. (These supply the metrics + the file
 extensions.)
 """
@@ -75,15 +75,9 @@ def populate_dim_session_heuristics(
         tool_metrics AS (
             SELECT ftu.session_id,
                    COUNT(*) AS tool_count,
-                   SUM(CASE WHEN ftr.is_error = TRUE THEN 1 ELSE 0 END)
+                   SUM(CASE WHEN ftu.is_error = TRUE THEN 1 ELSE 0 END)
                        AS error_count
-            FROM fact_tool_uses ftu
-            -- is_deleted in the ON clause: a soft-deleted duplicate result
-            -- row would fan this join out and silently double-count
-            -- tool_count/error_count (no natural-key assertion runs here).
-            LEFT JOIN fact_tool_results ftr
-                   ON ftr.tool_use_id = ftu.tool_use_id
-                  AND ftr.is_deleted = FALSE
+            FROM fact_tool_calls ftu
             WHERE ftu.is_deleted = FALSE
               AND ftu.session_id IN (SELECT session_id FROM staging_sessions)
             GROUP BY ftu.session_id

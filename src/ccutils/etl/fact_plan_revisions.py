@@ -1,15 +1,15 @@
-"""Populate fact_plan_revisions from fact_tool_uses + fact_tool_results.
+"""Populate fact_plan_revisions from fact_tool_calls.
 
 One row per ExitPlanMode tool_use. Outcome is classified with a
 two-tier signal hierarchy:
 
-1. STRUCTURAL (preferred): fact_tool_results.is_error tri-state nullable
+1. STRUCTURAL (preferred): fact_tool_calls.is_error tri-state nullable
    BOOLEAN (R16). When is_error=FALSE -> accepted, is_error=TRUE -> rejected.
 2. CONTENT (fallback when is_error IS NULL): match the result_content_text
    against the documented Claude Code approval-signature phrase. Real
    sessions emit accepted plans without an explicit is_error field, so
    this fallback is necessary -- but unlike v0.14 we read the FULL
-   content from fact_tool_results.result_content_text rather than the
+   content from fact_tool_calls.result_content_text rather than the
    2000-char-truncated fact_tool_calls.output_text.
 
 Classification (priority order):
@@ -22,7 +22,7 @@ Classification (priority order):
 parent_revision_key chains revisions within a session by timestamp.
 user_feedback_text captures the next user text message after a rejection.
 
-Run AFTER populate_fact_tool_uses + populate_fact_tool_results.
+Run AFTER populate_fact_tool_calls.
 """
 
 from __future__ import annotations
@@ -68,6 +68,10 @@ def populate_fact_plan_revisions(conn, *, run: EtlRun) -> None:
                 ftu.session_id,
                 ftu.timestamp AS plan_timestamp,
                 ftu.message_id AS invoke_message_id,
+                ftu.is_error,
+                ftu.result_content_text,
+                ftu.result_timestamp AS resolved_timestamp,
+                ftu.result_message_id,
                 json_extract_string(ftu.input_json, '$.plan') AS plan_text,
                 json_extract_string(ftu.input_json, '$.planFilePath')
                     AS plan_file_path,
@@ -77,7 +81,7 @@ def populate_fact_plan_revisions(conn, *, run: EtlRun) -> None:
                 COUNT(*) OVER (
                     PARTITION BY ftu.session_id
                 ) AS revisions_in_session
-            FROM fact_tool_uses ftu
+            FROM fact_tool_calls ftu
             JOIN dim_tool dt USING (tool_key)
             WHERE ftu.is_deleted = FALSE
               AND dt.tool_name = 'ExitPlanMode'
@@ -89,19 +93,8 @@ def populate_fact_plan_revisions(conn, *, run: EtlRun) -> None:
         with_results AS (
             -- Pair each plan_call to its tool_result (may be missing if
             -- the session ended mid-flight -> pending).
-            SELECT
-                pc.*,
-                ftr.is_error,
-                ftr.result_content_text,
-                ftr.timestamp AS resolved_timestamp,
-                ftr.message_id AS result_message_id
+            SELECT pc.*
             FROM plan_calls pc
-            -- is_deleted in the ON clause: a soft-deleted duplicate result
-            -- row would pair one plan_call to two results and duplicate the
-            -- revision downstream.
-            LEFT JOIN fact_tool_results ftr
-                   ON ftr.tool_use_id = pc.tool_use_id
-                  AND ftr.is_deleted = FALSE
         ),
         with_outcome AS (
             SELECT

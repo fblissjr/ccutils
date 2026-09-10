@@ -92,12 +92,12 @@ class TestPlantedDefectsAreFound:
     def test_natural_key_violation(self, warehouse):
         conn = _open(warehouse)
         conn.execute(
-            "INSERT INTO fact_tool_results SELECT * REPLACE ('dup-entry' AS entry_id, "
-            "'other-hash' AS hash_diff) FROM fact_tool_results LIMIT 1"
+            "INSERT INTO fact_tool_calls SELECT * REPLACE ('dup-entry' AS entry_id, "
+            "'other-hash' AS hash_diff) FROM fact_tool_calls LIMIT 1"
         )
         conn.close()
         findings, _ = _findings(warehouse, "natural_key_unique")
-        assert [f.object for f in findings] == ["fact_tool_results"]
+        assert [f.object for f in findings] == ["fact_tool_calls"]
 
     def test_declared_populated_but_no_step_wrote_it(self, warehouse):
         conn = _open(warehouse)
@@ -153,13 +153,13 @@ class TestPlantedDefectsAreFound:
         the shape bash_exit_code had on 52,974 real rows before 1.0.0.)"""
         conn = _open(warehouse)
         conn.execute(
-            "INSERT INTO fact_tool_results SELECT r.* REPLACE "
+            "INSERT INTO fact_tool_calls SELECT r.* REPLACE "
             "('e' || i AS entry_id, 'toolu_' || i AS tool_use_id) "
-            "FROM fact_tool_results r, range(60) t(i) LIMIT 60"
+            "FROM fact_tool_calls r, range(60) t(i) LIMIT 60"
         )
         conn.close()
         findings, _ = _findings(warehouse, "null_column")
-        assert ("fact_tool_results", "webfetch_http_code") in [
+        assert ("fact_tool_calls", "webfetch_http_code") in [
             (f.object, f.detail) for f in findings
         ]
 

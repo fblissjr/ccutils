@@ -5,7 +5,7 @@ Grain: one row per Task tool_use (parent-side subagent spawn).
 The legacy populator tried to cross-link parent and subagent sessions
 via heuristic matching. In v0.15 the agent rollup metrics (totalDurationMs,
 totalTokens, totalToolUseCount, status, subagent_type) are captured
-structurally on fact_tool_results.agent_* columns from the R1 toolUseResult
+structurally on fact_tool_calls.agent_* columns from the R1 toolUseResult
 payload, so the parent-side fact stands on its own.
 
 agent_session_key / parent_session_key are NULL for now -- cross-session
@@ -13,7 +13,7 @@ subagent linkage (reading .meta.json sidecars to mark dim_session.is_agent
 and parent_session_key) is a separate Phase D follow-up. session_id on
 this fact is the PARENT session that delegated.
 
-Run AFTER populate_fact_tool_uses + populate_fact_tool_results.
+Run AFTER populate_fact_tool_calls + populate_fact_tool_calls.
 """
 
 from __future__ import annotations
@@ -26,10 +26,7 @@ import pytest
 from ccutils import create_star_schema
 from ccutils.etl.fact_agent_delegations import populate_fact_agent_delegations
 from ccutils.etl.fact_messages import populate_fact_messages
-from ccutils.etl.fact_tool_calls import (
-    populate_fact_tool_results,
-    populate_fact_tool_uses,
-)
+from ccutils.etl.fact_tool_calls import populate_fact_tool_calls
 from ccutils.etl.lineage import EtlRun
 from ccutils.etl.staging import load_session_to_staging
 from ccutils.parsers.parquet_writer import write_session_to_parquet
@@ -130,8 +127,7 @@ def _populate(conn, jsonl_path, tmp_path):
         """
     )
     populate_fact_messages(conn, run=run)
-    populate_fact_tool_uses(conn, run=run)
-    populate_fact_tool_results(conn, run=run)
+    populate_fact_tool_calls(conn, run=run)
     populate_fact_agent_delegations(conn, run=run)
     return run
 
@@ -237,7 +233,7 @@ class TestFactAgentDelegations:
             """
             SELECT ftr.agent_id, fad.agent_session_key
             FROM fact_agent_delegations fad
-            JOIN fact_tool_results ftr USING (tool_use_id)
+            JOIN fact_tool_calls ftr USING (tool_use_id)
             ORDER BY ftr.agent_id
             """
         ).fetchall()
@@ -836,7 +832,7 @@ class TestAsyncCompletionReconciliation:
         # nothing at all.
         assert row[3] is not None, "duration derivation validated 188/188"
         # row[4] (tool count) is deliberately not asserted here: this
-        # fixture's agent calls no tools, so there is no fact_tool_uses row
+        # fixture's agent calls no tools, so there is no fact_tool_calls row
         # to count and the value is NULL for a reason unrelated to tokens.
 
     def test_sync_delegation_keeps_api_stated_tokens(self, conn, tmp_path):
@@ -1071,10 +1067,10 @@ class TestAsyncCompletionReconciliation:
 
 
 class TestSoftDeletedResultsDoNotFanOut:
-    """A soft-deleted fact_tool_results twin must not fan out the inbound.
+    """A soft-deleted fact_tool_calls twin must not fan out the inbound.
 
     Same defect class as the file-operations test of the same name: this
-    populator derives from fact_tool_uses JOIN fact_tool_results, and a
+    populator derives from fact_tool_calls JOIN fact_tool_calls, and a
     repaired (soft-deleted) duplicate result row must not re-enter through
     the join. Observed on a real pre-R23 warehouse: 1 session failed with
     2 duplicate delegation_keys after the open-time repair had run.
@@ -1090,10 +1086,10 @@ class TestSoftDeletedResultsDoNotFanOut:
         assert before > 0, "fixture must produce at least one delegation"
 
         conn.execute(
-            "INSERT INTO fact_tool_results SELECT * REPLACE ("
+            "INSERT INTO fact_tool_calls SELECT * REPLACE ("
             "  'e_twin' AS entry_id, TRUE AS is_deleted,"
             "  current_timestamp AS deleted_at)"
-            "FROM fact_tool_results WHERE tool_name = 'Task' "
+            "FROM fact_tool_calls WHERE tool_name = 'Task' "
             "ORDER BY tool_use_id LIMIT 1"
         )
 

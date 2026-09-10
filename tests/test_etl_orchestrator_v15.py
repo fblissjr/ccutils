@@ -74,8 +74,8 @@ class TestRunV15Etl:
         )
         for table in (
             "fact_messages",
-            "fact_tool_uses",
-            "fact_tool_results",
+            "fact_tool_calls",
+            "fact_tool_calls",
             "fact_token_usage",
             "fact_session_summary",
         ):
@@ -119,7 +119,7 @@ class TestRunV15Etl:
             parquet_lake_root=tmp_path / "lake",
         )
         first = {}
-        for table in ("fact_messages", "fact_tool_uses", "fact_tool_results",
+        for table in ("fact_messages", "fact_tool_calls", "fact_tool_calls",
                       "fact_token_usage", "fact_session_summary"):
             first[table] = conn.execute(
                 f"SELECT last_updated_at FROM {table} ORDER BY 1"

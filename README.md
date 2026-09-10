@@ -195,9 +195,9 @@ Subagent transcripts are first-class sessions: agent files carry their parent's 
 
 - **Machinery, in the `etl` schema:** `etl.versions`, `etl.batch_runs`, `etl.runs`, `etl.steps`, `etl.schema_version` (plus transient `etl.log_entries` staging). `main` holds only dimensions, facts and views.
 - **Dimensions:** `dim_session` (with intent/complexity/outcome/domain enrichment + subagent linkage), `dim_project`, `dim_tool`, `dim_model`, `dim_file`, `dim_session_chain`, `dim_facet_type` (facet registry).
-- **Core facts:** `fact_messages`, `fact_tool_uses`, `fact_tool_results` (R1 structured `toolUseResult` payloads: Edit `structured_patch`, Bash `exit_code` / `interrupted`, Read `num_lines`, Agent rollups), `fact_token_usage` (R11 cache split: `cache_creation_5m_tokens` + `cache_creation_1h_tokens`), `fact_session_summary`.
+- **Core facts:** `fact_messages`, `fact_tool_calls` (one row per tool use: the call, its typed `toolUseResult` payload, the derived failure kind, and its position in the agentic run), `fact_token_usage` (R11 cache split: `cache_creation_5m_tokens` + `cache_creation_1h_tokens`), `fact_session_summary`.
 - **Entry-type facts:** `fact_attachments`, `fact_progress_events`, `fact_system_events`, `fact_meta_events` (permission-mode time series), `fact_file_history_snapshots`, `fact_queue_operations`, `fact_pr_links`.
-- **Derived:** `fact_file_operations` + `bridge_session_file`, `fact_diagnostics`, `fact_plan_revisions` (structural outcome from `fact_tool_results.is_error`), `fact_agent_delegations` (cross-session linkage via `dim_session.agent_id`), `fact_errors`, `fact_tool_chain_steps`.
+- **Derived:** `fact_file_operations` + `bridge_session_file`, `fact_diagnostics`, `fact_plan_revisions` (structural outcome from `fact_tool_calls.is_error`), `fact_agent_delegations` (cross-session linkage via `dim_session.agent_id`).
 - **Facets:** `fact_session_facets` Tier 1 (F01-F19, SQL-computed; always on). Tier 2 (F20+, LLM-extracted via Haiku) is opt-in via `--llm-facets`.
 
 **Populated after the per-session loop** (global sources, not per-session, so they are outside `run_v15_etl` and only the batch archive path reaches them):
@@ -226,23 +226,22 @@ LIMIT 20;
 
 -- Tool usage by category
 SELECT dt.tool_category, COUNT(*) AS uses
-FROM fact_tool_uses ftu
+FROM fact_tool_calls ftu
 JOIN dim_tool dt USING (tool_key)
 GROUP BY dt.tool_category
 ORDER BY uses DESC;
 
--- Bash invocations that exited non-zero or were interrupted (R1 toolUseResult capture)
+-- Bash invocations that failed, with the derived reason
 SELECT
   ftu.session_id,
   json_extract_string(ftu.input_json, '$.command') AS command,
-  ftr.derived_exit_code,
-  ftr.derived_failure_kind,
-  ftr.timestamp
-FROM fact_tool_uses ftu
-JOIN fact_tool_results ftr USING (tool_use_id)
+  ftu.derived_exit_code,
+  ftu.derived_failure_kind,
+  ftu.timestamp
+FROM fact_tool_calls ftu
 WHERE ftu.tool_name = 'Bash'
-  AND ftr.is_error
-ORDER BY ftr.timestamp DESC
+  AND ftu.is_error
+ORDER BY ftu.timestamp DESC
 LIMIT 20;
 
 -- ETL observability: per-session run status, duration, batch context,

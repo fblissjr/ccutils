@@ -8,8 +8,8 @@ self-contained row per session and never need to join facts to facts.
 Sourced from:
   fact_messages              user_messages, assistant_messages, total_thinking_blocks
   fact_token_usage           token tier rollups, api_response_count
-  fact_tool_uses             total_tool_uses, unique_tools_used
-  fact_tool_results          total_tool_results, total_tool_errors,
+  fact_tool_calls            total_tool_uses, unique_tools_used,
+                             total_tool_results, total_tool_errors,
   fact_system_events         api_errors, compactions, turn_durations,
                              stop_events, prevented_continuations
   fact_progress_events       totals + hook/bash variant counts
@@ -99,7 +99,7 @@ tool_use_rollup AS (
         session_id,
         COUNT(*) AS total_tool_uses,
         COUNT(DISTINCT tool_name) AS unique_tools_used
-    FROM fact_tool_uses
+    FROM fact_tool_calls
     WHERE is_deleted = FALSE
       AND session_id IN (SELECT DISTINCT session_id FROM etl.log_entries WHERE session_id IS NOT NULL)
     GROUP BY session_id
@@ -107,9 +107,9 @@ tool_use_rollup AS (
 tool_result_rollup AS (
     SELECT
         session_id,
-        COUNT(*) AS total_tool_results,
+        COUNT(result_entry_id) AS total_tool_results,
         SUM(CASE WHEN is_error THEN 1 ELSE 0 END) AS total_tool_errors
-    FROM fact_tool_results
+    FROM fact_tool_calls
     WHERE is_deleted = FALSE
       AND session_id IN (SELECT DISTINCT session_id FROM etl.log_entries WHERE session_id IS NOT NULL)
     GROUP BY session_id

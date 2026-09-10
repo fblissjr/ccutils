@@ -123,11 +123,11 @@ class TestCreateStarSchema:
         conn.close()
 
     def test_creates_fact_tool_uses_and_results_tables(self, output_dir):
-        """v0.15 replaces legacy fact_tool_calls with fact_tool_uses + fact_tool_results."""
+        """v0.15 replaces legacy fact_tool_calls with fact_tool_calls + fact_tool_calls."""
         db_path = output_dir / "test.duckdb"
         conn = create_star_schema(db_path)
 
-        for tbl in ("fact_tool_uses", "fact_tool_results"):
+        for tbl in ("fact_tool_calls", "fact_tool_calls"):
             result = conn.execute(
                 "SELECT name FROM sqlite_master WHERE type='table' AND name=?",
                 [tbl],
@@ -164,17 +164,6 @@ class TestCreateStarSchema:
 
         result = conn.execute(
             "SELECT name FROM sqlite_master WHERE type='view' AND name='semantic_messages'"
-        ).fetchone()
-        assert result is not None
-        conn.close()
-
-    def test_creates_semantic_tool_calls_view(self, output_dir):
-        """Test that semantic_tool_calls view is created."""
-        db_path = output_dir / "test.duckdb"
-        conn = create_star_schema(db_path)
-
-        result = conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='view' AND name='semantic_tool_calls'"
         ).fetchone()
         assert result is not None
         conn.close()
@@ -315,13 +304,13 @@ class TestFactMessagesTable:
 
 
 class TestFactToolUsesAndResultsTables:
-    """v0.15 split fact_tool_calls into fact_tool_uses + fact_tool_results."""
+    """v0.15 split fact_tool_calls into fact_tool_calls + fact_tool_calls."""
 
     def test_fact_tool_uses_has_dimension_keys(self, output_dir):
         db_path = output_dir / "test.duckdb"
         conn = create_star_schema(db_path)
 
-        columns = [c[0] for c in conn.execute("DESCRIBE fact_tool_uses").fetchall()]
+        columns = [c[0] for c in conn.execute("DESCRIBE fact_tool_calls").fetchall()]
         for col in ("session_key", "tool_key", "date_key", "time_key"):
             assert col in columns
         conn.close()
@@ -331,9 +320,9 @@ class TestFactToolUsesAndResultsTables:
         db_path = output_dir / "test.duckdb"
         conn = create_star_schema(db_path)
 
-        info = conn.execute("DESCRIBE fact_tool_results").fetchall()
+        info = conn.execute("DESCRIBE fact_tool_calls").fetchall()
         is_error_row = [r for r in info if r[0] == "is_error"]
-        assert is_error_row, "fact_tool_results missing is_error"
+        assert is_error_row, "fact_tool_calls missing is_error"
         # DuckDB DESCRIBE row: (column_name, column_type, null, key, default, extra)
         assert is_error_row[0][2] == "YES", "is_error must be nullable for tri-state"
         conn.close()
@@ -760,7 +749,7 @@ class TestFactPlanRevisions:
         conn = create_star_schema(db_path)
         columns = [c[0] for c in conn.execute("DESCRIBE fact_plan_revisions").fetchall()]
         # v0.15: tool_call_id -> tool_use_id (matching the rename across
-        # fact_tool_uses / fact_tool_results); invoke_message_id and
+        # fact_tool_calls / fact_tool_calls); invoke_message_id and
         # result_message_id dropped (derivable via tool_use_id join);
         # plan_estimated_tokens dropped (plan_char_count is enough --
         # the v0.15 schema treats word-count token estimates as a

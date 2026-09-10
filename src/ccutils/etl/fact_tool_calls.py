@@ -1,11 +1,16 @@
-"""Populate fact_tool_uses + fact_tool_results from etl.log_entries (Phase C3).
+"""Populate fact_tool_calls from etl.log_entries: one row per tool_use_id.
 
-Two facts replace the legacy fact_tool_calls. Pure SQL projection, mirroring
-the C2 pattern: project staging into an _inbound temp table, compute hash_diff,
-INSERT new rows, UPDATE diff'd rows, soft-delete missing rows.
+The use (the assistant's tool_use block), its result (the tool_result block
+plus the entry-level `toolUseResult` payload, typed per tool), and its
+position in the agentic run (chain_id, step_position, prev/next tool) are
+one row, because they are one grain. They used to be three tables keyed by
+the same id -- fact_tool_uses, fact_tool_results, fact_tool_chain_steps --
+plus fact_errors, a filter over the second; on the corpus every use had
+exactly one result and one chain step, and every consumer joined them.
 
-The key new capture vs the legacy ETL: per-tool typed columns from the
-entry-level `toolUseResult` field on user entries. Linked by tool_use_id.
+A result whose tool_use_id has no use in the same session is dropped: the
+use is the row, the result decorates it. A use with no result (the session
+ended mid-flight) keeps NULL result columns.
 """
 
 from __future__ import annotations
@@ -15,25 +20,10 @@ from ccutils.etl.upsert import lineage_upsert
 from ccutils.etl.utils import project_key_sql
 
 
-# Columns copied into fact_tool_uses by the lineage upsert. EXCLUDES
-# natural key (tool_use_id), session_id, and the derived keys
-# (session_key, date_key, time_key) which the helper handles.
-_USES_PAYLOAD_COLS = [
-    "entry_id", "message_id",
-    "project_key", "tool_key",
-    "tool_name", "invoke_sequence_num",
-    "input_json", "input_summary", "timestamp",
-]
-_USES_HASH_COLS = [
-    "tool_name", "invoke_sequence_num", "input_json",
-    "input_summary", "timestamp",
-]
-
-# Columns copied into fact_tool_results by the lineage upsert.
-_RESULTS_PAYLOAD_COLS = [
-    "entry_id", "message_id",
-    "project_key", "tool_key",
-    "tool_name", "timestamp",
+# Columns copied into fact_tool_calls by the lineage upsert. EXCLUDES the
+# natural key (tool_use_id), session_id, and the derived keys (session_key,
+# date_key, time_key) which the helper handles.
+_RESULT_TYPED_COLS = [
     "is_error", "result_content_text", "result_payload_json",
     "bash_stdout_bytes", "derived_exit_code", "derived_failure_kind", "sandbox_disabled",
     "edit_user_modified", "edit_replace_all", "edit_structured_patch_json",
@@ -46,19 +36,19 @@ _RESULTS_PAYLOAD_COLS = [
     "agent_total_tool_use_count", "agent_subagent_type",
     "agent_id", "agent_resolved_model", "agent_is_async",
 ]
-_RESULTS_HASH_COLS = [
-    "tool_name", "timestamp", "is_error",
-    "result_content_text", "result_payload_json",
-    "bash_stdout_bytes", "derived_exit_code", "derived_failure_kind", "sandbox_disabled",
-    "edit_user_modified", "edit_replace_all", "edit_structured_patch_json",
-    "read_num_lines", "read_total_lines", "read_file_path",
-    "write_type",
-    "glob_num_files", "glob_truncated",
-    "grep_mode", "grep_num_files",
-    "webfetch_http_code", "webfetch_bytes",
-    "agent_status", "agent_total_duration_ms", "agent_total_tokens",
-    "agent_total_tool_use_count", "agent_subagent_type",
-    "agent_id", "agent_resolved_model", "agent_is_async",
+_CHAIN_COLS = [
+    "chain_id", "step_position", "prev_tool_key", "next_tool_key",
+    "time_since_prev_seconds",
+]
+_PAYLOAD_COLS = [
+    "entry_id", "message_id", "project_key", "tool_key",
+    "tool_name", "invoke_sequence_num", "input_json", "input_summary", "timestamp",
+    "result_entry_id", "result_message_id", "result_timestamp",
+    *_RESULT_TYPED_COLS, *_CHAIN_COLS,
+]
+_HASH_COLS = [
+    "tool_name", "invoke_sequence_num", "input_json", "input_summary", "timestamp",
+    "result_timestamp", *_RESULT_TYPED_COLS, *_CHAIN_COLS,
 ]
 
 
@@ -350,34 +340,6 @@ QUALIFY tool_use_id IS NULL OR ROW_NUMBER() OVER (
 """
 
 
-def populate_fact_tool_uses(conn, *, run: EtlRun) -> None:
-    """Project staging tool_use blocks into fact_tool_uses."""
-    conn.execute("DROP TABLE IF EXISTS _inbound_tool_uses")
-    conn.execute(f"CREATE TEMP TABLE _inbound_tool_uses AS {_PROJECT_USES_SQL}")
-
-    # Derive input_summary, project_key, tool_key on the temp table.
-    # (session_key/date_key/time_key/hash_diff are added by lineage_upsert.)
-    conn.execute("ALTER TABLE _inbound_tool_uses ADD COLUMN input_summary VARCHAR")
-    conn.execute("ALTER TABLE _inbound_tool_uses ADD COLUMN project_key VARCHAR")
-    conn.execute("ALTER TABLE _inbound_tool_uses ADD COLUMN tool_key VARCHAR")
-    conn.execute("UPDATE _inbound_tool_uses SET input_summary = substring(input_json, 1, 200)")
-    conn.execute("UPDATE _inbound_tool_uses SET tool_key = md5(tool_name)")
-    conn.execute(
-        "UPDATE _inbound_tool_uses "
-        f"SET project_key = {project_key_sql('source_path')}"
-    )
-
-    lineage_upsert(
-        conn,
-        run=run,
-        table="fact_tool_uses",
-        inbound_table="_inbound_tool_uses",
-        natural_key="tool_use_id",
-        payload_cols=_USES_PAYLOAD_COLS,
-        hash_cols=_USES_HASH_COLS,
-    )
-
-
 # Derived from the STATED failure signal. `is_error` is what the source
 # says; the error text carries the reason. 1,281 of 1,608 failed Bash calls
 # on the corpus start with "Exit code N"; the rest are hook blocks,
@@ -406,34 +368,125 @@ _DERIVED_RESULT_SQL = """
 """
 
 
-def populate_fact_tool_results(conn, *, run: EtlRun) -> None:
-    """Project staging tool_result blocks (joined with toolUseResult payload)
-    into fact_tool_results. tool_name resolved from staging within the
-    populator -- decoupled from fact_tool_uses ordering.
-    """
+# One chain per agentic run: the contiguous block of tool uses following one
+# human turn, up to the next human turn. A human turn is a user message that
+# carries real input, not a tool_result envelope and not meta. Partitioning
+# on the assistant message instead put every tool use in its own chain of
+# length 1 (Claude Code writes ONE content block per assistant entry, so
+# parallel calls are separate entries) -- 71,175 of 71,216 steps at position
+# 1 on a 2,250-session corpus. run_index 0 is honest for transcripts that
+# open mid-flight. Reads the inbound uses/results, and fact_messages for
+# entry order (populated earlier in the same run).
+_CHAIN_SQL = """
+WITH staged AS (
+    SELECT DISTINCT session_id FROM etl.log_entries WHERE session_id IS NOT NULL
+),
+msg_seq AS (
+    SELECT session_id, message_id, MIN(sequence_num) AS sequence_num
+    FROM fact_messages
+    WHERE is_deleted = FALSE AND session_id IN (SELECT session_id FROM staged)
+    GROUP BY session_id, message_id
+),
+human_turns AS (
+    SELECT DISTINCT session_id, sequence_num
+    FROM fact_messages
+    WHERE is_deleted = FALSE AND message_type = 'user'
+      AND has_tool_result = FALSE AND is_meta = FALSE
+      AND session_id IN (SELECT session_id FROM staged)
+),
+tool_events AS (
+    SELECT u.tool_use_id, u.session_id, u.tool_key, u.timestamp,
+           ms.sequence_num, u.invoke_sequence_num
+    FROM _inbound_tool_uses u
+    JOIN msg_seq ms ON ms.session_id = u.session_id AND ms.message_id = u.message_id
+),
+events AS (
+    SELECT session_id, sequence_num, CAST(NULL AS TIMESTAMP) AS timestamp,
+           1 AS is_human, CAST(NULL AS VARCHAR) AS tool_use_id,
+           CAST(NULL AS VARCHAR) AS tool_key, 0 AS invoke_sequence_num
+    FROM human_turns
+    UNION ALL
+    SELECT session_id, sequence_num, timestamp, 0, tool_use_id, tool_key, invoke_sequence_num
+    FROM tool_events
+),
+runs AS (
+    SELECT *, SUM(is_human) OVER (
+        PARTITION BY session_id
+        ORDER BY sequence_num, is_human DESC, invoke_sequence_num
+        ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+    ) AS run_index
+    FROM events
+),
+ordered AS (
+    SELECT tool_use_id, session_id, timestamp,
+           md5(session_id || '|' || CAST(run_index AS VARCHAR)) AS chain_id,
+           ROW_NUMBER() OVER w AS step_position,
+           LAG(tool_key) OVER w AS prev_tool_key,
+           LEAD(tool_key) OVER w AS next_tool_key,
+           LAG(timestamp) OVER w AS prev_timestamp
+    FROM runs
+    WHERE tool_use_id IS NOT NULL
+    WINDOW w AS (PARTITION BY session_id, run_index ORDER BY sequence_num, invoke_sequence_num)
+)
+SELECT tool_use_id, session_id, chain_id, step_position, prev_tool_key, next_tool_key,
+       CASE WHEN prev_timestamp IS NOT NULL
+            THEN EXTRACT(EPOCH FROM (timestamp - prev_timestamp)) END AS time_since_prev_seconds
+FROM ordered
+"""
+
+
+def populate_fact_tool_calls(conn, *, run: EtlRun) -> None:
+    """Project staging into one row per tool_use_id: use + result + chain."""
+    conn.execute("DROP TABLE IF EXISTS _inbound_tool_uses")
+    conn.execute(f"CREATE TEMP TABLE _inbound_tool_uses AS {_PROJECT_USES_SQL}")
+    conn.execute("ALTER TABLE _inbound_tool_uses ADD COLUMN input_summary VARCHAR")
+    conn.execute("ALTER TABLE _inbound_tool_uses ADD COLUMN project_key VARCHAR")
+    conn.execute("ALTER TABLE _inbound_tool_uses ADD COLUMN tool_key VARCHAR")
+    conn.execute("UPDATE _inbound_tool_uses SET input_summary = substring(input_json, 1, 200)")
+    conn.execute("UPDATE _inbound_tool_uses SET tool_key = md5(tool_name)")
+    conn.execute(
+        "UPDATE _inbound_tool_uses "
+        f"SET project_key = {project_key_sql('source_path')}"
+    )
+
     conn.execute("DROP TABLE IF EXISTS _inbound_tool_results")
     conn.execute(
         "CREATE TEMP TABLE _inbound_tool_results AS "
         f"SELECT *, {_DERIVED_RESULT_SQL} FROM ({_PROJECT_RESULTS_SQL}) p"
     )
 
-    conn.execute("ALTER TABLE _inbound_tool_results ADD COLUMN project_key VARCHAR")
-    conn.execute("ALTER TABLE _inbound_tool_results ADD COLUMN tool_key VARCHAR")
+    conn.execute("DROP TABLE IF EXISTS _inbound_tool_chain")
+    conn.execute(f"CREATE TEMP TABLE _inbound_tool_chain AS {_CHAIN_SQL}")
+
+    typed = ", ".join(f"r.{c}" for c in _RESULT_TYPED_COLS)
+    chain = ", ".join(f"c.{col}" for col in _CHAIN_COLS)
+    conn.execute("DROP TABLE IF EXISTS _inbound_tool_calls")
     conn.execute(
-        "UPDATE _inbound_tool_results "
-        "SET tool_key = md5(tool_name) WHERE tool_name IS NOT NULL"
-    )
-    conn.execute(
-        "UPDATE _inbound_tool_results "
-        f"SET project_key = {project_key_sql('source_path')}"
+        f"""
+        CREATE TEMP TABLE _inbound_tool_calls AS
+        SELECT
+            u.tool_use_id, u.session_id, u.entry_id, u.message_id,
+            u.project_key, u.tool_key, u.tool_name, u.invoke_sequence_num,
+            u.input_json, u.input_summary, u.timestamp,
+            r.entry_id AS result_entry_id,
+            r.message_id AS result_message_id,
+            r.timestamp AS result_timestamp,
+            {typed},
+            {chain}
+        FROM _inbound_tool_uses u
+        LEFT JOIN _inbound_tool_results r
+               ON r.tool_use_id = u.tool_use_id AND r.session_id = u.session_id
+        LEFT JOIN _inbound_tool_chain c
+               ON c.tool_use_id = u.tool_use_id AND c.session_id = u.session_id
+        """
     )
 
     lineage_upsert(
         conn,
         run=run,
-        table="fact_tool_results",
-        inbound_table="_inbound_tool_results",
+        table="fact_tool_calls",
+        inbound_table="_inbound_tool_calls",
         natural_key="tool_use_id",
-        payload_cols=_RESULTS_PAYLOAD_COLS,
-        hash_cols=_RESULTS_HASH_COLS,
+        payload_cols=_PAYLOAD_COLS,
+        hash_cols=_HASH_COLS,
     )
