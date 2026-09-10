@@ -659,7 +659,6 @@ def _create_objects(conn) -> None:
             -- stop_hook_summary
             hook_count INTEGER,
             prevented_continuation BOOLEAN,
-            stop_reason VARCHAR,
             has_output BOOLEAN,
             -- api_error
             error_status INTEGER,
@@ -2021,7 +2020,7 @@ def _create_objects(conn) -> None:
                 ELSE subtype
             END AS decision_type,
             CASE subtype
-                WHEN 'stop_hook_summary' THEN stop_reason
+                WHEN 'stop_hook_summary' THEN NULL  -- stopReason is stated empty on every real row
                 WHEN 'api_error' THEN error_type
                 WHEN 'compact_boundary' THEN compact_trigger
             END AS decision_value,
@@ -2664,26 +2663,10 @@ AUDIT_EXCEPTIONS: dict[tuple[str, str, str | None], str] = {
         "Tier 2 (LLM) facets only; NULL on every Tier 1 row",
     ("null_column", "fact_session_facets", "extraction_metadata_json"):
         "Tier 2 (LLM) facets only; NULL on every Tier 1 row",
-    ("single_valued_column", "dim_memory", "node_type"):
-        "stated in frontmatter; one value in this corpus",
-    ("single_valued_column", "fact_tool_results", "edit_user_modified"):
-        "stated (userModified); never true in this corpus",
-    ("single_valued_column", "fact_token_usage", "service_tier"):
-        "stated by the API; one plan in this corpus",
-    ("single_valued_column", "fact_token_usage", "speed"):
-        "stated by the API; one value in this corpus",
-    ("single_valued_column", "fact_token_usage", "server_tool_use_web_search_requests"):
-        "stated by the API; zero in this corpus",
-    ("single_valued_column", "fact_token_usage", "server_tool_use_web_fetch_requests"):
-        "stated by the API; zero in this corpus",
-    ("single_valued_column", "fact_system_events", "prevented_continuation"):
-        "stated; never true in this corpus",
     ("single_valued_column", "fact_session_facets", "is_fallback"):
         "Tier 2 only; false on every Tier 1 row",
     ("single_valued_column", "fact_session_summary", "total_prevented_continuations"):
         "sum of a stated flag that is never true in this corpus",
-    ("single_valued_column", "fact_session_summary", "current_permission_mode"):
-        "stated; one mode in this corpus",
 }
 
 

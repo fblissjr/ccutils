@@ -20,9 +20,9 @@ machine that has it; nothing here depends on it.
   machinery moved to the `etl` schema, plain version string, coverage
   layer with step-level table names, seven stub tables culled, `ccutils
   audit` calibrated on a full-corpus build and its 46 findings fixed or
-  accepted with a reason). Step 8 (the reader's guide) also landed. What remains before tagging:
-  the merges decided the same day (see Decisions) and a clean gated audit
-  on a fresh full-corpus build.
+  accepted with a reason). Step 8 (the reader's guide) also landed. The gated audit exits clean on a
+  fresh full-corpus build (0 findings, 9 accepted). What remains before
+  tagging: the merges decided the same day (see Decisions).
 - **Suite:** about 1,320 tests collected (`uv run pytest tests/ --confcutdir=tests`).
   Healthy state is all green plus one skipped live-API test.
 - **Working tree:** `uv.lock` carries an uncommitted regeneration. It is

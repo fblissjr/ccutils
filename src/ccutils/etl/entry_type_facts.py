@@ -95,7 +95,7 @@ def populate_fact_progress_events(conn, *, run: EtlRun) -> None:
 _SYS_PAYLOAD_COLS = [
     "timestamp", "subtype", "level",
     "duration_ms", "message_count",
-    "hook_count", "prevented_continuation", "stop_reason", "has_output",
+    "hook_count", "prevented_continuation", "has_output",
     "error_status", "error_type",
     "retry_in_ms", "retry_attempt", "max_retries",
     "compact_trigger", "compact_pre_tokens", "logical_parent_uuid",
@@ -122,7 +122,6 @@ def populate_fact_system_events(conn, *, run: EtlRun) -> None:
             -- stop_hook_summary
             json_extract(sle.system_payload_json, '$.hookCount')::INTEGER AS hook_count,
             json_extract(sle.system_payload_json, '$.preventedContinuation')::BOOLEAN AS prevented_continuation,
-            NULLIF(json_extract_string(sle.system_payload_json, '$.stopReason'), '') AS stop_reason,
             json_extract(sle.system_payload_json, '$.hasOutput')::BOOLEAN AS has_output,
             -- api_error
             json_extract(sle.system_payload_json, '$.error.status')::INTEGER AS error_status,

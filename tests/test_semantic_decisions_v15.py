@@ -113,7 +113,7 @@ class TestSemanticDecisionsView:
 
     def test_system_event_subtypes_projected(self, conn):
         _insert_system_event(
-            conn, "stop_hook_summary", stop_reason="user_stop"
+            conn, "stop_hook_summary", has_output=True
         )
         _insert_system_event(
             conn, "api_error", error_type="overloaded", error_status=529
@@ -131,7 +131,7 @@ class TestSemanticDecisionsView:
             ).fetchall()
         )
         assert rows == {
-            "stop_event": "user_stop",
+            "stop_event": None,  # stopReason is stated empty on every real row; the column is gone
             "api_error": "overloaded",
             "compact_boundary": "auto",
         }
