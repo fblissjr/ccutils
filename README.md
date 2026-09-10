@@ -152,18 +152,18 @@ v0.15 rebuilds the ETL as a four-tier pipeline:
 
 1. **Tier 0** -- raw JSONL on disk (Claude Code writes).
 2. **Tier 1** -- Parquet lake under `<output>/parquet_lake/projects/<project>/<session>/`. Typed-columnar cache of every parsed JSONL entry. Persistent and re-derivable; the DuckDB warehouse can be torn down and rebuilt from Parquet without re-parsing JSONL.
-3. **Tier 2** -- DuckDB staging table (`stg_log_entries`) loaded from Parquet via `read_parquet()`, cleared at the end of every run.
+3. **Tier 2** -- DuckDB staging table (`etl.log_entries`) loaded from Parquet via `read_parquet()`, cleared at the end of every run.
 4. **Tier 3** -- DuckDB warehouse: dimensions, facts, and semantic views consumers query. The warehouse is persistent and incremental: re-running the CLI against the same database file accumulates new sessions instead of wiping and rebuilding.
 
-Every fact carries the v0.15 lineage convention: `created_at`, `last_updated_at`, `created_by_version_key`, `last_updated_by_version_key`, `etl_run_id`, `record_source`, `hash_diff`, plus soft-delete (`is_deleted`, `deleted_at`). Re-running ETL on unchanged source is a no-op (the `hash_diff` gate prevents spurious UPDATEs). There are no schema migrations: `meta_schema_version` is a one-row stamp of the schema fingerprint and ccutils version that wrote the file, and opening a warehouse whose table shapes differ from what the current code creates is refused with a rebuild instruction.
+Every fact carries the v0.15 lineage convention: `created_at`, `last_updated_at`, `created_by_version_key`, `last_updated_by_version_key`, `etl_run_id`, `record_source`, `hash_diff`, plus soft-delete (`is_deleted`, `deleted_at`). Re-running ETL on unchanged source is a no-op (the `hash_diff` gate prevents spurious UPDATEs). There are no schema migrations: `etl.schema_version` is a one-row stamp of the schema fingerprint and ccutils version that wrote the file, and opening a warehouse whose table shapes differ from what the current code creates is refused with a rebuild instruction.
 
-**Run metadata (three grains):** every CLI invocation writes one `fact_etl_batch_runs` row; every session ETL writes one `fact_etl_runs` row (linked via `batch_run_id`, carrying a CDC data window of min/max entry timestamps); every pipeline node writes one `fact_etl_steps` row with real affected-row counts. Counts on the parent rows are derived from the children at completion -- the audit trail cannot drift from what the DML actually did. Query `semantic_etl_runs` for the joined picture.
+**Run metadata (three grains):** every CLI invocation writes one `etl.batch_runs` row; every session ETL writes one `etl.runs` row (linked via `batch_run_id`, carrying a CDC data window of min/max entry timestamps); every pipeline node writes one `etl.steps` row with real affected-row counts. Counts on the parent rows are derived from the children at completion -- the audit trail cannot drift from what the DML actually did. Query `semantic_etl_runs` for the joined picture.
 
 Subagent transcripts are first-class sessions: agent files carry their parent's `sessionId` internally, so ccutils keys them by file identity (`agent-<id>`), links them to their parent session, and computes delegation depth -- your agents don't silently merge into their parents.
 
 **Tables populated by `run_v15_etl`:**
 
-- **Lineage / Meta:** `dim_etl_version`, `fact_etl_batch_runs`, `fact_etl_runs`, `fact_etl_steps`, `meta_schema_version`.
+- **Machinery, in the `etl` schema:** `etl.versions`, `etl.batch_runs`, `etl.runs`, `etl.steps`, `etl.schema_version` (plus transient `etl.log_entries` staging). `main` holds only dimensions, facts and views.
 - **Dimensions:** `dim_session` (with intent/complexity/outcome/domain enrichment + subagent linkage), `dim_project`, `dim_tool`, `dim_model`, `dim_file`, `dim_session_chain`, `dim_facet_type` (facet registry).
 - **Core facts:** `fact_messages`, `fact_tool_uses`, `fact_tool_results` (R1 structured `toolUseResult` payloads: Edit `structured_patch`, Bash `exit_code` / `interrupted`, Read `num_lines`, Agent rollups), `fact_token_usage` (R11 cache split: `cache_creation_5m_tokens` + `cache_creation_1h_tokens`), `fact_session_summary`.
 - **Entry-type facts:** `fact_attachments`, `fact_progress_events`, `fact_system_events`, `fact_meta_events` (permission-mode time series), `fact_file_history_snapshots`, `fact_queue_operations`, `fact_pr_links`.
@@ -236,14 +236,14 @@ LIMIT 10;
 SELECT
   status, sessions_seen, sessions_succeeded, sessions_failed,
   rows_inserted, data_start_ts, data_end_ts, output_format
-FROM fact_etl_batch_runs
+FROM etl.batch_runs
 ORDER BY started_at DESC
 LIMIT 5;
 ```
 
 ### JSON Export
 
-The v0.15 star schema as a JSON directory tree (`meta.json` + `dimensions/` + `facts/`).
+The v0.15 star schema as a JSON directory tree (`meta.json` + `dimensions/` + `facts/` + `etl/` for run metadata; staging is never exported).
 
 ```bash
 ccutils --format json -o ./json-export/

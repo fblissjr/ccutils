@@ -18,7 +18,7 @@ Cover four things before writing any implementation:
    `entry_session_id` when modeling agent files — the JSONL contract puts the
    PARENT's sessionId on every line).
 3. **Idempotency**: run ETL twice on unchanged source; second run must be a
-   no-op (hash_diff gate — assert zero updated rows via `fact_etl_steps` or
+   no-op (hash_diff gate — assert zero updated rows via `etl.steps` or
    unchanged `last_updated_at`).
 4. **Soft delete**: an entry present in run 1 and absent in run 2 gets
    `is_deleted = TRUE`, not a hard DELETE.
@@ -34,7 +34,7 @@ the CREATE, and every existing warehouse is refused and rebuilt (see
 ## 3. Populator `etl/fact_<x>.py`
 
 Shape: build a temp inbound table (one row per natural key) from
-`stg_log_entries` (or from permanent facts), then delegate to
+`etl.log_entries` (or from permanent facts), then delegate to
 `lineage_upsert(conn, run=run, table=..., inbound_table=..., natural_key=...,
 payload_cols=[...], hash_cols=[...])`.
 
@@ -50,7 +50,7 @@ payload_cols=[...], hash_cols=[...])`.
   `fact_session_facets`) MUST pass `soft_delete_scope_sql` or each populator
   soft-deletes the other's rows.
 - Inbound built from **permanent facts** (not staging) must scope to staged
-  sessions: `AND session_id IN (SELECT DISTINCT session_id FROM stg_log_entries ...)`.
+  sessions: `AND session_id IN (SELECT DISTINCT session_id FROM etl.log_entries ...)`.
 - The step row (`upsert:<table>`) is self-recorded with real affected-row
   counts — don't add manual step bookkeeping around it.
 
@@ -64,7 +64,7 @@ reads another fact, it goes after that fact's populator.
 
 Add the table to `_PROGRESS_TABLES` in `export/duckdb_archive.py`. That list
 must contain every DATA fact `run_v15_etl` populates and exclude the audit
-tables (`fact_etl_runs` / `fact_etl_batch_runs` / `fact_etl_steps`) — stale
+tables (`etl.runs` / `etl.batch_runs` / `etl.steps`) — stale
 entries undercount the display; audit rows would inflate it.
 
 ## 6. Optional semantic view

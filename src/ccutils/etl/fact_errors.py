@@ -62,7 +62,7 @@ def populate_fact_errors(conn, *, run: EtlRun) -> None:
             WHERE ftr.is_deleted = FALSE
               AND ftr.is_error = TRUE
               AND ftr.session_id IN (
-                  SELECT DISTINCT session_id FROM stg_log_entries
+                  SELECT DISTINCT session_id FROM etl.log_entries
                   WHERE session_id IS NOT NULL
               )
         )

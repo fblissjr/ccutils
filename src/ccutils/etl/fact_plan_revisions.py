@@ -82,7 +82,7 @@ def populate_fact_plan_revisions(conn, *, run: EtlRun) -> None:
             WHERE ftu.is_deleted = FALSE
               AND dt.tool_name = 'ExitPlanMode'
               AND ftu.session_id IN (
-                  SELECT DISTINCT session_id FROM stg_log_entries
+                  SELECT DISTINCT session_id FROM etl.log_entries
                   WHERE session_id IS NOT NULL
               )
         ),
@@ -159,14 +159,14 @@ def populate_fact_plan_revisions(conn, *, run: EtlRun) -> None:
             WHERE wo.outcome = 'rejected'
         ),
         -- Pull the feedback text from staging (fact_messages doesn't
-        -- carry content; the v0.15 model keeps text in stg_log_entries).
+        -- carry content; the v0.15 model keeps text in etl.log_entries).
         with_feedback_text AS (
             SELECT
                 wf.*,
                 json_extract_string(sle.message_json, '$.content')
                     AS user_feedback_text_candidate
             FROM with_feedback wf
-            LEFT JOIN stg_log_entries sle
+            LEFT JOIN etl.log_entries sle
                 ON sle.uuid = wf.user_feedback_message_id
         )
         SELECT

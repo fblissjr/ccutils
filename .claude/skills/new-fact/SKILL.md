@@ -35,7 +35,7 @@ in `src/ccutils/schemas/star/schema.py::create_star_schema()`.
 
 Full detail, pitfalls, and the `lineage_upsert` contract:
 `.claude/skills/etl-dev/references/new-fact-table.md`. Summary: build a temp
-inbound table from `stg_log_entries` (or scoped permanent facts), delegate to
+inbound table from `etl.log_entries` (or scoped permanent facts), delegate to
 `lineage_upsert(conn, run=run, table=..., inbound_table=..., natural_key=...,
 payload_cols=[...], hash_cols=[...])`. Wire into `run_v15_etl` in dependency
 order (`fact_session_summary` stays LAST), then add to `_PROGRESS_TABLES` in

@@ -24,7 +24,7 @@ Tier 0   raw JSONL on disk                        immutable
 Tier 1   parquet lake                             re-derivable cache, full history
    |
 Tier 2   staging: N SHAPED tables                 transient, one incremental slice per session
-           stg_log_entries    raw lines (exists today)
+           etl.log_entries    raw lines (exists today)
            stg_tool_uses      \
            stg_tool_results    >  extracted ONCE, here
            stg_messages       /
@@ -166,9 +166,9 @@ Three grains, joined `batch → run → step`:
 
 | Table | Grain |
 |---|---|
-| `fact_etl_batch_runs` | one CLI invocation |
-| `fact_etl_runs` | one session ETL — carries `batch_run_id`, CDC window, `run_kind` |
-| `fact_etl_steps` | one task within a run — `(etl_run_id, step_id)` |
+| `etl.batch_runs` | one CLI invocation |
+| `etl.runs` | one session ETL — carries `batch_run_id`, CDC window, `run_kind` |
+| `etl.steps` | one task within a run — `(etl_run_id, step_id)` |
 
 Already correct and not to be rebuilt: insert / update / soft-delete counts
 are separated at every grain, and every rollup is derived from children rather

@@ -1,4 +1,4 @@
-"""Populate fact_tool_uses + fact_tool_results from stg_log_entries (Phase C3).
+"""Populate fact_tool_uses + fact_tool_results from etl.log_entries (Phase C3).
 
 Two facts replace the legacy fact_tool_calls. Pure SQL projection, mirroring
 the C2 pattern: project staging into an _inbound temp table, compute hash_diff,
@@ -72,7 +72,7 @@ WITH assistant_entries AS (
         sle.source_path,
         TRY_CAST(sle.timestamp AS TIMESTAMP) AS timestamp,
         sle.message_json
-    FROM stg_log_entries sle
+    FROM etl.log_entries sle
     WHERE sle.type = 'assistant'
       AND json_type(sle.message_json, '$.content') = 'ARRAY'
 ),
@@ -147,7 +147,7 @@ WITH user_entries AS (
         TRY_CAST(sle.timestamp AS TIMESTAMP) AS timestamp,
         sle.message_json,
         sle.tool_use_result_json
-    FROM stg_log_entries sle
+    FROM etl.log_entries sle
     WHERE sle.type = 'user'
       AND json_type(sle.message_json, '$.content') = 'ARRAY'
 ),
@@ -168,7 +168,7 @@ tool_name_map AS (
     SELECT
         json_extract_string(b.block, '$.id') AS tool_use_id,
         json_extract_string(b.block, '$.name') AS tool_name
-    FROM stg_log_entries sle,
+    FROM etl.log_entries sle,
     LATERAL (
         SELECT unnest(json_extract(sle.message_json, '$.content')::JSON[]) AS block
     ) b

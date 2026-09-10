@@ -596,7 +596,7 @@ class TestEtlIntegration:
     def test_import_records_a_run_of_its_own_kind(self, conn, projects_root):
         run_memory_import(conn, projects_root=projects_root)
         rows = conn.execute(
-            "SELECT run_kind, status FROM fact_etl_runs "
+            "SELECT run_kind, status FROM etl.runs "
             "WHERE source_path = '<auto-memory>'"
         ).fetchall()
         assert rows == [("global_source", "success")]
@@ -618,7 +618,7 @@ class TestEtlIntegration:
         lying."""
         run_memory_import(conn, projects_root=projects_root)
         row = conn.execute(
-            "SELECT step_name, status, rows_inserted FROM fact_etl_steps "
+            "SELECT step_name, status, rows_inserted FROM etl.steps "
             "WHERE step_name = 'dim_memory'"
         ).fetchone()
         assert row == ("dim_memory", "success", 3)
@@ -628,7 +628,7 @@ class TestEtlIntegration:
     ):
         run_memory_import(conn, projects_root=projects_root)
         run_id = conn.execute(
-            "SELECT etl_run_id FROM fact_etl_runs WHERE source_path = '<auto-memory>'"
+            "SELECT etl_run_id FROM etl.runs WHERE source_path = '<auto-memory>'"
         ).fetchone()[0]
         assert conn.execute(
             "SELECT COUNT(*) FROM dim_memory WHERE etl_run_id = ?", [run_id]
@@ -664,7 +664,7 @@ class TestEtlIntegration:
         run_memory_import(conn, projects_root=projects_root)
         counts = [
             r[0] for r in conn.execute(
-                "SELECT rows_inserted FROM fact_etl_steps "
+                "SELECT rows_inserted FROM etl.steps "
                 "WHERE step_name = 'dim_memory' ORDER BY started_at"
             ).fetchall()
         ]
@@ -686,7 +686,7 @@ class TestEtlIntegration:
         run_memory_import(conn, projects_root=projects_root)
 
         row = conn.execute(
-            "SELECT status, error_message FROM fact_etl_runs "
+            "SELECT status, error_message FROM etl.runs "
             "WHERE source_path = '<auto-memory>'"
         ).fetchone()
         assert row[0] == "failed"
@@ -791,7 +791,7 @@ class TestParserContractUpgrade:
         run_memory_import(conn, projects_root=indexed_root)
 
         row = conn.execute(
-            "SELECT rows_inserted, rows_updated FROM fact_etl_steps "
+            "SELECT rows_inserted, rows_updated FROM etl.steps "
             "WHERE step_name = 'dim_memory' ORDER BY started_at DESC LIMIT 1"
         ).fetchone()
         assert row[1] > 0, "relink work must be recorded somewhere non-zero"
@@ -874,7 +874,7 @@ class TestInterruptAndGuarding:
 
         # The run must still be marked failed on the way out.
         assert conn.execute(
-            "SELECT status FROM fact_etl_runs WHERE source_path = '<auto-memory>'"
+            "SELECT status FROM etl.runs WHERE source_path = '<auto-memory>'"
         ).fetchone()[0] == "failed"
 
     def test_ordinary_errors_are_still_recorded_and_swallowed(

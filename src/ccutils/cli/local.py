@@ -250,7 +250,7 @@ def convert_cmd(
     # would silently produce a non-sanitized database on the duckdb/json
     # paths. Fail loud rather than ship the regression. Render-only formats
     # (html, markdown) sanitize on the render path and are exempt.
-    # --no-thinking IS wired (truncates stg_log_entries;
+    # --no-thinking IS wired (truncates etl.log_entries;
     # fact_messages.content_text already excludes thinking by SQL projection).
     if output_format in ("duckdb", "json") and private:
         raise click.UsageError(
@@ -330,7 +330,7 @@ def convert_cmd(
             # per file pointed every run at the same -o: the html index was
             # rewritten from the last file's session list so earlier transcripts
             # became unreachable, the json export overwrote dimensions/ so only
-            # the last session survived, `fact_etl_batch_runs` got N rows for one
+            # the last session survived, `etl.batch_runs` got N rows for one
             # invocation, the global sources ran N times, and with no -o a
             # browser window opened per file.
             _convert_files(
@@ -491,7 +491,7 @@ def _etl_session_files(
     batch path (export/duckdb_archive.py). Returns the list of
     (session_file, exception) failures.
 
-    Records one fact_etl_batch_runs row for the invocation; each session's
+    Records one etl.batch_runs row for the invocation; each session's
     EtlRun links back via batch_run_id and complete() rolls the counts up.
     Anything that escapes the per-file isolation (KeyboardInterrupt, a
     failure inside complete() itself) marks the batch row failed instead

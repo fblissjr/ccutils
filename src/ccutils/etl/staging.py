@@ -1,6 +1,6 @@
 """Load Tier 1 Parquet into the Tier 2 staging table.
 
-`stg_log_entries` is one row per JSONL line, with the envelope as typed
+`etl.log_entries` is one row per JSONL line, with the envelope as typed
 columns and polymorphic payloads as JSON strings. Fact-table populators
 (Phase C2 onward) read from staging and project into their grain.
 
@@ -38,7 +38,7 @@ def load_session_to_staging(
     conn,
     log_entries_parquet: str | Path,
 ) -> StagingLoad:
-    """Load one session's log_entries.parquet into stg_log_entries.
+    """Load one session's log_entries.parquet into etl.log_entries.
 
     Returns a StagingLoad (row count + CDC data window). Idempotent by
     source_path: existing rows for the same source are DELETEd before
@@ -59,12 +59,12 @@ def load_session_to_staging(
     if source_paths:
         placeholders = ",".join("?" for _ in source_paths)
         conn.execute(
-            f"DELETE FROM stg_log_entries WHERE source_path IN ({placeholders})",
+            f"DELETE FROM etl.log_entries WHERE source_path IN ({placeholders})",
             source_paths,
         )
 
     conn.execute(
-        f"INSERT INTO stg_log_entries SELECT * FROM read_parquet('{parquet_path_str}')"
+        f"INSERT INTO etl.log_entries SELECT * FROM read_parquet('{parquet_path_str}')"
     )
 
     if not source_paths:
@@ -88,7 +88,7 @@ def load_session_to_staging(
     #    ai-title, ...): the filename stem.
     conn.execute(
         f"""
-        UPDATE stg_log_entries
+        UPDATE etl.log_entries
         SET session_id = CASE
             WHEN {subagent_match_sql("source_path")}
                 THEN {subagent_session_id_sql("source_path")}
@@ -103,7 +103,7 @@ def load_session_to_staging(
     row = conn.execute(
         "SELECT COUNT(*), MIN(TRY_CAST(timestamp AS TIMESTAMP)), "
         "       MAX(TRY_CAST(timestamp AS TIMESTAMP)) "
-        "FROM stg_log_entries WHERE source_path = ANY (?)",
+        "FROM etl.log_entries WHERE source_path = ANY (?)",
         [source_paths],
     ).fetchone()
     return StagingLoad(*row)

@@ -220,15 +220,16 @@ class TestFileConversionDuckDB:
         assert db_path.exists()
 
         conn = _duckdb.connect(str(db_path))
-        tables = {row[0] for row in conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='table'"
+        tables = {f"{s}.{t}" for s, t in conn.execute(
+            "SELECT table_schema, table_name FROM information_schema.tables "
+            "WHERE table_type = 'BASE TABLE'"
         ).fetchall()}
         conn.close()
 
         # v0.15-only fact tables that must exist after a star ETL.
-        for expected in ("dim_etl_version", "fact_messages",
-                         "fact_session_summary", "fact_session_facets",
-                         "dim_facet_type"):
+        for expected in ("etl.versions", "main.fact_messages",
+                         "main.fact_session_summary", "main.fact_session_facets",
+                         "main.dim_facet_type"):
             assert expected in tables, (
                 f"Expected v0.15 table {expected} missing -- "
                 "did --format duckdb still write the legacy simple schema?"

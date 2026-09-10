@@ -201,7 +201,7 @@ def populate_fact_file_operations(conn, *, run: EtlRun) -> None:
           -- rows are already in target with matching hash_diff and would
           -- be no-ops to recompute.
           AND ftu.session_id IN (
-              SELECT DISTINCT session_id FROM stg_log_entries
+              SELECT DISTINCT session_id FROM etl.log_entries
               WHERE session_id IS NOT NULL
           )
         """

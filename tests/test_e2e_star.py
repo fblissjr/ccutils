@@ -287,21 +287,21 @@ def test_t1_upsert_zero_rows_soft_deletes_old_records(conn, temp_dir):
 # --- Feature 2: Staging & Summary Query Optimization ---
 
 def test_t1_staging_unconditionally_cleared_log_entries(conn, temp_dir):
-    """Test 8: Verify stg_log_entries is unconditionally cleared after run_v15_etl completes.
+    """Test 8: Verify etl.log_entries is unconditionally cleared after run_v15_etl completes.
     Even with include_thinking=True (default).
     """
     session = create_mock_session_file(temp_dir, "sess_stg_1", make_basic_loglines("sess_stg_1"))
     run_v15_etl(conn, session, project_name="test-project", parquet_lake_root=temp_dir / "lake", include_thinking=True)
     
     # Verify staging is empty
-    count = conn.execute("SELECT COUNT(*) FROM stg_log_entries").fetchone()[0]
-    assert count == 0, "stg_log_entries was not cleared at the end of the ETL run"
+    count = conn.execute("SELECT COUNT(*) FROM etl.log_entries").fetchone()[0]
+    assert count == 0, "etl.log_entries was not cleared at the end of the ETL run"
 
 
 def test_t1_session_summary_scoping_fact_messages(conn):
     """Test 10: Verify fact_messages subquery inside fact_session_summary is scoped to staging sessions."""
     from ccutils.etl.fact_session_summary import _PROJECT_SQL
-    expected_clause = "session_id in (select distinct session_id from stg_log_entries where session_id is not null)"
+    expected_clause = "session_id in (select distinct session_id from etl.log_entries where session_id is not null)"
     # Normalize whitespaces
     sql_normalized = " ".join(_PROJECT_SQL.lower().split())
     assert expected_clause in sql_normalized, "fact_messages query selection is not scoped to staging session_ids"
@@ -310,7 +310,7 @@ def test_t1_session_summary_scoping_fact_messages(conn):
 def test_t1_session_summary_scoping_fact_token_usage(conn):
     """Test 11: Verify fact_token_usage subquery inside fact_session_summary is scoped to staging sessions."""
     from ccutils.etl.fact_session_summary import _PROJECT_SQL
-    expected_clause = "session_id in (select distinct session_id from stg_log_entries where session_id is not null)"
+    expected_clause = "session_id in (select distinct session_id from etl.log_entries where session_id is not null)"
     # Normalize whitespaces
     sql_normalized = " ".join(_PROJECT_SQL.lower().split())
     # The staging scope must be applied specifically to the fact_token_usage subquery selection
@@ -325,7 +325,7 @@ def test_t1_session_summary_scoping_fact_token_usage(conn):
 def test_t1_session_summary_scoping_fact_tool_uses(conn):
     """Test 12: Verify fact_tool_uses subquery inside fact_session_summary is scoped to staging sessions."""
     from ccutils.etl.fact_session_summary import _PROJECT_SQL
-    expected_clause = "session_id in (select distinct session_id from stg_log_entries where session_id is not null)"
+    expected_clause = "session_id in (select distinct session_id from etl.log_entries where session_id is not null)"
     sql_normalized = " ".join(_PROJECT_SQL.lower().split())
     tool_uses_idx = sql_normalized.find("from fact_tool_uses")
     assert tool_uses_idx != -1
@@ -591,7 +591,7 @@ def test_t2_staging_cleared_on_exception(conn, temp_dir):
     """Test 26: Verify staging tables are cleared even if an exception occurs during the ETL run."""
     conn.execute(
         """
-        INSERT INTO stg_log_entries (
+        INSERT INTO etl.log_entries (
             etl_run_id, parsed_at, parser_version, record_source, entry_id, source_path, sequence_num, type, session_id
         ) VALUES ('run123', current_timestamp, '1.0', 'test', 'entry123', '/path', 1, 'user', 'sess123')
         """
@@ -603,14 +603,14 @@ def test_t2_staging_cleared_on_exception(conn, temp_dir):
     with pytest.raises(Exception):
         run_v15_etl(conn, invalid_file, project_name="p", parquet_lake_root=temp_dir / "lake")
         
-    count = conn.execute("SELECT COUNT(*) FROM stg_log_entries").fetchone()[0]
+    count = conn.execute("SELECT COUNT(*) FROM etl.log_entries").fetchone()[0]
     assert count == 0, "Staging was not cleared on ETL failure"
 
 
 def test_t2_session_summary_scoping_fact_tool_results(conn):
     """Test 27: Verify fact_tool_results subquery inside fact_session_summary is scoped to staging sessions."""
     from ccutils.etl.fact_session_summary import _PROJECT_SQL
-    expected_clause = "session_id in (select distinct session_id from stg_log_entries where session_id is not null)"
+    expected_clause = "session_id in (select distinct session_id from etl.log_entries where session_id is not null)"
     sql_normalized = " ".join(_PROJECT_SQL.lower().split())
     idx = sql_normalized.find("from fact_tool_results")
     assert idx != -1
@@ -621,7 +621,7 @@ def test_t2_session_summary_scoping_fact_tool_results(conn):
 def test_t2_session_summary_scoping_fact_file_operations(conn):
     """Test 28: Verify fact_file_operations subquery inside fact_session_summary is scoped to staging sessions."""
     from ccutils.etl.fact_session_summary import _PROJECT_SQL
-    expected_clause = "session_id in (select distinct session_id from stg_log_entries where session_id is not null)"
+    expected_clause = "session_id in (select distinct session_id from etl.log_entries where session_id is not null)"
     sql_normalized = " ".join(_PROJECT_SQL.lower().split())
     idx = sql_normalized.find("from fact_file_operations")
     if idx != -1:
@@ -632,7 +632,7 @@ def test_t2_session_summary_scoping_fact_file_operations(conn):
 def test_t2_session_summary_scoping_fact_diagnostics(conn):
     """Test 29: Verify fact_attachments subquery (for diagnostics) inside fact_session_summary is scoped to staging sessions."""
     from ccutils.etl.fact_session_summary import _PROJECT_SQL
-    expected_clause = "session_id in (select distinct session_id from stg_log_entries where session_id is not null)"
+    expected_clause = "session_id in (select distinct session_id from etl.log_entries where session_id is not null)"
     sql_normalized = " ".join(_PROJECT_SQL.lower().split())
     idx = sql_normalized.find("from fact_attachments")
     assert idx != -1
@@ -643,7 +643,7 @@ def test_t2_session_summary_scoping_fact_diagnostics(conn):
 def test_t2_session_summary_scoping_fact_plan_revisions(conn):
     """Test 30: Verify fact_plan_revisions subquery inside fact_session_summary is scoped to staging sessions."""
     from ccutils.etl.fact_session_summary import _PROJECT_SQL
-    expected_clause = "session_id in (select distinct session_id from stg_log_entries where session_id is not null)"
+    expected_clause = "session_id in (select distinct session_id from etl.log_entries where session_id is not null)"
     sql_normalized = " ".join(_PROJECT_SQL.lower().split())
     idx = sql_normalized.find("from fact_plan_revisions")
     if idx != -1:
@@ -693,7 +693,7 @@ def test_t2_subagent_recursive_cte_handles_deep_tree(conn):
     conn.execute("INSERT INTO dim_session (session_key, session_id, is_agent, parent_session_key) VALUES (md5('D'), 'D', TRUE, md5('C'))")
     conn.execute(
         """
-        INSERT INTO stg_log_entries (
+        INSERT INTO etl.log_entries (
             etl_run_id, parsed_at, parser_version, record_source, entry_id, source_path, sequence_num, type, session_id
         ) VALUES ('run-t35', current_timestamp, '1.0', 'test', 'entry-t35', '/path', 1, 'user', 'D')
         """
@@ -774,7 +774,7 @@ def test_t3_incremental_load_and_scoped_summary_interaction(conn, temp_dir):
     session_2 = create_mock_session_file(temp_dir, "sess_2", make_basic_loglines("sess_2"))
     
     from ccutils.etl.fact_session_summary import _PROJECT_SQL
-    assert "stg_log_entries" in _PROJECT_SQL, "Summary populator lacks staging scoping"
+    assert "etl.log_entries" in _PROJECT_SQL, "Summary populator lacks staging scoping"
     
     run_v15_etl(conn, session_2, project_name="p", parquet_lake_root=temp_dir / "lake")
     
@@ -865,7 +865,7 @@ def test_t3_zero_rows_soft_delete_and_unconditional_staging_clearance(conn, temp
     run_v15_etl(conn, session_fixed, project_name="p", parquet_lake_root=temp_dir / "lake")
     
     assert conn.execute("SELECT COUNT(*) FROM fact_errors WHERE session_id = 'sess_combo' AND is_deleted = FALSE").fetchone()[0] == 0
-    assert conn.execute("SELECT COUNT(*) FROM stg_log_entries").fetchone()[0] == 0
+    assert conn.execute("SELECT COUNT(*) FROM etl.log_entries").fetchone()[0] == 0
 
 
 # =========================================================================
@@ -991,7 +991,7 @@ def test_t4_scenario_4_deep_subagent_depth_verification(conn, temp_dir):
     # root A, the down-walk recomputes B/C/D.
     conn.execute(
         """
-        INSERT INTO stg_log_entries (
+        INSERT INTO etl.log_entries (
             etl_run_id, parsed_at, parser_version, record_source, entry_id, source_path, sequence_num, type, session_id
         ) VALUES ('run-t48', current_timestamp, '1.0', 'test', 'entry-t48', '/path', 1, 'user', 'B')
         """
@@ -1048,7 +1048,7 @@ def test_t4_scenario_6_e2e_cli_flow(conn, temp_dir):
     assert depths["sess_p"] == 0
     assert depths["agent-c"] == 1
 
-    assert conn.execute("SELECT COUNT(*) FROM stg_log_entries").fetchone()[0] == 0
+    assert conn.execute("SELECT COUNT(*) FROM etl.log_entries").fetchone()[0] == 0
     
     output_dir = temp_dir / "html_e2e_out"
     generate_html(json_path=parent_file, output_dir=output_dir)

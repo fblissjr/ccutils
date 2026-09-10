@@ -63,7 +63,7 @@ WITH session_envelope AS (
         MAX(sle.source_path) AS source_path,
         MIN(TRY_CAST(sle.timestamp AS TIMESTAMP)) AS first_timestamp,
         MAX(TRY_CAST(sle.timestamp AS TIMESTAMP)) AS last_timestamp
-    FROM stg_log_entries sle
+    FROM etl.log_entries sle
     WHERE sle.session_id IS NOT NULL
     GROUP BY sle.session_id
 ),
@@ -76,7 +76,7 @@ msg_rollup AS (
         SUM(CASE WHEN has_thinking THEN 1 ELSE 0 END) AS total_thinking_blocks
     FROM fact_messages
     WHERE is_deleted = FALSE
-      AND session_id IN (SELECT DISTINCT session_id FROM stg_log_entries WHERE session_id IS NOT NULL)
+      AND session_id IN (SELECT DISTINCT session_id FROM etl.log_entries WHERE session_id IS NOT NULL)
     GROUP BY session_id
 ),
 token_rollup AS (
@@ -92,7 +92,7 @@ token_rollup AS (
         COUNT(*) AS api_response_count
     FROM fact_token_usage
     WHERE is_deleted = FALSE
-      AND session_id IN (SELECT DISTINCT session_id FROM stg_log_entries WHERE session_id IS NOT NULL)
+      AND session_id IN (SELECT DISTINCT session_id FROM etl.log_entries WHERE session_id IS NOT NULL)
     GROUP BY session_id
 ),
 tool_use_rollup AS (
@@ -102,7 +102,7 @@ tool_use_rollup AS (
         COUNT(DISTINCT tool_name) AS unique_tools_used
     FROM fact_tool_uses
     WHERE is_deleted = FALSE
-      AND session_id IN (SELECT DISTINCT session_id FROM stg_log_entries WHERE session_id IS NOT NULL)
+      AND session_id IN (SELECT DISTINCT session_id FROM etl.log_entries WHERE session_id IS NOT NULL)
     GROUP BY session_id
 ),
 tool_result_rollup AS (
@@ -113,7 +113,7 @@ tool_result_rollup AS (
         SUM(CASE WHEN bash_interrupted THEN 1 ELSE 0 END) AS total_bash_interrupted
     FROM fact_tool_results
     WHERE is_deleted = FALSE
-      AND session_id IN (SELECT DISTINCT session_id FROM stg_log_entries WHERE session_id IS NOT NULL)
+      AND session_id IN (SELECT DISTINCT session_id FROM etl.log_entries WHERE session_id IS NOT NULL)
     GROUP BY session_id
 ),
 system_rollup AS (
@@ -129,7 +129,7 @@ system_rollup AS (
             AS total_prevented_continuations
     FROM fact_system_events
     WHERE is_deleted = FALSE
-      AND session_id IN (SELECT DISTINCT session_id FROM stg_log_entries WHERE session_id IS NOT NULL)
+      AND session_id IN (SELECT DISTINCT session_id FROM etl.log_entries WHERE session_id IS NOT NULL)
     GROUP BY session_id
 ),
 progress_rollup AS (
@@ -140,7 +140,7 @@ progress_rollup AS (
         SUM(CASE WHEN data_type = 'bash_progress' THEN 1 ELSE 0 END) AS total_bash_progress_events
     FROM fact_progress_events
     WHERE is_deleted = FALSE
-      AND session_id IN (SELECT DISTINCT session_id FROM stg_log_entries WHERE session_id IS NOT NULL)
+      AND session_id IN (SELECT DISTINCT session_id FROM etl.log_entries WHERE session_id IS NOT NULL)
     GROUP BY session_id
 ),
 attachment_rollup AS (
@@ -151,7 +151,7 @@ attachment_rollup AS (
         SUM(CASE WHEN attachment_type = 'hook_success' THEN 1 ELSE 0 END) AS total_hook_successes
     FROM fact_attachments
     WHERE is_deleted = FALSE
-      AND session_id IN (SELECT DISTINCT session_id FROM stg_log_entries WHERE session_id IS NOT NULL)
+      AND session_id IN (SELECT DISTINCT session_id FROM etl.log_entries WHERE session_id IS NOT NULL)
     GROUP BY session_id
 ),
 meta_rollup AS (
@@ -161,7 +161,7 @@ meta_rollup AS (
             AS permission_mode_transition_count
     FROM fact_meta_events
     WHERE is_deleted = FALSE
-      AND session_id IN (SELECT DISTINCT session_id FROM stg_log_entries WHERE session_id IS NOT NULL)
+      AND session_id IN (SELECT DISTINCT session_id FROM etl.log_entries WHERE session_id IS NOT NULL)
     GROUP BY session_id
 ),
 meta_current_mode AS (
@@ -174,7 +174,7 @@ meta_current_mode AS (
                row_number() OVER (PARTITION BY session_id ORDER BY timestamp DESC) AS rn
         FROM fact_meta_events
         WHERE is_deleted = FALSE AND meta_type = 'permission-mode'
-          AND session_id IN (SELECT DISTINCT session_id FROM stg_log_entries WHERE session_id IS NOT NULL)
+          AND session_id IN (SELECT DISTINCT session_id FROM etl.log_entries WHERE session_id IS NOT NULL)
     )
     WHERE rn = 1
 ),
@@ -182,7 +182,7 @@ file_history_rollup AS (
     SELECT session_id, COUNT(*) AS total_file_history_snapshots
     FROM fact_file_history_snapshots
     WHERE is_deleted = FALSE
-      AND session_id IN (SELECT DISTINCT session_id FROM stg_log_entries WHERE session_id IS NOT NULL)
+      AND session_id IN (SELECT DISTINCT session_id FROM etl.log_entries WHERE session_id IS NOT NULL)
     GROUP BY session_id
 )
 SELECT

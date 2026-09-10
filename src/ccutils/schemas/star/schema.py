@@ -29,13 +29,14 @@ def schema_fingerprint(conn) -> str:
     """
     rows = conn.execute(
         """
-        SELECT c.table_name, c.ordinal_position, c.column_name, c.data_type
+        SELECT c.table_schema, c.table_name, c.ordinal_position,
+               c.column_name, c.data_type
         FROM information_schema.columns c
         JOIN information_schema.tables t
           ON t.table_schema = c.table_schema AND t.table_name = c.table_name
-        WHERE t.table_type = 'BASE TABLE' AND c.table_schema = 'main'
-          AND c.table_name <> 'meta_schema_version'
-        ORDER BY 1, 2
+        WHERE t.table_type = 'BASE TABLE' AND c.table_schema IN ('main', 'etl')
+          AND NOT (c.table_schema = 'etl' AND c.table_name = 'schema_version')
+        ORDER BY c.table_schema, c.table_name, c.ordinal_position
         """
     ).fetchall()
     return conn.execute(
@@ -64,7 +65,7 @@ def _stamped_by(conn) -> str | None:
     name with no version row of this shape; that reads as None too."""
     try:
         row = conn.execute(
-            "SELECT ccutils_version FROM meta_schema_version "
+            "SELECT ccutils_version FROM etl.schema_version "
             "WHERE schema_fingerprint IS NOT NULL LIMIT 1"
         ).fetchone()
     except duckdb.Error:
@@ -79,7 +80,7 @@ def create_star_schema(db_path):
     created: its table shapes must hash to exactly what this code's DDL
     produces, or `SchemaMismatchError` is raised. No migrations, no repair;
     the remedy is a rebuild. A fresh file or ":memory:" gets the full
-    schema and a one-row stamp in `meta_schema_version`.
+    schema and a one-row stamp in `etl.schema_version`.
 
     Authoritative table inventory lives in docs/STAR_SCHEMA.md; per-populator
     wiring in etl/orchestrator.py. No hard PK/FK constraints -- soft
@@ -90,7 +91,7 @@ def create_star_schema(db_path):
     conn = duckdb.connect(str(db_path))
     existing = conn.execute(
         "SELECT COUNT(*) FROM information_schema.tables "
-        "WHERE table_type = 'BASE TABLE' AND table_schema = 'main'"
+        "WHERE table_type = 'BASE TABLE' AND table_schema IN ('main', 'etl')"
     ).fetchone()[0]
     if existing:
         actual = schema_fingerprint(conn)
@@ -110,7 +111,7 @@ def create_star_schema(db_path):
     _create_objects(conn)
     if _stamped_by(conn) is None:
         conn.execute(
-            "INSERT INTO meta_schema_version (schema_fingerprint, ccutils_version) "
+            "INSERT INTO etl.schema_version (schema_fingerprint, ccutils_version) "
             "VALUES (?, ?)",
             [expected_schema_fingerprint(), PARSER_VERSION],
         )
@@ -123,16 +124,20 @@ def _create_objects(conn) -> None:
     # =========================================================================
     # Lineage + Meta Tables (Phase B of v0.15 rethink)
     # =========================================================================
-    # dim_etl_version is the catalog of (ccutils_version, business_rules_version)
+    # etl.versions is the catalog of (ccutils_version, business_rules_version)
     # tuples; every fact row references one created_by_version_key and one
-    # last_updated_by_version_key. fact_etl_runs records every batch.
-    # meta_schema_version is the one-row stamp create_star_schema checks on
+    # last_updated_by_version_key. etl.runs records every batch.
+    # etl.schema_version is the one-row stamp create_star_schema checks on
     # open: which fingerprint and ccutils version wrote this file.
+
+    # The `etl` schema holds machinery -- run metadata, staging, the DDL
+    # stamp -- so the main schema is only what a consumer should query.
+    conn.execute("CREATE SCHEMA IF NOT EXISTS etl")
 
     conn.execute(
         """
-        CREATE TABLE IF NOT EXISTS dim_etl_version (
-            version_key VARCHAR,           -- MD5(ccutils_version || business_rules_version)
+        CREATE TABLE IF NOT EXISTS etl.versions (
+            version_key VARCHAR,           -- '<ccutils_version>/<business_rules_version>', readable as-is
             ccutils_version VARCHAR NOT NULL,
             business_rules_version VARCHAR NOT NULL DEFAULT '1',
             description VARCHAR,           -- e.g., "0.15.0 -- Pydantic parser, structured toolUseResult capture"
@@ -143,9 +148,9 @@ def _create_objects(conn) -> None:
 
     conn.execute(
         """
-        CREATE TABLE IF NOT EXISTS fact_etl_runs (
+        CREATE TABLE IF NOT EXISTS etl.runs (
             etl_run_id VARCHAR NOT NULL,        -- UUID4 hex per run
-            version_key VARCHAR,                -- FK dim_etl_version
+            version_key VARCHAR,                -- FK etl.versions
             started_at TIMESTAMP NOT NULL DEFAULT current_timestamp,
             completed_at TIMESTAMP,
             status VARCHAR NOT NULL DEFAULT 'running',  -- running | success | failed
@@ -158,7 +163,7 @@ def _create_objects(conn) -> None:
             facts_inserted INTEGER DEFAULT 0,
             facts_updated INTEGER DEFAULT 0,
             error_message VARCHAR,
-            batch_run_id VARCHAR,               -- FK fact_etl_batch_runs (NULL for standalone runs)
+            batch_run_id VARCHAR,               -- FK etl.batch_runs (NULL for standalone runs)
             data_start_ts TIMESTAMP,            -- CDC window: min entry timestamp staged this run
             data_end_ts TIMESTAMP,              -- CDC window: max entry timestamp staged this run
             run_kind VARCHAR                    -- session | reconciliation | global_source
@@ -166,16 +171,16 @@ def _create_objects(conn) -> None:
     """
     )
 
-    # fact_etl_batch_runs: one row per CLI orchestration (a `ccutils`
-    # or `ccutils local` invocation). Children in fact_etl_runs link back
+    # etl.batch_runs: one row per CLI orchestration (a `ccutils`
+    # or `ccutils local` invocation). Children in etl.runs link back
     # via batch_run_id; complete() rolls their counts + CDC window up here.
     # Accumulating-snapshot audit table: rows are UPDATEd as the batch
     # progresses (running -> success | partial | failed).
     conn.execute(
         """
-        CREATE TABLE IF NOT EXISTS fact_etl_batch_runs (
+        CREATE TABLE IF NOT EXISTS etl.batch_runs (
             batch_run_id VARCHAR NOT NULL,      -- UUID4 hex per orchestration
-            version_key VARCHAR,                -- FK dim_etl_version
+            version_key VARCHAR,                -- FK etl.versions
             started_at TIMESTAMP NOT NULL DEFAULT current_timestamp,
             completed_at TIMESTAMP,
             status VARCHAR NOT NULL DEFAULT 'running',  -- running | success | partial | failed
@@ -195,7 +200,7 @@ def _create_objects(conn) -> None:
     """
     )
 
-    # fact_etl_steps: one row per DAG node per session run. lineage_upsert
+    # etl.steps: one row per DAG node per session run. lineage_upsert
     # records an 'upsert:<fact_table>' step for every fact populator with
     # real DuckDB affected-row counts; run_v15_etl records the non-upsert
     # stages (write_parquet, load_staging, upsert_dimensions, enrichment
@@ -203,9 +208,9 @@ def _create_objects(conn) -> None:
     # body only, not the populator's inbound-projection prep.
     conn.execute(
         """
-        CREATE TABLE IF NOT EXISTS fact_etl_steps (
+        CREATE TABLE IF NOT EXISTS etl.steps (
             step_id VARCHAR NOT NULL,           -- UUID4 hex
-            etl_run_id VARCHAR NOT NULL,        -- FK fact_etl_runs
+            etl_run_id VARCHAR NOT NULL,        -- FK etl.runs
             batch_run_id VARCHAR,               -- denormalized for direct batch rollup
             step_name VARCHAR NOT NULL,         -- 'upsert:<table>' or stage name (display)
             step_kind VARCHAR NOT NULL DEFAULT 'stage',  -- 'upsert' (facts) | 'stage'; rollup scoping key
@@ -224,7 +229,7 @@ def _create_objects(conn) -> None:
 
     conn.execute(
         """
-        CREATE TABLE IF NOT EXISTS meta_schema_version (
+        CREATE TABLE IF NOT EXISTS etl.schema_version (
             schema_fingerprint VARCHAR NOT NULL, -- schema_fingerprint() at creation
             ccutils_version VARCHAR NOT NULL,    -- the ccutils that wrote it
             created_at TIMESTAMP NOT NULL DEFAULT current_timestamp
@@ -235,14 +240,14 @@ def _create_objects(conn) -> None:
     # =========================================================================
     # Staging Tables
     # =========================================================================
-    # stg_log_entries: bridge from Tier 1 (Parquet lake) to Tier 3 (warehouse
+    # etl.log_entries: bridge from Tier 1 (Parquet lake) to Tier 3 (warehouse
     # facts). One row per JSONL line. Fact-table populators select from here
     # to project into their grain. Trunc-and-reload friendly: reloading a
     # session replaces its rows by source_path.
 
     conn.execute(
         """
-        CREATE TABLE IF NOT EXISTS stg_log_entries (
+        CREATE TABLE IF NOT EXISTS etl.log_entries (
             etl_run_id VARCHAR NOT NULL,
             parsed_at TIMESTAMP NOT NULL,
             parser_version VARCHAR NOT NULL,
@@ -2633,7 +2638,7 @@ def _create_objects(conn) -> None:
             b.source_root AS batch_source_root,
             b.output_format AS batch_output_format,
             r.source_path,
-            -- run_kind was added to fact_etl_runs to scope the batch rollup
+            -- run_kind was added to etl.runs to scope the batch rollup
             -- but never surfaced here, so the documented observability view
             -- could not tell a session run from one that is not a session.
             -- With three kinds in play ('session', 'reconciliation',
@@ -2655,9 +2660,9 @@ def _create_objects(conn) -> None:
             r.error_message,
             v.ccutils_version,
             CAST(r.started_at AS DATE) AS run_date
-        FROM fact_etl_runs r
-        LEFT JOIN fact_etl_batch_runs b ON r.batch_run_id = b.batch_run_id
-        LEFT JOIN dim_etl_version v ON r.version_key = v.version_key
+        FROM etl.runs r
+        LEFT JOIN etl.batch_runs b ON r.batch_run_id = b.batch_run_id
+        LEFT JOIN etl.versions v ON r.version_key = v.version_key
         LEFT JOIN (
             -- step_count covers every DAG node; the rows_* rollups scope
             -- to step_kind='upsert' ONLY, matching _sum_upsert_steps in
@@ -2670,7 +2675,7 @@ def _create_objects(conn) -> None:
                 COALESCE(SUM(rows_inserted) FILTER (WHERE step_kind = 'upsert'), 0) AS rows_inserted,
                 COALESCE(SUM(rows_updated) FILTER (WHERE step_kind = 'upsert'), 0) AS rows_updated,
                 COALESCE(SUM(rows_soft_deleted) FILTER (WHERE step_kind = 'upsert'), 0) AS rows_soft_deleted
-            FROM fact_etl_steps
+            FROM etl.steps
             GROUP BY etl_run_id
         ) s ON r.etl_run_id = s.etl_run_id
     """

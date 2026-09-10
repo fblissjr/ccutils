@@ -37,7 +37,7 @@ class TestDimEtlVersionResolution:
     def test_first_use_inserts_version_row(self, conn):
         r = EtlRun.start(conn, source_path="x")
         rows = conn.execute(
-            "SELECT ccutils_version, business_rules_version FROM dim_etl_version"
+            "SELECT ccutils_version, business_rules_version FROM etl.versions"
         ).fetchall()
         assert len(rows) == 1
         assert rows[0][0] == PARSER_VERSION
@@ -47,15 +47,15 @@ class TestDimEtlVersionResolution:
         r1 = EtlRun.start(conn, source_path="x")
         r2 = EtlRun.start(conn, source_path="x")
         assert r1.version_key == r2.version_key
-        # And dim_etl_version still has only one row
-        n = conn.execute("SELECT COUNT(*) FROM dim_etl_version").fetchone()[0]
+        # And etl.versions still has only one row
+        n = conn.execute("SELECT COUNT(*) FROM etl.versions").fetchone()[0]
         assert n == 1
 
     def test_business_rule_bump_inserts_new_version(self, conn):
         r1 = EtlRun.start(conn, source_path="x", business_rules_version="1")
         r2 = EtlRun.start(conn, source_path="x", business_rules_version="2")
         assert r1.version_key != r2.version_key
-        n = conn.execute("SELECT COUNT(*) FROM dim_etl_version").fetchone()[0]
+        n = conn.execute("SELECT COUNT(*) FROM etl.versions").fetchone()[0]
         assert n == 2
 
 
@@ -63,7 +63,7 @@ class TestFactEtlRunsInsert:
     def test_start_inserts_running_row(self, conn):
         r = EtlRun.start(conn, source_path="archive/x")
         row = conn.execute(
-            "SELECT etl_run_id, status, source_path, version_key FROM fact_etl_runs"
+            "SELECT etl_run_id, status, source_path, version_key FROM etl.runs"
         ).fetchone()
         assert row is not None
         assert row[0] == r.etl_run_id
@@ -76,13 +76,13 @@ class TestFactEtlRunsInsert:
         r.complete(sessions_inserted=5)
         row = conn.execute(
             "SELECT status, completed_at, sessions_inserted, facts_inserted "
-            "FROM fact_etl_runs WHERE etl_run_id = ?",
+            "FROM etl.runs WHERE etl_run_id = ?",
             [r.etl_run_id],
         ).fetchone()
         assert row[0] == "success"
         assert row[1] is not None  # completed_at populated
         assert row[2] == 5
-        assert row[3] == 0  # derived from fact_etl_steps; no steps ran
+        assert row[3] == 0  # derived from etl.steps; no steps ran
 
     def test_complete_derives_fact_counts_from_steps(self, conn):
         r = EtlRun.start(conn, source_path="x")
@@ -91,7 +91,7 @@ class TestFactEtlRunsInsert:
             st.rows_updated = 2
         r.complete(sessions_inserted=1)
         row = conn.execute(
-            "SELECT facts_inserted, facts_updated FROM fact_etl_runs "
+            "SELECT facts_inserted, facts_updated FROM etl.runs "
             "WHERE etl_run_id = ?",
             [r.etl_run_id],
         ).fetchone()
@@ -101,7 +101,7 @@ class TestFactEtlRunsInsert:
         r = EtlRun.start(conn, source_path="x")
         r.fail("disk full")
         row = conn.execute(
-            "SELECT status, error_message FROM fact_etl_runs WHERE etl_run_id = ?",
+            "SELECT status, error_message FROM etl.runs WHERE etl_run_id = ?",
             [r.etl_run_id],
         ).fetchone()
         assert row[0] == "failed"

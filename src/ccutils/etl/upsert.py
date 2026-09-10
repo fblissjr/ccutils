@@ -257,7 +257,7 @@ def lineage_upsert(
                 etl_run_id = ?
             WHERE tgt.is_deleted = FALSE
               AND tgt.session_id IN (
-                  SELECT DISTINCT session_id FROM stg_log_entries WHERE session_id IS NOT NULL
+                  SELECT DISTINCT session_id FROM etl.log_entries WHERE session_id IS NOT NULL
                   UNION
                   SELECT DISTINCT session_id FROM {inbound_table} WHERE session_id IS NOT NULL
               )

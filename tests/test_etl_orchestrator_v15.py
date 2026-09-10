@@ -82,13 +82,13 @@ class TestRunV15Etl:
             n = conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
             assert n > 0, f"Expected rows in {table}"
 
-    def test_records_etl_run_in_fact_etl_runs(self, conn, basic_session, tmp_path):
+    def test_records_etl_run_in_etl_runs(self, conn, basic_session, tmp_path):
         result = run_v15_etl(
             conn, basic_session, project_name="test-project",
             parquet_lake_root=tmp_path / "lake",
         )
         row = conn.execute(
-            "SELECT status, sessions_inserted FROM fact_etl_runs WHERE etl_run_id = ?",
+            "SELECT status, sessions_inserted FROM etl.runs WHERE etl_run_id = ?",
             [result["etl_run_id"]],
         ).fetchone()
         assert row[0] == "success"
@@ -148,7 +148,7 @@ class TestRunV15Etl:
             )
         # The failure should have been recorded
         row = conn.execute(
-            "SELECT status FROM fact_etl_runs ORDER BY started_at DESC LIMIT 1"
+            "SELECT status FROM etl.runs ORDER BY started_at DESC LIMIT 1"
         ).fetchone()
         assert row[0] == "failed"
 

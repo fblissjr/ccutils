@@ -1,6 +1,6 @@
 """Enrich dim_session with heuristic classifications from v0.15 facts.
 
-Reads first_user_message / last_assistant_message from stg_log_entries
+Reads first_user_message / last_assistant_message from etl.log_entries
 (which has the raw content), and tool counts / message counts / error
 counts / file extensions from the v0.15 fact + bridge tables. Runs the
 classifiers in ccutils.etl.heuristics over each session and UPDATEs
@@ -43,7 +43,7 @@ def populate_dim_session_heuristics(
     rows = conn.execute(
         """
         WITH staging_sessions AS (
-            SELECT DISTINCT session_id FROM stg_log_entries
+            SELECT DISTINCT session_id FROM etl.log_entries
             WHERE session_id IS NOT NULL
         ),
         first_user AS (
@@ -52,7 +52,7 @@ def populate_dim_session_heuristics(
             SELECT sle.session_id,
                    CAST(json_extract(sle.message_json, '$.content') AS VARCHAR)
                        AS content_json
-            FROM stg_log_entries sle
+            FROM etl.log_entries sle
             JOIN staging_sessions ss USING (session_id)
             WHERE sle.type = 'user'
               AND COALESCE(sle.is_meta, FALSE) = FALSE
@@ -64,7 +64,7 @@ def populate_dim_session_heuristics(
             SELECT sle.session_id,
                    CAST(json_extract(sle.message_json, '$.content') AS VARCHAR)
                        AS content_json
-            FROM stg_log_entries sle
+            FROM etl.log_entries sle
             JOIN staging_sessions ss USING (session_id)
             WHERE sle.type = 'assistant'
             QUALIFY ROW_NUMBER() OVER (

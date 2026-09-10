@@ -42,7 +42,7 @@ from ccutils.parsers.memory import (
 __all__ = ["import_memories", "run_memory_import"]
 
 
-#: source_path value for the memory import's own ``fact_etl_runs`` row.
+#: source_path value for the memory import's own ``etl.runs`` row.
 #: Mirrors ``<post-session-reconciliation>`` -- a run that is not a session
 #: still needs a stable, greppable identity in the run table.
 MEMORY_RUN_SOURCE = "<auto-memory>"

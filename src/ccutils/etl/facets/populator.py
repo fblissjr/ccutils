@@ -6,8 +6,8 @@ the injected `FacetExtractor`, and writes one
 `fact_session_facets` row per FacetOutput via `lineage_upsert`.
 
 Contract (matches `internal/plans/facet_extractor_protocol.md` §2):
-  - Each session in `stg_log_entries` becomes one SessionInputs:
-      session_id        -> stg_log_entries.session_id
+  - Each session in `etl.log_entries` becomes one SessionInputs:
+      session_id        -> etl.log_entries.session_id
       first_user_message -> first non-meta user entry's content text
       last_assistant_message -> final assistant entry's content text
       tool_mix_summary   -> top-5 tools by count, "Bash×5, Read×3, ..."
@@ -158,14 +158,14 @@ def _build_session_inputs(
     rows = conn.execute(
         """
         WITH scope AS (
-            SELECT DISTINCT session_id FROM stg_log_entries
+            SELECT DISTINCT session_id FROM etl.log_entries
             WHERE session_id IS NOT NULL
         ),
         first_user AS (
             SELECT sle.session_id,
                    CAST(json_extract(sle.message_json, '$.content') AS VARCHAR)
                        AS content_json
-            FROM stg_log_entries sle
+            FROM etl.log_entries sle
             JOIN scope ss USING (session_id)
             WHERE sle.type = 'user'
               AND COALESCE(sle.is_meta, FALSE) = FALSE
@@ -178,7 +178,7 @@ def _build_session_inputs(
             SELECT sle.session_id,
                    CAST(json_extract(sle.message_json, '$.content') AS VARCHAR)
                        AS content_json
-            FROM stg_log_entries sle
+            FROM etl.log_entries sle
             JOIN scope ss USING (session_id)
             WHERE sle.type = 'assistant'
             QUALIFY ROW_NUMBER() OVER (

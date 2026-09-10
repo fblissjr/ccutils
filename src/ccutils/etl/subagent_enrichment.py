@@ -36,7 +36,7 @@ def populate_subagent_dim_session(conn, *, run: EtlRun) -> None:
     source_paths = [
         r[0] for r in conn.execute(
             """
-            SELECT DISTINCT source_path FROM stg_log_entries
+            SELECT DISTINCT source_path FROM etl.log_entries
             WHERE source_path IS NOT NULL
               AND session_id IS NOT NULL
             """
@@ -102,7 +102,7 @@ def populate_subagent_dim_session(conn, *, run: EtlRun) -> None:
         )
 
     if updates:
-        # Match by source_path against dim_session via stg_log_entries lookup.
+        # Match by source_path against dim_session via etl.log_entries lookup.
         conn.execute("DROP TABLE IF EXISTS _inbound_subagents")
         conn.execute(
             """
@@ -147,7 +147,7 @@ def populate_subagent_dim_session(conn, *, run: EtlRun) -> None:
                 worktree_branch = ins.worktree_branch,
                 stopped_by_user = ins.stopped_by_user
             FROM _inbound_subagents ins
-            JOIN stg_log_entries sle ON sle.source_path = ins.source_path
+            JOIN etl.log_entries sle ON sle.source_path = ins.source_path
             WHERE ds.session_key = md5(sle.session_id)
             """
         )
@@ -176,7 +176,7 @@ def _propagate_depth_level(conn) -> None:
             SELECT ds.session_key, ds.parent_session_key
             FROM dim_session ds
             WHERE ds.session_id IN (
-                SELECT DISTINCT session_id FROM stg_log_entries
+                SELECT DISTINCT session_id FROM etl.log_entries
                 WHERE session_id IS NOT NULL
             )
         ),
@@ -221,7 +221,7 @@ def _propagate_depth_level(conn) -> None:
         UPDATE dim_session SET depth_level = 0
         WHERE depth_level IS NULL
           AND session_id IN (
-              SELECT DISTINCT session_id FROM stg_log_entries
+              SELECT DISTINCT session_id FROM etl.log_entries
               WHERE session_id IS NOT NULL
           )
         """

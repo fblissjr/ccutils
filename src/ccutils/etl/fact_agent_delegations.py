@@ -143,7 +143,7 @@ def populate_fact_agent_delegations(conn, *, run: EtlRun) -> None:
         WHERE ftu.is_deleted = FALSE
           AND ftu.tool_name IN ({tool_list})
           AND ftu.session_id IN (
-              SELECT DISTINCT session_id FROM stg_log_entries
+              SELECT DISTINCT session_id FROM etl.log_entries
               WHERE session_id IS NOT NULL
           )
         """

@@ -76,7 +76,7 @@ def generate_duckdb_archive(
         source_folder: Path to Claude Code projects folder.
         output_dir: Path for output.
         include_agents: Whether to include agent sessions.
-        include_thinking: When False, `stg_log_entries` is cleared after each
+        include_thinking: When False, `etl.log_entries` is cleared after each
             session ETL so the raw message_json (which contains thinking
             blocks) doesn't survive in the warehouse.
             `fact_messages.content_text` already excludes thinking
@@ -98,7 +98,7 @@ def generate_duckdb_archive(
             this function programmatically with private=True, you will NOT
             get sanitized paths.
         facet_extractor: Optional Tier 2 facet extractor; None disables.
-        output_format: label recorded on the fact_etl_batch_runs row --
+        output_format: label recorded on the etl.batch_runs row --
             "duckdb" for a direct archive, "json" when driven by
             generate_json_archive.
         scope_history: keep dim_prompt to the projects this archive covers.
@@ -236,7 +236,7 @@ def generate_duckdb_archive(
                            scope_to_covered_projects=scope_history)
 
         # Per-session failures were isolated above (they land as failed
-        # fact_etl_runs children and make the batch 'partial').
+        # etl.runs children and make the batch 'partial').
         batch.complete(expected_sessions=total_session_count)
 
     final_row_count = _count_rows(conn)

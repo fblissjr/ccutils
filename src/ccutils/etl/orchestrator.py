@@ -22,7 +22,7 @@ Pipeline:
             ->  populate_fact_session_summary  (must run last; aggregates over all the above)
 
 The EtlRun lifecycle ensures any exception marks the run failed in
-fact_etl_runs instead of leaving 'running' rows around.
+etl.runs instead of leaving 'running' rows around.
 
 Dimensions are populated as STUB rows (just the surrogate key + natural
 key + minimal envelope fields). Full dimension enrichment (intent,
@@ -124,7 +124,7 @@ def _upsert_minimal_dimensions(conn) -> int:
             ANY_VALUE(sle.entrypoint) AS entrypoint,
             MIN(TRY_CAST(sle.timestamp AS TIMESTAMP)) AS first_timestamp,
             MAX(TRY_CAST(sle.timestamp AS TIMESTAMP)) AS last_timestamp
-        FROM stg_log_entries sle
+        FROM etl.log_entries sle
         WHERE sle.session_id IS NOT NULL
           AND NOT EXISTS (
               SELECT 1 FROM dim_session ds
@@ -148,7 +148,7 @@ def _upsert_minimal_dimensions(conn) -> int:
                 {project_key_sql("ANY_VALUE(sle.source_path)")} AS project_key,
                 MIN(TRY_CAST(sle.timestamp AS TIMESTAMP)) AS first_timestamp,
                 MAX(TRY_CAST(sle.timestamp AS TIMESTAMP)) AS last_timestamp
-            FROM stg_log_entries sle
+            FROM etl.log_entries sle
             WHERE sle.session_id IS NOT NULL
             GROUP BY sle.session_id
         ) sub
@@ -172,7 +172,7 @@ def _upsert_minimal_dimensions(conn) -> int:
             regexp_extract(sle.project_dir, '([^/]+)$', 1) AS project_name
         FROM (
             SELECT DISTINCT {project_dir_sql("source_path")} AS project_dir
-            FROM stg_log_entries
+            FROM etl.log_entries
         ) sle
         WHERE NOT EXISTS (
             SELECT 1 FROM dim_project dp
@@ -194,7 +194,7 @@ def _upsert_minimal_dimensions(conn) -> int:
             """
         + MODEL_FAMILY_SQL.format(col="json_extract_string(sle.message_json, '$.model')")
         + """ AS model_family
-        FROM stg_log_entries sle
+        FROM etl.log_entries sle
         WHERE sle.type = 'assistant'
           AND json_extract_string(sle.message_json, '$.model') IS NOT NULL
           AND NOT EXISTS (
@@ -224,7 +224,7 @@ def _upsert_minimal_dimensions(conn) -> int:
         FROM (
             SELECT DISTINCT
                 json_extract_string(b.block, '$.name') AS tool_name
-            FROM stg_log_entries sle,
+            FROM etl.log_entries sle,
             LATERAL (
                 SELECT unnest(json_extract(sle.message_json, '$.content')::JSON[]) AS block
             ) b
@@ -270,7 +270,7 @@ def _upsert_minimal_dimensions(conn) -> int:
 
     # dim_date: one row per calendar date seen in staging. Without these
     # rows all nine dim_date-joining semantic views return NULL dates.
-    insert_missing_dim_dates(conn, "stg_log_entries", "timestamp")
+    insert_missing_dim_dates(conn, "etl.log_entries", "timestamp")
 
     return sessions_inserted
 
@@ -282,7 +282,7 @@ def staging_scope(conn):
     try:
         yield
     finally:
-        conn.execute("DELETE FROM stg_log_entries")
+        conn.execute("DELETE FROM etl.log_entries")
 
 
 def run_v15_etl(
@@ -308,16 +308,16 @@ def run_v15_etl(
             default) disables Tier 2 entirely. When supplied, the Tier 2
             populator runs after Tier 1 and before fact_session_summary
             so the summary roll-up still sees every facet.
-        include_thinking: when False, `stg_log_entries` is cleared at the
+        include_thinking: when False, `etl.log_entries` is cleared at the
             end of this call. `fact_messages.content_text` already excludes
             thinking by SQL projection (the populator picks only
             `type='text'` blocks); the per-call truncate removes the raw
             staging JSON so no thinking text survives in the warehouse.
             The Parquet lake is unaffected -- it's the re-derivable cache
             and intentionally captures everything.
-        batch_run_id: optional fact_etl_batch_runs id linking this run to
-            the orchestration that spawned it (stamped on fact_etl_runs and
-            every fact_etl_steps row). None for standalone runs.
+        batch_run_id: optional etl.batch_runs id linking this run to
+            the orchestration that spawned it (stamped on etl.runs and
+            every etl.steps row). None for standalone runs.
 
     Returns:
         dict with 'etl_run_id' and 'sessions_inserted' for caller use.
@@ -419,7 +419,7 @@ def run_v15_etl(
             populate_fact_session_summary(conn, run=run)
 
             # No per-thinking staging cleanup here: `staging_scope` clears
-            # stg_log_entries unconditionally at exit, so the raw message_json
+            # etl.log_entries unconditionally at exit, so the raw message_json
             # (which carries thinking blocks) never survives the run regardless
             # of include_thinking. include_thinking still governs what lands in
             # the FACTS (dim_session.last_assistant_message, Tier 2 inputs,

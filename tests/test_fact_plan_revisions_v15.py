@@ -160,7 +160,7 @@ def _populate(conn, jsonl_path, tmp_path):
         INSERT INTO dim_tool (tool_key, tool_name, tool_category)
         SELECT DISTINCT md5(tool_name), tool_name, 'unknown' FROM (
             SELECT json_extract_string(b.block, '$.name') AS tool_name
-            FROM stg_log_entries sle, LATERAL (
+            FROM etl.log_entries sle, LATERAL (
                 SELECT unnest(json_extract(sle.message_json, '$.content')::JSON[]) AS block
             ) b
             WHERE sle.type = 'assistant'

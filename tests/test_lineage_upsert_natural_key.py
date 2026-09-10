@@ -124,7 +124,7 @@ class TestNaturalKeyIsAsserted:
         assert keys == [("toolu_a", 1), ("toolu_b", 1), ("toolu_c", 1)]
 
         read, inserted = conn.execute(
-            "SELECT rows_read, rows_inserted FROM fact_etl_steps "
+            "SELECT rows_read, rows_inserted FROM etl.steps "
             "WHERE etl_run_id = ? AND step_name = 'upsert:fact_tool_results'",
             [run.etl_run_id],
         ).fetchone()
@@ -155,7 +155,7 @@ class TestNaturalKeyIsAsserted:
         run2 = _upsert(conn)
 
         inserted, updated = conn.execute(
-            "SELECT rows_inserted, rows_updated FROM fact_etl_steps "
+            "SELECT rows_inserted, rows_updated FROM etl.steps "
             "WHERE etl_run_id = ? AND step_name = 'upsert:fact_tool_results'",
             [run2.etl_run_id],
         ).fetchone()

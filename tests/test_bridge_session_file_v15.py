@@ -134,11 +134,11 @@ def _populate_session(conn, jsonl_path, tmp_path, project_name="test-project"):
         """
         INSERT INTO dim_session (session_key, session_id, project_key)
         SELECT DISTINCT md5(session_id), session_id, md5('/work')
-        FROM stg_log_entries
+        FROM etl.log_entries
         WHERE session_id IS NOT NULL
           AND NOT EXISTS (
               SELECT 1 FROM dim_session ds
-              WHERE ds.session_key = md5(stg_log_entries.session_id)
+              WHERE ds.session_key = md5(etl.log_entries.session_id)
           )
         """
     )
@@ -147,7 +147,7 @@ def _populate_session(conn, jsonl_path, tmp_path, project_name="test-project"):
         INSERT INTO dim_tool (tool_key, tool_name, tool_category)
         SELECT DISTINCT md5(tool_name), tool_name, 'unknown' FROM (
             SELECT json_extract_string(b.block, '$.name') AS tool_name
-            FROM stg_log_entries sle, LATERAL (
+            FROM etl.log_entries sle, LATERAL (
                 SELECT unnest(json_extract(sle.message_json, '$.content')::JSON[]) AS block
             ) b
             WHERE sle.type = 'assistant'

@@ -49,7 +49,7 @@ class TestOwnWarehouseOpens:
         _build(db)
         conn = duckdb.connect(str(db))
         rows = conn.execute(
-            "SELECT schema_fingerprint, ccutils_version FROM meta_schema_version"
+            "SELECT schema_fingerprint, ccutils_version FROM etl.schema_version"
         ).fetchall()
         conn.close()
         assert len(rows) == 1
@@ -83,7 +83,7 @@ class TestForeignWarehouseIsRefused:
 
     def test_pre_1_0_warehouse_is_refused(self, tmp_path):
         """A warehouse from before the stamp existed carries the old
-        migration-ledger `meta_schema_version`, not a fingerprint."""
+        migration ledger `main.meta_schema_version`, not a fingerprint."""
         db = tmp_path / "old.duckdb"
         conn = duckdb.connect(str(db))
         conn.execute(
@@ -100,7 +100,7 @@ class TestForeignWarehouseIsRefused:
         db = tmp_path / "w.duckdb"
         _build(db)
         conn = duckdb.connect(str(db))
-        conn.execute("UPDATE meta_schema_version SET ccutils_version = '0.99.0'")
+        conn.execute("UPDATE etl.schema_version SET ccutils_version = '0.99.0'")
         conn.execute("ALTER TABLE fact_errors ADD COLUMN stray VARCHAR")
         conn.close()
         with pytest.raises(SchemaMismatchError) as exc:

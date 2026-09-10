@@ -1,4 +1,4 @@
-"""Populate fact_messages from stg_log_entries (Phase C2).
+"""Populate fact_messages from etl.log_entries (Phase C2).
 
 Pure SQL projection. The staging table has every JSONL line; this module
 filters to user/assistant rows and projects the typed columns the warehouse
@@ -197,7 +197,7 @@ FROM (
             )
             ORDER BY sequence_num, entry_id
         ) AS response_entry_seq
-    FROM stg_log_entries
+    FROM etl.log_entries
 ) sle
 WHERE sle.type IN ('user', 'assistant')
 """
@@ -243,7 +243,7 @@ def populate_fact_messages(conn, *, run: EtlRun) -> None:
         f"""
         UPDATE _inbound_messages im
         SET project_key = {project_key_sql("sle.source_path")}
-        FROM stg_log_entries sle
+        FROM etl.log_entries sle
         WHERE sle.entry_id = im.entry_id
         """
     )
@@ -251,7 +251,7 @@ def populate_fact_messages(conn, *, run: EtlRun) -> None:
         """
         UPDATE _inbound_messages im
         SET model_key = md5(json_extract_string(sle.message_json, '$.model'))
-        FROM stg_log_entries sle
+        FROM etl.log_entries sle
         WHERE sle.entry_id = im.entry_id
           AND im.message_type = 'assistant'
           AND json_extract_string(sle.message_json, '$.model') IS NOT NULL

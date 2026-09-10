@@ -1,4 +1,4 @@
-"""Populate fact_token_usage from stg_log_entries (Phase C5a).
+"""Populate fact_token_usage from etl.log_entries (Phase C5a).
 
 One row per assistant API response that carried `usage` data. R11
 correction: cache_creation split into pricing tiers (_5m / _1h) and a
@@ -101,7 +101,7 @@ SELECT
         AS server_tool_use_web_search_requests,
     json_extract(sle.message_json, '$.usage.server_tool_use.web_fetch_requests')::INTEGER
         AS server_tool_use_web_fetch_requests
-FROM stg_log_entries sle
+FROM etl.log_entries sle
 WHERE sle.type = 'assistant'
   AND json_extract(sle.message_json, '$.usage') IS NOT NULL
 -- One row per API response per session. Ordered by sequence_num so the
@@ -129,7 +129,7 @@ def populate_fact_token_usage(conn, *, run: EtlRun) -> None:
         """
         UPDATE _inbound_token_usage im
         SET model_key = md5(json_extract_string(sle.message_json, '$.model'))
-        FROM stg_log_entries sle
+        FROM etl.log_entries sle
         WHERE sle.entry_id = im.entry_id
           AND json_extract_string(sle.message_json, '$.model') IS NOT NULL
         """

@@ -28,7 +28,7 @@ healthy). Commit test + implementation + docs together.
   `references/new-fact-table.md`.
 - **Populators reading permanent facts (not staging) must scope inbound to
   staged sessions**: `AND session_id IN (SELECT DISTINCT session_id FROM
-  stg_log_entries ...)` — otherwise every run rescans the whole warehouse.
+  etl.log_entries ...)` — otherwise every run rescans the whole warehouse.
 - **Global (non-per-session) sources still go through the run-metadata
   system.** Living outside `run_v15_etl` is a statement about GRAIN, not a
   licence to skip lineage. `import_memories` first shipped as a bare call

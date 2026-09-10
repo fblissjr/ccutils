@@ -5,7 +5,7 @@
 Since 1.0.0 the warehouse has no upgrade path. `create_star_schema`
 fingerprints every base table's shape (name, columns, types, order) on
 open and raises `SchemaMismatchError` when the file differs from what the
-current DDL creates; the CLI turns that into "rebuild". `meta_schema_version`
+current DDL creates; the CLI turns that into "rebuild". `etl.schema_version`
 is a one-row stamp (fingerprint + ccutils version), not a ledger.
 
 So adding, renaming or dropping a column on a shipped table is one edit:
@@ -43,7 +43,7 @@ different contracts indistinguishable:
 1. `version` in `pyproject.toml`.
 2. `CHANGELOG.md` -- promote `[Unreleased]` to the new version.
 3. `PARSER_VERSION` in `src/ccutils/_version.py` -- it stamps every lineage row
-   (`dim_etl_version` / `record_source` chain) and the `meta_schema_version`
+   (`etl.versions` / `record_source` chain) and the `etl.schema_version`
    stamp, so bump it whenever parsing or populator semantics changed, not just
    on release day.
 

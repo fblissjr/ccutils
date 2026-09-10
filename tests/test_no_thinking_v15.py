@@ -9,7 +9,7 @@ Two related contracts to pin:
    start emitting thinking text into the user-visible content column.
 
 2. **Behavior (new contract).** When `run_v15_etl(include_thinking=False)`,
-   the orchestrator clears `stg_log_entries` after every populator runs.
+   the orchestrator clears `etl.log_entries` after every populator runs.
    Without this, the staging table retains the last loaded session's raw
    JSON -- which includes thinking blocks in `message_json`. `fact_messages`
    is unaffected (already thinking-free); the truncate just removes the
@@ -105,7 +105,7 @@ class TestFactMessagesExcludesThinkingByDefault:
 
 
 class TestIncludeThinkingFalseClearsStaging:
-    """run_v15_etl(include_thinking=False) clears stg_log_entries after the
+    """run_v15_etl(include_thinking=False) clears etl.log_entries after the
     per-session populators run, so the user's archive doesn't carry the raw
     thinking JSON in the staging artifact."""
 
@@ -134,15 +134,15 @@ class TestIncludeThinkingFalseClearsStaging:
             project_name="x", parquet_lake_root=tmp_path / "lake",
             include_thinking=False,
         )
-        n = conn.execute("SELECT COUNT(*) FROM stg_log_entries").fetchone()[0]
+        n = conn.execute("SELECT COUNT(*) FROM etl.log_entries").fetchone()[0]
         assert n == 0, (
-            "include_thinking=False should clear stg_log_entries entirely; "
+            "include_thinking=False should clear etl.log_entries entirely; "
             "otherwise the raw thinking JSON survives in the user's archive."
         )
-        # And nothing in stg_log_entries -> the thinking payload is not
+        # And nothing in etl.log_entries -> the thinking payload is not
         # anywhere user-queryable.
         any_thinking = conn.execute(
-            "SELECT COUNT(*) FROM stg_log_entries "
+            "SELECT COUNT(*) FROM etl.log_entries "
             "WHERE CAST(message_json AS VARCHAR) LIKE ?",
             [f"%{_THINKING_PAYLOAD}%"],
         ).fetchone()[0]
@@ -186,8 +186,8 @@ class TestCliAcceptsNoThinkingOnDuckdb:
         # Stored DB has no thinking payload anywhere queryable.
         import duckdb as _duckdb
         conn = _duckdb.connect(str(db_path))
-        stg_n = conn.execute("SELECT COUNT(*) FROM stg_log_entries").fetchone()[0]
-        assert stg_n == 0, "stg_log_entries should be empty after --no-thinking"
+        stg_n = conn.execute("SELECT COUNT(*) FROM etl.log_entries").fetchone()[0]
+        assert stg_n == 0, "etl.log_entries should be empty after --no-thinking"
         fm = conn.execute(
             "SELECT content_text FROM fact_messages "
             "WHERE session_id = 'think-s' AND message_type = 'assistant'"
@@ -217,7 +217,7 @@ class TestCliAcceptsNoThinkingOnDuckdb:
         )
         assert result.exit_code == 0, result.output
         assert (out / "meta.json").exists()
-        # The JSON export already skips stg_log_entries, but verify the
+        # The JSON export already skips etl.log_entries, but verify the
         # combined archive contains no thinking payload anywhere.
         leaked = []
         for path in out.rglob("*.json"):

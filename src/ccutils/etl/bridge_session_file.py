@@ -70,7 +70,7 @@ def populate_bridge_session_file(conn, *, run: EtlRun) -> None:
           -- ops do, so re-aggregating them would just churn through the
           -- hash_diff no-op path.
           AND ffo.session_id IN (
-              SELECT DISTINCT session_id FROM stg_log_entries
+              SELECT DISTINCT session_id FROM etl.log_entries
               WHERE session_id IS NOT NULL
           )
         GROUP BY ffo.session_id, ffo.session_key, ffo.file_key

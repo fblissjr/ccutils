@@ -170,7 +170,7 @@ FROM semantic_etl_runs ORDER BY started_at DESC LIMIT 10;
 -- What did each CLI invocation do (batch grain)
 SELECT status, sessions_seen, sessions_succeeded, sessions_failed,
        rows_inserted, output_format
-FROM fact_etl_batch_runs ORDER BY started_at DESC LIMIT 5;
+FROM etl.batch_runs ORDER BY started_at DESC LIMIT 5;
 ```
 
 ## Time series (system/meta events)

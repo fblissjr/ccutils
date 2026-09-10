@@ -54,7 +54,7 @@ def populate_fact_diagnostics(conn, *, run: EtlRun) -> None:
               -- Scope to current session: prior sessions' diagnostics
               -- are already in target and would no-op through hash_diff.
               AND fa.session_id IN (
-                  SELECT DISTINCT session_id FROM stg_log_entries
+                  SELECT DISTINCT session_id FROM etl.log_entries
                   WHERE session_id IS NOT NULL
               )
         ),

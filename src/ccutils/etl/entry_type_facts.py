@@ -30,7 +30,7 @@ def populate_fact_attachments(conn, *, run: EtlRun) -> None:
             TRY_CAST(sle.timestamp AS TIMESTAMP) AS timestamp,
             json_extract_string(sle.attachment_json, '$.type') AS attachment_type,
             sle.attachment_json
-        FROM stg_log_entries sle
+        FROM etl.log_entries sle
         WHERE sle.type = 'attachment'
         """
     )
@@ -74,7 +74,7 @@ def populate_fact_progress_events(conn, *, run: EtlRun) -> None:
             json_extract_string(sle.progress_data_json, '$.hookEvent') AS hook_event,
             json_extract_string(sle.progress_data_json, '$.agentId') AS agent_id,
             sle.progress_data_json AS data_json
-        FROM stg_log_entries sle
+        FROM etl.log_entries sle
         WHERE sle.type = 'progress'
         """
     )
@@ -138,7 +138,7 @@ def populate_fact_system_events(conn, *, run: EtlRun) -> None:
             json_extract_string(sle.system_payload_json, '$.content') AS content,
             json_extract_string(sle.system_payload_json, '$.url') AS bridge_url,
             sle.system_payload_json AS payload_json
-        FROM stg_log_entries sle
+        FROM etl.log_entries sle
         WHERE sle.type = 'system'
         """
     )
@@ -181,7 +181,7 @@ def populate_fact_meta_events(conn, *, run: EtlRun) -> None:
                 WHEN 'agent-name' THEN json_extract_string(sle.meta_payload_json, '$.agentName')
                 WHEN 'last-prompt' THEN json_extract_string(sle.meta_payload_json, '$.lastPrompt')
             END AS meta_value
-        FROM stg_log_entries sle
+        FROM etl.log_entries sle
         WHERE sle.type IN ('permission-mode', 'custom-title', 'agent-name', 'last-prompt')
         """
     )
@@ -217,7 +217,7 @@ def populate_fact_file_history_snapshots(conn, *, run: EtlRun) -> None:
             json_extract_string(sle.meta_payload_json, '$.messageId') AS message_id_link,
             json_extract(sle.meta_payload_json, '$.isSnapshotUpdate')::BOOLEAN AS is_snapshot_update,
             CAST(json_extract(sle.meta_payload_json, '$.snapshot') AS VARCHAR) AS snapshot_json
-        FROM stg_log_entries sle
+        FROM etl.log_entries sle
         WHERE sle.type = 'file-history-snapshot'
         """
     )
@@ -250,7 +250,7 @@ def populate_fact_queue_operations(conn, *, run: EtlRun) -> None:
             TRY_CAST(sle.timestamp AS TIMESTAMP) AS timestamp,
             json_extract_string(sle.meta_payload_json, '$.operation') AS operation,
             json_extract_string(sle.meta_payload_json, '$.content') AS content
-        FROM stg_log_entries sle
+        FROM etl.log_entries sle
         WHERE sle.type = 'queue-operation'
         """
     )
@@ -284,7 +284,7 @@ def populate_fact_pr_links(conn, *, run: EtlRun) -> None:
             TRY_CAST(json_extract_string(sle.meta_payload_json, '$.prNumber') AS INTEGER) AS pr_number,
             json_extract_string(sle.meta_payload_json, '$.prUrl') AS pr_url,
             json_extract_string(sle.meta_payload_json, '$.prRepository') AS pr_repository
-        FROM stg_log_entries sle
+        FROM etl.log_entries sle
         WHERE sle.type = 'pr-link'
         """
     )

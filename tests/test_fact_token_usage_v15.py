@@ -173,7 +173,7 @@ class TestPopulateFactTokenUsage:
             "SELECT cache_creation_5m_tokens, cache_creation_1h_tokens, "
             "cache_creation_total_tokens, cache_read_tokens "
             "FROM fact_token_usage ftu "
-            "JOIN stg_log_entries sle ON sle.entry_id = ftu.entry_id "
+            "JOIN etl.log_entries sle ON sle.entry_id = ftu.entry_id "
             "WHERE sle.uuid = 'a1'"
         ).fetchone()
         assert row[0] == 1200
@@ -189,7 +189,7 @@ class TestPopulateFactTokenUsage:
         row = conn.execute(
             "SELECT total_uncached_equivalent_tokens "
             "FROM fact_token_usage ftu "
-            "JOIN stg_log_entries sle ON sle.entry_id = ftu.entry_id "
+            "JOIN etl.log_entries sle ON sle.entry_id = ftu.entry_id "
             "WHERE sle.uuid = 'a1'"
         ).fetchone()
         # 10 input + 1500 cache_creation_total + 8000 cache_read = 9510
@@ -204,7 +204,7 @@ class TestPopulateFactTokenUsage:
             "server_tool_use_web_search_requests, "
             "server_tool_use_web_fetch_requests "
             "FROM fact_token_usage ftu "
-            "JOIN stg_log_entries sle ON sle.entry_id = ftu.entry_id "
+            "JOIN etl.log_entries sle ON sle.entry_id = ftu.entry_id "
             "WHERE sle.uuid = 'a1'"
         ).fetchone()
         assert a1[0] == "standard"
@@ -216,7 +216,7 @@ class TestPopulateFactTokenUsage:
         a2 = conn.execute(
             "SELECT service_tier, inference_geo "
             "FROM fact_token_usage ftu "
-            "JOIN stg_log_entries sle ON sle.entry_id = ftu.entry_id "
+            "JOIN etl.log_entries sle ON sle.entry_id = ftu.entry_id "
             "WHERE sle.uuid = 'a2'"
         ).fetchone()
         assert a2[0] == "priority"
@@ -341,7 +341,7 @@ class TestApiResponseGrain:
         populate_fact_token_usage(conn, run=run)
         uuid = conn.execute(
             "SELECT sle.uuid FROM fact_token_usage ftu "
-            "JOIN stg_log_entries sle ON sle.entry_id = ftu.entry_id "
+            "JOIN etl.log_entries sle ON sle.entry_id = ftu.entry_id "
             "WHERE ftu.api_message_id = 'msg_A'"
         ).fetchone()[0]
         assert uuid == "a1"

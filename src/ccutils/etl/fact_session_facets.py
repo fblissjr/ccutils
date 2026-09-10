@@ -27,7 +27,7 @@ the orchestrator. Calling this populator standalone (without the
 heuristic pass first) emits NULL for those four facets.
 
 Per-session scoping: every per-session source-fact read is bounded by
-stg_log_entries.session_id (which only carries the session currently
+etl.log_entries.session_id (which only carries the session currently
 being ETL'd). Without this guard, the populator would rescan the whole
 warehouse on every per-session call.
 
@@ -113,7 +113,7 @@ def _create_scope(conn) -> None:
                ds.domain, ds.project_key
         FROM dim_session ds
         WHERE ds.session_id IN (
-            SELECT DISTINCT session_id FROM stg_log_entries
+            SELECT DISTINCT session_id FROM etl.log_entries
             WHERE session_id IS NOT NULL
         )
         """

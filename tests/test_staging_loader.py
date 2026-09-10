@@ -1,6 +1,6 @@
 """Tests for the staging loader (Phase C chunk 1).
 
-stg_log_entries is the bridge from Tier 1 (Parquet lake) to Tier 3
+etl.log_entries is the bridge from Tier 1 (Parquet lake) to Tier 3
 (warehouse facts). Every entry in every session lands here as one row;
 fact-table populators select from this staging table to project into
 their grain. Trunc-and-reload friendly: rerun overwrites the staging
@@ -67,12 +67,12 @@ def conn(tmp_path):
 class TestStgLogEntriesDdl:
     def test_table_exists_after_create_star_schema(self, conn):
         result = conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='table' AND name='stg_log_entries'"
+            "SELECT table_name FROM information_schema.tables WHERE table_schema='etl' AND table_name='log_entries'"
         ).fetchone()
         assert result is not None
 
     def test_schema_matches_constant(self, conn):
-        cols = [c[0] for c in conn.execute("DESCRIBE stg_log_entries").fetchall()]
+        cols = [c[0] for c in conn.execute("DESCRIBE etl.log_entries").fetchall()]
         expected = [f.name for f in STG_LOG_ENTRIES_SCHEMA]
         assert set(expected).issubset(set(cols))
 
@@ -91,7 +91,7 @@ class TestLoadSessionToStaging:
 
         # Every staged row carries the etl_run_id from this run
         stamped = conn.execute(
-            "SELECT COUNT(*) FROM stg_log_entries WHERE etl_run_id = ?",
+            "SELECT COUNT(*) FROM etl.log_entries WHERE etl_run_id = ?",
             [run.etl_run_id],
         ).fetchone()[0]
         assert stamped == 8
@@ -104,7 +104,7 @@ class TestLoadSessionToStaging:
         )
         load_session_to_staging(conn, log_path)
         u1 = conn.execute(
-            "SELECT type, session_id, cwd, git_branch FROM stg_log_entries "
+            "SELECT type, session_id, cwd, git_branch FROM etl.log_entries "
             "WHERE uuid = 'u1'"
         ).fetchone()
         assert u1 == ("user", "stg-test", "/p", "main")
@@ -118,7 +118,7 @@ class TestLoadSessionToStaging:
         load_session_to_staging(conn, log_path)
         # User u2 has toolUseResult; assert it's available in staging
         result_json = conn.execute(
-            "SELECT tool_use_result_json FROM stg_log_entries WHERE uuid = 'u2'"
+            "SELECT tool_use_result_json FROM etl.log_entries WHERE uuid = 'u2'"
         ).fetchone()[0]
         parsed = json.loads(result_json)
         assert parsed["stdout"] == "out"
@@ -132,7 +132,7 @@ class TestLoadSessionToStaging:
             project_slug="stg-project",
         )
         load_session_to_staging(conn, log_path)
-        n1 = conn.execute("SELECT COUNT(*) FROM stg_log_entries").fetchone()[0]
+        n1 = conn.execute("SELECT COUNT(*) FROM etl.log_entries").fetchone()[0]
 
         # Re-run on the same source -- staging should NOT double up.
         run2 = EtlRun.start(conn, source_path=str(sample_jsonl))
@@ -141,12 +141,12 @@ class TestLoadSessionToStaging:
             project_slug="stg-project",
         )
         load_session_to_staging(conn, log_path2)
-        n2 = conn.execute("SELECT COUNT(*) FROM stg_log_entries").fetchone()[0]
+        n2 = conn.execute("SELECT COUNT(*) FROM etl.log_entries").fetchone()[0]
         assert n2 == n1, "Re-loading the same session must replace its rows, not append"
 
         # And the etl_run_id stamped on the rows should be the LATEST run.
         latest = conn.execute(
-            "SELECT DISTINCT etl_run_id FROM stg_log_entries"
+            "SELECT DISTINCT etl_run_id FROM etl.log_entries"
         ).fetchall()
         assert latest == [(run2.etl_run_id,)]
 
@@ -171,5 +171,5 @@ class TestLoadArchiveToStaging:
 
         sessions_loaded = load_archive_to_staging(conn, lake)
         assert sessions_loaded == 2
-        n = conn.execute("SELECT COUNT(*) FROM stg_log_entries").fetchone()[0]
+        n = conn.execute("SELECT COUNT(*) FROM etl.log_entries").fetchone()[0]
         assert n == 8 + 1  # first fixture's 8 lines + second fixture's 1 line

@@ -42,7 +42,7 @@ soft-deleted rows. Drop to raw facts only when the view lacks a column.
 | What Claude has learned about a project (auto memory) | `semantic_memory` (current state), `dim_memory` (version history) |
 | How memories reference each other / what the index catalogues | `semantic_memory_links` (filter `link_syntax`) |
 | Facets (F01–F19 SQL, F20+ LLM) | `fact_session_facets` + `dim_facet_type` (EAV — see gotchas) |
-| ETL observability / did my export work | `semantic_etl_runs`, `fact_etl_batch_runs` |
+| ETL observability / did my export work | `semantic_etl_runs`, `etl.batch_runs` |
 | Permission modes, compactions, API errors, turn durations | `fact_meta_events`, `fact_system_events` |
 
 ## 3. Rules that prevent wrong answers

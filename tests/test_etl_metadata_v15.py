@@ -1,11 +1,11 @@
 """Tests for the ETL run/batch/step metadata layer.
 
 Three grains:
-  - fact_etl_batch_runs: one row per CLI orchestration (BatchRun handle)
-  - fact_etl_runs: one row per session ETL (EtlRun, existing) -- gains
+  - etl.batch_runs: one row per CLI orchestration (BatchRun handle)
+  - etl.runs: one row per session ETL (EtlRun, existing) -- gains
     batch_run_id linkage, a data window (data_start_ts/data_end_ts), and
     REAL fact counts derived from its steps
-  - fact_etl_steps: one row per DAG node per run -- lineage_upsert records
+  - etl.steps: one row per DAG node per run -- lineage_upsert records
     one step per target fact with real DuckDB affected-row counts;
     run_v15_etl records the non-upsert stages (parquet, staging, dims)
 
@@ -32,11 +32,11 @@ def _write_session(path, session_id, ts_base="2026-04-19T10:00"):
 
 
 class TestEtlMetadataDdl:
-    def test_fact_etl_batch_runs_columns(self, conn):
+    def test_etl_batch_runs_columns(self, conn):
         cols = {
             r[0] for r in conn.execute(
                 "SELECT column_name FROM information_schema.columns "
-                "WHERE table_name = 'fact_etl_batch_runs'"
+                "WHERE table_schema = 'etl' AND table_name = 'batch_runs'"
             ).fetchall()
         }
         assert {
@@ -47,11 +47,11 @@ class TestEtlMetadataDdl:
             "data_start_ts", "data_end_ts", "error_message",
         } <= cols
 
-    def test_fact_etl_steps_columns(self, conn):
+    def test_etl_steps_columns(self, conn):
         cols = {
             r[0] for r in conn.execute(
                 "SELECT column_name FROM information_schema.columns "
-                "WHERE table_name = 'fact_etl_steps'"
+                "WHERE table_schema = 'etl' AND table_name = 'steps'"
             ).fetchall()
         }
         assert {
@@ -61,11 +61,11 @@ class TestEtlMetadataDdl:
             "rows_soft_deleted", "error_message",
         } <= cols
 
-    def test_fact_etl_runs_gains_batch_and_window_columns(self, conn):
+    def test_etl_runs_has_batch_and_window_columns(self, conn):
         cols = {
             r[0] for r in conn.execute(
                 "SELECT column_name FROM information_schema.columns "
-                "WHERE table_name = 'fact_etl_runs'"
+                "WHERE table_schema = 'etl' AND table_name = 'runs'"
             ).fetchall()
         }
         assert {"batch_run_id", "data_start_ts", "data_end_ts"} <= cols
@@ -80,7 +80,7 @@ class TestBatchRunLifecycle:
             conn, source_root="/src/projects", output_format="duckdb"
         )
         row = conn.execute(
-            "SELECT status, source_root, output_format FROM fact_etl_batch_runs "
+            "SELECT status, source_root, output_format FROM etl.batch_runs "
             "WHERE batch_run_id = ?", [batch.batch_run_id]
         ).fetchone()
         assert row == ("running", "/src/projects", "duckdb")
@@ -91,7 +91,7 @@ class TestBatchRunLifecycle:
         row = conn.execute(
             "SELECT status, sessions_seen, sessions_succeeded, sessions_failed, "
             "rows_inserted, completed_at IS NOT NULL "
-            "FROM fact_etl_batch_runs WHERE batch_run_id = ?",
+            "FROM etl.batch_runs WHERE batch_run_id = ?",
             [batch.batch_run_id],
         ).fetchone()
         assert row == ("success", 0, 0, 0, 0, True)
@@ -100,7 +100,7 @@ class TestBatchRunLifecycle:
         batch = BatchRun.start(conn, source_root="/src", output_format="duckdb")
         batch.fail("boom")
         row = conn.execute(
-            "SELECT status, error_message FROM fact_etl_batch_runs "
+            "SELECT status, error_message FROM etl.batch_runs "
             "WHERE batch_run_id = ?", [batch.batch_run_id]
         ).fetchone()
         assert row == ("failed", "boom")
@@ -115,7 +115,7 @@ class TestRunLevelMetadata:
             batch_run_id=batch.batch_run_id,
         )
         stamped = conn.execute(
-            "SELECT batch_run_id FROM fact_etl_runs WHERE etl_run_id = ?",
+            "SELECT batch_run_id FROM etl.runs WHERE etl_run_id = ?",
             [result["etl_run_id"]],
         ).fetchone()[0]
         assert stamped == batch.batch_run_id
@@ -124,7 +124,7 @@ class TestRunLevelMetadata:
         session = _write_session(tmp_path / "s1.jsonl", "meta-s2")
         result = run_v15_etl(conn, session, parquet_lake_root=tmp_path / "lake")
         start, end = conn.execute(
-            "SELECT data_start_ts, data_end_ts FROM fact_etl_runs "
+            "SELECT data_start_ts, data_end_ts FROM etl.runs "
             "WHERE etl_run_id = ?", [result["etl_run_id"]]
         ).fetchone()
         assert start is not None and end is not None
@@ -135,7 +135,7 @@ class TestRunLevelMetadata:
         session = _write_session(tmp_path / "s1.jsonl", "meta-s3")
         result = run_v15_etl(conn, session, parquet_lake_root=tmp_path / "lake")
         facts_inserted = conn.execute(
-            "SELECT facts_inserted FROM fact_etl_runs WHERE etl_run_id = ?",
+            "SELECT facts_inserted FROM etl.runs WHERE etl_run_id = ?",
             [result["etl_run_id"]],
         ).fetchone()[0]
         assert facts_inserted > 0
@@ -147,7 +147,7 @@ class TestStepRecording:
         result = run_v15_etl(conn, session, parquet_lake_root=tmp_path / "lake")
         row = conn.execute(
             "SELECT status, rows_read, rows_inserted, rows_updated "
-            "FROM fact_etl_steps WHERE etl_run_id = ? "
+            "FROM etl.steps WHERE etl_run_id = ? "
             "AND step_name = 'upsert:fact_messages'",
             [result["etl_run_id"]],
         ).fetchone()
@@ -163,7 +163,7 @@ class TestStepRecording:
         result = run_v15_etl(conn, session, parquet_lake_root=tmp_path / "lake")
         names = {
             r[0] for r in conn.execute(
-                "SELECT step_name FROM fact_etl_steps WHERE etl_run_id = ?",
+                "SELECT step_name FROM etl.steps WHERE etl_run_id = ?",
                 [result["etl_run_id"]],
             ).fetchall()
         }
@@ -174,7 +174,7 @@ class TestStepRecording:
         result = run_v15_etl(conn, session, parquet_lake_root=tmp_path / "lake")
         orders = [
             r[0] for r in conn.execute(
-                "SELECT step_order FROM fact_etl_steps WHERE etl_run_id = ? "
+                "SELECT step_order FROM etl.steps WHERE etl_run_id = ? "
                 "ORDER BY step_order", [result["etl_run_id"]]
             ).fetchall()
         ]
@@ -186,7 +186,7 @@ class TestStepRecording:
         run_v15_etl(conn, session, parquet_lake_root=tmp_path / "lake")
         second = run_v15_etl(conn, session, parquet_lake_root=tmp_path / "lake")
         row = conn.execute(
-            "SELECT rows_inserted, rows_updated FROM fact_etl_steps "
+            "SELECT rows_inserted, rows_updated FROM etl.steps "
             "WHERE etl_run_id = ? AND step_name = 'upsert:fact_messages'",
             [second["etl_run_id"]],
         ).fetchone()
@@ -198,7 +198,7 @@ class TestStepRecording:
             with run.step("boom"):
                 raise ValueError("kapow")
         row = conn.execute(
-            "SELECT status, error_message FROM fact_etl_steps "
+            "SELECT status, error_message FROM etl.steps "
             "WHERE etl_run_id = ? AND step_name = 'boom'",
             [run.etl_run_id],
         ).fetchone()
@@ -220,7 +220,7 @@ class TestBatchRollup:
         row = conn.execute(
             "SELECT status, sessions_seen, sessions_succeeded, sessions_failed, "
             "rows_inserted, data_start_ts, data_end_ts "
-            "FROM fact_etl_batch_runs WHERE batch_run_id = ?",
+            "FROM etl.batch_runs WHERE batch_run_id = ?",
             [batch.batch_run_id],
         ).fetchone()
         status, seen, ok, failed, rows_inserted, start, end = row
@@ -243,7 +243,7 @@ class TestBatchRollup:
         batch.complete()
         row = conn.execute(
             "SELECT status, sessions_seen, sessions_succeeded, sessions_failed "
-            "FROM fact_etl_batch_runs WHERE batch_run_id = ?",
+            "FROM etl.batch_runs WHERE batch_run_id = ?",
             [batch.batch_run_id],
         ).fetchone()
         assert row == ("partial", 2, 1, 1)
@@ -267,7 +267,7 @@ class TestSemanticEtlRunsView:
         # The view's rows_* rollup matches the run row's derived totals
         # (both scope to upsert:% steps; stage steps are excluded).
         facts_inserted = conn.execute(
-            "SELECT facts_inserted FROM fact_etl_runs WHERE etl_run_id = ?",
+            "SELECT facts_inserted FROM etl.runs WHERE etl_run_id = ?",
             [result["etl_run_id"]],
         ).fetchone()[0]
         assert rows_inserted == facts_inserted
@@ -293,7 +293,7 @@ class TestArchiveWiring:
             batches = conn.execute(
                 "SELECT batch_run_id, status, source_root, output_format, "
                 "sessions_seen, sessions_succeeded "
-                "FROM fact_etl_batch_runs"
+                "FROM etl.batch_runs"
             ).fetchall()
             assert len(batches) == 1
             batch_run_id, status, source_root, fmt, seen, ok = batches[0]
@@ -303,7 +303,7 @@ class TestArchiveWiring:
             assert (seen, ok) == (2, 2)
 
             orphans = conn.execute(
-                "SELECT COUNT(*) FROM fact_etl_runs WHERE batch_run_id IS NULL"
+                "SELECT COUNT(*) FROM etl.runs WHERE batch_run_id IS NULL"
             ).fetchone()[0]
             assert orphans == 0
         finally:
@@ -319,10 +319,10 @@ class TestReviewFixes:
         facts_inserted, upsert_sum, staging_rows = conn.execute(
             """
             SELECT
-                (SELECT facts_inserted FROM fact_etl_runs WHERE etl_run_id = ?),
-                (SELECT COALESCE(SUM(rows_inserted), 0) FROM fact_etl_steps
+                (SELECT facts_inserted FROM etl.runs WHERE etl_run_id = ?),
+                (SELECT COALESCE(SUM(rows_inserted), 0) FROM etl.steps
                  WHERE etl_run_id = ? AND step_kind = 'upsert'),
-                (SELECT rows_inserted FROM fact_etl_steps
+                (SELECT rows_inserted FROM etl.steps
                  WHERE etl_run_id = ? AND step_name = 'load_staging')
             """,
             [result["etl_run_id"]] * 3,
@@ -342,8 +342,8 @@ class TestReviewFixes:
         batch_inserted, upsert_sum = conn.execute(
             """
             SELECT
-                (SELECT rows_inserted FROM fact_etl_batch_runs WHERE batch_run_id = ?),
-                (SELECT COALESCE(SUM(rows_inserted), 0) FROM fact_etl_steps
+                (SELECT rows_inserted FROM etl.batch_runs WHERE batch_run_id = ?),
+                (SELECT COALESCE(SUM(rows_inserted), 0) FROM etl.steps
                  WHERE batch_run_id = ? AND step_kind = 'upsert')
             """,
             [batch.batch_run_id] * 2,
@@ -361,7 +361,7 @@ class TestReviewFixes:
         batch.complete(expected_sessions=3)
         row = conn.execute(
             "SELECT status, sessions_seen, sessions_succeeded, sessions_failed "
-            "FROM fact_etl_batch_runs WHERE batch_run_id = ?",
+            "FROM etl.batch_runs WHERE batch_run_id = ?",
             [batch.batch_run_id],
         ).fetchone()
         assert row == ("partial", 3, 1, 2)
@@ -373,7 +373,7 @@ class TestReviewFixes:
         batch.complete(expected_sessions=1)
         row = conn.execute(
             "SELECT status, sessions_seen, sessions_succeeded, sessions_failed "
-            "FROM fact_etl_batch_runs WHERE batch_run_id = ?",
+            "FROM etl.batch_runs WHERE batch_run_id = ?",
             [batch.batch_run_id],
         ).fetchone()
         assert row == ("partial", 1, 0, 1)
@@ -384,7 +384,7 @@ class TestReviewFixes:
         second = run_v15_etl(conn, session, parquet_lake_root=tmp_path / "lake")
         rows = {
             run_id: conn.execute(
-                "SELECT sessions_inserted, sessions_updated FROM fact_etl_runs "
+                "SELECT sessions_inserted, sessions_updated FROM etl.runs "
                 "WHERE etl_run_id = ?", [run_id]
             ).fetchone()
             for run_id in (first["etl_run_id"], second["etl_run_id"])
@@ -415,7 +415,7 @@ class TestReviewFixes:
             )
         monkeypatch.setattr(lineage_mod.BatchRun, "complete", real_complete)
         status, err = conn.execute(
-            "SELECT status, error_message FROM fact_etl_batch_runs"
+            "SELECT status, error_message FROM etl.batch_runs"
         ).fetchone()
         assert status == "failed"
         assert "rollup exploded" in err
@@ -440,16 +440,16 @@ class TestJsonExportCompleteness:
             "fact_tool_results.json",
             "fact_attachments.json",
             "fact_session_facets.json",
-            "fact_etl_runs.json",
-            "fact_etl_batch_runs.json",
-            "fact_etl_steps.json",
         ):
             assert required in facts, f"missing {required}"
         assert "fact_tool_calls.json" not in facts  # nonexistent table
-        assert "stg_log_entries.json" not in facts  # staging never exported
+
+        etl = {p.name for p in (out / "etl").glob("*.json")}
+        assert {"runs.json", "batch_runs.json", "steps.json"} <= etl
+        assert "log_entries.json" not in etl  # staging never exported
 
         batch_rows = json.loads(
-            (out / "facts" / "fact_etl_batch_runs.json").read_text()
+            (out / "etl" / "batch_runs.json").read_text()
         )
         assert len(batch_rows) == 1
         assert batch_rows[0]["output_format"] == "json"
@@ -463,7 +463,7 @@ class TestSecondReviewFixes:
         run.complete()
         row = conn.execute(
             "SELECT rows_inserted, facts_inserted FROM semantic_etl_runs "
-            "JOIN fact_etl_runs USING (etl_run_id) WHERE etl_run_id = ?",
+            "JOIN etl.runs USING (etl_run_id) WHERE etl_run_id = ?",
             [run.etl_run_id],
         ).fetchone()
         assert row == (0, 0)  # stage-only run: zero facts, not NULL
@@ -474,7 +474,7 @@ class TestSecondReviewFixes:
                 b.complete()
                 raise RuntimeError("after complete")
         status = conn.execute(
-            "SELECT status FROM fact_etl_batch_runs WHERE batch_run_id = ?",
+            "SELECT status FROM etl.batch_runs WHERE batch_run_id = ?",
             [b.batch_run_id],
         ).fetchone()[0]
         assert status == "success"  # post-complete exception must not overwrite
@@ -489,7 +489,7 @@ class TestSecondReviewFixes:
 class TestRunKindScoping:
     """run_kind keeps the batch's session rollup honest.
 
-    Claim: fact_etl_runs used to be one-row-per-session by construction, so
+    Claim: etl.runs used to be one-row-per-session by construction, so
     BatchRun.complete counted child rows as sessions. The cross-session
     reconciliation pass is a child run that is NOT a session. Delete
     run_kind and every batch reports one more session than the CLI
@@ -514,7 +514,7 @@ class TestRunKindScoping:
         try:
             seen, ok = conn.execute(
                 "SELECT sessions_seen, sessions_succeeded "
-                "FROM fact_etl_batch_runs"
+                "FROM etl.batch_runs"
             ).fetchone()
             assert (seen, ok) == (2, 2), "two sessions, not three"
 
@@ -522,14 +522,14 @@ class TestRunKindScoping:
             # attached to the batch. Without this the test would still pass
             # if the pass were never wired in at all.
             kinds = dict(conn.execute(
-                "SELECT run_kind, COUNT(*) FROM fact_etl_runs GROUP BY 1"
+                "SELECT run_kind, COUNT(*) FROM etl.runs GROUP BY 1"
             ).fetchall())
             assert kinds.get("session") == 2
             assert kinds.get("reconciliation") == 1, (
                 "the post-loop pass must run, and must be labelled"
             )
             orphans = conn.execute(
-                "SELECT COUNT(*) FROM fact_etl_runs WHERE batch_run_id IS NULL"
+                "SELECT COUNT(*) FROM etl.runs WHERE batch_run_id IS NULL"
             ).fetchone()[0]
             assert orphans == 0
         finally:

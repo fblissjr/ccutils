@@ -11,22 +11,36 @@ from pathlib import Path
 
 
 def _star_tables(conn):
-    """Return (dimension_tables, fact_tables) present in the connection.
+    """Return (dimension_tables, fact_tables) present in the main schema.
 
-    Dimensions are dim_*; facts are fact_* plus bridge_*. stg_* (per-run
-    scratch, always cleared) and meta_* (DDL bookkeeping) are not star
-    data and are excluded.
+    Dimensions are dim_*; facts are fact_* plus bridge_*. Machinery lives
+    in the `etl` schema and is listed by `_etl_tables`.
     """
     tables = sorted(
         r[0]
         for r in conn.execute(
             "SELECT table_name FROM information_schema.tables "
-            "WHERE table_type = 'BASE TABLE'"
+            "WHERE table_type = 'BASE TABLE' AND table_schema = 'main'"
         ).fetchall()
     )
     dims = [t for t in tables if t.startswith("dim_")]
     facts = [t for t in tables if t.startswith(("fact_", "bridge_"))]
     return dims, facts
+
+
+def _etl_tables(conn):
+    """Base tables in the `etl` schema: run metadata and the stamp, exported
+    because the JSON archive mirrors the warehouse. `log_entries` is
+    excluded: staging is per-run scratch, cleared after every session, and
+    raw payloads must never persist in an export."""
+    return sorted(
+        r[0]
+        for r in conn.execute(
+            "SELECT table_name FROM information_schema.tables "
+            "WHERE table_type = 'BASE TABLE' AND table_schema = 'etl' "
+            "AND table_name <> 'log_entries'"
+        ).fetchall()
+    )
 
 # FK-by-convention key columns -> the dimension they join to. Relationships
 # are DERIVED from the live database at export time (same discipline as
@@ -72,7 +86,8 @@ def star_relationships(conn):
             r[0]
             for r in conn.execute(
                 "SELECT column_name FROM information_schema.columns "
-                "WHERE table_name = ? ORDER BY ordinal_position",
+                "WHERE table_schema = 'main' AND table_name = ? "
+                "ORDER BY ordinal_position",
                 [table],
             ).fetchall()
         ]
@@ -104,6 +119,7 @@ def export_star_schema_to_json(conn, output_dir):
             meta.json           - Schema metadata and relationships
             dimensions/         - One JSON file per dimension table
             facts/              - One JSON file per fact table
+            etl/                - One JSON file per etl.* machinery table
 
     Args:
         conn: DuckDB connection with star schema data
@@ -112,11 +128,13 @@ def export_star_schema_to_json(conn, output_dir):
     output_dir = Path(output_dir)
     dimensions_dir = output_dir / "dimensions"
     facts_dir = output_dir / "facts"
+    etl_dir = output_dir / "etl"
 
     dimensions_dir.mkdir(parents=True, exist_ok=True)
     facts_dir.mkdir(parents=True, exist_ok=True)
+    etl_dir.mkdir(parents=True, exist_ok=True)
 
-    table_manifest = {"dimensions": [], "facts": []}
+    table_manifest = {"dimensions": [], "facts": [], "etl": []}
     dimension_tables, fact_tables = _star_tables(conn)
 
     # Export dimension tables
@@ -141,6 +159,16 @@ def export_star_schema_to_json(conn, output_dir):
             }
         )
 
+    for table_name in _etl_tables(conn):
+        rows = _export_table(conn, f"etl.{table_name}", etl_dir, file_stem=table_name)
+        table_manifest["etl"].append(
+            {
+                "name": table_name,
+                "file": f"etl/{table_name}.json",
+                "row_count": rows,
+            }
+        )
+
     # Write meta.json
     meta = {
         "version": "2.0",
@@ -155,17 +183,19 @@ def export_star_schema_to_json(conn, output_dir):
         json.dump(meta, f, indent=2, default=str)
 
 
-def _export_table(conn, table_name, output_dir):
+def _export_table(conn, table_name, output_dir, file_stem=None):
     """Export a single table to JSON.
 
     Args:
         conn: DuckDB connection
-        table_name: Name of the table to export
+        table_name: Name of the table to export (may be schema-qualified)
         output_dir: Directory to write to
+        file_stem: file name without extension; defaults to table_name
 
     Returns:
         Number of rows exported
     """
+    file_stem = file_stem or table_name
     try:
         # Get column names
         columns_result = conn.execute(f"DESCRIBE {table_name}").fetchall()
@@ -187,7 +217,7 @@ def _export_table(conn, table_name, output_dir):
             data.append(record)
 
         # Write JSON file
-        output_path = output_dir / f"{table_name}.json"
+        output_path = output_dir / f"{file_stem}.json"
         with open(output_path, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2, default=str)
 
@@ -195,7 +225,7 @@ def _export_table(conn, table_name, output_dir):
 
     except Exception:
         # Table might not exist or be empty - write empty array
-        output_path = output_dir / f"{table_name}.json"
+        output_path = output_dir / f"{file_stem}.json"
         with open(output_path, "w", encoding="utf-8") as f:
             json.dump([], f)
         return 0

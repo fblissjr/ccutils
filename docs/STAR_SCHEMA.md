@@ -22,7 +22,7 @@ Tier 0 -- raw JSONL on disk in the user's Claude Code data directory
                   |
                   v  read_parquet(...)
 DuckDB:
-    stg_log_entries                              (Tier 2 -- transient staging)
+    etl.log_entries                              (Tier 2 -- transient staging)
                   |
                   v  per-fact populators
     fact_messages, fact_tool_uses, fact_tool_results,
@@ -44,31 +44,37 @@ Every v0.15 fact carries the same nine columns:
 | Column | Purpose |
 |---|---|
 | `created_at` / `last_updated_at` | When the row first appeared / when the mutable payload last changed |
-| `created_by_version_key` / `last_updated_by_version_key` | FK into `dim_etl_version` -- which ccutils version wrote / mutated the row |
-| `etl_run_id` | FK into `fact_etl_runs` -- which run wrote the row |
+| `created_by_version_key` / `last_updated_by_version_key` | `<ccutils_version>/<business_rules_version>`, readable without a join; also the key of `etl.versions` -- which ccutils version wrote / mutated the row |
+| `etl_run_id` | FK into `etl.runs` -- which run wrote the row |
 | `record_source` | Provenance string (`'claude_code_jsonl'`, `'history_jsonl'`, etc.) |
 | `hash_diff` | MD5 of the mutable-content columns. UPDATE only fires when content actually changed -- re-running ETL on unchanged source is a no-op |
 | `is_deleted` / `deleted_at` | Soft-delete only. We never `DELETE FROM`. |
 
 `session_id` is also carried as a degenerate dimension on most facts so `SELECT * FROM fact_X WHERE session_id = '...'` works without a `dim_session` join.
 
-There are no schema migrations. `meta_schema_version` holds one row: the `schema_fingerprint` (an md5 over every base table's name, columns, types and order) and the `ccutils_version` that wrote the file. `create_star_schema` recomputes the fingerprint of the file's tables on every open and raises `SchemaMismatchError` if it differs from what the current DDL produces; the only remedy is a rebuild. `dim_etl_version` is separate: it tracks the business-rules / parser version per row, not the table shapes.
+There are no schema migrations. `etl.schema_version` holds one row: the `schema_fingerprint` (an md5 over every base table's name, columns, types and order) and the `ccutils_version` that wrote the file. `create_star_schema` recomputes the fingerprint of the file's tables on every open and raises `SchemaMismatchError` if it differs from what the current DDL produces; the only remedy is a rebuild. `etl.versions` is separate: it tracks the business-rules / parser version per row, not the table shapes.
 
 ### Run metadata (three grains)
+
+Machinery lives in the `etl` schema -- `etl.versions`, `etl.batch_runs`,
+`etl.runs`, `etl.steps`, `etl.schema_version`, and the transient
+`etl.log_entries` staging table -- so `main` holds only what a consumer
+should query: dimensions, facts and semantic views. `semantic_etl_runs`
+stays in `main` because it is a consumer surface.
 
 ETL observability follows the same grain-first discipline as the data itself:
 
 | Table | Grain | Written by |
 |---|---|---|
-| `fact_etl_batch_runs` | One CLI orchestration (`ccutils --source` / `ccutils` invocation) | `BatchRun` handle (`etl/lineage.py`); `complete()` derives every count from its children |
-| `fact_etl_runs` | One session ETL | `EtlRun` handle; carries `batch_run_id`, a CDC data window (`data_start_ts`/`data_end_ts` = min/max staged entry timestamp), and fact counts derived from its steps |
-| `fact_etl_steps` | One DAG node within a run | `lineage_upsert` self-records an `upsert:<table>` step (`step_kind='upsert'`) per fact populator with real DuckDB affected-row counts; `run_v15_etl` records the non-upsert stages (`write_parquet`, `load_staging`, `upsert_dimensions`, enrichment passes) as `step_kind='stage'` |
+| `etl.batch_runs` | One CLI orchestration (`ccutils --source` / `ccutils` invocation) | `BatchRun` handle (`etl/lineage.py`); `complete()` derives every count from its children |
+| `etl.runs` | One session ETL | `EtlRun` handle; carries `batch_run_id`, a CDC data window (`data_start_ts`/`data_end_ts` = min/max staged entry timestamp), and fact counts derived from its steps |
+| `etl.steps` | One DAG node within a run | `lineage_upsert` self-records an `upsert:<table>` step (`step_kind='upsert'`) per fact populator with real DuckDB affected-row counts; `run_v15_etl` records the non-upsert stages (`write_parquet`, `load_staging`, `upsert_dimensions`, enrichment passes) as `step_kind='stage'` |
 
 `step_kind` is the scoping key for every rollup: `EtlRun.complete()`, `BatchRun.complete()`, and `semantic_etl_runs` all sum only `step_kind='upsert'` steps into `facts_inserted` / `facts_updated` / `rows_*` totals (via the shared `_sum_upsert_steps` helper in `etl/lineage.py`). Stage steps report real row counts at step grain but are not facts, so they're excluded from the fact-level totals -- one definition, three consumers, no drift.
 
 Why derived counts: the count columns on the parent rows are always computed from the child rows at `complete()` (SUM over steps, COUNT over runs) rather than tallied by the caller -- so the audit trail cannot drift from what the DML actually did.
 
-`BatchRun` (`etl/lineage.py`) is a context manager: `__exit__` marks the batch row `failed` on any exception that escapes the `with` block (including a hard crash or `KeyboardInterrupt`), so a batch can never stick at `running`. `complete(expected_sessions=N)` compares the child `fact_etl_runs` row count against `N` -- a session that died before `EtlRun.start` even wrote its row, or one left `running` by a crash, is counted as failed rather than silently dropped from the tally. Batch status lands `success` when no child failed, `partial` when some did (including missing/stuck-running children), `failed` only when the orchestration itself died. Query `semantic_etl_runs` for the joined run-grain picture.
+`BatchRun` (`etl/lineage.py`) is a context manager: `__exit__` marks the batch row `failed` on any exception that escapes the `with` block (including a hard crash or `KeyboardInterrupt`), so a batch can never stick at `running`. `complete(expected_sessions=N)` compares the child `etl.runs` row count against `N` -- a session that died before `EtlRun.start` even wrote its row, or one left `running` by a crash, is counted as failed rather than silently dropped from the tally. Batch status lands `success` when no child failed, `partial` when some did (including missing/stuck-running children), `failed` only when the orchestration itself died. Query `semantic_etl_runs` for the joined run-grain picture.
 
 ### Populator order
 
@@ -670,7 +676,7 @@ All views use the `semantic_` prefix and join facts with dimensions for easy que
 - `semantic_prompt_history` -- prompts from history JSONL linked to session metadata
 - `semantic_memory` -- the auto-memory corpus AS IT STANDS NOW (`is_current` only), with project, origin-session and date context. Query `dim_memory` directly for the version history behind it
 - `semantic_memory_links` -- the current memory graph with both ends named. Unresolved edges are kept, so "what does Claude reference that it never wrote down" is a `WHERE NOT is_resolved`
-- `semantic_etl_runs` -- run-grain ETL observability: run status/duration, orchestration (batch) context, CDC data window, and step-count/row-count rollups from `fact_etl_steps`. Carries `run_kind` -- **filter on it.** Three kinds share this view (`session`, `reconciliation`, `global_source`) and an unqualified count over it mixes them
+- `semantic_etl_runs` -- run-grain ETL observability: run status/duration, orchestration (batch) context, CDC data window, and step-count/row-count rollups from `etl.steps`. Carries `run_kind` -- **filter on it.** Three kinds share this view (`session`, `reconciliation`, `global_source`) and an unqualified count over it mixes them
 - `semantic_session_behavior` -- per-session behavioral feature vector: tool-category counts and shares (`read`/`search`/`mutate`/`execute`/`web`/`delegate`), agentic-run shape (`agentic_runs`, `tools_per_run`, `median_gap_seconds`), tokens in/out, thinking blocks, error rate, plus a `*_pctile` corpus-relative rank for each discriminating feature
 
 All 20 views bind against the current DDL (view creation validates column references on every `create_star_schema()` call).
@@ -753,8 +759,8 @@ SELECT
   fer.facts_inserted,
   fer.facts_updated,
   fer.status
-FROM fact_etl_runs fer
-LEFT JOIN dim_etl_version dev USING (version_key)
+FROM etl.runs fer
+LEFT JOIN etl.versions dev USING (version_key)
 ORDER BY fer.started_at DESC
 LIMIT 10;
 
@@ -809,4 +815,10 @@ output_dir/
     fact_messages.json
     fact_tool_uses.json
     ...
+  etl/                   # One JSON file per etl.* table (never log_entries)
+    runs.json
+    batch_runs.json
+    steps.json
+    versions.json
+    schema_version.json
 ```

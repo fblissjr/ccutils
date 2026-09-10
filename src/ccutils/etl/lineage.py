@@ -3,8 +3,8 @@
 Three responsibilities:
 
 1. **ETL run lifecycle.** `EtlRun.start(conn, source_path)` inserts a `running`
-   row into `fact_etl_runs`, allocates a UUID4 hex `etl_run_id`, and resolves
-   (creating if needed) the `dim_etl_version` row. Returns a handle whose
+   row into `etl.runs`, allocates a UUID4 hex `etl_run_id`, and resolves
+   (creating if needed) the `etl.versions` row. Returns a handle whose
    `.complete(...)` / `.fail(...)` methods close out the batch.
 
 2. **Hash-diff change detection.** `hash_diff(**attrs)` returns a stable
@@ -71,15 +71,19 @@ def _resolve_version_key(
     business_rules_version: str,
     description: str | None,
 ) -> str:
-    """Return the dim_etl_version surrogate key, inserting a row if first seen."""
-    version_key = generate_dimension_key(ccutils_version, business_rules_version)
+    """Return the etl.versions key, inserting a row if first seen.
+
+    The key is `<ccutils_version>/<business_rules_version>` -- a lineage
+    stamp exists to be read, and an md5 had to be joined before it said
+    anything."""
+    version_key = f"{ccutils_version}/{business_rules_version}"
     exists = conn.execute(
-        "SELECT 1 FROM dim_etl_version WHERE version_key = ?", [version_key]
+        "SELECT 1 FROM etl.versions WHERE version_key = ?", [version_key]
     ).fetchone()
     if exists is None:
         conn.execute(
             """
-            INSERT INTO dim_etl_version
+            INSERT INTO etl.versions
                 (version_key, ccutils_version, business_rules_version, description)
             VALUES (?, ?, ?, ?)
             """,
@@ -128,7 +132,7 @@ def _sum_upsert_steps(conn, *, scope_col: str, scope_id: str):
             COALESCE(SUM(rows_inserted), 0),
             COALESCE(SUM(rows_updated), 0),
             COALESCE(SUM(rows_soft_deleted), 0)
-        FROM fact_etl_steps
+        FROM etl.steps
         WHERE {scope_col} = ? AND step_kind = 'upsert'
         """,
         [scope_id],
@@ -150,7 +154,7 @@ class EtlRun:
             raise
 
     ``complete`` derives facts_inserted / facts_updated from this run's
-    fact_etl_steps rows -- populators report real affected-row counts via
+    etl.steps rows -- populators report real affected-row counts via
     ``step``, so the run row can't drift from what actually happened.
     """
 
@@ -181,7 +185,7 @@ class EtlRun:
         # relies on that to keep counting crashed sessions as failed ones.
         conn.execute(
             """
-            INSERT INTO fact_etl_runs
+            INSERT INTO etl.runs
                 (etl_run_id, version_key, source_path, status, batch_run_id,
                  run_kind)
             VALUES (?, ?, ?, 'running', ?, ?)
@@ -195,7 +199,7 @@ class EtlRun:
 
     @contextmanager
     def step(self, step_name: str, *, kind: str = "stage"):
-        """Record one DAG node in fact_etl_steps around the wrapped body.
+        """Record one DAG node in etl.steps around the wrapped body.
 
         Yields a StepCounts whose slots the body may fill (lineage_upsert
         fills all four; stage wrappers set what they cheaply know). On an
@@ -215,7 +219,7 @@ class EtlRun:
         step_id = uuid.uuid4().hex
         self.conn.execute(
             """
-            INSERT INTO fact_etl_steps
+            INSERT INTO etl.steps
                 (step_id, etl_run_id, batch_run_id, step_name, step_kind,
                  step_order, status)
             VALUES (?, ?, ?, ?, ?, ?, 'running')
@@ -230,13 +234,13 @@ class EtlRun:
             # BaseException so a KeyboardInterrupt mid-step doesn't leave
             # the step row stuck 'running' (mirrors BatchRun.__exit__).
             _mark_failed(
-                self.conn, table="fact_etl_steps", id_col="step_id",
+                self.conn, table="etl.steps", id_col="step_id",
                 id_val=step_id, error=str(e) or type(e).__name__,
             )
             raise
         self.conn.execute(
             """
-            UPDATE fact_etl_steps
+            UPDATE etl.steps
             SET status = 'success',
                 completed_at = current_timestamp,
                 rows_read = ?,
@@ -276,7 +280,7 @@ class EtlRun:
         )
         self.conn.execute(
             """
-            UPDATE fact_etl_runs
+            UPDATE etl.runs
             SET status = 'success',
                 completed_at = current_timestamp,
                 sessions_seen = ?,
@@ -301,7 +305,7 @@ class EtlRun:
 
     def fail(self, error_message: str) -> None:
         _mark_failed(
-            self.conn, table="fact_etl_runs", id_col="etl_run_id",
+            self.conn, table="etl.runs", id_col="etl_run_id",
             id_val=self.etl_run_id, error=error_message,
         )
 
@@ -319,8 +323,8 @@ class BatchRun:
     ``__exit__`` marks the batch row failed on ANY escaping exception
     (including KeyboardInterrupt) so it can never stick at 'running';
     ``complete()`` derives every count (sessions seen/succeeded/failed,
-    row totals, CDC data window) from the child fact_etl_runs /
-    fact_etl_steps rows rather than trusting the caller to tally. Status
+    row totals, CDC data window) from the child etl.runs /
+    etl.steps rows rather than trusting the caller to tally. Status
     lands 'success' when no child failed, else 'partial'.
     """
 
@@ -345,7 +349,7 @@ class BatchRun:
         batch_run_id = uuid.uuid4().hex
         conn.execute(
             """
-            INSERT INTO fact_etl_batch_runs
+            INSERT INTO etl.batch_runs
                 (batch_run_id, version_key, source_root, output_format, status)
             VALUES (?, ?, ?, ?, 'running')
             """,
@@ -370,7 +374,7 @@ class BatchRun:
                 COUNT(*) FILTER (WHERE status = 'success'),
                 MIN(data_start_ts),
                 MAX(data_end_ts)
-            FROM fact_etl_runs
+            FROM etl.runs
             WHERE batch_run_id = ?
               -- Sessions only. Cross-session passes (the delegation
               -- reconciliation) are child runs of this batch but are not
@@ -390,7 +394,7 @@ class BatchRun:
         status = "success" if failed == 0 else "partial"
         self.conn.execute(
             """
-            UPDATE fact_etl_batch_runs
+            UPDATE etl.batch_runs
             SET completed_at = current_timestamp,
                 sessions_seen = ?,
                 sessions_succeeded = ?,
@@ -414,7 +418,7 @@ class BatchRun:
 
     def fail(self, error_message: str) -> None:
         _mark_failed(
-            self.conn, table="fact_etl_batch_runs", id_col="batch_run_id",
+            self.conn, table="etl.batch_runs", id_col="batch_run_id",
             id_val=self.batch_run_id, error=error_message,
         )
 
@@ -430,7 +434,7 @@ class BatchRun:
         # suppresses.
         if exc is not None:
             status = self.conn.execute(
-                "SELECT status FROM fact_etl_batch_runs WHERE batch_run_id = ?",
+                "SELECT status FROM etl.batch_runs WHERE batch_run_id = ?",
                 [self.batch_run_id],
             ).fetchone()
             if status is not None and status[0] == "running":

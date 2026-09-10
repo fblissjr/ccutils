@@ -283,7 +283,7 @@ class TestOneWarehouseShape:
         conn = duckdb.connect(str(out / "archive.duckdb"), read_only=True)
         try:
             runs = conn.execute(
-                "SELECT DISTINCT run_kind FROM fact_etl_runs "
+                "SELECT DISTINCT run_kind FROM etl.runs "
                 "WHERE run_kind IS NOT NULL"
             ).fetchall()
         finally:

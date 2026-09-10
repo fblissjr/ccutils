@@ -58,7 +58,7 @@ def populate_fact_tool_chain_steps(conn, *, run: EtlRun) -> None:
         """
         CREATE TEMP TABLE _inbound_tool_chain_steps AS
         WITH staged AS (
-            SELECT DISTINCT session_id FROM stg_log_entries
+            SELECT DISTINCT session_id FROM etl.log_entries
             WHERE session_id IS NOT NULL
         ),
         -- One row per (session, entry). fact_messages is NOT unique on

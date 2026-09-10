@@ -51,7 +51,7 @@ filter: `semantic_sessions`, `semantic_tool_calls`, `semantic_decisions`,
   not a failure.** The rollup sums only `step_kind = 'upsert'` steps, which are
   fact populators; memory is a dimension, so counting it there would inflate
   every fact total. The real count lives one grain down --
-  `SELECT rows_inserted FROM fact_etl_steps WHERE step_name = 'dim_memory'`.
+  `SELECT rows_inserted FROM etl.steps WHERE step_name = 'dim_memory'`.
   Same applies to any future non-fact step. Filter `run_kind = 'global_source'`
   to find these runs.
 - `dim_memory` is a **Type 2 SCD** — one row per (memory file, content

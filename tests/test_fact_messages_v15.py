@@ -10,7 +10,7 @@ New shape (v0.15):
   is the derived "what would this have cost without caching" number.
 - stop_reason, permission_mode_at_send, prompt_id, request_id,
   is_api_error_message captured (previously dropped).
-- content_json dropped (lives in stg_log_entries + Parquet lake).
+- content_json dropped (lives in etl.log_entries + Parquet lake).
 - hash_diff guards UPDATE: re-running ETL on unchanged source is a no-op.
 """
 
@@ -317,7 +317,7 @@ class TestSoftDelete:
 
         # Now simulate that one entry vanished from source -- truncate staging
         # and reload with one row gone.
-        conn.execute("DELETE FROM stg_log_entries")
+        conn.execute("DELETE FROM etl.log_entries")
         truncated = tmp_path / "basic-truncated.jsonl"
         truncated.write_text(
             json.dumps({
@@ -420,7 +420,7 @@ class TestSplitResponseTokenAttribution:
             "SELECT sle.uuid, fm.output_tokens, fm.input_tokens, "
             "       fm.cache_read_tokens, fm.total_uncached_equivalent_tokens "
             "FROM fact_messages fm "
-            "JOIN stg_log_entries sle ON sle.entry_id = fm.entry_id "
+            "JOIN etl.log_entries sle ON sle.entry_id = fm.entry_id "
             "WHERE fm.message_type = 'assistant' ORDER BY sle.uuid"
         ).fetchall()
         # total_uncached_equivalent is input-side only: 10 + 0 creation + 100 read

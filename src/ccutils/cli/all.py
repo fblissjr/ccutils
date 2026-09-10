@@ -172,7 +172,7 @@ def all_cmd(
     # yet, so --private would silently produce a non-sanitized database on
     # duckdb/json. Fail loud rather than ship the regression. Render-only
     # formats (html, markdown) sanitize on the render path and are exempt.
-    # --no-thinking IS wired (truncates stg_log_entries;
+    # --no-thinking IS wired (truncates etl.log_entries;
     # fact_messages.content_text already excludes thinking by SQL projection).
     # --embed against --format json discards the embeddings (DB is built in
     # a tempdir and thrown away after export).
