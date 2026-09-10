@@ -198,6 +198,28 @@ they land.
   F32/F33, and decide whether `fact_agentic_runs` is materialized before any
   Tier 2 run-grain facet.
 
+### 1.2.0: how agents consume the warehouse
+
+Added 2026-09-10 at the owner's request. The primary consumer of ccutils
+output is a Claude Code agent (or another agent), not a person at a SQL
+prompt: the warehouse is a context database spanning projects, machines
+and sessions. Explore, then decide, the best surfaces for that:
+
+- **The reader's guide** (1.0.0 step 8) is the first piece: a generated
+  markdown file beside the archive saying what this warehouse holds, what
+  each table means, the join paths, and the questions it can answer, so an
+  agent opening it cold does not have to reverse-engineer the schema.
+- **Candidates to evaluate against real agent use:** a `ccutils report`
+  that emits markdown answers to the declared questions (1.2.0); per-project
+  markdown digests an agent can be pointed at; a skill or MCP-shaped query
+  surface with the routing table and gotchas built in; templates a
+  downstream repo can fill from `semantic_*` views. Measure by whether an
+  agent given the surface answers a cross-session question correctly
+  without hand-written SQL.
+- **Constraints already decided:** output is scoped per project, never
+  git-tracked, lives under the home-anchored archive directory; nothing is
+  scrubbed after the fact.
+
 ### 1.2.0: commit attribution, as specified by a downstream consumer
 
 Filed 2026-09-10 by a sibling research project that uses the warehouse as

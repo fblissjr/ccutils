@@ -25,7 +25,7 @@ from ccutils.schemas.star.schema import SchemaMismatchError
 
 ETL_TABLES = {
     "runs", "batch_runs", "steps", "versions", "schema_version", "log_entries",
-    "table_coverage",
+    "table_coverage", "audit_exceptions",
 }
 OLD_NAMES = {
     "fact_etl_runs", "fact_etl_batch_runs", "fact_etl_steps",

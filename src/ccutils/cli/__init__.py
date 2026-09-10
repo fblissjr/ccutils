@@ -6,6 +6,7 @@ from click_default_group import DefaultGroup
 from .local import convert_cmd
 from .import_cmd import import_cmd
 from .open_cmd import open_cmd
+from .audit_cmd import audit_cmd
 from .utils import (
     is_url,
     fetch_url_to_tempfile,
@@ -38,6 +39,7 @@ def cli():
 cli.add_command(convert_cmd, "convert")
 cli.add_command(import_cmd, "import")
 cli.add_command(open_cmd, "open")
+cli.add_command(audit_cmd, "audit")
 
 
 # Tombstones for the removed names.

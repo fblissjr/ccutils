@@ -257,6 +257,20 @@ def _create_objects(conn) -> None:
     """
     )
 
+    # Accepted audit findings. An exception is data with a reason, so a
+    # check is never deleted to make a warehouse pass. NULL detail matches
+    # every detail for that (check, object).
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS etl.audit_exceptions (
+            check_name VARCHAR NOT NULL,
+            object_name VARCHAR NOT NULL,
+            detail VARCHAR,
+            reason VARCHAR NOT NULL
+        )
+    """
+    )
+
     # =========================================================================
     # Staging Tables
     # =========================================================================
@@ -2642,12 +2656,25 @@ TABLE_COVERAGE = {
 }
 
 
+# Accepted audit findings, seeded into etl.audit_exceptions on every open.
+# (check, object, detail-or-None) -> reason. Keep this short: an entry here
+# is a defect the owner has looked at and chosen to live with, and the
+# reason must say why.
+AUDIT_EXCEPTIONS: dict[tuple[str, str, str | None], str] = {}
+
+
 def _seed_table_coverage(conn) -> None:
     conn.execute("DELETE FROM etl.table_coverage")
     conn.executemany(
         "INSERT INTO etl.table_coverage VALUES (?, ?, ?, ?, ?)",
         [(name, *spec) for name, spec in TABLE_COVERAGE.items()],
     )
+    conn.execute("DELETE FROM etl.audit_exceptions")
+    if AUDIT_EXCEPTIONS:
+        conn.executemany(
+            "INSERT INTO etl.audit_exceptions VALUES (?, ?, ?, ?)",
+            [(c, o, d, why) for (c, o, d), why in AUDIT_EXCEPTIONS.items()],
+        )
 
 
 # Every fact's declared natural key, mirroring the `natural_key=` argument

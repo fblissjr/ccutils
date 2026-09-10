@@ -47,6 +47,7 @@ One command converts; two do the things that are not converting.
 | `ccutils --source` | Convert every session under a directory (the Claude projects dir by default) |
 | `ccutils import` | Import a Claude.ai account export (Settings > Privacy > Export) |
 | `ccutils open` | Open a built warehouse in the DuckDB SQL UI |
+| `ccutils audit` | Check a built warehouse for the defect classes that have shipped; exits nonzero on any finding |
 
 Removed in 0.20.0, with no aliases: `local` and `all` were one operation
 split by scope, and the split is what let their behaviour drift apart --
@@ -116,6 +117,25 @@ ccutils open                      # the default archive
 ccutils open -o ./analytics       # a warehouse you built elsewhere
 duckdb -ui ./analytics/archive.duckdb   # or drive it yourself
 ```
+
+### Auditing the warehouse
+
+```bash
+ccutils audit                     # the default archive
+ccutils audit -o ./analytics      # a warehouse you built elsewhere
+```
+
+Every structural bug this project shipped passed its unit suite and was
+caught by a person eyeballing corpus numbers. `ccutils audit` is that
+eyeballing as a command: natural keys unique, one token-usage row per API
+response, foreign keys resolving, declared coverage (`etl.table_coverage`)
+against what runs actually wrote (`etl.steps.table_name`), every kept view
+executing, no run left `running`, delegation rollups scored against the
+agent's own transcript, and columns that are always NULL or single-valued
+on tables large enough to mean it. Exit 0 is clean, 1 is findings, 2 is no
+warehouse or one written by a different schema. Accepted findings live in
+`etl.audit_exceptions` with a reason, so a check is never deleted to make a
+warehouse pass.
 
 It launches; it does not build. With no warehouse there it says so and tells
 you the command that would create one.
