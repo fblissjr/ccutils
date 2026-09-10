@@ -15,23 +15,78 @@ machine that has it; nothing here depends on it.
 ## Where things stand
 
 - **Released:** 0.20.1, tagged 2026-08-28.
-- **In progress toward 1.0.0:** steps 1 through 7 below landed on
-  2026-09-10 (migration machinery deleted, foreign warehouses refused,
-  machinery moved to the `etl` schema, plain version string, coverage
-  layer with step-level table names, seven stub tables culled, `ccutils
-  audit` calibrated on a full-corpus build and its 46 findings fixed or
-  accepted with a reason). Step 8 (the reader's guide) also landed. The gated audit exits clean on a
-  fresh full-corpus build (0 findings, 9 accepted). What remains before
-  tagging: the merges decided the same day (see Decisions).
-- **Suite:** about 1,320 tests collected (`uv run pytest tests/ --confcutdir=tests`).
-  Healthy state is all green plus one skipped live-API test.
-- **Working tree:** `uv.lock` carries an uncommitted regeneration. It is
-  machine-generated; run `uv sync` and commit it, or discard it. Do not hand
-  edit.
+- **In progress toward 1.0.0 (paused 2026-09-10, resume here).** All
+  eight numbered steps landed, plus the first two of the four merges
+  decided the same day: `fact_tool_calls` (uses + results + chain steps +
+  errors in one table) and the summary and session-file bridge as views.
+  `ccutils audit` exits clean on the full corpus and on a one-project
+  subset build apart from columns that project never fills. Version is
+  still 0.20.1; the tag waits on the list under "Next session".
 - **Done and closed:** the JSONL contract doc (`docs/JSONL_CONTRACT.md`), the
   test audit, the CLI defect walk, the CLI restructure, every stated sidecar
   field, delegation outcomes, and the history-scoping leak. Their write-ups
   are in `CHANGELOG.md` under 0.19.1 through 0.20.1.
+
+## Next session
+
+Resume in this order. Each item was designed and its reads done on
+2026-09-10; nothing below is open-ended.
+
+1. **Confirm the last suite run.** The full suite for commit `6e1c304`
+   (summary and bridge views) was running when the session ended. Rerun
+   `uv run pytest tests/ --confcutdir=tests` and fix whatever it names
+   before touching anything else.
+2. **Delegations become a view; `--embed` is retired.** Delete
+   `fact_agent_delegations`, its populator, `populate_delegation_completion`
+   and `run_post_session_reconciliation` (and the `reconciliation` run
+   kind). `semantic_agent_delegations` is a view: the spawn row from
+   `fact_tool_calls` where the tool is Agent or Task (task description,
+   prompt, subagent type, `agent_is_async`, `agent_id`, the stated rollup
+   columns, `is_error` as spawn failure) joined to the child `dim_session`
+   on `md5('agent-' || agent_id)` and to `semantic_session_summary` for the
+   derived duration, tokens and tool count. `completion_state`: spawn
+   failed when the spawn row is an error; `completed` when the child's last
+   assistant message carries a stop reason (compare the two maxima, never
+   `arg_max`, which skips NULLs); `no_completion_recorded` otherwise; NULL
+   when the child transcript is absent. Derived columns keep the
+   `derived_` prefix; stated and derived never share a column. Add
+   delegation features to `semantic_session_summary` (delegation count,
+   spawn failures, max child depth, delegated output tokens). `--embed`
+   goes with it: `embed_sessions` and `cluster_sessions` were dead and
+   `match_delegations` wrote into the table being removed; delete
+   `schemas/star/embeddings.py`, `fact_session_embeddings`, the flag on
+   both commands, the `colbert` extra, and the README lines. Tests to port
+   from `test_fact_agent_delegations_v15.py`: one row per spawn, task input
+   captured, refused spawn is `spawn_failed`, async spawn re-derived from
+   the child transcript, sync spawn keeps stated values, no completion
+   leaves derived NULL, stated and derived never share a column. Update
+   the audit's ground-truth check to read the view, `test_etl_metadata`
+   and `test_cli_surface` for the removed run kind and flag, and the
+   downstream consumer's queries (it reads `semantic_agent_delegations`).
+3. **Collapse the five thin entry facts** (`fact_attachments`,
+   `fact_meta_events`, `fact_queue_operations`, `fact_pr_links`,
+   `fact_file_history_snapshots`) into
+   `fact_entry_events(entry_id, entry_type, subtype, value_text,
+   payload_json)`; `fact_system_events` and `fact_progress_events` stay.
+   `semantic_session_summary`, `semantic_decisions` and `fact_diagnostics`
+   read the thin tables; `dim_session` meta columns read staging and are
+   unaffected.
+4. **Delete the five plain-join views** marked `delete` in
+   `TABLE_COVERAGE` and update the query-warehouse skill's routing table
+   and recipes, which still name them.
+5. **Gate and tag.** One full-corpus build (about 15 minutes), `ccutils
+   audit` clean, then `docs/STAR_SCHEMA.md` table list, `README.md`,
+   `CHANGELOG.md` promoted from Unreleased, `pyproject.toml` and
+   `PARSER_VERSION` to 1.0.0, tag `v1.0.0`. Bump approved by the owner
+   on 2026-09-10.
+
+Working notes: verify with a one-project subset build
+(`ccutils --source --format duckdb -o <dir> -p ccutils`, about 70
+seconds) and `ccutils audit -o <dir>`; the full corpus is for the final
+gate only. Two scratch warehouses from this work sit under the ccutils
+archive root (`audit-calibration`, `audit-subset`); delete them after the
+tag. If the schema changes again, subset builds must be rebuilt, not
+reopened.
 
 ## Release map
 
