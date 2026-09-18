@@ -1,6 +1,6 @@
 # Roadmap and open items
 
-Last updated: 2026-09-10
+Last updated: 2026-09-18
 
 This is the one git-tracked status board. It consolidates what used to live
 only in gitignored `internal/` notes: the release sequence, the next
@@ -270,7 +270,13 @@ they land.
   whether `dim_session.last_assistant_message` shares the bug. Separately,
   the "first user message" is a slash-command wrapper in 146 of 320
   sessions and a paste longer than the 800-character cut in 73, so F20's
-  main input is often harness text rather than the user's request.
+  main input is often harness text rather than the user's request. And the
+  `first_user` query skips `is_meta` rows only: compaction summaries
+  (Claude-written, able to quote tool output) are user rows too, and none of
+  19 measured carries `isMeta`. 1 of 320 sessions opens with one, and 5 open
+  with a tool result, giving an empty first message. Filter
+  `is_compact_summary`, and skip tool-result rows when picking the first
+  message.
 - **`--private` is best-effort on render formats only.** Known channels:
   message text, thinking, raw non-message entries, tool_use keys beyond the
   allowlist, list-form tool results, the batch search index, index and
@@ -365,7 +371,17 @@ here and stays local.
   `hash_cols`, so a confidence change there would never update a row; after
   the tag a new column forces a rebuild); call the HTTP API directly, not
   the young SDK; send only scrubbed excerpts from sessions and fields the
-  owner selects. A Jev extractor must build its inputs with
+  owner selects. Scrubbing by listing bad shapes failed an adversarial
+  check (about 20 surviving shape classes, plus a username scrub that no-opped
+  when `$USER` was unset). The harness now gates with a token allowlist: only
+  plain words, short numbers and punctuation pass, and everything else
+  becomes a category placeholder. It also has an independent residue check
+  that blocks the session, and credential and identity checks that fail
+  closed. Against an independently written probe file
+  (`internal/egress_probes/`, 254 probes) it passes 252. The 2 misses are
+  deliberate over-scrubs. Those probes then informed rule changes, so a fresh
+  author must write new ones before that file counts as independent again. A
+  Jev extractor must build its inputs with
   `include_thinking=False` whatever `--no-thinking` says:
   `_build_session_inputs` passes the flag to `extract_text_from_content_json`,
   whose default concatenates thinking blocks into the message text. The test
