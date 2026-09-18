@@ -87,6 +87,4 @@ from .cli import (
     main,
     convert_cmd,
     open_cmd,
-    is_url,
-    fetch_url_to_tempfile,
 )

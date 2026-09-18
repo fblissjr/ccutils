@@ -8,10 +8,6 @@ from .import_cmd import import_cmd
 from .open_cmd import open_cmd
 from .audit_cmd import audit_cmd
 from .guide_cmd import guide_cmd
-from .utils import (
-    is_url,
-    fetch_url_to_tempfile,
-)
 
 
 @click.group(cls=DefaultGroup, default="convert", default_if_no_args=True)
@@ -92,6 +88,4 @@ __all__ = [
     "convert_cmd",
     "import_cmd",
     "open_cmd",
-    "is_url",
-    "fetch_url_to_tempfile",
 ]

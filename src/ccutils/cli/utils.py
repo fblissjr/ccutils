@@ -1,12 +1,10 @@
 """Utility functions for CLI commands."""
 
 import sys
-import tempfile
 import webbrowser
 from pathlib import Path
 
 import click
-import httpx
 
 from ..api import CredentialsError, resolve_anthropic_key
 from ..etl.facets import AnthropicFacetExtractor
@@ -66,45 +64,6 @@ def warn_private_best_effort():
         "index. Review the output before sharing.",
         err=True,
     )
-
-
-def is_url(path):
-    """Check if a path is a URL (starts with http:// or https://)."""
-    return path.startswith("http://") or path.startswith("https://")
-
-
-def fetch_url_to_tempfile(url):
-    """Fetch a URL and save to a temporary file.
-
-    Returns the Path to the temporary file.
-    Raises click.ClickException on network errors.
-    """
-    try:
-        response = httpx.get(url, timeout=60.0, follow_redirects=True)
-        response.raise_for_status()
-    except httpx.RequestError as e:
-        raise click.ClickException(f"Failed to fetch URL: {e}")
-    except httpx.HTTPStatusError as e:
-        raise click.ClickException(
-            f"Failed to fetch URL: {e.response.status_code} {e.response.reason_phrase}"
-        )
-
-    # Determine file extension from URL
-    url_path = url.split("?")[0]  # Remove query params
-    if url_path.endswith(".jsonl"):
-        suffix = ".jsonl"
-    elif url_path.endswith(".json"):
-        suffix = ".json"
-    else:
-        suffix = ".jsonl"  # Default to JSONL
-
-    # Extract a name from the URL for the temp file
-    url_name = Path(url_path).stem or "session"
-
-    temp_dir = Path(tempfile.gettempdir())
-    temp_file = temp_dir / f"claude-url-{url_name}{suffix}"
-    temp_file.write_text(response.text, encoding="utf-8")
-    return temp_file
 
 
 def maybe_open_browser(output_dir):

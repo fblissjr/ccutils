@@ -80,6 +80,26 @@ class TestRemovedCommands:
             assert f"  {gone}" not in commands, f"{gone} still advertised"
 
 
+class TestRemovedUrlInput:
+    """`is_url` / `fetch_url_to_tempfile` fetched a transcript from an http(s)
+    URL for the old `json` command. That command is gone and nothing called
+    them; they stayed exported as public API until removed. Guard against
+    re-export so a dead network path does not creep back in."""
+
+    GONE = ("is_url", "fetch_url_to_tempfile")
+
+    def test_url_helpers_are_not_exposed(self):
+        import importlib
+
+        for module in ("ccutils", "ccutils.cli", "ccutils.cli.utils"):
+            mod = importlib.import_module(module)
+            for name in self.GONE:
+                assert not hasattr(mod, name), f"{module}.{name} still exists"
+                assert name not in getattr(mod, "__all__", ()), (
+                    f"{module}.__all__ still lists {name}"
+                )
+
+
 class TestModeDispatch:
     """Which mode runs is decided by the positional and --source."""
 
