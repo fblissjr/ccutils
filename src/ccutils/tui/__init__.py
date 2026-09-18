@@ -39,7 +39,6 @@ from .selection import (
     build_project_choices,
     build_session_choices,
     build_flat_choices,
-    build_web_session_choices,
     build_import_choices,
 )
 
@@ -71,6 +70,5 @@ __all__ = [
     "build_project_choices",
     "build_session_choices",
     "build_flat_choices",
-    "build_web_session_choices",
     "build_import_choices",
 ]

@@ -43,17 +43,8 @@ from .parsers import (
     shorten_model_name,
 )
 
-# API client imports (from modular package)
-from .api import (
-    API_BASE_URL,
-    ANTHROPIC_VERSION,
-    CredentialsError,
-    get_access_token_from_keychain,
-    get_org_uuid_from_config,
-    get_api_headers,
-    fetch_sessions,
-    fetch_session,
-)
+# API key resolution for the Tier 2 facet extractor
+from .api import CredentialsError
 
 # Export format imports (from modular package)
 from .export import (
@@ -98,6 +89,4 @@ from .cli import (
     open_cmd,
     is_url,
     fetch_url_to_tempfile,
-    resolve_credentials,
-    format_session_for_display,
 )

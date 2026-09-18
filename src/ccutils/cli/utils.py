@@ -1,6 +1,5 @@
 """Utility functions for CLI commands."""
 
-import platform
 import sys
 import tempfile
 import webbrowser
@@ -9,12 +8,7 @@ from pathlib import Path
 import click
 import httpx
 
-from ..api import (
-    CredentialsError,
-    get_access_token_from_keychain,
-    get_org_uuid_from_config,
-    resolve_anthropic_key,
-)
+from ..api import CredentialsError, resolve_anthropic_key
 from ..etl.facets import AnthropicFacetExtractor
 
 
@@ -111,55 +105,6 @@ def fetch_url_to_tempfile(url):
     temp_file = temp_dir / f"claude-url-{url_name}{suffix}"
     temp_file.write_text(response.text, encoding="utf-8")
     return temp_file
-
-
-def resolve_credentials(token, org_uuid):
-    """Resolve token and org_uuid from arguments or auto-detect.
-
-    Returns (token, org_uuid) tuple.
-    Raises click.ClickException if credentials cannot be resolved.
-    """
-    # Get token
-    if token is None:
-        token = get_access_token_from_keychain()
-        if token is None:
-            if platform.system() == "Darwin":
-                raise click.ClickException(
-                    "Could not retrieve access token from macOS keychain. "
-                    "Make sure you are logged into Claude Code, or provide --token."
-                )
-            else:
-                raise click.ClickException(
-                    "On non-macOS platforms, you must provide --token with your access token."
-                )
-
-    # Get org UUID
-    if org_uuid is None:
-        org_uuid = get_org_uuid_from_config()
-        if org_uuid is None:
-            raise click.ClickException(
-                "Could not find organization UUID in ~/.claude.json. "  # path-privacy: ignore
-                "Provide --org-uuid with your organization UUID."
-            )
-
-    return token, org_uuid
-
-
-def format_session_for_display(session_data):
-    """Format a session for display in the list or picker.
-
-    Shows repo first (if available), then date, then title.
-    Returns a formatted string.
-    """
-    title = session_data.get("title", "Untitled")
-    created_at = session_data.get("created_at", "")
-    repo = session_data.get("repo")
-    # Truncate title if too long
-    if len(title) > 50:
-        title = title[:47] + "..."
-    repo_display = repo if repo else "(no repo)"
-    date_display = created_at[:19] if created_at else "N/A"
-    return f"{repo_display:30}  {date_display:19}  {title}"
 
 
 def maybe_open_browser(output_dir):

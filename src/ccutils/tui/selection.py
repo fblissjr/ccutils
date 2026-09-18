@@ -410,44 +410,6 @@ def build_flat_choices(grouped_sessions, expand_chains=False):
     return choices
 
 
-def build_web_session_choices(sessions):
-    """Build styled questionary choices for web API session picker.
-
-    Args:
-        sessions: List of session dicts from the Claude API.
-
-    Returns:
-        List of questionary.Choice objects with styled labels.
-    """
-    choices = []
-    for s in sessions:
-        sid = s.get("id", "unknown")
-        title = s.get("title", "Untitled")
-        created_at = s.get("created_at", "")
-        repo = s.get("repo")
-
-        tokens = []
-
-        # Repo (blue) or placeholder
-        repo_display = repo if repo else "(no repo)"
-        tokens.append(_styled("identity", f"{repo_display:<30s}"))
-        tokens.append(_styled("primary", "  "))
-
-        # Date (yellow)
-        date_display = created_at[:19] if created_at else "N/A"
-        tokens.append(_styled("temporal", f"{date_display:<19s}"))
-        tokens.append(_styled("primary", "  "))
-
-        # Title (default)
-        if len(title) > 50:
-            title = title[:47] + "..."
-        tokens.append(_styled("primary", title))
-
-        choices.append(questionary.Choice(title=tokens, value=sid))
-
-    return choices
-
-
 def build_import_choices(conversations):
     """Build styled questionary choices for Claude.ai export import.
 

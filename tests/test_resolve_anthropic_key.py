@@ -1,15 +1,14 @@
 """Tests for resolve_anthropic_key().
 
-Step 3 of the facet pipeline. Pattern matches
-ccutils.api.get_access_token_from_keychain (which fetches the Claude
-Code OAuth token from macOS keychain) but for the developer-grade
-Anthropic API key. Distinct keychain service name so the two
-credentials don't collide.
+Step 3 of the facet pipeline: resolve the developer-grade Anthropic API
+key the Tier 2 facet extractor calls the API with. This is the only
+credential ccutils resolves; it never reads a Claude subscription login
+(see tests/test_no_subscription_auth.py).
 
 Resolution order:
   1. ANTHROPIC_API_KEY environment variable (the SDK convention).
-  2. macOS keychain service "ccutils-anthropic" (matches the web
-     command's keychain pattern; Darwin only).
+  2. macOS keychain service "ccutils-anthropic", a service name of its
+     own (Darwin only).
   3. Fail loud -- raise CredentialsError with both options spelled out.
 """
 

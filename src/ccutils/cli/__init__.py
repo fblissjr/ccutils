@@ -11,8 +11,6 @@ from .guide_cmd import guide_cmd
 from .utils import (
     is_url,
     fetch_url_to_tempfile,
-    resolve_credentials,
-    format_session_for_display,
 )
 
 
@@ -96,6 +94,4 @@ __all__ = [
     "open_cmd",
     "is_url",
     "fetch_url_to_tempfile",
-    "resolve_credentials",
-    "format_session_for_display",
 ]
