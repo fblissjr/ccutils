@@ -365,7 +365,11 @@ here and stays local.
   `hash_cols`, so a confidence change there would never update a row; after
   the tag a new column forces a rebuild); call the HTTP API directly, not
   the young SDK; send only scrubbed excerpts from sessions and fields the
-  owner selects. The test harness is in untracked `internal/jev_spike/`.
+  owner selects. A Jev extractor must build its inputs with
+  `include_thinking=False` whatever `--no-thinking` says:
+  `_build_session_inputs` passes the flag to `extract_text_from_content_json`,
+  whose default concatenates thinking blocks into the message text. The test
+  harness is in untracked `internal/jev_spike/`.
   It has not run: no key yet. Claude-written labels are evaluation data
   only, never training data for another vendor's model.
 - **`recursive=` on `find_agent_sessions` is a documented no-op.** If a real
