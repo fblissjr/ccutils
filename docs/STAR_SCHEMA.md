@@ -321,12 +321,16 @@ Catalog of every facet (F01+). Seeded by `create_star_schema()` from `src/ccutil
 All v0.15 facts carry the lineage block (`created_at`, `last_updated_at`, `created_by_version_key`, `last_updated_by_version_key`, `etl_run_id`, `record_source`, `hash_diff`, `is_deleted`, `deleted_at`) plus `session_id` as a degenerate dimension. Only the business columns are listed below.
 
 #### fact_messages
-One row per user/assistant entry.
+One row per user/assistant entry, i.e. per JSONL line. `entry_id` is the key;
+`message_id` is the transcript's own `uuid` and is NOT unique: a continued
+session replays history into a new file under the same uuids, and history is
+occasionally replayed within one file (see `docs/ROADMAP.md`, "Continued
+sessions replay their history").
 
 | Column | Type | Description |
 |--------|------|-------------|
-| entry_id | VARCHAR | Degenerate dim: JSONL entry id |
-| message_id | VARCHAR | PK |
+| entry_id | VARCHAR | PK: a file-and-line surrogate, `generate_dimension_key(source_path, sequence_num)` (md5), stamped at Tier 1. Unique in the warehouse; NOT the JSONL `uuid`, and not stable across machines or a moved file |
+| message_id | VARCHAR | The JSONL `uuid`. Repeats across replayed history; neither `message_id` nor `(session_id, message_id)` is unique |
 | session_key | VARCHAR | FK to dim_session |
 | project_key | VARCHAR | FK to dim_project |
 | message_type | VARCHAR | user, assistant, system |
@@ -431,7 +435,7 @@ resume/fork replays history.
 
 | Column | Type | Description |
 |--------|------|-------------|
-| entry_id | VARCHAR | PK (JSONL entry id); no separate usage_id |
+| entry_id | VARCHAR | PK (the file-and-line surrogate, as in `fact_messages`); no separate usage_id |
 | api_message_id | VARCHAR | API response identity: `message.id`, falling back to `requestId`, then `entry_id` (R23) |
 | session_key | VARCHAR | FK to dim_session |
 | project_key | VARCHAR | FK to dim_project |

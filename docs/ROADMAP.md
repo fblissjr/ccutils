@@ -176,6 +176,20 @@ they land.
   replayed row, so per-project token sums double-count continuations.
   Belongs with 1.1.0 decomposition: a derived `is_replay` on the entry
   grain, computed from the chain, so aggregates can exclude it.
+  Replay also happens inside a single file (measured 2026-09-18 on a
+  320-session build of every non-temp project): 37 transcript uuids occur
+  twice in the same session file, 1,036 to 4,017 lines apart, with identical
+  timestamp and text (29 tool-result rows, 7 assistant, 1 meta; none typed
+  by the user). So `(session_id, message_id)` is not unique either, and
+  `is_replay` must be computed within a file as well as across a chain. The
+  same build had 1,889 uuids spanning more than one session file (11
+  sessions, 64 of them on typed messages).
+- **F14 `human_message_count` counts tool-result entries.** The facet
+  (`etl/fact_session_facets.py`, the F14 `_insert_facet`) counts every
+  non-meta `message_type = 'user'` row, and tool results are user rows. In
+  one session it reported 87 where 7 were typed; the other 80 matched that
+  session's 80 tool calls exactly. Filter `has_tool_result` (and
+  `is_compact_summary`). A value fix, not a schema change. Found 2026-09-18.
 
 - **`tests/test_fact_token_usage_v15.py` needs a grain oracle** asserting
   `count(*) = count(DISTINCT api_message_id)`. `lineage_upsert` cannot catch
@@ -248,6 +262,15 @@ they land.
   there is no quality evidence for the description text that Tier 3
   clustering would embed. Run F20 across the corpus and read the output
   before expanding `FACET_SPECS`.
+- **Tier 2 inputs are weaker than they look.** Measured 2026-09-18:
+  `SessionInputs.last_assistant_message` (`etl/facets/populator.py`,
+  `_build_session_inputs`) takes the last assistant entry whether or not it
+  carries text, so it is empty when a session ends on a tool call (11 of 50
+  sampled sessions). Take the last assistant entry that has text, and check
+  whether `dim_session.last_assistant_message` shares the bug. Separately,
+  the "first user message" is a slash-command wrapper in 146 of 320
+  sessions and a paste longer than the 800-character cut in 73, so F20's
+  main input is often harness text rather than the user's request.
 - **`--private` is best-effort on render formats only.** Known channels:
   message text, thinking, raw non-message entries, tool_use keys beyond the
   allowlist, list-form tool results, the batch search index, index and
@@ -330,6 +353,21 @@ here and stays local.
   their outcome numbers, which `ccutils audit` should report as coverage.
   Lands with the 1.3.0 rewrite; `semantic_agent_delegations` becomes the
   derived view instead of being deleted.
+- **TypeSafe Jev for Tier 2 enum facets: EXPLORING, decide before the
+  1.0.0 tag.** Jev (a hosted classifier: choice / score / yes-no questions
+  over one state, returning per-option probabilities, no text generation)
+  fits the designed-but-unbuilt enum facets F22-F25, F28, F29; not the text
+  facets (F20, F21, F26, F27) and not Tier 3. For a batch ETL its speed and
+  price decide nothing; what it adds over the Haiku path is probabilities.
+  Owner decisions so far: opt-in flag like `--llm-facets`; if a test run
+  earns it, `confidence` and `probabilities_json` become real columns on
+  `fact_session_facets` before the tag (the metadata JSON is excluded from
+  `hash_cols`, so a confidence change there would never update a row; after
+  the tag a new column forces a rebuild); call the HTTP API directly, not
+  the young SDK; send only scrubbed excerpts from sessions and fields the
+  owner selects. The test harness is in untracked `internal/jev_spike/`.
+  It has not run: no key yet. Claude-written labels are evaluation data
+  only, never training data for another vendor's model.
 - **`recursive=` on `find_agent_sessions` is a documented no-op.** If a real
   depth selector is ever wanted, build it from the sidecar's stated
   `spawnDepth`.
@@ -345,7 +383,11 @@ here and stays local.
   remote is unverified from a session.
 - The live-API smoke test needs a valid key in the `ccutils-anthropic`
   keychain entry; a 401 there is not a regression.
-- Test runs need the sandbox disabled for the `uv` cache.
+- `uv run` needs the sandbox disabled for its cache; calling the project
+  venv directly (`.venv/bin/python -m pytest tests/ --confcutdir=tests`)
+  runs inside it.
+- Commits are signed through a 1Password agent whose socket is outside the
+  sandbox, so `git commit` needs the sandbox off for that one command.
 
 ## What the test suite cannot see
 
