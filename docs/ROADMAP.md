@@ -28,9 +28,9 @@ machine that has it; nothing here depends on it.
   Parquet archive under the home-anchored lake root (`default_lake_root()`),
   through a harness-generic lake runner. EXPERIMENTAL and outside semver:
   the command and the lake layout may change before they are declared
-  stable. No warehouse change. Design and the phase plan in
-  `docs/HARNESS_ARCHITECTURE.md`; the store map and measured claims in
-  `docs/ANTIGRAVITY_CONTRACT.md`.
+  stable. No warehouse change. Where this goes next: "Harnesses beyond
+  Claude Code" below. Design: `docs/HARNESS_ARCHITECTURE.md`; store map and
+  measured claims: `docs/ANTIGRAVITY_CONTRACT.md`.
 - **Done and closed:** the JSONL contract doc (`docs/JSONL_CONTRACT.md`), the
   test audit, the CLI defect walk, the CLI restructure, every stated sidecar
   field, delegation outcomes, and the history-scoping leak. Their write-ups
@@ -116,13 +116,9 @@ Behind the rewrite, unscheduled: `fact_file_backups`, memory history
 backfill, the Cowork `audit.jsonl` ingester, facet Tier 2 to Tier 3
 clustering, comprehensive `--private` hardening.
 
-Other harnesses (`docs/HARNESS_ARCHITECTURE.md`). Phase 0, the raw
-Antigravity lake, is built and experimental. Phases 1 (decode through the
-app's own protobuf descriptors, extracted locally and never committed) and
-1b (opt-in decryption of the 27 legacy `.pb` conversations) add no DDL and
-can land any time. Phases 2 to 4 (harness-neutral shaped staging, harness
-identity in the warehouse, Antigravity populators) ride on 1.3.0 and must not
-be built on today's `log_entries` staging.
+Harnesses other than Claude Code run on their own track, below
+("Harnesses beyond Claude Code"): phase 0 is built, phases 1 and 1b add no
+DDL and can land any time, phases 2 to 4 ride on 1.3.0.
 
 Semver binds from 1.0.0 onward. No major bump without the owner's permission.
 
@@ -179,6 +175,162 @@ kept so the ordering argument survives.
 
 Then: bump `pyproject.toml`, `CHANGELOG.md` and `PARSER_VERSION` together;
 tag `v1.0.0`.
+
+## Harnesses beyond Claude Code
+
+Design and principles: `docs/HARNESS_ARCHITECTURE.md` (PROPOSED). Antigravity's
+store map and measured claims: `docs/ANTIGRAVITY_CONTRACT.md`. This section is
+the schedule and the concrete next steps.
+
+The destination is one warehouse that answers the same questions about every
+agent harness on the machine, without pretending they are the same thing. The
+ordering argument: Tier 1 is per-harness and native, so a new harness can be
+captured today without touching the warehouse; harness-neutrality belongs to
+the shaped staging that 1.3.0 builds, so everything that reshapes facts waits
+for it. Building phases 2 to 4 on today's `log_entries` staging would be
+building the layer 1.3.0 replaces.
+
+### Phase 0 -- the raw Antigravity lake. DONE 2026-09-22, EXPERIMENTAL
+
+`ccutils lake antigravity` mirrors the native store into
+`<lake_root>/antigravity/` byte for byte: every SQLite table of every
+conversation, the summaries index, brain text files, media as inventory,
+legacy `.pb` and `implicit/*.pb` as ciphertext. Nothing is decoded.
+`parsers/lake.py` is the harness-generic runner; `parsers/antigravity/` is the
+first `LakeSource`.
+
+Measured on the first real run: 469 units, 0 errors, 8.4s; second run 1.5s,
+everything unchanged, 0 files rewritten; 752 MB; 54,001 step payloads
+sha256-identical to the source; a traced run opened 13,327 paths under the
+data root and none outside the allowlist.
+
+The command and the lake layout are outside semver until declared stable.
+Declaring them stable is a decision for after phase 1, when a consumer exists.
+
+### Phase 1 -- decode Antigravity. Unscheduled, no DDL, can land any time
+
+The lake is opaque without this: everything interesting (text, thinking,
+tool calls, tokens, models, timestamps) is inside protobuf blobs. The schema
+is stated by the app's own binaries, so the decoder reads it rather than
+hard-coding field numbers.
+
+1. **Capture the schema into the lake.** Extract the `FileDescriptorSet` from
+   the installed Go binary (rodata scan for `FileDescriptorProto` bytes, walk
+   to each descriptor's end, keep the longest duplicate per name, check the
+   dependency closure of `trajectory.proto`). Write it to
+   `<lake_root>/antigravity/_schema/<app>-<version>/` with the manifest row
+   that says which run captured it. Never committed: it is extracted from a
+   proprietary binary, and the owner accepted that exposure for local use
+   only (2026-09-22). Capturing it per app version is what keeps old blobs
+   decodable after the app updates.
+2. **Add the `protobuf` dependency** and build a descriptor pool from the
+   captured set; no generated code in the repo.
+3. **Decode into a derived layer**, `decoded/*.parquet` beside each unit's raw
+   tables, with its own format version: `steps.step_payload`
+   (`gemini_coder.Step`), `gen_metadata.data`, `raw_summary`,
+   `trajectory_metadata_blob`, `executor_metadata`, `parent_references`, and
+   the annotation `.pbtxt`. Derived from raw plus the captured schema, so it
+   is re-derivable and never replaces the mirror.
+4. **Read both tool encodings** (contract claim 11): per-tool step types, and
+   step 132 `GENERIC`, which wraps the old step as an `Any`.
+5. **Keep bytes as bytes.** Inline images and the one ~97 MB prompt-snapshot
+   row per conversation must not become base64 in JSON.
+6. **`antigravity_*` DuckDB views over the decoded layer**, marked unstable:
+   steps with names and times, tool calls joined to their results on the
+   stated call id, token usage, models, subagents.
+
+Gates: an unknown-field walk over the whole corpus finds 0 (the survey's
+number on 2.6M fields); decoded planner text equals the brain transcript's
+content for joined lines within the measured rate; a decode failure is
+recorded in the manifest, never a silent NULL.
+
+### Phase 1b -- the 27 encrypted legacy conversations. Opt-in, after phase 1
+
+20 hub and 7 CLI conversations (Nov 2025 to May 2026) are in the old encrypted
+`.pb` format; the lake archives the ciphertext. Community tools report
+AES-128-CTR with the first 16 bytes as the nonce and the key in the macOS
+Keychain item `Antigravity Safe Storage`; unverified here.
+
+- Verify the scheme against the local files first: does the plaintext decode
+  as a `gemini_coder.Trajectory` with 0 unknown fields?
+- `--decrypt-legacy`, macOS only. The key is read at runtime (the OS prompts),
+  never stored, never logged, and its absence fails loudly rather than
+  skipping. The ciphertext stays in the lake.
+- Output goes into the same per-conversation tables with `record_source`
+  `antigravity_legacy_pb`, so a decrypted conversation is queried like any
+  other.
+- Gate: each decrypted conversation's step count equals its summaries
+  `step_count`, or the file is recorded as undecryptable with a reason.
+- Fallback, only if decryption does not work: export through the running
+  language server's local RPC. It needs the app running and a CSRF token from
+  process arguments, so it is the second choice, not the first.
+
+### Phase 2 -- harness-neutral staging. Rides 1.3.0
+
+- Write the `stg_*` contract into `docs/ETL_ARCHITECTURE.md` as Tier 2's
+  target: sessions, messages, tool calls, tool results, usage, delegations,
+  artifacts, each carrying `harness`. Draft it from the measured shapes of at
+  least two harnesses, ideally three with plain Gemini CLI, so it is not a
+  generalization of one.
+- Per-harness vocabulary maps, because facts encode Claude Code's today:
+  `_AGENT_TOOL_NAMES`, `TOOL_CATEGORIES`, the `api_message_id` usage grain.
+- **Claude Code becomes a `LakeSource`** (`ccutils lake claude_code`), its
+  lake moves under `<lake_root>/claude_code/`, and staging reads the lake.
+  That also makes true what `README.md` has claimed for a year: the warehouse
+  can be rebuilt from Parquet without re-parsing JSONL. No code path does that
+  today.
+- Revise the `LakeSource` interface against that second real harness; it was
+  designed against one and a test-only toy.
+- Gate: a Claude Code warehouse rebuilt from the lake alone matches a build
+  from JSONL, and both harnesses produce the same `stg_*` shapes.
+
+### Phase 3 -- harness identity in the warehouse. Rides 1.3.0
+
+- A `harness` column or dimension, and harness-namespaced keys in the
+  key-formula module (a Claude Code `session_key` changes; that is a rebuild,
+  not a migration).
+- `record_source` carried from staging instead of `lineage_upsert`'s constant
+  default. Of five allow-listed values, only two ever reach a row today.
+- A per-harness parser version: one global `PARSER_VERSION` cannot say which
+  contract wrote a row when two harnesses are in the file.
+- A neutral project identity. Claude Code's project is the transcript
+  directory; Antigravity states a workspace URI, a git root and a `project_id`
+  named in `config/projects/*.json`.
+- `dim_model` gains provider, and family comes from a structural parse of the
+  stated id: the corpus holds `gemini-3.8-flash-tiered` and, through
+  Antigravity, `claude-opus-4-6-thinking`.
+- Gate: `ccutils audit` runs per harness and is clean; no key collides; no
+  `record_source` is a constant.
+
+### Phase 4 -- Antigravity populators. Rides 1.3.0
+
+Neutral facts through the adapter: `PLANNER_RESPONSE` to messages and tool
+calls; tool steps to results joined on the stated call id; `gen_metadata` to
+usage; `INVOKE_SUBAGENT` plus the stated parent and depth to delegations;
+brain artifacts, and later their `.git` snapshots, to plan revisions. Stated
+values win: Antigravity states a command's exit code, where Claude Code's is
+derived from output text.
+
+Antigravity-only facts, which do not get forced into neutral columns:
+checkpoints, agent-to-agent messages, forks and battle mode, browser
+subagent.
+
+Gate: audit clean per harness; delegation depth equals the stated
+`nesting_depth` with no walking.
+
+### Phase 5 -- render and privacy. After phase 4
+
+HTML and markdown from neutral staging. `--no-thinking` must be wired and its
+effect asserted on every new surface: Antigravity's thinking text is real,
+unlike Claude Code's empty blocks, so the flag stops being a no-op that looks
+fine. Anything built for a third party stays `include_thinking=False`.
+
+### Further harnesses, unscheduled
+
+Cowork's `audit.jsonl` (already on the list behind the rewrite), Claude.ai
+exports (HTML-only today), plain Gemini CLI chats (`tmp/*/chats/*.json`,
+found while surveying Antigravity). Each is a `LakeSource` plus a contract
+doc; the third one is what proves the interface was not built around two.
 
 ## Known defects and open items
 
@@ -430,6 +582,36 @@ here and stays local.
   staging; and the verification section names baseline assets that no
   longer exist and, by decision, will not be rebuilt.
 
+### Antigravity lake: known gaps
+
+Found while building phase 0 (2026-09-22), not fixed. None blocks the lake.
+
+- **The lake has no self-check.** The manifest records what was written, and
+  the contract canaries check the SOURCE, but nothing verifies the lake
+  against the source after the fact the way `ccutils audit` checks the
+  warehouse. A `lake --check` re-reading a sample of blobs and comparing
+  sha256 would close it.
+- **`brain/<id>/.git` is excluded**, so the per-conversation snapshot history
+  (up to 769 commits, which is artifact revision history and earlier versions
+  of the transcripts) is not archived. Phase 4 extracts it. Until then a
+  conversation deleted in the app loses that history even though its current
+  files are kept.
+- **`implicit/*.pb` is archived without knowing what it is.** 46 encrypted
+  files whose uuids match no conversation; the language server prunes them.
+  Phase 1b may reveal them, or they stay a labelled unknown.
+- **`antigravity-ide` duplicates 19 of the hub's legacy conversations.** It is
+  ingested because it is the IDE app's live data-dir name, so it will hold
+  real conversations if that app is used again; today it costs a second copy
+  of 19 ciphertext files and their brain files.
+- **Plain Gemini CLI chats are not ingested** (`tmp/*/chats/*.json`). A
+  separate harness, found while surveying; listed under further harnesses.
+- **One conversation's `cascade_id` is not its filename.** An empty database
+  in the hub store carries an id found nowhere else on disk; the contract
+  claim exempts empty files rather than explaining them.
+- **The `.pb` encryption scheme is unverified here** -- community-reported
+  only, and verifying it needs a Keychain credential. Phase 1b verifies
+  before it decrypts.
+
 ### Environment and tooling
 
 - `gh` fails with a TLS certificate error in the sandbox, so PR text on the
@@ -476,6 +658,15 @@ if it is deleted.
 - **The same value is stored once.** Stated values live where they are
   stated (`fact_tool_results`); derived values carry a `derived_` name and
   live in views. A fact never copies another fact's columns.
+- **Tier 1 is per-harness and native; neutrality starts at Tier 2.** A
+  second harness is mirrored at its own grain, byte-faithful, and is not
+  reshaped into another harness's envelope. Decided 2026-09-22 while
+  building the Antigravity lake, against the alternative of extending
+  `etl.log_entries`.
+- **A harness lake whose Tier 0 is not durable is an archive, not a cache.**
+  It keeps units whose source disappeared, supersedes rather than overwrites,
+  and lives apart from warehouse output dirs so that rebuilding a warehouse
+  cannot delete it.
 - **`TaskCreate` is not an agent spawn.** `Agent` is the only tool name in
   the corpus carrying an agent rollup; `Task` is kept for older transcripts.
 

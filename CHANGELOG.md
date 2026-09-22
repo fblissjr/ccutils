@@ -29,6 +29,7 @@ All notable changes to this project will be documented in this file.
 - **`is_url` and `fetch_url_to_tempfile`.** They downloaded a transcript from an http(s) URL into a temp file for the old `json` command, which is gone; nothing has called them since, but both stayed exported from `ccutils` and `ccutils.cli`. With them goes the last network call in the CLI layer: `httpx` is now used only by the Tier 2 facet extractor. `tests/test_cli_surface.py::TestRemovedUrlInput` fails if either name is exposed again.
 
 ### Documentation
+- **The harness roadmap lives in `docs/ROADMAP.md`.** "Harnesses beyond Claude Code" carries the whole track: what phase 0 shipped and what it measured, then decode, legacy decryption, harness-neutral staging, harness identity, populators, and render, each with its concrete steps and its gate, plus the known gaps of the lake as built. `docs/HARNESS_ARCHITECTURE.md` keeps the reasoning and points at it, so the schedule has one home.
 - **`docs/ROADMAP.md` is the single tracked status board.** The release sequence, the 1.0.0 step list, and every known-but-unfixed defect lived only in gitignored `internal/` notes, so a fresh checkout or a new session could not find where work left off. Consolidated, each open item re-verified against the code, and pointed to from `CLAUDE.md`.
 
 ## [0.20.1]

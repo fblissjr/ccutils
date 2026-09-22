@@ -2,11 +2,12 @@
 
 Last updated: 2026-09-22
 
-> **Status: PROPOSED.** Phase 0 (below) is built: the harness-generic lake
-> runner and the Antigravity lake source, shipped as the EXPERIMENTAL
-> `ccutils lake` command, outside semver. Everything after it is a plan. It
-> rides on the Tier 2 rewrite in `docs/ETL_ARCHITECTURE.md` (1.3.0) rather
-> than on today's staging.
+> **Status: PROPOSED.** One phase is built: the harness-generic lake runner
+> and the Antigravity lake source, shipped as the EXPERIMENTAL `ccutils lake`
+> command, outside semver. Everything after it is a plan, scheduled in
+> `docs/ROADMAP.md` under "Harnesses beyond Claude Code", and it rides on the
+> Tier 2 rewrite in `docs/ETL_ARCHITECTURE.md` (1.3.0) rather than on today's
+> staging.
 
 ccutils was built around one harness, Claude Code, and its Tier 1 and staging
 assume Claude Code JSONL in about twenty places: line-delimited text, the
@@ -85,25 +86,19 @@ least two, ideally three (with Gemini CLI), before 1.3.0 builds it.
 
 ## Phases
 
-| Phase | What | Rides on | Warehouse change |
-|---|---|---|---|
-| 0 Raw lake (built) | Generic runner; Antigravity source; contract doc; `ccutils lake antigravity`, experimental | nothing | no |
-| 1 Decode | Extract the protobuf descriptor set from the installed app into `lake/antigravity/_schema/<app>-<version>/` (never committed); add the `protobuf` dependency; decode steps, generations and summaries to named JSON; `antigravity_*` DuckDB views, marked unstable. Gates: an unknown-field walk finds 0, and text matches the brain transcript | nothing | no |
-| 1b Legacy decrypt | Opt-in `--decrypt-legacy` (macOS): read the Keychain item at runtime, never store the key, fail loudly without it; verify the plaintext decodes as a `Trajectory` with 0 unknown fields before writing it into the same tables | 1 | no |
-| 2 Neutral staging | Write the `stg_*` contract and vocabulary maps into `ETL_ARCHITECTURE.md`; Claude Code goes lake-first (`ccutils lake claude_code`, staging reads the lake) and the `LakeSource` interface is revised against it | 1.3.0 | rebuild |
-| 3 Identity | Harness column or dimension; namespaced keys; `record_source` carried from staging instead of a constant; per-harness parser version; a neutral project identity; model provider and family from the stated id | 1.3.0 | rebuild |
-| 4 Antigravity populators | Neutral facts through the adapter, plus Antigravity-only facts (checkpoints, agent messages, forks and battle mode, browser subagent); `ccutils audit` per harness | 1.3.0 | rebuild |
-| 5 Render and privacy | HTML and markdown through neutral staging; `--no-thinking` wired and asserted on every new surface (Antigravity's thinking text is real, unlike Claude Code's empty blocks) | 4 | no |
-
-Phases 0, 1 and 1b add no DDL and do not touch the 1.0.0 gate. Phases 2 to 4
-are deliberately not built on today's `log_entries` staging, which is the
-layer 1.3.0 replaces.
+The schedule, the concrete steps and the gates live in `docs/ROADMAP.md`
+under "Harnesses beyond Claude Code"; this document holds the reasoning
+behind them. In short: phase 0 (the raw Antigravity lake) is built and
+experimental; phase 1 decodes it through the app's own descriptors and 1b
+decrypts the legacy files, neither touching the warehouse; phases 2 to 4
+(neutral staging, harness identity, Antigravity populators) ride on the 1.3.0
+rewrite, because building them on today's `log_entries` staging would build
+the layer that rewrite replaces; phase 5 is render and privacy.
 
 ## Open questions
 
-- What a "project" is across harnesses: Claude Code's is the transcript
-  directory; Antigravity states a workspace URI, a git root and a
-  `project_id` named in `config/projects`.
-- Whether `fact_messages` splits into neutral and harness-specific parts.
-- How forks and battle mode map; Claude Code has no analogue.
-- Whether the archive should ever honour in-app deletions (a prune flag).
+Tracked in `docs/ROADMAP.md` under "Open design questions": what a "project"
+is across harnesses (Claude Code's transcript directory vs Antigravity's
+workspace URI, git root and `project_id`), whether `fact_messages` splits
+into neutral and harness-specific parts, how forks and battle mode map, and
+whether the archive should ever honour in-app deletions.
