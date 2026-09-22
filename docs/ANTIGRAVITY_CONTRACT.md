@@ -249,7 +249,7 @@ Observed step types, both stores: 15 `PLANNER_RESPONSE` 26,293 · 132 `GENERIC`
 - Measured: all 54,001 steps carry Step metadata field 1 (the creation time
   of claim 6). In the brain transcripts, 3 conversations write 81 step
   indices twice with different times; in 5 of them the step type changes too
-  (e.g. idx 142 `GENERIC` at 18:46, then `USER_INPUT` at 19:16). The database
+  (a `GENERIC` step, then a `USER_INPUT` step written about half an hour later under the same idx). The database
   holds only the later step for every one checked: a revert truncates the
   conversation and the new branch re-uses the indices. The earlier branch
   survives on disk only in the transcript, which appends.
