@@ -26,6 +26,7 @@ from ccutils.parsers.antigravity import stores
 from ccutils.parsers.lake import read_manifest, write_lake
 
 from helpers_antigravity import (
+    BASE_TS,
     CONV_A,
     CONV_B,
     CONV_CLI,
@@ -57,6 +58,11 @@ def run(home, lake_root, **kw):
     src = AntigravitySource(app_bundle=None, **{k: v for k, v in kw.items() if k == "stores"})
     return write_lake(src, lake_root=lake_root, root=home.root,
                       **{k: v for k, v in kw.items() if k != "stores"})
+
+
+def conv_status(result):
+    """unit_id -> status for conversation units (brain_git units share the id)."""
+    return {o.unit_id: o.status for o in result.outcomes if o.unit_kind != "brain_git"}
 
 
 def conv_dir(lake_root, conv, store="antigravity"):
@@ -118,7 +124,7 @@ class TestConversationMirror:
 
     def test_empty_conversation_is_mirrored(self, home, lake_root):
         result = run(home, lake_root)
-        assert {o.unit_id: o.status for o in result.outcomes}[CONV_EMPTY] == "written"
+        assert conv_status(result)[CONV_EMPTY] == "written"
         assert table(conv_dir(lake_root, CONV_EMPTY) / "steps.parquet") == []
 
     def test_summaries_are_mirrored_per_store(self, home, lake_root):
@@ -163,7 +169,7 @@ class TestWal:
             append_steps(h.wal_conn, [Step(3, 15)])
             assert (db.stat().st_size, db.stat().st_mtime_ns) == (db_stat.st_size, db_stat.st_mtime_ns)
             result = write_lake(src, lake_root=lake_root, root=h.root)
-            status = {o.unit_id: o.status for o in result.outcomes}
+            status = conv_status(result)
             assert status[CONV_CLI] == "written"
             rows = table(conv_dir(lake_root, CONV_CLI, "antigravity-cli") / "steps.parquet")
             assert sorted(r["idx"] for r in rows) == [0, 1, 2, 3]
@@ -207,7 +213,7 @@ class TestSchemaDrift:
         db.unlink()
         write_conversation_db(db, CONV_B, [Step(0, 14)], drop_steps_column="render_info")
         result = run(home, lake_root)
-        status = {o.unit_id: o.status for o in result.outcomes}
+        status = conv_status(result)
         assert status[CONV_B] == "error"
         assert status[CONV_A] == "written"
         err = next(o.error for o in result.outcomes if o.unit_id == CONV_B)
@@ -279,10 +285,33 @@ class TestConversationFiles:
             assert files[rel]["sha256"] == hashlib.sha256((home.store() / rel).read_bytes()).hexdigest()
             assert files[rel]["size_bytes"] == (home.store() / rel).stat().st_size
 
-    def test_git_and_chunks_are_excluded(self, home, lake_root):
+    def test_git_and_chunks_are_not_in_the_conversation_unit(self, home, lake_root):
         run(home, lake_root)
         rels = files_by_relpath(lake_root)
         assert not any("/.git/" in r or "/chunks/" in r for r in rels)
+
+    def test_brain_git_is_archived_as_its_own_unit(self, home, lake_root):
+        # The snapshot history is the only record of earlier artifact
+        # versions, and it goes when the app deletes the conversation. It is
+        # its own unit so a new commit does not rewrite the conversation's
+        # steps and generations.
+        run(home, lake_root)
+        path = lake_root / "antigravity" / "antigravity" / "brain_git" / CONV_A / "git_files.parquet"
+        rows = {r["relpath"]: r for r in table(path)}
+        obj = f"brain/{CONV_A}/.git/objects/ab/{'0' * 38}"
+        assert set(rows) == {f"brain/{CONV_A}/.git/HEAD", f"brain/{CONV_A}/.git/refs/heads/main", obj}
+        assert rows[obj]["kind"] == "git_object" and rows[f"brain/{CONV_A}/.git/HEAD"]["kind"] == "git_meta"
+        assert rows[obj]["content"] == (home.store() / obj).read_bytes()
+        assert {r["conversation_id"] for r in rows.values()} == {CONV_A}
+
+    def test_a_new_git_object_rewrites_only_the_git_unit(self, home, lake_root):
+        run(home, lake_root)
+        (home.store() / "brain" / CONV_A / ".git" / "objects" / "cd").mkdir()
+        (home.store() / "brain" / CONV_A / ".git" / "objects" / "cd" / ("1" * 38)).write_bytes(b"new")
+        result = run(home, lake_root)
+        status = {(o.unit_kind, o.unit_id): o.status for o in result.outcomes}
+        assert status[("brain_git", CONV_A)] == "written"
+        assert status[("conversation", CONV_A)] == "unchanged"
 
     def test_symlink_is_recorded_never_followed(self, home, lake_root):
         run(home, lake_root)
@@ -292,7 +321,7 @@ class TestConversationFiles:
 
     def test_legacy_pb_is_archived_as_ciphertext(self, home, lake_root):
         result = run(home, lake_root)
-        assert {o.unit_id: o.status for o in result.outcomes}[CONV_PB] == "written"
+        assert conv_status(result)[CONV_PB] == "written"
         files = files_by_relpath(lake_root, CONV_PB)
         pb = files[f"conversations/{CONV_PB}.pb"]
         assert pb["kind"] == "legacy_pb"
@@ -356,7 +385,7 @@ class TestReruns:
         run(home, lake_root)
         (home.store() / "brain" / CONV_A / "walkthrough.md").write_text("# Walkthrough\n")
         result = run(home, lake_root)
-        status = {o.unit_id: o.status for o in result.outcomes}
+        status = conv_status(result)
         assert status[CONV_A] == "written"
         assert status[CONV_B] == "unchanged"
         assert f"brain/{CONV_A}/walkthrough.md" in files_by_relpath(lake_root)
@@ -369,6 +398,78 @@ class TestReruns:
         row = manifest(lake_root)[("antigravity", "conversation", CONV_B)]
         assert row["source_present"] is False
 
+    def test_a_deleted_db_keeps_its_tables_marked_absent(self, home, lake_root):
+        # The .db goes, the brain dir stays: the rewrite must not take the
+        # steps with it.
+        run(home, lake_root)
+        (home.store() / "conversations" / f"{CONV_A}.db").unlink()
+        result = run(home, lake_root)
+        assert conv_status(result)[CONV_A] == "written"
+        steps = table(conv_dir(lake_root, CONV_A) / "steps.parquet")
+        assert len(steps) == 3 and {r["source_present"] for r in steps} == {False}
+        gens = table(conv_dir(lake_root, CONV_A) / "gen_metadata.parquet")
+        assert len(gens) == 2
+        files = files_by_relpath(lake_root)
+        assert files[f"brain/{CONV_A}/task.md"]["source_present"] is True
+
+    def test_a_deleted_conversations_summary_row_is_kept(self, home, lake_root):
+        # The stated parent and nesting depth live only in the summaries row.
+        run(home, lake_root)
+        db = home.store() / "conversation_summaries.db"
+        conn = sqlite3.connect(db)
+        conn.execute("DELETE FROM conversation_summaries WHERE conversation_id = ?", (CONV_B,))
+        conn.commit()
+        conn.close()
+        run(home, lake_root)
+        rows = {r["conversation_id"]: r for r in table(
+            lake_root / "antigravity" / "antigravity" / "summaries" / "conversation_summaries.parquet")}
+        assert rows[CONV_B]["source_present"] is False
+        assert rows[CONV_B]["parent_conversation_id"] == CONV_A and rows[CONV_B]["nesting_depth"] == 1
+        assert rows[CONV_A]["source_present"] is True
+
+    def test_a_deleted_brain_file_is_kept_with_its_content(self, home, lake_root):
+        run(home, lake_root)
+        rel = f"brain/{CONV_A}/task.md"
+        content = (home.store() / rel).read_bytes()
+        (home.store() / rel).unlink()
+        run(home, lake_root)
+        row = files_by_relpath(lake_root)[rel]
+        assert row["source_present"] is False and row["content"] == content
+
+    def test_a_store_filter_does_not_mark_other_stores_missing(self, home, lake_root):
+        run(home, lake_root)
+        result = run(home, lake_root, stores=("antigravity-cli",))
+        assert result.missing == []
+        assert all(r["source_present"] for r in manifest(lake_root).values())
+
+    def test_a_revert_that_reuses_step_indices_supersedes(self, home, lake_root):
+        # Measured: 3 real conversations re-use 81 step indices after a revert,
+        # with a later created_at (docs/ANTIGRAVITY_CONTRACT.md claim 14). The
+        # idx set does not shrink, so only the creation time shows it.
+        run(home, lake_root)
+        db = home.store() / "conversations" / f"{CONV_A}.db"
+        (_i, _t, _s, _h, meta, *_rest, payload, _f) = Step(1, 14, text="new branch").row(BASE_TS + 5000)
+        conn = sqlite3.connect(db)
+        conn.execute("UPDATE steps SET step_type = 14, metadata = ?, step_payload = ? WHERE idx = 1", (meta, payload))
+        conn.commit()
+        conn.close()
+        result = run(home, lake_root)
+        assert conv_status(result)[CONV_A] == "superseded"
+        kept = list((lake_root / "antigravity" / "antigravity" / "conversations" / "_superseded" / CONV_A)
+                    .glob("*/steps.parquet"))
+        assert len(kept) == 1
+        assert {r["idx"]: r["step_type"] for r in table(kept[0])}[1] == 15
+
+    def test_an_in_place_status_update_does_not_supersede(self, home, lake_root):
+        run(home, lake_root)
+        db = home.store() / "conversations" / f"{CONV_A}.db"
+        conn = sqlite3.connect(db)
+        conn.execute("UPDATE steps SET status = 9 WHERE idx = 2")
+        conn.commit()
+        conn.close()
+        result = run(home, lake_root)
+        assert conv_status(result)[CONV_A] == "written"
+
     def test_dropped_steps_supersede_the_old_snapshot(self, home, lake_root):
         run(home, lake_root)
         db = home.store() / "conversations" / f"{CONV_A}.db"
@@ -377,7 +478,7 @@ class TestReruns:
         conn.commit()
         conn.close()
         result = run(home, lake_root)
-        assert {o.unit_id: o.status for o in result.outcomes}[CONV_A] == "superseded"
+        assert conv_status(result)[CONV_A] == "superseded"
         kept = list((lake_root / "antigravity" / "antigravity" / "conversations" / "_superseded" / CONV_A)
                     .glob("*/steps.parquet"))
         assert len(kept) == 1 and len(table(kept[0])) == 3
@@ -394,6 +495,7 @@ class TestReruns:
 # old shape forever, because the source fingerprint cannot see a writer change.
 PINNED_FORMAT_FINGERPRINTS = {
     1: "e2f0012235d8d639a6f82710ed1649958ab5f198db3eb27d46b945212b3ab650",
+    2: "a7bc2621b003ab91617f9c6ed80aea874d01c090d47a2aba291d46557f45f5b9",
 }
 
 
@@ -487,6 +589,24 @@ class TestReadAllowlist:
                 open(decoy, "rb")
         assert violations(trace, home.root) == [str(decoy.resolve())]
 
+    def test_a_file_swapped_for_a_symlink_after_lstat_is_not_followed(self, home, lake_root, monkeypatch):
+        # lstat and open are two calls; a symlink planted between them must
+        # not be followed to the credentials beside the data.
+        from ccutils.parsers.antigravity import writer
+        rel = f"brain/{CONV_A}/task.md"
+        target = home.store() / rel
+        regular = os.lstat(target)
+        target.unlink()
+        target.symlink_to(home.root / "oauth_creds.json")
+        real_lstat = os.lstat
+        monkeypatch.setattr(writer.os, "lstat",
+                            lambda p, *a, **k: regular if Path(p) == target else real_lstat(p, *a, **k))
+        spec = writer.FileSpec(rel, "artifact", stores.BYTES, "antigravity_conversation_file")
+        with traced() as trace:
+            row = writer.file_row(home.store(), spec)
+        assert row is not None and row["kind"] == "symlink" and row["content"] is None
+        assert violations(trace, home.root) == []
+
     def test_allowlist_is_anchored(self, home):
         root = home.root.resolve()
         assert stores.is_allowed(root, root / "antigravity" / "conversations" / f"{CONV_A}.db")
@@ -494,6 +614,6 @@ class TestReadAllowlist:
         assert not stores.is_allowed(root, root / "oauth_creds.json")
         assert not stores.is_allowed(root, root / "antigravity-backup" / "conversations" / f"{CONV_A}.db")
         assert not stores.is_allowed(root, root / "config" / "mcp_config.json")
-        # brain/<id>/.git is inside an allowed subtree; the classifier, not the
-        # allowlist, excludes it -- and the tracer test proves it is never opened.
+        # brain/<id>/.git is inside an allowed subtree; the conversation
+        # classifier leaves it to the brain_git unit.
         assert stores.classify_conversation_file(".git/HEAD", "brain") is None

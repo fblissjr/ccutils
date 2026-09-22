@@ -164,10 +164,13 @@ Mirrors another harness's native transcript store into a Parquet lake, Tier 1
 only (no warehouse). For Antigravity that is every table of every
 `conversations/<id>.db` (SQLite of protobuf blobs, kept as bytes), the
 conversation index, the brain files (transcripts, agent messages, tool
-outputs, artifacts; media as inventory only), and the encrypted legacy `.pb`
-files as ciphertext. Nothing is decoded yet. The lake is an archive:
-unchanged units are skipped, a conversation deleted in the app stays in the
-lake, and a snapshot that lost rows is kept under `_superseded/`. Reads are an
+outputs, artifacts, the per-conversation `.git` snapshot history; media as
+inventory only), and the encrypted legacy `.pb` files as ciphertext. Nothing
+is decoded yet. The lake is an archive: unchanged units are skipped, and
+nothing it held leaves the current tree. Rows the app deleted (a
+conversation, its summary row, a brain file) stay with `source_present =
+false`, and a conversation that was reverted keeps its old snapshot under
+`_superseded/`. Reads are an
 allowlist, so the OAuth tokens beside the data are never opened; the lake is
 still private data. **Experimental:** the command and the layout are outside
 semver until declared stable. Store map and measured claims:
@@ -178,6 +181,7 @@ phases: [docs/HARNESS_ARCHITECTURE.md](docs/HARNESS_ARCHITECTURE.md).
 -- DuckDB over the lake; union_by_name because a drifted file can carry extra columns
 SELECT store, step_type, count(*)
 FROM read_parquet('~/.ccutils/lake/antigravity/*/conversations/*/steps.parquet', union_by_name = true)
+WHERE source_present          -- drop this to include what the app has since deleted
 GROUP BY ALL ORDER BY 3 DESC;
 ```
 

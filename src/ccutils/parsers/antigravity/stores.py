@@ -66,9 +66,11 @@ CAPPED = "capped"          # bytes up to UNCLASSIFIED_MAX_BYTES, inventory above
 
 UNCLASSIFIED_MAX_BYTES = 1024 * 1024
 
-# Directories never walked, relative to the conversation dir. `.git` is the
-# brain snapshot history (extracted in a later phase, not mirrored as blobs);
-# `logs/chunks/` is an exact concatenation of the whole transcript files.
+# Directories the conversation walk never enters, relative to the
+# conversation dir. `.git` is the brain snapshot history, archived by its own
+# `brain_git` unit (GIT_FILE_RULES) so a new commit does not rewrite the
+# conversation; `logs/chunks/` is an exact concatenation of the whole
+# transcript files (contract claim 8) and is not archived at all.
 EXCLUDED_DIRS: dict[str, tuple[str, ...]] = {
     "brain": (r"\.git", r"\.system_generated/logs/chunks"),
     "browser_recordings": (),
@@ -97,6 +99,17 @@ CONVERSATION_FILE_RULES: dict[str, tuple[tuple[str, str, str], ...]] = {
         (r".+", "recording_frame", INVENTORY),
     ),
 }
+
+
+# brain/<id>/.git, relative to the .git dir. Everything is kept as bytes:
+# objects are zlib-compressed and small, and real repos hold only loose
+# objects (184 repos, 63,039 loose objects, 0 packs; survey 2026-09-22).
+GIT_DIR = ".git"
+GIT_FILE_RULES: tuple[tuple[str, str], ...] = (
+    (r"objects/[0-9a-f]{2}/[0-9a-f]{38}", "git_object"),
+    (r"objects/pack/pack-[0-9a-f]+\.(pack|idx|rev)", "git_pack"),
+    (r".+", "git_meta"),
+)
 
 
 def default_root() -> Path:
@@ -136,6 +149,14 @@ def classify_conversation_file(rel: str, area: str) -> tuple[str, str] | None:
         if re.fullmatch(pattern, rel):
             return kind, keep
     return None
+
+
+def git_file_kind(rel: str) -> str:
+    """Kind of a file relative to a brain .git dir."""
+    for pattern, kind in GIT_FILE_RULES:
+        if re.fullmatch(pattern, rel):
+            return kind
+    return "git_meta"  # unreachable: the last rule matches everything
 
 
 def store_file_kind(rel: str) -> str | None:
@@ -206,3 +227,23 @@ def app_version(plist: Path | None) -> str | None:
             return str(plistlib.load(f).get("CFBundleShortVersionString"))
     except (OSError, plistlib.InvalidFileException):
         return None
+
+
+def walk_git_dir(store_root: Path, conv_id: str) -> list[str]:
+    """Store-relative paths of every file under ``brain/<conv_id>/.git``.
+
+    Symlinks, to files or directories, are listed but never followed."""
+    base = store_root / "brain" / conv_id / GIT_DIR
+    out: list[str] = []
+    for dirpath, dirnames, filenames in os.walk(base, followlinks=False):
+        rel_dir = Path(dirpath).relative_to(base).as_posix()
+        prefix = f"brain/{conv_id}/{GIT_DIR}" + ("" if rel_dir == "." else f"/{rel_dir}")
+        keep = []
+        for d in sorted(dirnames):
+            if (Path(dirpath) / d).is_symlink():
+                out.append(f"{prefix}/{d}")
+            else:
+                keep.append(d)
+        dirnames[:] = keep
+        out += [f"{prefix}/{f}" for f in sorted(filenames)]
+    return out

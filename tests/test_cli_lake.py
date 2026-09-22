@@ -104,3 +104,17 @@ def test_help_says_experimental():
     result = invoke("--help")
     assert result.exit_code == 0
     assert "EXPERIMENTAL" in result.output
+
+
+def test_carried_and_superseded_units_are_reported(home, tmp_path):
+    # What the archive kept that the app dropped must be visible in the
+    # output, not only in the manifest.
+    out = tmp_path / "out"
+    invoke("antigravity", "-o", str(out), "--source", str(home.root))
+    (home.store() / "brain" / CONV_A / "task.md").unlink()
+    (home.store() / "conversations" / f"{CONV_B}.db").unlink()
+    result = invoke("antigravity", "-o", str(out), "--source", str(home.root))
+    assert result.exit_code == 0, result.output
+    assert "Carried forward" in result.output and "files 1" in result.output
+    assert "source gone, kept in the archive: 1" in result.output
+    assert "Schema drift" not in result.output

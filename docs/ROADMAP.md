@@ -194,15 +194,32 @@ building the layer 1.3.0 replaces.
 
 `ccutils lake antigravity` mirrors the native store into
 `<lake_root>/antigravity/` byte for byte: every SQLite table of every
-conversation, the summaries index, brain text files, media as inventory,
-legacy `.pb` and `implicit/*.pb` as ciphertext. Nothing is decoded.
-`parsers/lake.py` is the harness-generic runner; `parsers/antigravity/` is the
-first `LakeSource`.
+conversation, the summaries index, brain text files, each brain `.git`
+history, media as inventory, legacy `.pb` and `implicit/*.pb` as ciphertext.
+Nothing is decoded. `parsers/lake.py` is the harness-generic runner;
+`parsers/antigravity/` is the first `LakeSource`.
 
 Measured on the first real run: 469 units, 0 errors, 8.4s; second run 1.5s,
 everything unchanged, 0 files rewritten; 752 MB; 54,001 step payloads
 sha256-identical to the source; a traced run opened 13,327 paths under the
 data root and none outside the allowlist.
+
+Revised the same day after review (lake format 2), because the first cut
+could lose data it had archived: a `.db` deleted beside a surviving brain
+dir wiped every step, a deleted conversation's summaries row (its only
+stated parent and depth) vanished, a deleted brain file vanished, `--store`
+marked every other store missing, and a revert, which re-uses step indices
+(contract claim 14), overwrote the earlier branch. Now every row carries
+`source_present`; dropped rows and tables are carried forward marked absent;
+a lost or re-created step supersedes; missing-unit detection covers only the
+stores scanned; files open `O_NOFOLLOW`; and `brain/<id>/.git` is archived
+as its own `brain_git` unit. Each fix was checked by breaking it and watching
+its test fail, and replayed against a copy of the real CLI store (a deleted
+conversation kept 1,780 steps, its summary row and a deleted brain file; a
+revert superseded; the next run was all unchanged). Real run at format 2:
+654 units, 0 errors, 22.8s; unchanged re-run 3.1s; 1.5 GB (780 MB of it git
+history); 77,102 paths opened under the data root, none outside the
+allowlist.
 
 The command and the lake layout are outside semver until declared stable.
 Declaring them stable is a decision for after phase 1, when a consumer exists.
@@ -219,14 +236,21 @@ hard-coding field numbers.
    to each descriptor's end, keep the longest duplicate per name, check the
    dependency closure of `trajectory.proto`). Write it to
    `<lake_root>/antigravity/_schema/<app>-<version>/` with the manifest row
-   that says which run captured it. Never committed: it is extracted from a
-   proprietary binary, and the owner accepted that exposure for local use
-   only (2026-09-22). Capturing it per app version is what keeps old blobs
-   decodable after the app updates.
+   that says which run captured it (archive-grade: it is what keeps old blobs
+   decodable after the app updates). Never committed: it is extracted from a
+   proprietary binary. **Open: the owner's go-ahead.** The first plan recorded
+   that the owner had accepted this; asked on 2026-09-22, the owner was not
+   sure what it entailed, so it is explained there and awaits a decision.
+   The alternative is to decode by field number only and establish each
+   field's meaning by measurement (the brain transcript states step names,
+   claim 6), which touches nothing in the binary but states less.
 2. **Add the `protobuf` dependency** and build a descriptor pool from the
    captured set; no generated code in the repo.
-3. **Decode into a derived layer**, `decoded/*.parquet` beside each unit's raw
-   tables, with its own format version: `steps.step_payload`
+3. **Decode into a derived tree**, `<lake_root>/antigravity-decoded/`, never
+   inside the archive's unit directories (decided 2026-09-22): a
+   re-derivable cache mixed into the archive would ride along on unit swaps
+   and supersedes, and re-deriving it would mean deleting inside the archive.
+   It has its own format version and decodes, per unit: `steps.step_payload`
    (`gemini_coder.Step`), `gen_metadata.data`, `raw_summary`,
    `trajectory_metadata_blob`, `executor_metadata`, `parent_references`, and
    the annotation `.pbtxt`. Derived from raw plus the captured schema, so it
@@ -339,10 +363,12 @@ they land.
 
 ### Fix at 1.0.0 or before
 
-- **`docs/JSONL_CONTRACT.md` claim 5 has gone red.** On 2026-09-22
+- **`docs/JSONL_CONTRACT.md` claim 5 is intermittently red.** On 2026-09-22
   `tests/test_jsonl_contract.py::TestThinkingTextIsAbsent::test_corpus_holds`
-  failed on a clean `main`: 12 thinking blocks in its seeded sample now carry
-  text. Either Claude Code has started persisting reasoning text or the rare
+  failed on a clean `main` (12 thinking blocks in its seeded sample carried
+  text), then passed on a full-suite run later that day: the seed is fixed but
+  the corpus grows, so the draw changes. It is a rare-event absolute checked on
+  a sample, the pattern `CLAUDE.md` warns about. Either Claude Code has started persisting reasoning text or the rare
   case (54 of 50,268 corpus-wide when the claim was written) moved into the
   sample. Measure the rate corpus-wide, restate the claim as a rate, and
   revisit the "reasoning text is not on disk" rule in `CLAUDE.md` and the
@@ -591,11 +617,24 @@ Found while building phase 0 (2026-09-22), not fixed. None blocks the lake.
   against the source after the fact the way `ccutils audit` checks the
   warehouse. A `lake --check` re-reading a sample of blobs and comparing
   sha256 would close it.
-- **`brain/<id>/.git` is excluded**, so the per-conversation snapshot history
-  (up to 769 commits, which is artifact revision history and earlier versions
-  of the transcripts) is not archived. Phase 4 extracts it. Until then a
-  conversation deleted in the app loses that history even though its current
-  files are kept.
+- **A kept path whose content changes is overwritten.** Carry-forward keys
+  on the path, so a brain file rewritten in place (rather than deleted) keeps
+  only its latest bytes in the current tree. The transcripts measured append;
+  artifacts keep their revisions as `.resolved.N` files and in `.git`, which
+  is archived. Revisit if a file kind turns out to be rewritten.
+- **A `brain_git` unit is rewritten whole when one object lands.** Git
+  objects are immutable, so an append-only unit would read only new ones;
+  today an active conversation's repo (up to 223 MB) is re-read. And if the
+  app ever runs `git gc`, the pruned loose objects would be carried forward
+  beside the new pack (duplicates, not loss).
+- **One lake, one data root.** Units are keyed by store, not by data root, so
+  pointing `--source` at another machine's `.gemini` with the same lake root
+  would mix the two archives. Refuse a root that differs from the last
+  complete run, or key the lake by root.
+- **The contract canaries read the app's live files with `immutable=1`**,
+  which the contract itself says ignores the WAL and can read a torn page
+  during a checkpoint: they measure checkpointed state only, and could flake
+  while the app is writing. Reusing the lake's snapshot copy would fix both.
 - **`implicit/*.pb` is archived without knowing what it is.** 46 encrypted
   files whose uuids match no conversation; the language server prunes them.
   Phase 1b may reveal them, or they stay a labelled unknown.
@@ -664,9 +703,12 @@ if it is deleted.
   building the Antigravity lake, against the alternative of extending
   `etl.log_entries`.
 - **A harness lake whose Tier 0 is not durable is an archive, not a cache.**
-  It keeps units whose source disappeared, supersedes rather than overwrites,
-  and lives apart from warehouse output dirs so that rebuilding a warehouse
-  cannot delete it.
+  Nothing it held leaves the current tree except into `_superseded/`: rows
+  and tables the source dropped are carried forward with `source_present =
+  false`, and a snapshot that is not a continuation (lost or re-created
+  steps) supersedes. It lives apart from warehouse output dirs so that
+  rebuilding a warehouse cannot delete it, and anything derived from it lives
+  in a separate tree. Decided 2026-09-22.
 - **`TaskCreate` is not an agent spawn.** `Agent` is the only tool name in
   the corpus carrying an agent rollup; `Task` is kept for older transcripts.
 

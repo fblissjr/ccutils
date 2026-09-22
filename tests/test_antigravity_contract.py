@@ -512,3 +512,35 @@ class TestGenericToolSteps:
         after = f_timestamp(1, int(GENERIC_CUTOVER) + 60)
         before = f_timestamp(1, int(GENERIC_CUTOVER) - 60)
         assert legacy_after_cutover([(8, after), (8, before), (132, after)]) == 1
+
+
+# ---------------------------------------------------------------------------
+# Claim 14: every step states its creation time, and reverts re-use indices
+# ---------------------------------------------------------------------------
+
+
+def missing_created_at(rows) -> list[int]:
+    """(idx, metadata) rows whose Step metadata carries no field 1."""
+    return [idx for idx, meta in rows if not meta or get(meta, 1) is None]
+
+
+class TestStepCreationTimeIsStated:
+    """The lake's revert detection compares Step metadata field 1 per idx
+    (parsers/antigravity/__init__.py::supersedes). A step without it is
+    skipped there, so if Antigravity stops writing it, reverts go back to
+    being overwritten silently. This canary is what would say so."""
+
+    def test_corpus_holds(self, dbs):
+        bad, n = [], 0
+        for db in dbs:
+            conn = _ro(db)
+            rows = conn.execute("SELECT idx, metadata FROM steps").fetchall()
+            conn.close()
+            n += len(rows)
+            bad += [(db.stem, i) for i in missing_created_at(rows)]
+        assert n > 0
+        assert bad == [], f"{len(bad)} of {n} steps state no creation time, e.g. {bad[:3]}"
+
+    def test_oracle(self):
+        rows = [(0, f_timestamp(1, 1_790_000_000)), (1, f_bytes(12, b"exec-1")), (2, None)]
+        assert missing_created_at(rows) == [1, 2]

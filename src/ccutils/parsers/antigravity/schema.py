@@ -25,7 +25,11 @@ from ccutils.parsers.antigravity import stores
 # Bump when the writer's output changes: a table shape, a classification
 # rule, the allowlist, the store list. Pinned to format_fingerprint() by
 # tests/test_antigravity_lake.py, so a change without a bump fails.
-LAKE_FORMAT_VERSION = 1
+#
+# 2: `source_present` in the envelope; rows and tables the source lost are
+#    carried forward (CARRY_KEYS); reverts supersede (IDX_TABLES, claim 14);
+#    brain/<id>/.git archived as the `brain_git` unit.
+LAKE_FORMAT_VERSION = 2
 
 TEXT, INTEGER, BLOB, REAL = "text", "integer", "blob", "real"
 
@@ -59,6 +63,28 @@ SUMMARIES_TABLES: dict[str, tuple[tuple[str, str], ...]] = {
         ("group_id", TEXT),
     ),
 }
+
+# Per unit kind, (table, key) pairs whose rows are carried forward when the
+# source drops them. Each key is unique within its table: a summaries row per
+# conversation, a files row per path.
+CARRY_KEYS: dict[str, tuple[tuple[str, str], ...]] = {
+    "conversation": (("files", "relpath"),),
+    "brain_git": (("git_files", "relpath"),),
+    "summaries": (("conversation_summaries", "conversation_id"),),
+    "store_files": (("store_files", "relpath"),),
+    "implicit": (("implicit_files", "relpath"),),
+    "config_projects": (("config_projects", "relpath"),),
+}
+
+# Conversation tables keyed on `idx`. A snapshot that lost an idx from any of
+# them is not a continuation of the old one and supersedes it.
+IDX_TABLES: tuple[str, ...] = (
+    "steps", "gen_metadata", "executor_metadata", "parent_references", "battle_mode_infos",
+)
+
+# Step metadata field 1 is the step's creation time (claim 6). A step whose
+# creation time changed under the same idx was re-created by a revert (claim 14).
+STEP_CREATED_AT_FIELD = 1
 
 FILE_FIELDS: tuple[pa.Field, ...] = (
     pa.field("relpath", pa.string(), nullable=False),
@@ -115,5 +141,7 @@ def format_fingerprint() -> str:
         repr(stores.STORE_FILE_PATTERNS), repr(stores.GLOBAL_FILE_PATTERNS),
         repr(stores.STORE_FILE_KINDS), repr(stores.EXCLUDED_DIRS),
         repr(stores.CONVERSATION_FILE_RULES), repr(stores.UNCLASSIFIED_MAX_BYTES),
+        repr(stores.GIT_DIR), repr(stores.GIT_FILE_RULES),
+        repr(CARRY_KEYS), repr(IDX_TABLES), repr(STEP_CREATED_AT_FIELD),
     ]
     return hashlib.sha256("\n".join(parts).encode()).hexdigest()

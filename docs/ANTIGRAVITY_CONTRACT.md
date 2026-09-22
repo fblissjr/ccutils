@@ -45,7 +45,7 @@ Inside a store (counts are hub + CLI):
 | `brain/<uuid>/.system_generated/steps/<N>/*` | full tool output for step N (`output.txt`, `content.md`) | | | bytes |
 | `brain/<uuid>/.system_generated/tasks/*.log` | background task logs | | | bytes |
 | `brain/<uuid>/*.md`, `artifacts/*.md`, `*.metadata.json`, `*.resolved[.N]` | artifacts (task, implementation plan, walkthrough) and versions | | | bytes |
-| `brain/<uuid>/.git/` | per-conversation snapshot history, "Snapshot" commits (survey: 129 repos, up to 769 commits) | | | excluded; Phase 4 |
+| `brain/<uuid>/.git/` | per-conversation snapshot history, "Snapshot" commits (survey: 184 repos, up to 769 commits, 63,039 loose objects, 0 packs, never gc'd; 1.2 GB on disk) | | | bytes, as its own `brain_git` unit; interpreted in Phase 4 |
 | `brain/<uuid>/.user_uploaded/`, `.tempmediaStorage/`, images, video | user uploads and media | | | inventory only |
 | `browser_recordings/<uuid>/` | `metadata.json` plus JPEG frames | | | metadata bytes, frames inventory |
 | `annotations/<uuid>.pbtxt` | protobuf text: title, pinned, archived, last viewed | | | bytes |
@@ -219,10 +219,12 @@ Observed step types, both stores: 15 `PLANNER_RESPONSE` 26,293 · 132 `GENERIC`
 
 - Measured: a full real run under a Python audit hook opened 13,327 paths
   under the data root, none outside the allowlist, no subprocess, no
-  credential file.
+  credential file. At lake format 2, which also reads `brain/<id>/.git`:
+  77,102 paths, none outside the allowlist.
 - Consequence: the allowlist in `parsers/antigravity/stores.py` is anchored
-  regexes over store-relative paths; symlinks are recorded, never followed;
-  excluded directories are never entered. It keeps credential FILES out. It
+  regexes over store-relative paths; symlinks are recorded, never followed,
+  and files are opened `O_NOFOLLOW` so one planted between the `lstat` and
+  the open is not followed either; excluded directories are never entered. It keeps credential FILES out. It
   does not make the lake shareable: transcript content can hold secrets that
   agents printed.
 - Canary: `tests/test_antigravity_lake.py::TestReadAllowlist`, with `chmod
@@ -235,9 +237,33 @@ Observed step types, both stores: 15 `PLANNER_RESPONSE` 26,293 · 132 `GENERIC`
   either settings file; deletion is a user action (`DeleteCascadeTrajectory`).
   `pruneTrajectory` touches only implicit trajectories.
 - Consequence: conversations persist until deleted in the app; the risks to
-  the Tier 0 copy are in-app deletes, format changes and data-dir
-  migrations. The lake is an archive: a unit whose source disappears is kept.
+  the Tier 0 copy are in-app deletes, reverts (claim 14), format changes and
+  data-dir migrations. The lake is an archive: nothing it held leaves the
+  current tree except into `_superseded/`. A unit whose source disappears is
+  kept; a summaries row, a brain file or a whole table the source dropped is
+  carried forward with `source_present = false`.
 - Canary: none; re-check on a major app update.
+
+## 14. Every step states its creation time, and a revert re-uses indices
+
+- Measured: all 54,001 steps carry Step metadata field 1 (the creation time
+  of claim 6). In the brain transcripts, 3 conversations write 81 step
+  indices twice with different times; in 5 of them the step type changes too
+  (e.g. idx 142 `GENERIC` at 18:46, then `USER_INPUT` at 19:16). The database
+  holds only the later step for every one checked: a revert truncates the
+  conversation and the new branch re-uses the indices. The earlier branch
+  survives on disk only in the transcript, which appends.
+- Consequence: an idx-set check cannot see a revert once the new branch is as
+  long as the old one. The lake compares field 1's raw bytes per idx and
+  supersedes the old snapshot when any differ (the bytes are compared, never
+  decoded or stored). A spurious difference costs one extra snapshot; a
+  missed one would lose the pre-revert branch, so the check errs toward
+  superseding. Whether field 1 stays fixed across in-place status updates is
+  unmeasured (it needs two snapshots of a running step); a violation would
+  show as superseded units on runs where nothing was reverted.
+- Canary: `TestStepCreationTimeIsStated` (every step has field 1). The reuse
+  itself is a survey number, not a canary: the design is the same whether it
+  is rare or common.
 
 ---
 

@@ -38,7 +38,8 @@ Tier 4   views                                    anything fully derived
 Tier 1 is a re-derivable cache for Claude Code only. For a harness whose own
 storage is not durable (Antigravity has already changed formats once and
 deletes on request), the Tier 1 lake is an **archive**: kept when the source
-disappears, superseded rather than overwritten, and never interpreted. How
+disappears, what the source dropped carried forward marked absent, reverted
+snapshots superseded rather than overwritten, and never interpreted. How
 more than one harness fits these tiers, and why neutrality starts at Tier 2,
 is in `docs/HARNESS_ARCHITECTURE.md`; the shaped staging below is where it
 lands.

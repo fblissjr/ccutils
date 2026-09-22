@@ -356,8 +356,6 @@ DECOY_RELPATHS = (
     "antigravity-browser-profile/Cookies",
     "config/mcp_config.json",
     "antigravity/antigravity_state.pbtxt",
-    "antigravity/brain/" + CONV_A + "/.git/HEAD",
-    "antigravity/brain/" + CONV_A + "/.git/objects/ab/cdef",
     "antigravity/brain/" + CONV_A + "/.system_generated/logs/chunks/transcript_full/00000000.jsonl",
     "antigravity-backup/conversations/" + CONV_PB + ".pb",
     "weird-store/conversations/" + CONV_A + ".db",
@@ -447,6 +445,11 @@ def make_gemini_home(root: Path, *, wal: bool = False, lock_decoys: bool = True)
     _write(brain / ".tempmediaStorage" / "media_1789395530474.img", b"\x89PNG temp media")
     _write(brain / "big.bin", b"\0" * (1024 * 1024 + 1))
     (brain / "leak").symlink_to(root / "oauth_creds.json")
+    # brain/<id>/.git: the per-conversation snapshot history. Real repos hold
+    # only loose objects (no packs, never gc'd; survey), archived as bytes.
+    _write(brain / ".git" / "HEAD", "ref: refs/heads/main\n")
+    _write(brain / ".git" / "refs" / "heads" / "main", "ab" + "0" * 38 + "\n")
+    _write(brain / ".git" / "objects" / "ab" / ("0" * 38), b"x\x01zlib-compressed object")
     _write(main / "brain" / "tempmediaStorage" / "x.png", b"\x89PNG temp")
     _write(main / "browser_recordings" / CONV_A / "metadata.json", json.dumps({"highlights": []}))
     _write(main / "browser_recordings" / CONV_A / "1790000000000000000.jpg", b"\xff\xd8 frame")

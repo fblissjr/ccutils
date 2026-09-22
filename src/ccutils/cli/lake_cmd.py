@@ -78,11 +78,14 @@ def lake_cmd(harness, output, source_root, stores, force):
 
     by_store: dict[str, dict[str, int]] = {}
     rows: dict[str, int] = {}
+    carried: dict[str, int] = {}
     for o in result.outcomes:
         c = by_store.setdefault(o.store, {})
         c[o.status] = c.get(o.status, 0) + 1
         for table, n in o.tables.items():
             rows[table] = rows.get(table, 0) + n
+        for table, n in o.carried.items():
+            carried[table] = carried.get(table, 0) + n
     width = max((len(s) for s in by_store), default=0)
     for store in sorted(by_store):
         c = by_store[store]
@@ -94,8 +97,11 @@ def lake_cmd(harness, output, source_root, stores, force):
         click.echo(f"  source gone, kept in the archive: {len(result.missing)}")
     if rows:
         click.echo("Rows written: " + ", ".join(f"{t} {n:,}" for t, n in sorted(rows.items())))
-    drift = [f"{o.store}/{o.unit_id}: {n}" for o in result.outcomes for n in o.notes]
-    for heading, lines in (("Notes", result.notes), ("Schema drift", drift)):
+    if carried:
+        click.echo("Carried forward (gone from the source, kept marked source_present=false): "
+                   + ", ".join(f"{t} {n:,}" for t, n in sorted(carried.items())))
+    unit_notes = [f"{o.store}/{o.unit_kind}/{o.unit_id}: {n}" for o in result.outcomes for n in o.notes]
+    for heading, lines in (("Notes", result.notes), ("Unit notes (schema drift, supersedes)", unit_notes)):
         if lines:
             click.echo(f"{heading}:")
             for line in lines:

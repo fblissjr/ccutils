@@ -26,10 +26,13 @@ Claude.ai exports, and plain Gemini CLI chats.
    there.** Each harness mirrors its own source at its own grain,
    byte-faithful, inside a shared envelope (`harness, store, record_source,
    source_relpath, lake_run_id, ingested_at, parser_version,
-   lake_format_version`). For a harness whose own storage is not durable
-   (Antigravity has already changed formats once and deletes on request), the
-   lake is an archive, not a cache. Interpretation baked in there would be
-   irreversible.
+   lake_format_version, source_present`). For a harness whose own storage is
+   not durable (Antigravity has already changed formats once, deletes on
+   request and re-uses step indices after a revert), the lake is an archive,
+   not a cache: nothing it held leaves the current tree except into
+   `_superseded/`. Interpretation baked in there would be irreversible, and
+   anything derived from the lake (Phase 1's decoded tables) lives in a
+   separate tree, so re-deriving never means deleting inside the archive.
 2. **Neutrality starts at Tier 2.** The shaped staging tables planned for
    1.3.0 become the harness-neutral contract; each harness gets one adapter
    that decodes its lake into them, once. This does not come for free: facts
@@ -64,9 +67,13 @@ Tier 4  views
 The lake runner (`src/ccutils/parsers/lake.py`) is harness-generic: stat
 fingerprints (including a SQLite `-wal`), a per-source `lake_format_version`
 so a widened writer re-derives an existing lake, atomic unit swaps with
-crash recovery, archive semantics (kept on disappearance, superseded instead
-of overwritten when rows vanish), a manifest, a run log and a lock. A
-`LakeSource` supplies `discover` and `write_unit`. The interface is
+crash recovery, archive semantics (a unit kept on disappearance; rows of a
+keyed table and whole tables the source dropped carried forward marked
+`source_present = false`; the old unit superseded when the source says the
+new one is not a continuation, or when a carry would drop a column),
+missing-unit detection scoped to the stores actually scanned, a manifest, a
+run log and a lock. A `LakeSource` supplies `discover`, `write_unit` and
+`supersedes`; a unit declares its `carry_keys`. The interface is
 provisional until Claude Code joins it in Phase 2.
 
 ## Neutral staging, sketch

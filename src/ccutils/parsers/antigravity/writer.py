@@ -18,6 +18,7 @@ tail.
 
 from __future__ import annotations
 
+import errno
 import hashlib
 import os
 import shutil
@@ -170,7 +171,21 @@ def file_row(source_root: Path, spec: FileSpec) -> dict | None:
     digest = hashlib.sha256()
     chunks = [] if keep_bytes else None
     size = 0
-    with open(path, "rb") as f:
+    # O_NOFOLLOW: lstat and open are two calls, and a symlink planted between
+    # them must not be followed. O_NONBLOCK keeps a FIFO from hanging the open.
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    except FileNotFoundError:
+        return None
+    except OSError as e:
+        if e.errno == errno.ELOOP:
+            row["kind"] = "symlink"
+            return row
+        raise
+    if not stat_mod.S_ISREG(os.fstat(fd).st_mode):
+        os.close(fd)
+        return None
+    with os.fdopen(fd, "rb") as f:
         while True:
             chunk = f.read(1024 * 1024)
             if not chunk:

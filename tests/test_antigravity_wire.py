@@ -65,3 +65,27 @@ class TestDecoder:
     def test_zero_timestamp_omits_fields(self):
         # proto3 omits zero values, so an all-zero Timestamp is an empty message.
         assert f_timestamp(1, 0) == bytes.fromhex("0a00")
+
+
+class TestLakeFieldReader:
+    """`parsers/antigravity/wire.field_bytes`, the one protobuf read the lake
+    makes, checked against the same golden bytes and against the test codec."""
+
+    def test_golden_bytes(self):
+        from ccutils.parsers.antigravity.wire import field_bytes
+        assert field_bytes(bytes.fromhex("089601"), 1) == bytes.fromhex("9601")
+        assert field_bytes(bytes.fromhex("120774657374696e67"), 2) == b"testing"
+        assert field_bytes(bytes.fromhex("1a03089601"), 3) == bytes.fromhex("089601")
+
+    def test_agrees_with_the_test_codec_on_a_step_metadata(self):
+        from ccutils.parsers.antigravity.wire import field_bytes
+        meta = f_timestamp(1, 1_790_000_000, 5) + f_str(12, "exec-1") + f_msg(4, f_str(1, "call"))
+        assert field_bytes(meta, 1) == get(meta, 1)
+        assert field_bytes(meta, 12) == b"exec-1"
+        assert field_bytes(meta, 7) is None
+
+    def test_last_wins_and_bad_wire_raises(self):
+        from ccutils.parsers.antigravity.wire import field_bytes
+        assert field_bytes(f_str(1, "a") + f_str(1, "b"), 1) == b"b"
+        with pytest.raises(ValueError):
+            field_bytes(f_str(2, "testing")[:-1], 2)
