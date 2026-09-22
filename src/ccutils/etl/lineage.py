@@ -29,26 +29,10 @@ from ccutils.schemas.star.utils import generate_dimension_key
 
 
 from ccutils._version import PARSER_VERSION
+# The allow-list lives in ccutils.provenance so Tier 1 writers can validate
+# labels without importing this module; re-exported here for warehouse code.
+from ccutils.provenance import _RECORD_SOURCES, record_source_label  # noqa: F401
 DEFAULT_BUSINESS_RULES_VERSION = "1"
-
-
-# Provenance label allow-list. Add new values here when a new source goes live.
-_RECORD_SOURCES: frozenset[str] = frozenset({
-    "claude_code_jsonl",   # Tier 0 Claude Code project session JSONL
-    "history_jsonl",       # Claude Code prompt-history JSONL
-    "claude_ai_export",    # Claude.ai account export
-    "derived_post_etl",    # DAG-invariant facts derived from other facts
-    "claude_code_memory",  # Claude Code auto-memory markdown directories
-})
-
-
-def record_source_label(name: str) -> str:
-    if name not in _RECORD_SOURCES:
-        raise ValueError(
-            f"Unknown record_source {name!r}. Add it to _RECORD_SOURCES in lineage.py "
-            f"if it's a new legitimate source."
-        )
-    return name
 
 
 def hash_diff(**attrs: Any) -> str:
