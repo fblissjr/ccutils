@@ -96,8 +96,10 @@ least two, ideally three (with Gemini CLI), before 1.3.0 builds it.
 The schedule, the concrete steps and the gates live in `docs/ROADMAP.md`
 under "Harnesses beyond Claude Code"; this document holds the reasoning
 behind them. In short: phase 0 (the raw Antigravity lake) is built and
-experimental; phase 1 decodes it through the app's own descriptors and 1b
-decrypts the legacy files, neither touching the warehouse; phases 2 to 4
+experimental, at lake format 2 since the same day's archive fix; phase 1
+decodes it (parked; waits on whether to read the app's own descriptors or
+decode by field number) and 1b decrypts the legacy files, neither touching
+the warehouse; phases 2 to 4
 (neutral staging, harness identity, Antigravity populators) ride on the 1.3.0
 rewrite, because building them on today's `log_entries` staging would build
 the layer that rewrite replaces; phase 5 is render and privacy.

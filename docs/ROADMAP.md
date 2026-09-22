@@ -41,8 +41,8 @@ machine that has it; nothing here depends on it.
 Resume in this order. Each item was designed and its reads done on
 2026-09-10; nothing below is open-ended.
 
-1. **Start from a green suite.** The full suite passed on the last
-   commit of 2026-09-10 (1,308 passed, 1 skipped). Rerun
+1. **Start from a green suite.** The full suite passed on 2026-09-22 at
+   `8551031` (1,458 passed, 1 skipped). Rerun
    `uv run pytest tests/ --confcutdir=tests` once to confirm the tree is
    as left, then begin step 2.
 2. **Delegations become a view; `--embed` is retired.** Delete
@@ -224,7 +224,12 @@ allowlist.
 The command and the lake layout are outside semver until declared stable.
 Declaring them stable is a decision for after phase 1, when a consumer exists.
 
-### Phase 1 -- decode Antigravity. Unscheduled, no DDL, can land any time
+### Phase 1 -- decode Antigravity. PARKED 2026-09-22, no DDL, can land any time
+
+The owner parked this on 2026-09-22 after the format 2 fix: start it later.
+It waits on one decision, step 1's go-ahead to extract the schema from the
+app's binary or to decode by field number instead. Everything else below is
+settled.
 
 The lake is opaque without this: everything interesting (text, thinking,
 tool calls, tokens, models, timestamps) is inside protobuf blobs. The schema
