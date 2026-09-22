@@ -8,6 +8,7 @@ from .import_cmd import import_cmd
 from .open_cmd import open_cmd
 from .audit_cmd import audit_cmd
 from .guide_cmd import guide_cmd
+from .lake_cmd import lake_cmd
 
 
 @click.group(cls=DefaultGroup, default="convert", default_if_no_args=True)
@@ -22,8 +23,10 @@ def cli():
     pass
 
 
-# One conversion command (the default), plus the two that are not
-# conversion: importing a different source, and opening what was built.
+# One conversion command (the default), plus the ones that are not
+# conversion: importing a Claude.ai export, opening what was built, auditing
+# and describing a warehouse, and `lake`, which mirrors another harness's
+# native store into the Tier 1 Parquet lake (experimental; no warehouse).
 #
 # `local`, `all`, `convert`, `web` and `schema` were removed in 0.20.0 with
 # no aliases. `local` and `all` were one operation split by scope, and the
@@ -36,6 +39,7 @@ cli.add_command(import_cmd, "import")
 cli.add_command(open_cmd, "open")
 cli.add_command(audit_cmd, "audit")
 cli.add_command(guide_cmd, "guide")
+cli.add_command(lake_cmd, "lake")
 
 
 # Tombstones for the removed names.

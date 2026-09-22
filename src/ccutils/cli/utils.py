@@ -27,6 +27,18 @@ def default_archive_output():
     return Path.home() / ".ccutils" / "claude-archive"
 
 
+def default_lake_root():
+    """Where `ccutils lake` writes when the user passes no ``-o/--output``.
+
+    Home-anchored for the same reason as `default_archive_output`, and kept
+    apart from it on purpose: a warehouse output dir is disposable (rebuild
+    instead of migrate), while a harness lake is an archive that may hold the
+    only copy of conversations the app has since deleted. Deleting a
+    warehouse to rebuild it must not be able to take the archive with it.
+    """
+    return Path.home() / ".ccutils" / "lake"
+
+
 def build_facet_extractor_or_exit(with_llm_facets: bool):
     """Resolve Anthropic credentials and construct an AnthropicFacetExtractor
     at the CLI boundary. CredentialsError surfaces as a helpful message +

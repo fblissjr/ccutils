@@ -153,6 +153,34 @@ you the command that would create one.
 The first run fetches the `ui` extension (one-time, needs network). For a
 terminal UI instead, any DuckDB client works — point it at the same file.
 
+### lake (experimental)
+
+```bash
+ccutils lake antigravity                    # mirror Google Antigravity's store into ~/.ccutils/lake/
+ccutils lake antigravity --store antigravity-cli -o DIR
+```
+
+Mirrors another harness's native transcript store into a Parquet lake, Tier 1
+only (no warehouse). For Antigravity that is every table of every
+`conversations/<id>.db` (SQLite of protobuf blobs, kept as bytes), the
+conversation index, the brain files (transcripts, agent messages, tool
+outputs, artifacts; media as inventory only), and the encrypted legacy `.pb`
+files as ciphertext. Nothing is decoded yet. The lake is an archive:
+unchanged units are skipped, a conversation deleted in the app stays in the
+lake, and a snapshot that lost rows is kept under `_superseded/`. Reads are an
+allowlist, so the OAuth tokens beside the data are never opened; the lake is
+still private data. **Experimental:** the command and the layout are outside
+semver until declared stable. Store map and measured claims:
+[docs/ANTIGRAVITY_CONTRACT.md](docs/ANTIGRAVITY_CONTRACT.md); design and
+phases: [docs/HARNESS_ARCHITECTURE.md](docs/HARNESS_ARCHITECTURE.md).
+
+```sql
+-- DuckDB over the lake; union_by_name because a drifted file can carry extra columns
+SELECT store, step_type, count(*)
+FROM read_parquet('~/.ccutils/lake/antigravity/*/conversations/*/steps.parquet', union_by_name = true)
+GROUP BY ALL ORDER BY 3 DESC;
+```
+
 ## Export Formats
 
 Four formats: `html`, `markdown`, `duckdb`, `json` (plus `both` = html+duckdb on `all`). `html` and `markdown` are render-only transcripts; `duckdb` and `json` both write the v0.15 star schema. Coverage differs on purpose: the warehouse formats ingest **every** session on disk (including ones with no summary line), while html/markdown skip warmup/no-summary sessions for a curated browsing archive.
@@ -363,6 +391,8 @@ tar czf - ./archive | age -r <recipient-key> > archive.tar.gz.age && rm -rf ./ar
 
 - [Star Schema Reference](docs/STAR_SCHEMA.md) -- table definitions, populator notes, example queries.
 - [Facet & Cluster Pipeline](docs/FACET_CLUSTER_PIPELINE.md) -- Tier 1/2/3 facet design, status, and roadmap.
+- [Harness Architecture](docs/HARNESS_ARCHITECTURE.md) -- ingesting transcript sources other than Claude Code: principles, tiers, phases.
+- [Antigravity Contract](docs/ANTIGRAVITY_CONTRACT.md) -- where Antigravity stores everything and the measured claims the lake relies on.
 
 ## Development
 

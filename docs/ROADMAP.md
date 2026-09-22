@@ -1,6 +1,6 @@
 # Roadmap and open items
 
-Last updated: 2026-09-18
+Last updated: 2026-09-22
 
 This is the one git-tracked status board. It consolidates what used to live
 only in gitignored `internal/` notes: the release sequence, the next
@@ -22,6 +22,15 @@ machine that has it; nothing here depends on it.
   `ccutils audit` exits clean on the full corpus and on a one-project
   subset build apart from columns that project never fills. Version is
   still 0.20.1; the tag waits on the list under "Next session".
+- **A second harness, Tier 1 only (2026-09-22).** `ccutils lake
+  antigravity` mirrors Google Antigravity's native store (SQLite files of
+  protobuf blobs, brain files, encrypted legacy files) byte-for-byte into a
+  Parquet archive under the home-anchored lake root (`default_lake_root()`),
+  through a harness-generic lake runner. EXPERIMENTAL and outside semver:
+  the command and the lake layout may change before they are declared
+  stable. No warehouse change. Design and the phase plan in
+  `docs/HARNESS_ARCHITECTURE.md`; the store map and measured claims in
+  `docs/ANTIGRAVITY_CONTRACT.md`.
 - **Done and closed:** the JSONL contract doc (`docs/JSONL_CONTRACT.md`), the
   test audit, the CLI defect walk, the CLI restructure, every stated sidecar
   field, delegation outcomes, and the history-scoping leak. Their write-ups
@@ -107,6 +116,14 @@ Behind the rewrite, unscheduled: `fact_file_backups`, memory history
 backfill, the Cowork `audit.jsonl` ingester, facet Tier 2 to Tier 3
 clustering, comprehensive `--private` hardening.
 
+Other harnesses (`docs/HARNESS_ARCHITECTURE.md`). Phase 0, the raw
+Antigravity lake, is built and experimental. Phases 1 (decode through the
+app's own protobuf descriptors, extracted locally and never committed) and
+1b (opt-in decryption of the 27 legacy `.pb` conversations) add no DDL and
+can land any time. Phases 2 to 4 (harness-neutral shaped staging, harness
+identity in the warehouse, Antigravity populators) ride on 1.3.0 and must not
+be built on today's `log_entries` staging.
+
 Semver binds from 1.0.0 onward. No major bump without the owner's permission.
 
 ## 1.0.0: the warehouse break
@@ -169,6 +186,15 @@ Found, verified against the code on 2026-09-10, not fixed. Grouped by where
 they land.
 
 ### Fix at 1.0.0 or before
+
+- **`docs/JSONL_CONTRACT.md` claim 5 has gone red.** On 2026-09-22
+  `tests/test_jsonl_contract.py::TestThinkingTextIsAbsent::test_corpus_holds`
+  failed on a clean `main`: 12 thinking blocks in its seeded sample now carry
+  text. Either Claude Code has started persisting reasoning text or the rare
+  case (54 of 50,268 corpus-wide when the claim was written) moved into the
+  sample. Measure the rate corpus-wide, restate the claim as a rate, and
+  revisit the "reasoning text is not on disk" rule in `CLAUDE.md` and the
+  coverage layer's entry.
 
 - **Continued sessions replay their history.** 706 `api_message_id`
   values recur across sessions in the same chain (1,403 rows), and the
@@ -342,6 +368,13 @@ here and stays local.
   commit must read as blocked, not as NULL).
 
 ### Open design questions
+
+- **More than one harness.** What a project is across harnesses (Claude
+  Code's transcript directory vs Antigravity's workspace URI, git root and
+  `project_id`); whether `fact_messages` splits into neutral and
+  harness-specific parts; how Antigravity forks and battle mode map; whether
+  the lake archive should ever honour in-app deletions. Context in
+  `docs/HARNESS_ARCHITECTURE.md`.
 
 - **Agent rollup provenance: DECIDED 2026-09-10.** `fact_tool_results` is
   the only home for the stated rollup (`status`, `totalDurationMs`,
