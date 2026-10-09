@@ -42,8 +42,8 @@ Resume in this order. Each item was designed and its reads done on
 2026-09-10; nothing below is open-ended.
 
 1. **Start from a green suite.** The full suite passed on 2026-10-09 with
-   the lockfile refreshed that day and the claim 5 canary corrected (1,464
-   passed, 1 skipped). Rerun
+   the lockfile refreshed that day, the claim 5 canary corrected and lake
+   format 3 in (1,469 passed, 1 skipped). Rerun
    `uv run pytest tests/ --confcutdir=tests` once to confirm the tree is
    as left, then begin step 2.
 2. **Delegations become a view; `--embed` is retired.** Delete
@@ -387,15 +387,15 @@ they land.
 
 ### Fix at 1.0.0 or before
 
-- **Thinking text reaches `dim_session` and the Tier 2 inputs by default.**
+- **Thinking text reaches `dim_session.last_assistant_message` by default.**
   Found 2026-10-09 while correcting `docs/JSONL_CONTRACT.md` claim 5.
   `extract_text_from_content_json` defaults to including thinking, so a
   session whose last assistant entry is a thinking block that kept its text
-  puts that text in `dim_session.last_assistant_message` and in the
-  `SessionInputs` that `--llm-facets` sends to the API. This was harmless
-  while every thinking string was empty and is not now. `--no-thinking`
-  closes it, and the reader's guide states it. Open: whether the default
-  for those two call sites should flip to excluding thinking.
+  puts that text in `dim_session.last_assistant_message`. `--no-thinking`
+  closes it, and the reader's guide states it. Left as is on purpose: the
+  column stays on the machine and follows the flag. The other half of this
+  finding is closed: the `SessionInputs` that `--llm-facets` sends to the API
+  are now built without thinking whatever the flag says.
 
 - **Continued sessions replay their history.** 706 `api_message_id`
   values recur across sessions in the same chain (1,403 rows), and the

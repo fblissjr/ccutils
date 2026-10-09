@@ -77,10 +77,13 @@ def populate_tier2_facets(
     *,
     run: EtlRun,
     extractor: FacetExtractor,
-    include_thinking: bool = True,
 ) -> None:
-    """Extract Tier 2 facets for every session currently in staging."""
-    session_rows = _build_session_inputs(conn, include_thinking=include_thinking)
+    """Extract Tier 2 facets for every session currently in staging.
+
+    Takes no `include_thinking`: what the extractor is sent never contains
+    thinking text, whatever `--no-thinking` says (see `_build_session_inputs`).
+    """
+    session_rows = _build_session_inputs(conn)
     if not session_rows:
         return
 
@@ -147,10 +150,12 @@ def populate_tier2_facets(
 # ---------------------------------------------------------------------------
 
 
-def _build_session_inputs(
-    conn, *, include_thinking: bool = True,
-) -> list[tuple[SessionInputs, str | None]]:
+def _build_session_inputs(conn) -> list[tuple[SessionInputs, str | None]]:
     """One (SessionInputs, first_timestamp) tuple per session in staging.
+
+    The message text is built without thinking blocks, unconditionally: these
+    inputs leave the machine, and Claude Code persists thinking text on a
+    share of blocks (docs/JSONL_CONTRACT.md claim 5).
 
     Returns first_timestamp alongside so the inbound table can carry it
     into lineage_upsert's date_key / time_key derivation.
@@ -256,10 +261,10 @@ def _build_session_inputs(
         inputs = SessionInputs(
             session_id=session_id,
             first_user_message=extract_text_from_content_json(
-                first_user_json, include_thinking=include_thinking,
+                first_user_json, include_thinking=False,
             ),
             last_assistant_message=extract_text_from_content_json(
-                last_assistant_json, include_thinking=include_thinking,
+                last_assistant_json, include_thinking=False,
             ),
             tool_mix_summary=tool_mix_summary or "",
             model_used=model_used,

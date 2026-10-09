@@ -358,10 +358,11 @@ tar czf - ./archive | age -r <recipient-key> > archive.tar.gz.age && rm -rf ./ar
 
 # Content (included by default -- use flags to exclude)
 --no-thinking              Exclude thinking from outputs. Drops thinking from
-                           dim_session messages + Tier 2 facet inputs and
-                           clears the staging artifact (fact_messages already
-                           excludes thinking by projection). Parquet lake is
-                           unaffected -- delete it post-run if needed.
+                           dim_session messages and clears the staging
+                           artifact (fact_messages already excludes thinking
+                           by projection, and Tier 2 facet inputs never carry
+                           it). Parquet lake is unaffected -- delete it
+                           post-run if needed.
 --no-subagents             Exclude related agent sessions
 --include-temp-sessions    Include sessions whose cwd is under the OS temp
                            directory (excluded by default -- typically

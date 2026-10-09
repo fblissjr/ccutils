@@ -281,17 +281,24 @@ class TestParquetLakeRetainsThinkingByDesign:
 
 
 class TestTier2WithNoThinkingExcludesThinkingFromExtractor:
-    """When `--llm-facets --no-thinking` are combined, the Tier 2
-    extractor's `SessionInputs` must not contain thinking text -- otherwise
-    the LLM sees content the user explicitly opted out of, and the extracted
-    facet (persisted to fact_session_facets.value_text) could echo it.
+    """The Tier 2 extractor's `SessionInputs` never contain thinking text,
+    with or without `--no-thinking`.
+
+    The inputs leave the machine, and the extracted facet (persisted to
+    fact_session_facets.value_text) could echo them. This first held only
+    when `--llm-facets --no-thinking` were combined, which was enough while
+    every thinking string on disk was empty. Claude Code persists text on a
+    share of blocks now (docs/JSONL_CONTRACT.md claim 5), and the standing
+    rule is that text built for a third party excludes thinking whatever
+    the flag says, so the default arm is the one that matters.
 
     Uses a `CannedFacetExtractor`-like spy to capture the SessionInputs the
     populator actually builds, without making a real API call.
     """
 
+    @pytest.mark.parametrize("include_thinking", [True, False])
     def test_session_inputs_passed_to_extractor_exclude_thinking(
-        self, conn, session_with_thinking, tmp_path
+        self, conn, session_with_thinking, tmp_path, include_thinking
     ):
         from ccutils.etl.facets import FacetSpec
 
@@ -315,7 +322,7 @@ class TestTier2WithNoThinkingExcludesThinkingFromExtractor:
         run_v15_etl(
             conn, session_with_thinking,
             project_name="x", parquet_lake_root=tmp_path / "lake",
-            include_thinking=False,
+            include_thinking=include_thinking,
             facet_extractor=_SpyExtractor(),
         )
 

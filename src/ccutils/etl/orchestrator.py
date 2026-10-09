@@ -431,10 +431,8 @@ def run_v15_etl(
             # Tier 2 facets (LLM-extracted) only run when a FacetExtractor is
             # injected. Default None disables Tier 2 entirely.
             if facet_extractor is not None:
-                populate_tier2_facets(
-                    conn, run=run, extractor=facet_extractor,
-                    include_thinking=include_thinking,
-                )
+                # No include_thinking here: Tier 2 inputs never carry thinking.
+                populate_tier2_facets(conn, run=run, extractor=facet_extractor)
 
             # No per-thinking staging cleanup here: `staging_scope` clears
             # etl.log_entries unconditionally at exit, so the raw message_json

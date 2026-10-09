@@ -130,11 +130,14 @@ empty on most blocks and holds short text on some.
   `fact_messages.content_text` excludes thinking blocks by projection. The one
   path in is `extract_text_from_content_json`, whose default includes
   thinking: a session whose last assistant entry is a thinking block puts that
-  text in `dim_session.last_assistant_message` and in the Tier 2 facet
-  inputs. The `dim_session` path is pinned by
-  `tests/test_guide.py::TestGuideOnReasoningText`, because the reader's guide
-  states it; the facet-input path is read from
-  `etl/facets/populator.py::_build_session_inputs` and has no test of its own.
+  text in `dim_session.last_assistant_message` unless built with
+  `--no-thinking`. `tests/test_guide.py::TestGuideOnReasoningText` pins it,
+  because the reader's guide states it.
+- Consequence: what `--llm-facets` sends to the API is built without thinking
+  whatever the flag says (`etl/facets/populator.py::_build_session_inputs`,
+  pinned by
+  `tests/test_no_thinking_v15.py::TestTier2WithNoThinkingExcludesThinkingFromExtractor`).
+  Until 2026-10-09 it followed the flag.
 - Canary: `tests/test_jsonl_contract.py::TestThinkingTextIsAMinority`, which
   scans the whole corpus from `THINKING_TEXT_SINCE` and asserts the share
   stays under `THINKING_TEXT_MAJORITY`.
