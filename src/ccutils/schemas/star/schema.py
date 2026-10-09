@@ -1414,6 +1414,12 @@ def _create_objects(conn) -> None:
     # six views; nothing in them was stated, all of it was a rollup of other
     # facts. A view cannot go stale, cannot be skipped by one entry point,
     # and stores nothing twice.
+    #
+    # Every integer SUM in a view is cast `::BIGINT`. DuckDB types SUM over an
+    # integer as HUGEINT, a view column takes its expression's type, and
+    # HUGEINT reaches Arrow as decimal128(38, 0). While the summary was a
+    # table its INSERT did the cast; as a view, nothing did.
+    # tests/test_star_schema_ddl.py::TestNoColumnIsHugeint fails on a bare one.
     # =========================================================================
     conn.execute(
         """
@@ -1421,20 +1427,20 @@ def _create_objects(conn) -> None:
         WITH msg_rollup AS (
             SELECT session_id,
                    COUNT(*) AS total_messages,
-                   SUM(CASE WHEN message_type = 'user' THEN 1 ELSE 0 END) AS user_messages,
-                   SUM(CASE WHEN message_type = 'assistant' THEN 1 ELSE 0 END) AS assistant_messages,
-                   SUM(CASE WHEN has_thinking THEN 1 ELSE 0 END) AS total_thinking_blocks
+                   SUM(CASE WHEN message_type = 'user' THEN 1 ELSE 0 END)::BIGINT AS user_messages,
+                   SUM(CASE WHEN message_type = 'assistant' THEN 1 ELSE 0 END)::BIGINT AS assistant_messages,
+                   SUM(CASE WHEN has_thinking THEN 1 ELSE 0 END)::BIGINT AS total_thinking_blocks
             FROM fact_messages WHERE is_deleted = FALSE GROUP BY session_id
         ),
         token_rollup AS (
             SELECT session_id,
-                   SUM(COALESCE(input_tokens, 0)) AS total_input_tokens,
-                   SUM(COALESCE(output_tokens, 0)) AS total_output_tokens,
-                   SUM(COALESCE(cache_creation_5m_tokens, 0)) AS total_cache_creation_5m_tokens,
-                   SUM(COALESCE(cache_creation_1h_tokens, 0)) AS total_cache_creation_1h_tokens,
-                   SUM(COALESCE(cache_creation_total_tokens, 0)) AS total_cache_creation_total_tokens,
-                   SUM(COALESCE(cache_read_tokens, 0)) AS total_cache_read_tokens,
-                   SUM(COALESCE(total_uncached_equivalent_tokens, 0)) AS total_uncached_equivalent_tokens,
+                   SUM(COALESCE(input_tokens, 0))::BIGINT AS total_input_tokens,
+                   SUM(COALESCE(output_tokens, 0))::BIGINT AS total_output_tokens,
+                   SUM(COALESCE(cache_creation_5m_tokens, 0))::BIGINT AS total_cache_creation_5m_tokens,
+                   SUM(COALESCE(cache_creation_1h_tokens, 0))::BIGINT AS total_cache_creation_1h_tokens,
+                   SUM(COALESCE(cache_creation_total_tokens, 0))::BIGINT AS total_cache_creation_total_tokens,
+                   SUM(COALESCE(cache_read_tokens, 0))::BIGINT AS total_cache_read_tokens,
+                   SUM(COALESCE(total_uncached_equivalent_tokens, 0))::BIGINT AS total_uncached_equivalent_tokens,
                    COUNT(*) AS api_response_count
             FROM fact_token_usage WHERE is_deleted = FALSE GROUP BY session_id
         ),
@@ -1443,36 +1449,36 @@ def _create_objects(conn) -> None:
                    COUNT(*) AS total_tool_uses,
                    COUNT(DISTINCT tool_name) AS unique_tools_used,
                    COUNT(result_entry_id) AS total_tool_results,
-                   SUM(CASE WHEN is_error THEN 1 ELSE 0 END) AS total_tool_errors
+                   SUM(CASE WHEN is_error THEN 1 ELSE 0 END)::BIGINT AS total_tool_errors
             FROM fact_tool_calls WHERE is_deleted = FALSE GROUP BY session_id
         ),
         system_rollup AS (
             SELECT session_id,
-                   SUM(CASE WHEN subtype = 'api_error' THEN 1 ELSE 0 END) AS total_api_errors,
-                   SUM(CASE WHEN subtype = 'compact_boundary' THEN 1 ELSE 0 END) AS total_compactions,
-                   SUM(CASE WHEN subtype = 'turn_duration' THEN COALESCE(duration_ms, 0) ELSE 0 END) AS total_turn_durations_ms,
-                   SUM(CASE WHEN subtype = 'turn_duration' THEN 1 ELSE 0 END) AS turn_count,
-                   SUM(CASE WHEN subtype = 'stop_hook_summary' THEN 1 ELSE 0 END) AS total_stop_events,
-                   SUM(CASE WHEN subtype = 'stop_hook_summary' AND prevented_continuation THEN 1 ELSE 0 END) AS total_prevented_continuations
+                   SUM(CASE WHEN subtype = 'api_error' THEN 1 ELSE 0 END)::BIGINT AS total_api_errors,
+                   SUM(CASE WHEN subtype = 'compact_boundary' THEN 1 ELSE 0 END)::BIGINT AS total_compactions,
+                   SUM(CASE WHEN subtype = 'turn_duration' THEN COALESCE(duration_ms, 0) ELSE 0 END)::BIGINT AS total_turn_durations_ms,
+                   SUM(CASE WHEN subtype = 'turn_duration' THEN 1 ELSE 0 END)::BIGINT AS turn_count,
+                   SUM(CASE WHEN subtype = 'stop_hook_summary' THEN 1 ELSE 0 END)::BIGINT AS total_stop_events,
+                   SUM(CASE WHEN subtype = 'stop_hook_summary' AND prevented_continuation THEN 1 ELSE 0 END)::BIGINT AS total_prevented_continuations
             FROM fact_system_events WHERE is_deleted = FALSE GROUP BY session_id
         ),
         progress_rollup AS (
             SELECT session_id,
                    COUNT(*) AS total_progress_events,
-                   SUM(CASE WHEN data_type = 'hook_progress' THEN 1 ELSE 0 END) AS total_hook_progress_events,
-                   SUM(CASE WHEN data_type = 'bash_progress' THEN 1 ELSE 0 END) AS total_bash_progress_events
+                   SUM(CASE WHEN data_type = 'hook_progress' THEN 1 ELSE 0 END)::BIGINT AS total_hook_progress_events,
+                   SUM(CASE WHEN data_type = 'bash_progress' THEN 1 ELSE 0 END)::BIGINT AS total_bash_progress_events
             FROM fact_progress_events WHERE is_deleted = FALSE GROUP BY session_id
         ),
         attachment_rollup AS (
             SELECT session_id,
                    COUNT(*) AS total_attachments,
-                   SUM(CASE WHEN attachment_type = 'diagnostics' THEN 1 ELSE 0 END) AS total_diagnostics,
-                   SUM(CASE WHEN attachment_type = 'hook_success' THEN 1 ELSE 0 END) AS total_hook_successes
+                   SUM(CASE WHEN attachment_type = 'diagnostics' THEN 1 ELSE 0 END)::BIGINT AS total_diagnostics,
+                   SUM(CASE WHEN attachment_type = 'hook_success' THEN 1 ELSE 0 END)::BIGINT AS total_hook_successes
             FROM fact_attachments WHERE is_deleted = FALSE GROUP BY session_id
         ),
         meta_rollup AS (
             SELECT session_id,
-                   SUM(CASE WHEN meta_type = 'permission-mode' THEN 1 ELSE 0 END) AS permission_mode_transition_count
+                   SUM(CASE WHEN meta_type = 'permission-mode' THEN 1 ELSE 0 END)::BIGINT AS permission_mode_transition_count
             FROM fact_meta_events WHERE is_deleted = FALSE GROUP BY session_id
         ),
         file_history_rollup AS (
@@ -1485,19 +1491,19 @@ def _create_objects(conn) -> None:
         -- reference would be a cycle. The spawn-failure predicate is the
         -- same three stated facts that view's completion_state uses.
         child_tokens AS (
-            SELECT session_id, SUM(COALESCE(output_tokens, 0)) AS output_tokens
+            SELECT session_id, SUM(COALESCE(output_tokens, 0))::BIGINT AS output_tokens
             FROM fact_token_usage WHERE is_deleted = FALSE GROUP BY session_id
         ),
         delegation_rollup AS (
             SELECT ftc.session_id,
                    COUNT(*) AS total_delegations,
                    SUM(CASE WHEN ftc.is_error IS TRUE AND ftc.agent_id IS NULL
-                             AND ftc.agent_status IS NULL THEN 1 ELSE 0 END)
+                             AND ftc.agent_status IS NULL THEN 1 ELSE 0 END)::BIGINT
                        AS total_spawn_failures,
                    -- Stated by the child's sidecar (spawnDepth); NULL when
                    -- no child is in the warehouse or none states a depth.
                    MAX(cs.spawn_depth) AS max_child_depth,
-                   SUM(COALESCE(ct.output_tokens, 0)) AS delegated_output_tokens
+                   SUM(COALESCE(ct.output_tokens, 0))::BIGINT AS delegated_output_tokens
             FROM fact_tool_calls ftc
             LEFT JOIN dim_session cs ON cs.session_id = 'agent-' || ftc.agent_id
             LEFT JOIN child_tokens ct ON ct.session_id = 'agent-' || ftc.agent_id
@@ -1572,11 +1578,11 @@ def _create_objects(conn) -> None:
             MIN(ffo.timestamp) AS first_operation_timestamp,
             MAX(ffo.timestamp) AS last_operation_timestamp,
             COUNT(*) AS operation_count,
-            SUM(CASE WHEN ffo.operation_type = 'read' THEN 1 ELSE 0 END) AS read_count,
-            SUM(CASE WHEN ffo.operation_type = 'write' THEN 1 ELSE 0 END) AS write_count,
-            SUM(CASE WHEN ffo.operation_type = 'edit' THEN 1 ELSE 0 END) AS edit_count,
+            SUM(CASE WHEN ffo.operation_type = 'read' THEN 1 ELSE 0 END)::BIGINT AS read_count,
+            SUM(CASE WHEN ffo.operation_type = 'write' THEN 1 ELSE 0 END)::BIGINT AS write_count,
+            SUM(CASE WHEN ffo.operation_type = 'edit' THEN 1 ELSE 0 END)::BIGINT AS edit_count,
             SUM(CASE WHEN ffo.operation_type IN ('write', 'edit')
-                     THEN COALESCE(ffo.file_size_chars, 0) ELSE 0 END) AS total_chars_written
+                     THEN COALESCE(ffo.file_size_chars, 0) ELSE 0 END)::BIGINT AS total_chars_written
         FROM fact_file_operations ffo
         WHERE ffo.is_deleted = FALSE AND ffo.session_id IS NOT NULL AND ffo.file_key IS NOT NULL
         GROUP BY ffo.session_id, ffo.session_key, ffo.file_key
@@ -2025,11 +2031,11 @@ def _create_objects(conn) -> None:
             df.directory_path,
             df.language,
             COUNT(DISTINCT bsf.session_key) AS session_count,
-            SUM(bsf.operation_count) AS total_operations,
-            SUM(bsf.read_count) AS total_reads,
-            SUM(bsf.write_count) AS total_writes,
-            SUM(bsf.edit_count) AS total_edits,
-            SUM(bsf.total_chars_written) AS total_chars_written,
+            SUM(bsf.operation_count)::BIGINT AS total_operations,
+            SUM(bsf.read_count)::BIGINT AS total_reads,
+            SUM(bsf.write_count)::BIGINT AS total_writes,
+            SUM(bsf.edit_count)::BIGINT AS total_edits,
+            SUM(bsf.total_chars_written)::BIGINT AS total_chars_written,
             CAST(MIN(bsf.first_operation_timestamp) AS DATE) AS first_seen_date,
             MIN(bsf.first_operation_timestamp) AS first_seen,
             CAST(MAX(bsf.last_operation_timestamp) AS DATE) AS last_seen_date,
@@ -2152,7 +2158,7 @@ def _create_objects(conn) -> None:
             dt2.tool_name AS next_tool_name,
             COUNT(*) AS frequency,
             AVG(ftcs.time_since_prev_seconds) AS avg_time_between,
-            SUM(CASE WHEN ftcs.is_error THEN 1 ELSE 0 END) AS error_count,
+            SUM(CASE WHEN ftcs.is_error THEN 1 ELSE 0 END)::BIGINT AS error_count,
             ROUND(SUM(CASE WHEN ftcs.is_error THEN 1 ELSE 0 END) * 100.0 / COUNT(*), 1) AS error_rate_pct
         FROM fact_tool_calls ftcs
         JOIN dim_tool dt1 ON ftcs.tool_key = dt1.tool_key
@@ -2208,9 +2214,9 @@ def _create_objects(conn) -> None:
             df.file_extension,
             df.language,
             COUNT(DISTINCT ds.session_id) AS sessions_touching_file,
-            SUM(bsf.read_count) AS total_reads,
-            SUM(bsf.write_count) AS total_writes,
-            SUM(bsf.edit_count) AS total_edits,
+            SUM(bsf.read_count)::BIGINT AS total_reads,
+            SUM(bsf.write_count)::BIGINT AS total_writes,
+            SUM(bsf.edit_count)::BIGINT AS total_edits,
             CAST(MAX(ds.first_timestamp) AS DATE) AS last_touched_date,
             MAX(ds.first_timestamp) AS last_touched
         FROM semantic_session_files bsf
@@ -2530,10 +2536,10 @@ def _create_objects(conn) -> None:
             SELECT
                 etl_run_id,
                 COUNT(*) AS step_count,
-                COALESCE(SUM(rows_read) FILTER (WHERE step_kind = 'upsert'), 0) AS rows_read,
-                COALESCE(SUM(rows_inserted) FILTER (WHERE step_kind = 'upsert'), 0) AS rows_inserted,
-                COALESCE(SUM(rows_updated) FILTER (WHERE step_kind = 'upsert'), 0) AS rows_updated,
-                COALESCE(SUM(rows_soft_deleted) FILTER (WHERE step_kind = 'upsert'), 0) AS rows_soft_deleted
+                COALESCE(SUM(rows_read) FILTER (WHERE step_kind = 'upsert'), 0)::BIGINT AS rows_read,
+                COALESCE(SUM(rows_inserted) FILTER (WHERE step_kind = 'upsert'), 0)::BIGINT AS rows_inserted,
+                COALESCE(SUM(rows_updated) FILTER (WHERE step_kind = 'upsert'), 0)::BIGINT AS rows_updated,
+                COALESCE(SUM(rows_soft_deleted) FILTER (WHERE step_kind = 'upsert'), 0)::BIGINT AS rows_soft_deleted
             FROM etl.steps
             GROUP BY etl_run_id
         ) s ON r.etl_run_id = s.etl_run_id

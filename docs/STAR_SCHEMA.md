@@ -517,10 +517,10 @@ M:N aggregate per (session, file).
 | first_operation_timestamp | TIMESTAMP | Earliest operation on this file |
 | last_operation_timestamp | TIMESTAMP | Latest operation on this file |
 | operation_count | BIGINT | Total operations |
-| read_count | HUGEINT | Read operations |
-| write_count | HUGEINT | Write operations |
-| edit_count | HUGEINT | Edit operations |
-| total_chars_written | HUGEINT | Total characters written |
+| read_count | BIGINT | Read operations |
+| write_count | BIGINT | Write operations |
+| edit_count | BIGINT | Edit operations |
+| total_chars_written | BIGINT | Total characters written |
 
 #### fact_diagnostics
 LSP diagnostics flattened from `fact_attachments` where `attachment_type='diagnostics'`. Columns: `diagnostic_id` (PK), `entry_id`, `session_key`, `file_key`, `date_key`, `time_key`, `file_path`, `severity` (Error/Warning/Info/Hint), `source` (Pyright, typescript, etc.), `code`, `message`, `range_start_line` / `range_start_col` / `range_end_line` / `range_end_col`, `timestamp`.
@@ -584,7 +584,7 @@ A view since 1.0.0. It was the table `fact_agent_delegations`, written per sessi
 | derived_completion_timestamp | TIMESTAMP | The agent's last assistant message |
 | derived_seconds_to_completion | DOUBLE | derived_completion_timestamp - delegation_timestamp |
 | derived_duration_ms | DOUBLE | The agent's first message to its last assistant message |
-| derived_io_tokens | HUGEINT | Input+output summed from the agent's OWN usage. A *different measure* from `agent_total_tokens`, not a fallback for it |
+| derived_io_tokens | BIGINT | Input+output summed from the agent's OWN usage. A *different measure* from `agent_total_tokens`, not a fallback for it |
 | derived_tool_use_count | BIGINT | The agent's own tool calls; 0, not NULL, for an agent that finished without calling one. `ccutils audit` scores it against `agent_total_tool_use_count` where both exist |
 | derived_output_text | TEXT | The agent's final report: its terminal assistant message |
 
@@ -634,38 +634,38 @@ One row per session. Aggregates over every fact above. Must populate last.
 | last_timestamp | TIMESTAMP | Last message time |
 | session_duration_seconds | DOUBLE | last_timestamp - first_timestamp |
 | total_messages | BIGINT | Total message count |
-| user_messages | HUGEINT | User message count |
-| assistant_messages | HUGEINT | Assistant message count |
-| total_thinking_blocks | HUGEINT | Thinking blocks across assistant messages |
-| total_input_tokens | HUGEINT | Sum of API input tokens |
-| total_output_tokens | HUGEINT | Sum of API output tokens |
-| total_cache_creation_5m_tokens | HUGEINT | R11 split |
-| total_cache_creation_1h_tokens | HUGEINT | R11 split |
-| total_cache_creation_total_tokens | HUGEINT | 5m + 1h |
-| total_cache_read_tokens | HUGEINT | Sum of cache-read tokens |
-| total_uncached_equivalent_tokens | HUGEINT | Sum, R11-correct |
+| user_messages | BIGINT | User message count |
+| assistant_messages | BIGINT | Assistant message count |
+| total_thinking_blocks | BIGINT | Thinking blocks across assistant messages |
+| total_input_tokens | BIGINT | Sum of API input tokens |
+| total_output_tokens | BIGINT | Sum of API output tokens |
+| total_cache_creation_5m_tokens | BIGINT | R11 split |
+| total_cache_creation_1h_tokens | BIGINT | R11 split |
+| total_cache_creation_total_tokens | BIGINT | 5m + 1h |
+| total_cache_read_tokens | BIGINT | Sum of cache-read tokens |
+| total_uncached_equivalent_tokens | BIGINT | Sum, R11-correct |
 | api_response_count | BIGINT | Count of contributing fact_token_usage rows |
 | total_tool_uses | BIGINT | Tool use count |
 | unique_tools_used | BIGINT | Distinct tools used |
 | total_tool_results | BIGINT | Tool result count |
-| total_tool_errors | HUGEINT | Error count (fact_tool_calls.is_error=TRUE) |
-| total_api_errors | HUGEINT | From fact_system_events |
-| total_compactions | HUGEINT | From fact_system_events |
-| total_turn_durations_ms | HUGEINT | Sum of turn durations, from fact_system_events |
-| turn_count | HUGEINT | Count of turn_duration system events |
-| total_stop_events | HUGEINT | From fact_system_events |
-| total_prevented_continuations | HUGEINT | From fact_system_events |
+| total_tool_errors | BIGINT | Error count (fact_tool_calls.is_error=TRUE) |
+| total_api_errors | BIGINT | From fact_system_events |
+| total_compactions | BIGINT | From fact_system_events |
+| total_turn_durations_ms | BIGINT | Sum of turn durations, from fact_system_events |
+| turn_count | BIGINT | Count of turn_duration system events |
+| total_stop_events | BIGINT | From fact_system_events |
+| total_prevented_continuations | BIGINT | From fact_system_events |
 | total_progress_events | BIGINT | From fact_progress_events |
 | total_delegations | BIGINT | Agent/Task spawn calls made by this session |
-| total_spawn_failures | HUGEINT | Spawns that were refused: a stated error, no agent id, no status |
+| total_spawn_failures | BIGINT | Spawns that were refused: a stated error, no agent id, no status |
 | max_child_depth | INTEGER | Deepest `spawn_depth` stated by a directly spawned agent's sidecar; NULL when none is in the warehouse or states one |
-| delegated_output_tokens | HUGEINT | Output tokens of the directly spawned agents, from their own usage rows |
-| total_hook_progress_events | HUGEINT | From fact_progress_events |
-| total_bash_progress_events | HUGEINT | From fact_progress_events |
+| delegated_output_tokens | BIGINT | Output tokens of the directly spawned agents, from their own usage rows |
+| total_hook_progress_events | BIGINT | From fact_progress_events |
+| total_bash_progress_events | BIGINT | From fact_progress_events |
 | total_attachments | BIGINT | From fact_attachments |
-| total_diagnostics | HUGEINT | From fact_diagnostics |
-| total_hook_successes | HUGEINT | From fact_attachments |
-| permission_mode_transition_count | HUGEINT | From fact_meta_events |
+| total_diagnostics | BIGINT | From fact_diagnostics |
+| total_hook_successes | BIGINT | From fact_attachments |
+| permission_mode_transition_count | BIGINT | From fact_meta_events |
 | current_permission_mode | VARCHAR | Latest permission mode, from fact_meta_events |
 | total_file_history_snapshots | BIGINT | From fact_file_history_snapshots |
 

@@ -782,3 +782,42 @@ class TestFactPlanRevisions:
         ).fetchone()
         assert result is not None
         conn.close()
+
+
+class TestNoColumnIsHugeint:
+    """No column a consumer reads is HUGEINT.
+
+    DuckDB types `SUM` over an integer column as HUGEINT (a 128-bit integer),
+    and a view takes whatever type its expression has. Nothing is stored that
+    way: every table column is INTEGER or BIGINT. But the summed columns of
+    every `semantic_` view came out HUGEINT, and that reaches Arrow, and so a
+    dataframe, as `decimal128(38, 0)` instead of `int64`.
+
+    It arrived unannounced. `semantic_session_summary` was a table with
+    INTEGER and BIGINT columns until 1.0.0 made it a view, and the same
+    `SUM(...)` that had been cast by the INSERT then defined the column
+    type. The doc went on saying BIGINT for a month.
+
+    The sums are cast to BIGINT in the views. A session's token total does
+    not approach 2^63.
+    """
+
+    def test_main_has_no_hugeint_column(self, tmp_path):
+        conn = create_star_schema(tmp_path / "t.duckdb")
+        rows = conn.execute(
+            "SELECT table_name, column_name FROM information_schema.columns "
+            "WHERE table_schema = 'main' AND data_type = 'HUGEINT' "
+            "ORDER BY 1, 2"
+        ).fetchall()
+        conn.close()
+        assert rows == []
+
+    def test_a_summed_view_column_reaches_arrow_as_int64(self, tmp_path):
+        """The effect, not just the declared type."""
+        conn = create_star_schema(tmp_path / "t.duckdb")
+        schema = conn.execute(
+            "SELECT total_input_tokens, total_tool_errors, total_delegations "
+            "FROM semantic_session_summary"
+        ).to_arrow_table().schema
+        conn.close()
+        assert [str(f.type) for f in schema] == ["int64", "int64", "int64"]
