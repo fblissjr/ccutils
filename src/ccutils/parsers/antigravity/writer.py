@@ -81,6 +81,38 @@ def _check(value, kind: str, where: str):
     return value
 
 
+def _observed_kind(conn: sqlite3.Connection, table: str, name: str, declared: str) -> tuple[str, list[str]]:
+    """(kind, storage classes seen) for a column the contract does not declare.
+
+    Read from the data, because SQLite does not hold a column to its declared
+    type and a column declared with none (every column of an FTS5 table) says
+    nothing at all. The snapshot is a private copy, so what `typeof` reports
+    here is what the row loop below will read."""
+    seen = sorted(
+        r[0] for r in conn.execute(f"SELECT DISTINCT typeof(`{name}`) FROM `{table}`") if r[0] != "null"
+    )
+    if not seen:
+        return ag_schema.storage_kind(declared), seen
+    if len(seen) == 1:
+        return seen[0], seen
+    return ag_schema.MIXED, seen
+
+
+def _row_order(conn: sqlite3.Connection, table: str, info: list) -> str:
+    """ORDER BY terms giving a table's rows a stable order.
+
+    rowid where there is one. A WITHOUT ROWID table (two of an FTS5 index's
+    own tables are) has none, and always has a primary key, so that is used."""
+    try:
+        conn.execute(f"SELECT rowid FROM `{table}` LIMIT 0")
+        return "rowid"
+    except sqlite3.OperationalError:
+        key = [r[1] for r in sorted(info, key=lambda r: r[5]) if r[5]]
+        if not key:
+            raise LakeWriteError(f"{table}: no rowid and no primary key to order by")
+        return ", ".join(f"`{name}`" for name in key)
+
+
 def mirror_sqlite(
     db_copy: Path,
     out_dir: Path,
@@ -104,7 +136,8 @@ def mirror_sqlite(
         if missing_tables:
             raise LakeWriteError(f"missing table(s): {', '.join(missing_tables)}")
         for table in tables:
-            actual = [(r[1], r[2]) for r in conn.execute(f"PRAGMA table_info(`{table}`)")]
+            info = conn.execute(f"PRAGMA table_info(`{table}`)").fetchall()
+            actual = [(r[1], r[2]) for r in info]
             declared = dict(expected.get(table, ()))
             if table not in expected:
                 notes.append(f"drift: unknown table {table} mirrored")
@@ -112,17 +145,25 @@ def mirror_sqlite(
             if missing:
                 raise LakeWriteError(f"{table}: missing column(s) {', '.join(missing)}")
             columns = []
+            names = {name for name, _ in actual}
             for name, decl in actual:
                 if name in declared:
                     columns.append((name, declared[name]))
-                else:
-                    columns.append((name, ag_schema.storage_kind(decl)))
-                    if table in expected:
-                        notes.append(f"drift: unknown column {table}.{name} ({decl or 'no type'}) mirrored")
+                    continue
+                kind, seen = _observed_kind(conn, table, name, decl)
+                columns.append((name, kind))
+                if table in expected:
+                    notes.append(f"drift: unknown column {table}.{name} ({decl or 'no type'}) mirrored")
+                if kind == ag_schema.MIXED:
+                    storage = name + ag_schema.MIXED_STORAGE_SUFFIX
+                    if storage in names:
+                        raise LakeWriteError(f"{table}.{name}: mixed storage, and {storage} is already a column")
+                    notes.append(
+                        f"drift: {table}.{name} holds {'/'.join(seen)}; kept as bytes with {storage}")
             schema = ag_schema.table_schema(columns, with_conversation_id=conversation_id is not None)
             writer = TableWriter(out_dir / f"{table}.parquet", schema)
             select = ", ".join(f"`{name}`" for name, _ in columns)
-            cursor = conn.execute(f"SELECT {select} FROM `{table}` ORDER BY rowid")
+            cursor = conn.execute(f"SELECT {select} FROM `{table}` ORDER BY {_row_order(conn, table, info)}")
             try:
                 while True:
                     batch = cursor.fetchmany(FETCH_ROWS)
@@ -131,7 +172,11 @@ def mirror_sqlite(
                     for values in batch:
                         row = dict(base_row)
                         for (name, kind), value in zip(columns, values):
-                            row[name] = _check(value, kind, f"{table}.{name}")
+                            if kind == ag_schema.MIXED:
+                                row[name], row[name + ag_schema.MIXED_STORAGE_SUFFIX] = (
+                                    ag_schema.encode_mixed(value))
+                            else:
+                                row[name] = _check(value, kind, f"{table}.{name}")
                         writer.add(row)
             finally:
                 counts[table] = writer.close()

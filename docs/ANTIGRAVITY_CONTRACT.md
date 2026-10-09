@@ -1,7 +1,7 @@
 <!-- path-privacy: skip-file -- references universal Antigravity data and install paths (not personal) -->
 # The Antigravity on-disk contract
 
-Last updated: 2026-09-22
+Last updated: 2026-10-09
 
 What `ccutils lake antigravity` assumes about how Google Antigravity (the Gemini
 agentic IDE/hub and its `agy` CLI, from the Windsurf "Cascade" lineage) stores
@@ -123,6 +123,10 @@ files in `language_server` 2.15.1; decoding with it found 0 unknown fields in
   text (`YYYY-MM-DD HH:MM:SS.ffffff+00:00`); `numeric` booleans hold integers.
 - Consequence: SQLite does not enforce declared types, so the writer checks
   every value and fails the unit on a mismatch rather than coercing it.
+- Scope, corrected 2026-10-09: this holds for the tables the contract
+  declares (`schema.CONVERSATION_TABLES`, `schema.SUMMARIES_TABLES`). It does
+  not hold for the full-text index the hub added later (claim 15), and the
+  check above applies only to declared columns.
 - Canary: `TestStorageTypes`.
 
 ## 5. The files are in WAL mode
@@ -264,6 +268,42 @@ Observed step types, both stores: 15 `PLANNER_RESPONSE` 26,293 · 132 `GENERIC`
 - Canary: `TestStepCreationTimeIsStated` (every step has field 1). The reuse
   itself is a survey number, not a canary: the design is the same whether it
   is rare or common.
+
+## 15. The hub's summaries database carries a full-text index, and its columns are untyped
+
+- Measured 2026-10-09 on app 2.21.1: `conversation_summaries.db` in the
+  `antigravity` store holds an FTS5 virtual table `conversations_fts`, the
+  five tables FTS5 keeps its index in (`_config`, `_content`, `_data`,
+  `_docsize`, `_idx`) and `search_schema_version`. The CLI store's database
+  has none of them. Row counts and per-column storage classes are in
+  `CHANGELOG.md` under "The Antigravity lake survives the hub's full-text
+  index".
+- Every column of the index is declared with no type. Most hold one storage
+  class. `user_step_byte_offsets` and `agent_step_byte_offsets` hold a blob
+  in some rows and text in others. `_config` and `_idx` are `WITHOUT ROWID`.
+- The indexed columns `title`, `workspace`, `project`, `user_body` and
+  `agent_body` are plain text: a conversation's user and agent text in
+  chunks, with the step range each chunk covers. It is the first place a
+  hub conversation's text can be read without decoding a protobuf blob, and
+  it bears on the parked phase 1 decision in `docs/ROADMAP.md`. How complete
+  the bodies are against the steps is unmeasured.
+- Consequence: the writer takes the kind of a column the contract does not
+  declare from the data (`typeof`), not from its declaration. A column
+  holding several storage classes is written as bytes plus a
+  `<name>__storage` column naming the class of each row
+  (`schema.encode_mixed` / `decode_mixed`). A table with no rowid is read in
+  primary-key order. Lake format 3.
+- This claim exists because the first real run after the app updated lost
+  the hub's whole summaries unit to it: an untyped column was assumed to be a
+  blob, the first text value failed the type check, and the unit holds every
+  conversation's only stated parent and nesting depth (claim 9).
+- Canary: none yet. The mechanism is tested on fixtures
+  (`tests/test_antigravity_lake.py::TestSchemaDrift`); nothing checks the
+  real store still looks like this.
+- If this changes: a new table or column is mirrored and noted as drift in
+  the manifest, and nothing fails. The tables are not yet declared in
+  `schema.SUMMARIES_TABLES`, because a declared table is required of every
+  store and the CLI's has none.
 
 ---
 

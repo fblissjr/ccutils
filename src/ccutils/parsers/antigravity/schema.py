@@ -29,12 +29,53 @@ from ccutils.parsers.antigravity import stores
 # 2: `source_present` in the envelope; rows and tables the source lost are
 #    carried forward (CARRY_KEYS); reverts supersede (IDX_TABLES, claim 14);
 #    brain/<id>/.git archived as the `brain_git` unit.
-LAKE_FORMAT_VERSION = 2
+#
+# 3: a column the contract does not declare takes its kind from the data
+#    (`typeof`), not from its declared type; one holding several storage
+#    classes is written as bytes plus a `<name>__storage` column (MIXED).
+LAKE_FORMAT_VERSION = 3
 
 TEXT, INTEGER, BLOB, REAL = "text", "integer", "blob", "real"
 
 ARROW_TYPES = {TEXT: pa.string(), INTEGER: pa.int64(), BLOB: pa.large_binary(), REAL: pa.float64()}
 PYTHON_TYPES = {TEXT: str, INTEGER: int, BLOB: bytes, REAL: float}
+
+# SQLite types values, not columns: one column can hold a blob in one row and
+# text in the next (the hub's full-text index does). Such a column cannot be
+# one Arrow type, so it is written as two columns: the value's bytes under
+# its own name, and the storage class each row had under this suffix.
+MIXED = "mixed"
+MIXED_STORAGE_SUFFIX = "__storage"
+
+
+def encode_mixed(value) -> tuple[bytes | None, str | None]:
+    """(bytes, storage class) for one value of a MIXED column."""
+    if value is None:
+        return None, None
+    if isinstance(value, bytes):
+        return value, BLOB
+    if isinstance(value, str):
+        return value.encode("utf-8"), TEXT
+    if isinstance(value, int):
+        return str(value).encode("ascii"), INTEGER
+    if isinstance(value, float):
+        return repr(value).encode("ascii"), REAL
+    raise TypeError(f"not a SQLite storage class: {type(value).__name__}")
+
+
+def decode_mixed(data: bytes | None, storage: str | None):
+    """The value `encode_mixed` was given."""
+    if storage is None:
+        return None
+    if storage == BLOB:
+        return data
+    if storage == TEXT:
+        return data.decode("utf-8")
+    if storage == INTEGER:
+        return int(data)
+    if storage == REAL:
+        return float(data)
+    raise ValueError(f"unknown storage class {storage!r}")
 
 CONVERSATION_TABLES: dict[str, tuple[tuple[str, str], ...]] = {
     "trajectory_meta": (
@@ -97,9 +138,11 @@ FILE_FIELDS: tuple[pa.Field, ...] = (
 
 
 def storage_kind(declared: str) -> str:
-    """Storage kind for a column the contract does not know (schema drift).
+    """Storage kind for an undeclared column that holds no value to read it from.
 
-    Follows SQLite's affinity rules, except that NUMERIC-affinity names map to
+    The writer reads the kind of a column the contract does not know from the
+    data (`typeof`); this is the fallback for an empty or all-NULL column,
+    where the declaration is all there is. Follows SQLite's affinity rules, except that NUMERIC-affinity names map to
     INTEGER (every NUMERIC column measured holds integers) and dates to TEXT
     (gorm writes them as strings)."""
     d = declared.upper()
@@ -118,7 +161,12 @@ def table_schema(columns: list[tuple[str, str]], *, with_conversation_id: bool) 
     fields = list(envelope_fields())
     if with_conversation_id:
         fields.append(pa.field("conversation_id", pa.string(), nullable=False))
-    fields += [pa.field(name, ARROW_TYPES[kind]) for name, kind in columns]
+    for name, kind in columns:
+        if kind == MIXED:
+            fields.append(pa.field(name, pa.large_binary()))
+            fields.append(pa.field(name + MIXED_STORAGE_SUFFIX, pa.string()))
+        else:
+            fields.append(pa.field(name, ARROW_TYPES[kind]))
     return pa.schema(fields)
 
 
@@ -143,5 +191,6 @@ def format_fingerprint() -> str:
         repr(stores.CONVERSATION_FILE_RULES), repr(stores.UNCLASSIFIED_MAX_BYTES),
         repr(stores.GIT_DIR), repr(stores.GIT_FILE_RULES),
         repr(CARRY_KEYS), repr(IDX_TABLES), repr(STEP_CREATED_AT_FIELD),
+        repr(("undeclared-column-kind", "typeof", MIXED, MIXED_STORAGE_SUFFIX)),
     ]
     return hashlib.sha256("\n".join(parts).encode()).hexdigest()

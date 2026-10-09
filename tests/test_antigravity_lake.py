@@ -232,6 +232,87 @@ class TestSchemaDrift:
         err = next(o.error for o in result.outcomes if o.unit_id == CONV_B)
         assert "steps.step_type" in err
 
+    # The three below reproduce what app 2.21.1 did to the hub's summaries
+    # database: it added a full-text index, whose columns are declared with no
+    # type and hold text, integers and (in one column) a mix of blob and text.
+    # The writer guessed BLOB from the empty declaration, the first text value
+    # failed the type check, and the whole summaries unit was lost with it,
+    # including the only stated parent and nesting depth of every conversation.
+
+    @staticmethod
+    def _summaries(lake_root, name):
+        return lake_root / "antigravity" / "antigravity" / "summaries" / f"{name}.parquet"
+
+    @staticmethod
+    def _summaries_status(result):
+        return {o.store: o.status for o in result.outcomes if o.unit_kind == "summaries"}
+
+    def test_an_untyped_column_takes_its_type_from_the_data(self, home, lake_root):
+        conn = sqlite3.connect(home.store() / "conversation_summaries.db")
+        conn.execute("CREATE TABLE future_untyped (label, n, ratio, payload, never_set)")
+        conn.execute("INSERT INTO future_untyped VALUES ('alpha', 7, 0.5, x'0102', NULL)")
+        conn.commit()
+        conn.close()
+        result = run(home, lake_root)
+        assert self._summaries_status(result)["antigravity"] == "written"
+        row = table(self._summaries(lake_root, "future_untyped"))[0]
+        assert (row["label"], row["n"], row["ratio"], row["payload"], row["never_set"]) == (
+            "alpha", 7, 0.5, b"\x01\x02", None)
+        assert table(self._summaries(lake_root, "conversation_summaries"))
+
+    def test_a_column_holding_several_storage_classes_is_kept_exactly(self, home, lake_root):
+        values = [b"\x00\xff", "text \u00e9", None, 42, 1.5]
+        conn = sqlite3.connect(home.store() / "conversation_summaries.db")
+        conn.execute("CREATE TABLE future_mixed (id INTEGER, v)")
+        conn.executemany("INSERT INTO future_mixed VALUES (?, ?)", list(enumerate(values)))
+        conn.commit()
+        conn.close()
+        result = run(home, lake_root)
+        assert self._summaries_status(result)["antigravity"] == "written"
+        rows = table(self._summaries(lake_root, "future_mixed"))
+        assert [r["v__storage"] for r in rows] == ["blob", "text", None, "integer", "real"]
+        assert [ag_schema.decode_mixed(r["v"], r["v__storage"]) for r in rows] == values
+        notes = json.loads(manifest(lake_root)[("antigravity", "summaries", "conversation_summaries")]["notes"])
+        assert any("future_mixed.v" in n and "v__storage" in n for n in notes)
+
+    def test_a_full_text_index_does_not_cost_the_summaries(self, home, lake_root):
+        conn = sqlite3.connect(home.store() / "conversation_summaries.db")
+        try:
+            conn.execute(
+                "CREATE VIRTUAL TABLE conversations_fts USING fts5("
+                "conversation_id UNINDEXED, chunk_index UNINDEXED, offsets UNINDEXED, body)")
+        except sqlite3.OperationalError:
+            conn.close()
+            pytest.skip("this SQLite build has no FTS5")
+        conn.execute("INSERT INTO conversations_fts VALUES (?, 0, x'0a0b', 'first body')", (CONV_A,))
+        conn.execute("INSERT INTO conversations_fts VALUES (?, 1, '[3]', 'second body')", (CONV_B,))
+        conn.commit()
+        conn.close()
+        result = run(home, lake_root)
+        assert self._summaries_status(result)["antigravity"] == "written"
+        assert {r["conversation_id"] for r in table(self._summaries(lake_root, "conversation_summaries"))} >= {
+            CONV_A, CONV_B}
+        fts = table(self._summaries(lake_root, "conversations_fts"))
+        assert [(r["conversation_id"], r["chunk_index"], r["body"]) for r in fts] == [
+            (CONV_A, 0, "first body"), (CONV_B, 1, "second body")]
+        assert [ag_schema.decode_mixed(r["offsets"], r["offsets__storage"]) for r in fts] == [b"\x0a\x0b", "[3]"]
+        # The index's own storage is ordinary tables and is mirrored too.
+        for shadow in ("content", "data", "docsize", "config", "idx"):
+            assert self._summaries(lake_root, f"conversations_fts_{shadow}").is_file(), shadow
+
+    def test_a_table_without_rowid_is_mirrored_in_key_order(self, home, lake_root):
+        # Two of an FTS5 index's own tables are WITHOUT ROWID, so there is no
+        # rowid to order by; the primary key is the only stable order.
+        conn = sqlite3.connect(home.store() / "conversation_summaries.db")
+        conn.execute("CREATE TABLE future_keyed (k TEXT, part INTEGER, v TEXT, PRIMARY KEY (k, part)) WITHOUT ROWID")
+        conn.executemany("INSERT INTO future_keyed VALUES (?, ?, ?)",
+                         [("b", 1, "third"), ("a", 2, "second"), ("a", 1, "first")])
+        conn.commit()
+        conn.close()
+        result = run(home, lake_root)
+        assert self._summaries_status(result)["antigravity"] == "written"
+        assert [r["v"] for r in table(self._summaries(lake_root, "future_keyed"))] == ["first", "second", "third"]
+
 
 # ---------------------------------------------------------------------------
 # Files around the database
@@ -496,6 +577,7 @@ class TestReruns:
 PINNED_FORMAT_FINGERPRINTS = {
     1: "e2f0012235d8d639a6f82710ed1649958ab5f198db3eb27d46b945212b3ab650",
     2: "a7bc2621b003ab91617f9c6ed80aea874d01c090d47a2aba291d46557f45f5b9",
+    3: "25f91724d2756d200d82f1585816bb8d2d73c2a882239db44d90b6b2bd21bd9e",
 }
 
 

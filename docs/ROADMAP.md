@@ -93,10 +93,10 @@ Resume in this order. Each item was designed and its reads done on
 Working notes: verify with a one-project subset build
 (`ccutils --source --format duckdb -o <dir> -p ccutils`, about 70
 seconds) and `ccutils audit -o <dir>`; the full corpus is for the final
-gate only. Two scratch warehouses from this work sit under the ccutils
-archive root (`audit-calibration`, `audit-subset`); delete them after the
-tag. If the schema changes again, subset builds must be rebuilt, not
-reopened.
+gate only. The two scratch warehouses this note used to name
+(`audit-calibration`, `audit-subset`) are not under the ccutils archive root
+as of 2026-10-09, so there is nothing to delete after the tag. If the schema
+changes again, subset builds must be rebuilt, not reopened.
 
 ## Release map
 
@@ -223,6 +223,14 @@ revert superseded; the next run was all unchanged). Real run at format 2:
 history); 77,102 paths opened under the data root, none outside the
 allowlist.
 
+First run at the default lake root, 2026-10-09 (the earlier runs wrote
+elsewhere and no lake was on disk): it lost the hub's summaries unit, because
+app 2.21.1 had added a full-text index whose untyped columns the writer
+assumed were blobs (contract claim 15). Fixed as lake format 3 and re-run
+over the format 2 lake just written: 677 units, 0 errors, every row count
+equal to the first run's plus the summaries unit, and the mixed-storage
+columns' class counts equal to the source's.
+
 The command and the lake layout are outside semver until declared stable.
 Declaring them stable is a decision for after phase 1, when a consumer exists.
 
@@ -237,6 +245,14 @@ The lake is opaque without this: everything interesting (text, thinking,
 tool calls, tokens, models, timestamps) is inside protobuf blobs. The schema
 is stated by the app's own binaries, so the decoder reads it rather than
 hard-coding field numbers.
+
+New on 2026-10-09, and relevant to the decision above: since app 2.21.1 the
+hub's summaries database carries a full-text index holding each
+conversation's user and agent text as plain chunks (contract claim 15), and
+the lake now mirrors it. That is text without any decoding, for hub
+conversations only, with completeness against the steps unmeasured. It does
+not replace the decode (no tool calls, tokens or models), but it may be
+enough for a first reading surface while the decision stays parked.
 
 1. **Capture the schema into the lake.** Extract the `FileDescriptorSet` from
    the installed Go binary (rodata scan for `FileDescriptorProto` bytes, walk
@@ -635,8 +651,14 @@ here and stays local.
 
 ### Antigravity lake: known gaps
 
-Found while building phase 0 (2026-09-22), not fixed. None blocks the lake.
+Found while building phase 0 (2026-09-22) or on the first default-root run
+(2026-10-09), not fixed. None blocks the lake.
 
+- **The hub's full-text tables are mirrored as drift, not declared.** Every
+  run notes seven unknown tables (contract claim 15). Declaring them in
+  `schema.SUMMARIES_TABLES` needs a notion of a table one store has and
+  another does not, since a declared table is required of every store. With
+  it goes a corpus canary for claim 15.
 - **The lake has no self-check.** The manifest records what was written, and
   the contract canaries check the SOURCE, but nothing verifies the lake
   against the source after the fact the way `ccutils audit` checks the
