@@ -226,7 +226,7 @@ Subagent transcripts are first-class sessions: agent files carry their parent's 
 - **Machinery, in the `etl` schema:** `etl.versions`, `etl.batch_runs`, `etl.runs`, `etl.steps`, `etl.schema_version` (plus transient `etl.log_entries` staging). `main` holds only dimensions, facts and views.
 - **Dimensions:** `dim_session` (with intent/complexity/outcome/domain enrichment + subagent linkage), `dim_project`, `dim_tool`, `dim_model`, `dim_file`, `dim_session_chain`, `dim_facet_type` (facet registry).
 - **Core facts:** `fact_messages`, `fact_tool_calls` (one row per tool use: the call, its typed `toolUseResult` payload, the derived failure kind, and its position in the agentic run), `fact_token_usage` (R11 cache split: `cache_creation_5m_tokens` + `cache_creation_1h_tokens`), `semantic_session_summary`.
-- **Entry-type facts:** `fact_attachments`, `fact_progress_events`, `fact_system_events`, `fact_meta_events` (permission-mode time series), `fact_file_history_snapshots`, `fact_queue_operations`, `fact_pr_links`.
+- **Entry-type facts:** `fact_entry_events` (attachments, every permission-mode / title / agent-name / last-prompt entry, file-history snapshots, queue operations and PR links, one row per entry in file order), `fact_progress_events`, `fact_system_events`.
 - **Derived:** `fact_file_operations` (+ the `semantic_session_files` view), `fact_diagnostics`, `fact_plan_revisions` (structural outcome from `fact_tool_calls.is_error`), and the `semantic_agent_delegations` view (each Agent/Task spawn joined to the agent's own session).
 - **Facets:** `fact_session_facets` Tier 1 (F01-F19, SQL-computed; always on). Tier 2 (F20+, LLM-extracted via Haiku) is opt-in via `--llm-facets`.
 

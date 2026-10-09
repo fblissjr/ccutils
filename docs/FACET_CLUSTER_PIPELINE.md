@@ -33,8 +33,8 @@ Inventory of the v0.15 facts and dimensions, with the fields relevant to facet e
 | `fact_token_usage` | per-API-response token breakdown, cache hits, model name |
 | `semantic_session_summary` | aggregate tokens/cost/duration/tool counts per session |
 | `fact_file_operations` | file paths, file extensions, operation counts (no LOC-delta column yet -- see F08 note below) |
-| `fact_attachments` | attachment subtypes (23 variants) |
-| `fact_pr_links` | PR URLs referenced |
+| `fact_entry_events` (`entry_type = 'attachment'`) | attachment subtypes |
+| `fact_entry_events` (`entry_type = 'pr-link'`) | PR URLs referenced |
 | `fact_plan_revisions` | plan content over time |
 | `fact_tool_calls` (Agent/Task rows; `semantic_agent_delegations`) | subagent fan-out, agent types |
 | `dim_session` | session id, cwd, git_branch, agent_id, parent_session_key, first/last timestamp, intent/complexity/outcome/domain (heuristic columns, `etl/heuristics.py`) |
@@ -78,7 +78,7 @@ These are cheap, deterministic, and run inline with the existing `run_v15_etl()`
 | F15 | `tokens_in` / `tokens_out` / `cost_usd` | num | `semantic_session_summary` | Already aggregated. **Implemented as a single value**: current populator emits only summed `input_tokens` from `fact_token_usage` (deliberately independent of `semantic_session_summary`'s populator order); `tokens_out` and `cost_usd` are not computed anywhere in the codebase yet -- there is no USD pricing calculation at all |
 | F16 | `local_hour` / `local_dow` | enum | `dim_time` | For temporal patterns |
 | F17 | `had_subagents` | bool | an Agent/Task call in `fact_tool_calls` | — |
-| F18 | `pr_referenced` | bool | `fact_pr_links` | Was a PR opened/referenced in-session |
+| F18 | `pr_referenced` | bool | a `pr-link` row in `fact_entry_events` | Was a PR opened/referenced in-session |
 | F19 | `had_plan_revision` | bool | `fact_plan_revisions` | Did the session reshape its plan mid-flight |
 
 ### Tier 2 — LLM-extracted from session content (one inference call per facet × session)

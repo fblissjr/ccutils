@@ -1,8 +1,7 @@
-"""Populate the seven new entry-type facts (Phase C4).
+"""Populate the entry-type facts: entry events, progress events, system events.
 
-Each populator builds a per-entry-type inbound temp table from staging,
-then delegates to lineage_upsert() for the UPDATE/INSERT/soft-delete
-choreography.
+Each populator builds an inbound temp table from staging, then delegates to
+lineage_upsert() for the UPDATE/INSERT/soft-delete choreography.
 """
 
 from __future__ import annotations
@@ -12,35 +11,118 @@ from ccutils.etl.upsert import lineage_upsert
 
 
 # --------------------------------------------------------------------------
-# fact_attachments
+# fact_entry_events
 # --------------------------------------------------------------------------
 
-_ATTACH_PAYLOAD_COLS = ["timestamp", "attachment_type", "attachment_json"]
-_ATTACH_HASH_COLS = ["timestamp", "attachment_type", "attachment_json"]
+#: The entry types that land in fact_entry_events, and nothing else does.
+#: A list, not "every type that is not a message": taking a new type in is a
+#: decision about what the warehouse holds, made per type. It was five
+#: tables until 1.0.0, one per group below.
+ENTRY_EVENT_TYPES = (
+    "attachment",
+    "permission-mode", "custom-title", "agent-name", "last-prompt",
+    "file-history-snapshot",
+    "queue-operation",
+    "pr-link",
+)
+
+_ENTRY_PAYLOAD_COLS = [
+    "sequence_num", "timestamp", "derived_timestamp",
+    "entry_type", "subtype", "value_text", "payload_json",
+]
+_ENTRY_HASH_COLS = _ENTRY_PAYLOAD_COLS
+
+# What each entry type contributes. `subtype` is the sub-kind the entry
+# states, where it states one. `value_text` is its one scalar, where it has
+# one. `payload_json` is the staged payload whole, so nothing a narrower
+# table used to hold as a column is lost: a pr-link's number and repository,
+# and a snapshot's isSnapshotUpdate flag and backup map, are read from it.
+#
+# Time. The meta entries (permission-mode, custom-title, agent-name,
+# last-prompt) state no timestamp at all, so `timestamp` is NULL on them and
+# the only order they have is their position in the file, `sequence_num`.
+# `derived_timestamp` places such an entry by its neighbours: the stated
+# time of the nearest entry before it in the same file, or after it when
+# nothing timestamped precedes. It is NULL where the entry states its own,
+# so the stated and the derived value never share a column. `key_timestamp`
+# is whichever exists and feeds only date_key / time_key.
+_PROJECT_ENTRY_EVENTS_SQL = """
+CREATE TEMP TABLE _inbound_entry_events AS
+WITH stated AS (
+    -- EVERY staged entry, not only the types kept below: an entry is placed
+    -- by whatever sits around it in the file.
+    SELECT
+        sle.*,
+        COALESCE(
+            TRY_CAST(sle.timestamp AS TIMESTAMP),
+            -- A file-history-snapshot entry carries no timestamp of its
+            -- own; the snapshot inside it states one.
+            CASE WHEN sle.type = 'file-history-snapshot' THEN TRY_CAST(
+                json_extract_string(sle.meta_payload_json, '$.snapshot.timestamp')
+                AS TIMESTAMP) END
+        ) AS stated_ts
+    FROM etl.log_entries sle
+),
+placed AS (
+    SELECT
+        s.*,
+        LAST_VALUE(s.stated_ts IGNORE NULLS) OVER (
+            PARTITION BY s.source_path ORDER BY s.sequence_num
+            ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING) AS ts_before,
+        FIRST_VALUE(s.stated_ts IGNORE NULLS) OVER (
+            PARTITION BY s.source_path ORDER BY s.sequence_num
+            ROWS BETWEEN 1 FOLLOWING AND UNBOUNDED FOLLOWING) AS ts_after
+    FROM stated s
+)
+SELECT
+    sle.entry_id,
+    sle.session_id,
+    sle.sequence_num,
+    sle.stated_ts AS timestamp,
+    CASE WHEN sle.stated_ts IS NULL
+         THEN COALESCE(sle.ts_before, sle.ts_after) END AS derived_timestamp,
+    COALESCE(sle.stated_ts, sle.ts_before, sle.ts_after) AS key_timestamp,
+    sle.type AS entry_type,
+    CASE sle.type
+        WHEN 'attachment' THEN json_extract_string(sle.attachment_json, '$.type')
+        WHEN 'queue-operation' THEN json_extract_string(sle.meta_payload_json, '$.operation')
+    END AS subtype,
+    CASE sle.type
+        WHEN 'permission-mode' THEN json_extract_string(sle.meta_payload_json, '$.permission_mode')
+        WHEN 'custom-title' THEN json_extract_string(sle.meta_payload_json, '$.customTitle')
+        WHEN 'agent-name' THEN json_extract_string(sle.meta_payload_json, '$.agentName')
+        WHEN 'last-prompt' THEN json_extract_string(sle.meta_payload_json, '$.lastPrompt')
+        WHEN 'queue-operation' THEN json_extract_string(sle.meta_payload_json, '$.content')
+        WHEN 'pr-link' THEN json_extract_string(sle.meta_payload_json, '$.prUrl')
+        -- The message the snapshot belongs to.
+        WHEN 'file-history-snapshot' THEN json_extract_string(sle.meta_payload_json, '$.messageId')
+    END AS value_text,
+    CAST(CASE WHEN sle.type = 'attachment' THEN sle.attachment_json
+              ELSE sle.meta_payload_json END AS VARCHAR) AS payload_json
+FROM placed sle
+WHERE sle.type IN ({types})
+"""
 
 
-def populate_fact_attachments(conn, *, run: EtlRun) -> None:
-    conn.execute("DROP TABLE IF EXISTS _inbound_attachments")
-    conn.execute(
-        """
-        CREATE TEMP TABLE _inbound_attachments AS
-        SELECT
-            sle.entry_id,
-            sle.session_id,
-            TRY_CAST(sle.timestamp AS TIMESTAMP) AS timestamp,
-            json_extract_string(sle.attachment_json, '$.type') AS attachment_type,
-            sle.attachment_json
-        FROM etl.log_entries sle
-        WHERE sle.type = 'attachment'
-        """
-    )
+def populate_fact_entry_events(conn, *, run: EtlRun) -> None:
+    """One row per entry of a type in ENTRY_EVENT_TYPES.
+
+    One row per ENTRY, which for the meta types is not one row per change:
+    Claude Code restates the current permission mode far more often than it
+    changes it. Changes are found by comparing a row with the one before it
+    in `sequence_num` order, which is what the views do.
+    """
+    conn.execute("DROP TABLE IF EXISTS _inbound_entry_events")
+    conn.execute(_PROJECT_ENTRY_EVENTS_SQL.format(
+        types=", ".join(f"'{t}'" for t in ENTRY_EVENT_TYPES)))
     lineage_upsert(
         conn, run=run,
-        table="fact_attachments",
-        inbound_table="_inbound_attachments",
+        table="fact_entry_events",
+        inbound_table="_inbound_entry_events",
         natural_key="entry_id",
-        payload_cols=_ATTACH_PAYLOAD_COLS,
-        hash_cols=_ATTACH_HASH_COLS,
+        payload_cols=_ENTRY_PAYLOAD_COLS,
+        hash_cols=_ENTRY_HASH_COLS,
+        timestamp_col="key_timestamp",
     )
 
 
@@ -148,154 +230,4 @@ def populate_fact_system_events(conn, *, run: EtlRun) -> None:
         natural_key="entry_id",
         payload_cols=_SYS_PAYLOAD_COLS,
         hash_cols=_SYS_HASH_COLS,
-    )
-
-
-# --------------------------------------------------------------------------
-# fact_meta_events
-# --------------------------------------------------------------------------
-
-_META_PAYLOAD_COLS = ["timestamp", "meta_type", "meta_value"]
-_META_HASH_COLS = _META_PAYLOAD_COLS
-
-
-def populate_fact_meta_events(conn, *, run: EtlRun) -> None:
-    """Time-series for permission-mode, custom-title, agent-name, last-prompt.
-
-    Critically: each entry is its own row -- NOT the last value on
-    dim_session as the legacy ETL kept.
-    """
-    conn.execute("DROP TABLE IF EXISTS _inbound_meta")
-    conn.execute(
-        """
-        CREATE TEMP TABLE _inbound_meta AS
-        SELECT
-            sle.entry_id,
-            sle.session_id,
-            TRY_CAST(sle.timestamp AS TIMESTAMP) AS timestamp,
-            sle.type AS meta_type,
-            CASE sle.type
-                WHEN 'permission-mode' THEN json_extract_string(sle.meta_payload_json, '$.permission_mode')
-                WHEN 'custom-title' THEN json_extract_string(sle.meta_payload_json, '$.customTitle')
-                WHEN 'agent-name' THEN json_extract_string(sle.meta_payload_json, '$.agentName')
-                WHEN 'last-prompt' THEN json_extract_string(sle.meta_payload_json, '$.lastPrompt')
-            END AS meta_value
-        FROM etl.log_entries sle
-        WHERE sle.type IN ('permission-mode', 'custom-title', 'agent-name', 'last-prompt')
-        """
-    )
-    lineage_upsert(
-        conn, run=run,
-        table="fact_meta_events",
-        inbound_table="_inbound_meta",
-        natural_key="entry_id",
-        payload_cols=_META_PAYLOAD_COLS,
-        hash_cols=_META_HASH_COLS,
-    )
-
-
-# --------------------------------------------------------------------------
-# fact_file_history_snapshots
-# --------------------------------------------------------------------------
-
-_FHS_PAYLOAD_COLS = [
-    "timestamp", "message_id_link", "is_snapshot_update", "snapshot_json",
-]
-_FHS_HASH_COLS = _FHS_PAYLOAD_COLS
-
-
-def populate_fact_file_history_snapshots(conn, *, run: EtlRun) -> None:
-    conn.execute("DROP TABLE IF EXISTS _inbound_fhs")
-    conn.execute(
-        """
-        CREATE TEMP TABLE _inbound_fhs AS
-        SELECT
-            sle.entry_id,
-            sle.session_id,
-            -- The entry carries no timestamp; the snapshot inside it does.
-            COALESCE(
-                TRY_CAST(sle.timestamp AS TIMESTAMP),
-                TRY_CAST(json_extract_string(sle.meta_payload_json, '$.snapshot.timestamp') AS TIMESTAMP)
-            ) AS timestamp,
-            json_extract_string(sle.meta_payload_json, '$.messageId') AS message_id_link,
-            json_extract(sle.meta_payload_json, '$.isSnapshotUpdate')::BOOLEAN AS is_snapshot_update,
-            CAST(json_extract(sle.meta_payload_json, '$.snapshot') AS VARCHAR) AS snapshot_json
-        FROM etl.log_entries sle
-        WHERE sle.type = 'file-history-snapshot'
-        """
-    )
-    lineage_upsert(
-        conn, run=run,
-        table="fact_file_history_snapshots",
-        inbound_table="_inbound_fhs",
-        natural_key="entry_id",
-        payload_cols=_FHS_PAYLOAD_COLS,
-        hash_cols=_FHS_HASH_COLS,
-    )
-
-
-# --------------------------------------------------------------------------
-# fact_queue_operations
-# --------------------------------------------------------------------------
-
-_QO_PAYLOAD_COLS = ["timestamp", "operation", "content"]
-_QO_HASH_COLS = _QO_PAYLOAD_COLS
-
-
-def populate_fact_queue_operations(conn, *, run: EtlRun) -> None:
-    conn.execute("DROP TABLE IF EXISTS _inbound_qo")
-    conn.execute(
-        """
-        CREATE TEMP TABLE _inbound_qo AS
-        SELECT
-            sle.entry_id,
-            sle.session_id,
-            TRY_CAST(sle.timestamp AS TIMESTAMP) AS timestamp,
-            json_extract_string(sle.meta_payload_json, '$.operation') AS operation,
-            json_extract_string(sle.meta_payload_json, '$.content') AS content
-        FROM etl.log_entries sle
-        WHERE sle.type = 'queue-operation'
-        """
-    )
-    lineage_upsert(
-        conn, run=run,
-        table="fact_queue_operations",
-        inbound_table="_inbound_qo",
-        natural_key="entry_id",
-        payload_cols=_QO_PAYLOAD_COLS,
-        hash_cols=_QO_HASH_COLS,
-    )
-
-
-# --------------------------------------------------------------------------
-# fact_pr_links
-# --------------------------------------------------------------------------
-
-_PR_PAYLOAD_COLS = ["timestamp", "pr_number", "pr_url", "pr_repository"]
-_PR_HASH_COLS = _PR_PAYLOAD_COLS
-
-
-def populate_fact_pr_links(conn, *, run: EtlRun) -> None:
-    conn.execute("DROP TABLE IF EXISTS _inbound_pr")
-    conn.execute(
-        """
-        CREATE TEMP TABLE _inbound_pr AS
-        SELECT
-            sle.entry_id,
-            sle.session_id,
-            TRY_CAST(sle.timestamp AS TIMESTAMP) AS timestamp,
-            TRY_CAST(json_extract_string(sle.meta_payload_json, '$.prNumber') AS INTEGER) AS pr_number,
-            json_extract_string(sle.meta_payload_json, '$.prUrl') AS pr_url,
-            json_extract_string(sle.meta_payload_json, '$.prRepository') AS pr_repository
-        FROM etl.log_entries sle
-        WHERE sle.type = 'pr-link'
-        """
-    )
-    lineage_upsert(
-        conn, run=run,
-        table="fact_pr_links",
-        inbound_table="_inbound_pr",
-        natural_key="entry_id",
-        payload_cols=_PR_PAYLOAD_COLS,
-        hash_cols=_PR_HASH_COLS,
     )

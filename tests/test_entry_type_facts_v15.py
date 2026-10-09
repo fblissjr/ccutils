@@ -1,21 +1,22 @@
-"""Tests for the new entry-type facts (Phase C chunk 4).
+"""Tests for the entry-type facts.
 
-Seven new facts capture entry types the legacy ETL drops entirely or
-samples sparsely:
+Three facts capture the top-level entry types that are not messages:
 
-  fact_attachments         all 23 attachment subtypes
-  fact_progress_events     all 6 progress data variants (51k hook_progress
-                           per-archive previously dropped)
-  fact_system_events       all 7 system subtypes (5 previously dropped)
-  fact_meta_events         time-series for permission-mode, custom-title,
-                           agent-name, last-prompt (legacy only kept LAST
-                           value of each on dim_session)
-  fact_file_history_snapshots  file-history-snapshot entries (1.6k/archive
-                                previously dropped entirely)
-  fact_queue_operations    queue-operation entries (latency analytics)
-  fact_pr_links            pr-link entries (GitHub PR <-> session linkage)
+  fact_entry_events     one row per attachment, permission-mode,
+                        custom-title, agent-name, last-prompt,
+                        file-history-snapshot, queue-operation or pr-link
+                        entry: (entry_type, subtype, value_text, payload_json)
+  fact_progress_events  the progress data variants, with typed columns
+  fact_system_events    the system subtypes, with typed columns
 
-All share the C2 lineage convention.
+`fact_entry_events` was five tables until 1.0.0 (`fact_attachments`,
+`fact_meta_events`, `fact_file_history_snapshots`, `fact_queue_operations`,
+`fact_pr_links`). Each held one or two columns of its own beside the same
+entry id, session and timestamp, and every reader filtered on one entry
+type, so they are one table keyed on that type. What each entry type
+contributes is asserted below per type, because that mapping is the whole
+of what the collapse could have got wrong: a value left out of `value_text`
+or `payload_json` is a value the warehouse no longer has.
 """
 
 import json
@@ -24,12 +25,9 @@ import pytest
 
 from ccutils import create_star_schema
 from ccutils.etl.entry_type_facts import (
-    populate_fact_attachments,
-    populate_fact_file_history_snapshots,
-    populate_fact_meta_events,
-    populate_fact_pr_links,
+    ENTRY_EVENT_TYPES,
+    populate_fact_entry_events,
     populate_fact_progress_events,
-    populate_fact_queue_operations,
     populate_fact_system_events,
 )
 from ccutils.etl.lineage import EtlRun
@@ -129,21 +127,36 @@ def system_session(tmp_path):
 
 @pytest.fixture
 def meta_session(tmp_path):
-    """Three permission-mode transitions, one custom-title, one agent-name."""
+    """Meta entries the way Claude Code writes them.
+
+    They carry NO timestamp and no uuid: only `type`, `sessionId` and the
+    value. Measured over the whole corpus on 2026-10-09, none of the
+    permission-mode, custom-title, agent-name or last-prompt entries has one
+    (the record is in CHANGELOG.md). They sit between timestamped entries,
+    and a permission-mode entry RESTATES the current mode far more often
+    than it changes it.
+
+    This fixture used to give every meta entry a timestamp. The tests then
+    ordered by a column that is empty on real data, and passed.
+    """
     jsonl = tmp_path / "meta.jsonl"
+    msg = lambda kind, uuid, ts: {  # noqa: E731
+        "type": kind, "uuid": uuid, "sessionId": "meta-s", "timestamp": ts,
+        "cwd": "/p", "message": {"role": kind, "content": "x"}}
     lines = [
-        {"type": "permission-mode", "sessionId": "meta-s",
-         "timestamp": "2026-04-19T10:00:00Z", "permissionMode": "default"},
-        {"type": "custom-title", "sessionId": "meta-s",
-         "timestamp": "2026-04-19T10:00:01Z", "customTitle": "the title"},
-        {"type": "permission-mode", "sessionId": "meta-s",
-         "timestamp": "2026-04-19T10:01:00Z", "permissionMode": "plan"},
-        {"type": "permission-mode", "sessionId": "meta-s",
-         "timestamp": "2026-04-19T10:02:00Z", "permissionMode": "acceptEdits"},
-        {"type": "agent-name", "sessionId": "meta-s",
-         "timestamp": "2026-04-19T10:00:30Z", "agentName": "Explore"},
-        {"type": "last-prompt", "sessionId": "meta-s",
-         "timestamp": "2026-04-19T10:02:30Z", "lastPrompt": "make it faster"},
+        {"type": "permission-mode", "sessionId": "meta-s", "permissionMode": "default"},
+        msg("user", "u1", "2026-04-19T10:00:00Z"),
+        {"type": "custom-title", "sessionId": "meta-s", "customTitle": "the title"},
+        msg("assistant", "a1", "2026-04-19T10:00:05Z"),
+        {"type": "permission-mode", "sessionId": "meta-s", "permissionMode": "default"},
+        msg("user", "u2", "2026-04-19T10:01:00Z"),
+        {"type": "permission-mode", "sessionId": "meta-s", "permissionMode": "plan"},
+        {"type": "agent-name", "sessionId": "meta-s", "agentName": "Explore"},
+        msg("assistant", "a2", "2026-04-19T10:01:30Z"),
+        {"type": "permission-mode", "sessionId": "meta-s", "permissionMode": "plan"},
+        msg("user", "u3", "2026-04-19T10:02:00Z"),
+        {"type": "permission-mode", "sessionId": "meta-s", "permissionMode": "acceptEdits"},
+        {"type": "last-prompt", "sessionId": "meta-s", "lastPrompt": "make it faster"},
     ]
     jsonl.write_text("\n".join(json.dumps(d) for d in lines))
     return jsonl
@@ -203,9 +216,7 @@ class TestNewFactDdl:
     )
 
     @pytest.mark.parametrize("table", [
-        "fact_attachments", "fact_progress_events", "fact_system_events",
-        "fact_meta_events", "fact_file_history_snapshots",
-        "fact_queue_operations", "fact_pr_links",
+        "fact_entry_events", "fact_progress_events", "fact_system_events",
     ])
     def test_table_exists_with_lineage(self, conn, table):
         result = conn.execute(
@@ -220,35 +231,199 @@ class TestNewFactDdl:
 # --- Populator tests ---
 
 
-class TestFactAttachments:
-    def test_one_row_per_attachment_entry(self, conn, attachment_session, tmp_path):
-        run = EtlRun.start(conn, source_path=str(attachment_session))
-        _stage(conn, attachment_session, tmp_path, run)
-        populate_fact_attachments(conn, run=run)
-        n = conn.execute("SELECT COUNT(*) FROM fact_attachments").fetchone()[0]
-        assert n == 3
+class TestFactEntryEvents:
+    """One row per entry of a collapsed type, each carrying what its own
+    table used to."""
 
-    def test_attachment_type_carried(self, conn, attachment_session, tmp_path):
-        run = EtlRun.start(conn, source_path=str(attachment_session))
-        _stage(conn, attachment_session, tmp_path, run)
-        populate_fact_attachments(conn, run=run)
-        types = sorted(
-            r[0] for r in conn.execute(
-                "SELECT attachment_type FROM fact_attachments"
-            ).fetchall()
-        )
-        assert types == ["diagnostics", "hook_success", "invoked_skills"]
+    def _load(self, conn, jsonl, tmp_path):
+        run = EtlRun.start(conn, source_path=str(jsonl))
+        _stage(conn, jsonl, tmp_path, run)
+        populate_fact_entry_events(conn, run=run)
 
-    def test_attachment_payload_preserved(self, conn, attachment_session, tmp_path):
-        run = EtlRun.start(conn, source_path=str(attachment_session))
-        _stage(conn, attachment_session, tmp_path, run)
-        populate_fact_attachments(conn, run=run)
-        payload = conn.execute(
-            "SELECT attachment_json FROM fact_attachments WHERE entry_id IN "
-            "(SELECT entry_id FROM fact_attachments WHERE attachment_type = 'hook_success')"
-        ).fetchone()[0]
+    def test_attachments_carry_their_type_and_payload(self, conn, attachment_session, tmp_path):
+        self._load(conn, attachment_session, tmp_path)
+        rows = conn.execute(
+            "SELECT entry_type, subtype, value_text, payload_json "
+            "FROM fact_entry_events ORDER BY subtype"
+        ).fetchall()
+        assert [(r[0], r[1], r[2]) for r in rows] == [
+            ("attachment", "diagnostics", None),
+            ("attachment", "hook_success", None),
+            ("attachment", "invoked_skills", None),
+        ]
+        assert json.loads(rows[1][3])["hookName"] == "ruff"
+
+    def test_meta_entries_keep_their_values(self, conn, meta_session, tmp_path):
+        self._load(conn, meta_session, tmp_path)
+        assert conn.execute("SELECT COUNT(*) FROM fact_entry_events").fetchone()[0] == 8
+        others = dict(conn.execute(
+            "SELECT entry_type, value_text FROM fact_entry_events "
+            "WHERE entry_type <> 'permission-mode'"
+        ).fetchall())
+        assert others == {
+            "custom-title": "the title",
+            "agent-name": "Explore",
+            "last-prompt": "make it faster",
+        }
+        assert conn.execute(
+            "SELECT COUNT(*) FROM fact_entry_events WHERE subtype IS NOT NULL"
+        ).fetchone()[0] == 0, "a meta entry states no sub-kind"
+
+    def test_meta_entries_are_ordered_by_position_not_by_time(
+        self, conn, meta_session, tmp_path
+    ):
+        """The file position is the only order a meta entry has.
+
+        `timestamp` is what the entry states, and these state none. Ordering
+        the permission-mode rows by it is ordering by NULL. `sequence_num`
+        is the entry's position in its transcript, which is stated by the
+        file itself and is the same column `fact_messages` carries, so an
+        entry can also be placed between two messages.
+        """
+        self._load(conn, meta_session, tmp_path)
+        rows = conn.execute(
+            "SELECT sequence_num, value_text, timestamp FROM fact_entry_events "
+            "WHERE entry_type = 'permission-mode' ORDER BY sequence_num"
+        ).fetchall()
+        assert [r[1] for r in rows] == ["default", "default", "plan", "plan", "acceptEdits"]
+        assert [r[0] for r in rows] == [0, 4, 6, 9, 11]
+        assert all(r[2] is None for r in rows), "none is stated, so none is stored"
+
+    def test_an_entry_with_no_time_is_placed_by_its_neighbours(
+        self, conn, meta_session, tmp_path
+    ):
+        """`derived_timestamp` is the stated time of the entry before it in
+        the file, or of the one after when nothing timestamped precedes it.
+        Named derived because it is; `timestamp` stays NULL. The date and
+        time keys follow it, so a date filter does not drop these rows."""
+        self._load(conn, meta_session, tmp_path)
+        rows = conn.execute(
+            "SELECT sequence_num, strftime(derived_timestamp, '%H:%M:%S'), date_key, time_key "
+            "FROM fact_entry_events ORDER BY sequence_num"
+        ).fetchall()
+        assert rows == [
+            (0, "10:00:00", 20260419, 1000),   # nothing before it: the next entry's
+            (2, "10:00:00", 20260419, 1000),
+            (4, "10:00:05", 20260419, 1000),
+            (6, "10:01:00", 20260419, 1001),
+            (7, "10:01:00", 20260419, 1001),
+            (9, "10:01:30", 20260419, 1001),
+            (11, "10:02:00", 20260419, 1002),
+            (12, "10:02:00", 20260419, 1002),
+        ]
+
+    def test_an_entry_that_states_its_time_derives_none(
+        self, conn, attachment_session, tmp_path
+    ):
+        self._load(conn, attachment_session, tmp_path)
+        rows = conn.execute(
+            "SELECT timestamp IS NOT NULL, derived_timestamp, sequence_num "
+            "FROM fact_entry_events ORDER BY sequence_num"
+        ).fetchall()
+        assert rows == [(True, None, 0), (True, None, 1), (True, None, 2)]
+
+    def test_file_history_snapshot_keeps_its_link_flag_and_snapshot(
+        self, conn, file_history_session, tmp_path
+    ):
+        self._load(conn, file_history_session, tmp_path)
+        entry_type, value, payload = conn.execute(
+            "SELECT entry_type, value_text, payload_json FROM fact_entry_events"
+        ).fetchone()
+        assert entry_type == "file-history-snapshot"
+        assert value == "m1", "the message the snapshot belongs to"
         parsed = json.loads(payload)
-        assert parsed["hookName"] == "ruff"
+        assert parsed["isSnapshotUpdate"] is False
+        assert parsed["snapshot"]["messageId"] == "m1"
+        assert "trackedFileBackups" in parsed["snapshot"]
+
+    def test_file_history_snapshot_takes_its_time_from_the_snapshot(self, conn, tmp_path):
+        """The entry itself carries no timestamp; the snapshot inside does."""
+        jsonl = tmp_path / "fh-nots.jsonl"
+        jsonl.write_text(json.dumps(
+            {"type": "file-history-snapshot", "uuid": "fh2", "sessionId": "fh2-s",
+             "messageId": "m2", "isSnapshotUpdate": True,
+             "snapshot": {"messageId": "m2", "trackedFileBackups": {},
+                          "timestamp": "2026-04-19T11:22:33Z"}}))
+        self._load(conn, jsonl, tmp_path)
+        ts, date_key = conn.execute(
+            "SELECT timestamp, date_key FROM fact_entry_events"
+        ).fetchone()
+        assert ts.strftime("%H:%M:%S") == "11:22:33"
+        assert date_key == 20260419
+
+    def test_queue_operation_carries_operation_and_content(self, conn, queue_op_session, tmp_path):
+        self._load(conn, queue_op_session, tmp_path)
+        assert conn.execute(
+            "SELECT entry_type, subtype, value_text FROM fact_entry_events"
+        ).fetchone() == ("queue-operation", "enqueue", "queued prompt")
+
+    def test_pr_link_carries_url_number_and_repository(self, conn, pr_session, tmp_path):
+        self._load(conn, pr_session, tmp_path)
+        row = conn.execute(
+            "SELECT entry_type, value_text, "
+            "       json_extract(payload_json, '$.prNumber')::INTEGER, "
+            "       json_extract_string(payload_json, '$.prRepository') "
+            "FROM fact_entry_events"
+        ).fetchone()
+        assert row == ("pr-link", "https://github.com/o/r/pull/42", 42, "o/r")
+
+    def test_only_the_declared_entry_types_land(self, conn, tmp_path):
+        """The scope is a list, not "everything that is not a message".
+
+        Other top-level types exist in real transcripts (`ai-title`, `mode`,
+        `cost-state` and more). Taking them in is a decision about what the
+        warehouse holds, to be made per type, not a side effect of a
+        collapse.
+        """
+        assert ENTRY_EVENT_TYPES == (
+            "attachment", "permission-mode", "custom-title", "agent-name",
+            "last-prompt", "file-history-snapshot", "queue-operation", "pr-link",
+        )
+        jsonl = tmp_path / "mixed.jsonl"
+        jsonl.write_text("\n".join(json.dumps(d) for d in [
+            {"type": "user", "uuid": "u1", "sessionId": "mix-s",
+             "timestamp": "2026-04-19T10:00:00Z", "cwd": "/p",
+             "message": {"role": "user", "content": "hi"}},
+            {"type": "ai-title", "sessionId": "mix-s", "aiTitle": "a title"},
+            {"type": "custom-title", "sessionId": "mix-s",
+             "timestamp": "2026-04-19T10:00:01Z", "customTitle": "kept"},
+            {"type": "pr-link", "uuid": "pr9", "sessionId": "mix-s",
+             "timestamp": "2026-04-19T10:00:02Z", "prNumber": 9,
+             "prUrl": "https://github.com/o/r/pull/9", "prRepository": "o/r"},
+        ]))
+        self._load(conn, jsonl, tmp_path)
+        rows = conn.execute(
+            "SELECT entry_type, value_text FROM fact_entry_events ORDER BY timestamp"
+        ).fetchall()
+        assert rows == [("custom-title", "kept"),
+                        ("pr-link", "https://github.com/o/r/pull/9")]
+        ids = conn.execute("SELECT entry_id FROM fact_entry_events").fetchall()
+        assert len({r[0] for r in ids}) == 2
+
+
+class TestTheFiveTablesAreGone:
+    """A table that is created and never filled reads as "nothing happened"."""
+
+    GONE = ("fact_attachments", "fact_meta_events", "fact_file_history_snapshots",
+            "fact_queue_operations", "fact_pr_links")
+
+    def test_they_do_not_exist_or_stay_declared(self, conn):
+        from ccutils.etl import entry_type_facts
+        from ccutils.export.duckdb_archive import _PROGRESS_TABLES
+        from ccutils.schemas.star.schema import NATURAL_KEYS, TABLE_COVERAGE
+
+        tables = {r[0] for r in conn.execute(
+            "SELECT table_name FROM information_schema.tables").fetchall()}
+        for name in self.GONE:
+            assert name not in tables, name
+            assert name not in NATURAL_KEYS, name
+            assert name not in TABLE_COVERAGE, name
+            assert name not in _PROGRESS_TABLES, name
+            assert not hasattr(entry_type_facts, f"populate_{name}"), name
+        assert "fact_entry_events" in tables
+        assert NATURAL_KEYS["fact_entry_events"] == "entry_id"
+        assert "fact_entry_events" in TABLE_COVERAGE
+        assert "fact_entry_events" in _PROGRESS_TABLES
 
 
 class TestFactProgressEvents:
@@ -321,86 +496,17 @@ class TestFactSystemEvents:
         assert cb[1] == 100000
 
 
-class TestFactMetaEvents:
-    def test_all_meta_entries_become_rows(self, conn, meta_session, tmp_path):
-        """Time series: every permission-mode toggle is its own row, NOT
-        just the last value on dim_session."""
-        run = EtlRun.start(conn, source_path=str(meta_session))
-        _stage(conn, meta_session, tmp_path, run)
-        populate_fact_meta_events(conn, run=run)
-        n = conn.execute("SELECT COUNT(*) FROM fact_meta_events").fetchone()[0]
-        assert n == 6
-
-    def test_permission_mode_values_recorded_in_order(self, conn, meta_session, tmp_path):
-        run = EtlRun.start(conn, source_path=str(meta_session))
-        _stage(conn, meta_session, tmp_path, run)
-        populate_fact_meta_events(conn, run=run)
-        rows = conn.execute(
-            "SELECT meta_value FROM fact_meta_events "
-            "WHERE meta_type = 'permission-mode' "
-            "ORDER BY timestamp"
-        ).fetchall()
-        assert [r[0] for r in rows] == ["default", "plan", "acceptEdits"]
-
-
-class TestFactFileHistorySnapshots:
-    def test_row_created(self, conn, file_history_session, tmp_path):
-        run = EtlRun.start(conn, source_path=str(file_history_session))
-        _stage(conn, file_history_session, tmp_path, run)
-        populate_fact_file_history_snapshots(conn, run=run)
-        n = conn.execute("SELECT COUNT(*) FROM fact_file_history_snapshots").fetchone()[0]
-        assert n == 1
-
-    def test_snapshot_payload_preserved(self, conn, file_history_session, tmp_path):
-        run = EtlRun.start(conn, source_path=str(file_history_session))
-        _stage(conn, file_history_session, tmp_path, run)
-        populate_fact_file_history_snapshots(conn, run=run)
-        row = conn.execute(
-            "SELECT message_id_link, is_snapshot_update, snapshot_json "
-            "FROM fact_file_history_snapshots"
-        ).fetchone()
-        assert row[0] == "m1"
-        assert row[1] is False
-        snapshot = json.loads(row[2])
-        assert snapshot["messageId"] == "m1"
-
-
-class TestFactQueueOperations:
-    def test_row_created(self, conn, queue_op_session, tmp_path):
-        run = EtlRun.start(conn, source_path=str(queue_op_session))
-        _stage(conn, queue_op_session, tmp_path, run)
-        populate_fact_queue_operations(conn, run=run)
-        row = conn.execute(
-            "SELECT operation, content FROM fact_queue_operations"
-        ).fetchone()
-        assert row[0] == "enqueue"
-        assert row[1] == "queued prompt"
-
-
-class TestFactPrLinks:
-    def test_row_created(self, conn, pr_session, tmp_path):
-        run = EtlRun.start(conn, source_path=str(pr_session))
-        _stage(conn, pr_session, tmp_path, run)
-        populate_fact_pr_links(conn, run=run)
-        row = conn.execute(
-            "SELECT pr_number, pr_url, pr_repository FROM fact_pr_links"
-        ).fetchone()
-        assert row[0] == 42
-        assert row[1] == "https://github.com/o/r/pull/42"
-        assert row[2] == "o/r"
-
-
 class TestIdempotency:
-    """All seven populators must be idempotent under re-ETL."""
+    """Every populator must be idempotent under re-ETL, for each entry type."""
 
     @pytest.mark.parametrize("fixture_name,populator_name", [
-        ("attachment_session", "populate_fact_attachments"),
+        ("attachment_session", "populate_fact_entry_events"),
         ("progress_session", "populate_fact_progress_events"),
         ("system_session", "populate_fact_system_events"),
-        ("meta_session", "populate_fact_meta_events"),
-        ("file_history_session", "populate_fact_file_history_snapshots"),
-        ("queue_op_session", "populate_fact_queue_operations"),
-        ("pr_session", "populate_fact_pr_links"),
+        ("meta_session", "populate_fact_entry_events"),
+        ("file_history_session", "populate_fact_entry_events"),
+        ("queue_op_session", "populate_fact_entry_events"),
+        ("pr_session", "populate_fact_entry_events"),
     ])
     def test_reetl_does_not_bump_last_updated_at(
         self, request, conn, tmp_path, fixture_name, populator_name,

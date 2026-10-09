@@ -36,7 +36,7 @@ def warehouse(tmp_path):
     )
     conn.execute(
         "INSERT INTO etl.audit_exceptions VALUES "
-        "('null_column', 'fact_meta_events', 'timestamp', 'no source timestamp')"
+        "('null_column', 'fact_entry_events', 'subtype', 'most entry types state no sub-kind')"
     )
     conn.close()
     return db
@@ -65,8 +65,8 @@ class TestGuideDescribesThisWarehouse:
         conn = duckdb.connect(str(warehouse), read_only=True)
         text = render_guide(conn)
         conn.close()
-        assert "fact_meta_events.timestamp" in text
-        assert "no source timestamp" in text
+        assert "fact_entry_events.subtype" in text
+        assert "most entry types state no sub-kind" in text
 
     def test_join_paths_are_listed(self, warehouse):
         conn = duckdb.connect(str(warehouse), read_only=True)

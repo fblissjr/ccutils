@@ -438,8 +438,7 @@ class TestJsonExportCompleteness:
         for required in (
             "fact_messages.json",
             "fact_tool_calls.json",
-            "fact_tool_calls.json",
-            "fact_attachments.json",
+            "fact_entry_events.json",
             "fact_session_facets.json",
         ):
             assert required in facts, f"missing {required}"

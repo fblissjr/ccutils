@@ -16,10 +16,12 @@ machine that has it; nothing here depends on it.
 
 - **Released:** 0.20.1, tagged 2026-08-28.
 - **In progress toward 1.0.0 (resumed 2026-10-09).** All eight numbered
-  steps landed, plus three of the four merges decided on 2026-09-10:
+  steps landed, plus all four merges decided on 2026-09-10:
   `fact_tool_calls` (uses + results + chain steps + errors in one table),
-  the summary and session-file bridge as views, and delegations as a view
-  with `--embed` retired.
+  the summary and session-file bridge as views, delegations as a view with
+  `--embed` retired, and (the fourth) the five thin entry facts as
+  `fact_entry_events`. What is left is deleting the plain-join views, then
+  the gate.
   `ccutils audit` exits clean on the full corpus and on a one-project
   subset build apart from columns that project never fills. Version is
   still 0.20.1; the tag waits on the list under "Next session".
@@ -44,8 +46,8 @@ Resume in this order. Each item was designed and its reads done on
 
 1. **Start from a green suite.** Rerun
    `uv run pytest tests/ --confcutdir=tests` once to confirm the tree is
-   as left (the last result is in the commit that landed step 2), then
-   begin step 3.
+   as left (the last result is in the commit that landed step 3), then
+   begin step 4.
 2. **Delegations become a view; `--embed` is retired. DONE 2026-10-09.**
    `fact_agent_delegations`, its populator, the completion pass,
    `run_post_session_reconciliation` and the `reconciliation` run kind are
@@ -81,14 +83,22 @@ Resume in this order. Each item was designed and its reads done on
      launch that worked but named no agent is not counted as refused.
      `max_child_depth` is the deepest `spawn_depth` a directly spawned
      agent's sidecar states; it does not walk to descendants.
-3. **Collapse the five thin entry facts** (`fact_attachments`,
-   `fact_meta_events`, `fact_queue_operations`, `fact_pr_links`,
-   `fact_file_history_snapshots`) into
+3. **Collapse the five thin entry facts. DONE 2026-10-09.**
+   `fact_attachments`, `fact_meta_events`, `fact_queue_operations`,
+   `fact_pr_links` and `fact_file_history_snapshots` are one table,
    `fact_entry_events(entry_id, entry_type, subtype, value_text,
-   payload_json)`; `fact_system_events` and `fact_progress_events` stay.
-   `semantic_session_summary`, `semantic_decisions` and `fact_diagnostics`
-   read the thin tables; `dim_session` meta columns read staging and are
-   unaffected.
+   payload_json)`, written by one populator from a declared list of entry
+   types. `semantic_session_summary`, `semantic_decisions`,
+   `fact_diagnostics` and facet F18 read it. Verified on a one-project build
+   of the real corpus against the 2026-09-18 warehouse: every row of the
+   five old tables is in the new one with the same values; the record is in
+   `CHANGELOG.md`. The table also gained `sequence_num` and
+   `derived_timestamp`, because the meta entries state no time at all, and
+   the permission-mode transition count and `semantic_decisions` now keep
+   changes of mode, not every restatement. Left as it was on purpose: only the eight entry types the
+   five tables took are ingested. Other top-level types exist in the corpus
+   (`cost-state`, `ai-title`, `mode` and more), and taking one in is a
+   decision for the source profile work, not a side effect of this.
 4. **Delete the five plain-join views** marked `delete` in
    `TABLE_COVERAGE` and update the query-warehouse skill's routing table
    and recipes, which still name them (`tests/test_query_recipes.py` lists

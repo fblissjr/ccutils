@@ -182,15 +182,46 @@ SELECT status, sessions_seen, sessions_succeeded, sessions_failed,
 FROM etl.batch_runs ORDER BY started_at DESC LIMIT 5;
 ```
 
-## Time series (system/meta events)
+## Entry events and system events
 
 ```sql
--- Permission-mode history for a session (full time series, not last-value)
-SELECT timestamp, meta_value AS permission_mode
-FROM fact_meta_events
-WHERE meta_type = 'permission-mode' AND session_id = '<id>'
+-- Changes of permission mode in a session. NOT "every permission-mode row":
+-- the source restates the current mode far more often than it changes it,
+-- and writes no timestamp on those entries. semantic_decisions keeps only
+-- the changes; order by COALESCE(timestamp, derived_timestamp).
+SELECT COALESCE(timestamp, derived_timestamp) AS changed_at,
+       decision_value AS new_mode
+FROM semantic_decisions
+WHERE decision_type = 'permission_mode_change' AND session_id = '<id>'
+ORDER BY changed_at;
+
+-- Every permission-mode entry as written, in file order. `timestamp` is NULL
+-- on these rows (and on custom-title, agent-name, last-prompt): sequence_num
+-- is the only order they have, and derived_timestamp places each one by the
+-- timestamped entry before it.
+SELECT sequence_num, derived_timestamp, value_text AS permission_mode
+FROM fact_entry_events
+WHERE entry_type = 'permission-mode' AND session_id = '<id>'
   AND is_deleted = FALSE
-ORDER BY timestamp;
+ORDER BY sequence_num;
+
+-- What a session's non-message entries were, by kind. fact_entry_events
+-- holds attachments, the permission-mode / custom-title / agent-name /
+-- last-prompt series, file-history snapshots, queue operations and PR links:
+-- entry_type says which, subtype and value_text carry what each states, and
+-- payload_json holds the rest (e.g. a PR's number and repository).
+SELECT entry_type, subtype, COUNT(*) AS entries
+FROM fact_entry_events
+WHERE session_id = '<id>' AND is_deleted = FALSE
+GROUP BY ALL ORDER BY entries DESC;
+
+-- PRs linked from sessions
+SELECT session_id, value_text AS pr_url,
+       json_extract(payload_json, '$.prNumber')::INTEGER AS pr_number,
+       json_extract_string(payload_json, '$.prRepository') AS pr_repository
+FROM fact_entry_events
+WHERE entry_type = 'pr-link' AND is_deleted = FALSE
+ORDER BY timestamp DESC LIMIT 20;
 
 -- Compactions and API errors per session
 SELECT session_id, subtype, COUNT(*) AS n

@@ -26,10 +26,8 @@ DuckDB:
                   |
                   v  per-fact populators
     fact_messages, fact_tool_calls,
-    fact_token_usage, fact_attachments, fact_progress_events,
-    fact_system_events, fact_meta_events,
-    fact_file_history_snapshots, fact_queue_operations,
-    fact_pr_links, fact_file_operations, fact_diagnostics,
+    fact_token_usage, fact_entry_events, fact_progress_events,
+    fact_system_events, fact_file_operations, fact_diagnostics,
     fact_plan_revisions,
     fact_session_facets,
     semantic_session_summary                         (Tier 3 -- warehouse)
@@ -86,11 +84,10 @@ The orchestrator at `src/ccutils/etl/orchestrator.py` (`run_v15_etl`) runs per s
 4. Run fact populators in dependency order:
    - `fact_messages`, `fact_tool_calls` (use + result + chain position)
    - `fact_token_usage`
-   - `fact_attachments`, `fact_progress_events`, `fact_system_events`, `fact_meta_events`
-   - `fact_file_history_snapshots`, `fact_queue_operations`, `fact_pr_links`
+   - `fact_entry_events`, `fact_progress_events`, `fact_system_events`
    - `dim_file` + `fact_file_operations` (depend on tool_uses/tool_results)
    - `semantic_session_files` (aggregates fact_file_operations)
-   - `fact_diagnostics` (flattens fact_attachments where type='diagnostics')
+   - `fact_diagnostics` (flattens the `diagnostics` attachments in `fact_entry_events`)
    - `fact_plan_revisions` (ExitPlanMode outcome classification via R16 tri-state `is_error`)
    - `dim_session` heuristic enrichment (intent / complexity / outcome / domain)
    - `dim_session_chain` (slug-grouped chain aggregate)
@@ -109,7 +106,7 @@ After the per-session loop, two global sources are best-effort populated, both o
 - **All 12 entry types**: `file-history-snapshot`, `queue-operation`, `pr-link`, `last-prompt`, etc.
 - **All 7 system subtypes** on `fact_system_events` (turn_duration, stop_hook_summary, api_error, compact_boundary, local_command, away_summary, bridge_status).
 - **All 6 progress variants** on `fact_progress_events` (hook, bash, agent, query update, search results, MCP).
-- **Permission-mode time series** on `fact_meta_events` (replaces the last-value-only column on `dim_session`).
+- **Every permission-mode entry** in `fact_entry_events` (`entry_type = 'permission-mode'`), beside the last value on `dim_session`. The source restates the mode far more often than it changes it, and writes no timestamp on these entries; see that table.
 - **Message-level fields**: `stop_reason`, `permission_mode_at_send`, `prompt_id`, `request_id`, `is_api_error_message`, `api_error_text` on `fact_messages`.
 
 ### Parser
@@ -223,7 +220,7 @@ One row per Claude Code session. Stub fields populated during ETL; heuristic col
 | first_user_message | VARCHAR | First user message text (truncated to 500 chars) |
 | last_assistant_message | VARCHAR | Last assistant message text (truncated to 500 chars) |
 | custom_title | VARCHAR | From the `custom-title` meta entry, when present |
-| permission_mode | VARCHAR | Last-known permission mode (see `fact_meta_events` for the full time series) |
+| permission_mode | VARCHAR | Last-known permission mode (see `fact_entry_events`, `entry_type = 'permission-mode'`, for every statement of it, ordered by `sequence_num`) |
 | agent_type | VARCHAR | From .meta.json sidecar (Explore, Plan, etc.) |
 | agent_description | VARCHAR | From .meta.json sidecar |
 | spawn_depth | INTEGER | STATED by the agent's `.meta.json` sidecar (`spawnDepth`). Depth exists nowhere else: every agent carries the root's `sessionId` and nested agents are flat siblings on disk. NULL when there is no sidecar or it states none |
@@ -471,20 +468,42 @@ resume/fork replays history.
 
 Note: join to `fact_messages` via `entry_id`, or via `session_key` + `api_message_id` to reach every entry a response was split across.
 
-#### fact_attachments
-One row per attachment, covering all 23 attachment subtypes (selected_lines_in_ide, opened_file_in_ide, diagnostics, hook_success, etc.). Standard columns: `entry_id` (PK), `session_key`, `date_key`, `time_key`, `timestamp`, `attachment_type` (discriminator), `attachment_json` (full attachment, JSON-encoded string).
+#### fact_entry_events
+One row per entry of one of eight top-level types that are not messages. It was five tables until 1.0.0 (`fact_attachments`, `fact_meta_events`, `fact_file_history_snapshots`, `fact_queue_operations`, `fact_pr_links`), each holding one or two columns of its own beside the same entry id, session and timestamp. The list of types is `ENTRY_EVENT_TYPES` in `src/ccutils/etl/entry_type_facts.py`; other top-level types in a transcript are not ingested.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| entry_id | VARCHAR | PK: one row per entry |
+| session_key | VARCHAR | FK to dim_session |
+| session_id | VARCHAR | The session's id, carried so a query needs no `dim_session` join |
+| date_key | INTEGER | FK to dim_date |
+| time_key | INTEGER | FK to dim_time |
+| sequence_num | INTEGER | The entry's position in its transcript, the same column `fact_messages` carries. For the four meta entry types it is the only order there is |
+| timestamp | TIMESTAMP | STATED. A file-history-snapshot entry carries none of its own, so it is the snapshot's. NULL on every `permission-mode`, `custom-title`, `agent-name` and `last-prompt` row: the source writes no time on those entries |
+| derived_timestamp | TIMESTAMP | DERIVED, only where `timestamp` is NULL: the stated time of the nearest entry before this one in the file, or after it when nothing timestamped precedes. `date_key` and `time_key` come from whichever of the two exists |
+| entry_type | VARCHAR | The entry's top-level `type`; see the table below |
+| subtype | VARCHAR | The sub-kind the entry states, where it states one |
+| value_text | VARCHAR | The entry's one scalar value, where it has one |
+| payload_json | VARCHAR | The staged payload whole. Anything not lifted into the two columns above is read from here |
+
+| `entry_type` | `subtype` | `value_text` | In `payload_json` |
+|---|---|---|---|
+| `attachment` | the attachment's type (`diagnostics`, `hook_success`, `selected_lines_in_ide`, ...) | NULL | the attachment |
+| `permission-mode` | NULL | the mode | the entry's payload |
+| `custom-title` | NULL | the title | the entry's payload |
+| `agent-name` | NULL | the name | the entry's payload |
+| `last-prompt` | NULL | the prompt text | the entry's payload |
+| `file-history-snapshot` | NULL | the `messageId` the snapshot belongs to | `$.isSnapshotUpdate`, `$.snapshot` (with `trackedFileBackups`) |
+| `queue-operation` | the operation (`enqueue`, ...) | the queued content | the entry's payload |
+| `pr-link` | NULL | the PR URL | `$.prNumber`, `$.prRepository` |
+
+**One row per entry is not one row per change.** Claude Code restates the current permission mode, title, agent name and last prompt far more often than it changes them, and writes no timestamp on any of those entries (measured over the whole corpus on 2026-10-09; the record is in `CHANGELOG.md`). To find changes, order a session's rows by `sequence_num` and compare each with the one before it, which is what `semantic_decisions` and `semantic_session_summary.permission_mode_transition_count` do. The last value alone is `dim_session.permission_mode`.
 
 #### fact_progress_events
 One row per progress event, covering all 6 variants (hook_progress, bash_progress, agent_progress, query_update, search_results, mcp). Columns: `entry_id` (PK), `session_key`, `date_key`, `time_key`, `timestamp`, `data_type` (discriminator), `tool_use_id` / `parent_tool_use_id` (when tool-emitted), `hook_name` / `hook_event` (hook-emitted), `agent_id`, `data_json` (full payload, JSON-encoded string).
 
 #### fact_system_events
 One row per system event, covering all 7 subtypes (turn_duration, stop_hook_summary, api_error, compact_boundary, local_command, away_summary, bridge_status). Subsumes the legacy `fact_turn_durations` and `fact_stop_events`. Columns: `entry_id` (PK), `session_key`, `date_key`, `time_key`, `timestamp`, `subtype` (discriminator), `level`, `payload_json` (full JSON catch-all), plus typed columns promoted per subtype -- `duration_ms` / `message_count` (turn_duration); `hook_count` / `prevented_continuation` / `stop_reason` / `has_output` (stop_hook_summary); `error_status` / `error_type` / `retry_in_ms` / `retry_attempt` / `max_retries` (api_error); `compact_trigger` / `compact_pre_tokens` / `logical_parent_uuid` (compact_boundary); `content` (local_command / away_summary / bridge_status text); `bridge_url` (bridge_status).
-
-#### fact_meta_events
-Time-series for meta entries (permission-mode, custom-title, agent-name, last-prompt). Replaces v0.14's last-value-only columns on `dim_session`. Columns: `entry_id` (PK), `session_key`, `date_key`, `time_key`, `timestamp`, `meta_type` (discriminator), `meta_value` (current value at this timestamp). No JSON catch-all column on this table -- `meta_value` carries the full value.
-
-#### fact_file_history_snapshots / fact_queue_operations / fact_pr_links
-Thin per-entry-type facts. Each has `entry_id` as its PK, `session_key`, a `timestamp`, a discriminator, and typed/JSON payload columns specific to the entry type. Use them to inspect rare entry types without re-parsing JSONL. See `src/ccutils/etl/entry_type_facts.py` for exact columns per table.
 
 #### fact_file_operations
 One row per file touch. Derived from `fact_tool_calls`.
@@ -523,7 +542,7 @@ M:N aggregate per (session, file).
 | total_chars_written | BIGINT | Total characters written |
 
 #### fact_diagnostics
-LSP diagnostics flattened from `fact_attachments` where `attachment_type='diagnostics'`. Columns: `diagnostic_id` (PK), `entry_id`, `session_key`, `file_key`, `date_key`, `time_key`, `file_path`, `severity` (Error/Warning/Info/Hint), `source` (Pyright, typescript, etc.), `code`, `message`, `range_start_line` / `range_start_col` / `range_end_line` / `range_end_col`, `timestamp`.
+LSP diagnostics flattened from the `fact_entry_events` attachments whose `subtype` is `diagnostics`. Columns: `diagnostic_id` (PK), `entry_id`, `session_key`, `file_key`, `date_key`, `time_key`, `file_path`, `severity` (Error/Warning/Info/Hint), `source` (Pyright, typescript, etc.), `code`, `message`, `range_start_line` / `range_start_col` / `range_end_line` / `range_end_col`, `timestamp`.
 
 #### fact_plan_revisions
 One row per `ExitPlanMode` tool invocation, linked into a per-session revision chain. Uses the structural `fact_tool_calls.is_error` signal (R16 tri-state) with full-content approval-signature fallback when `is_error` is NULL.
@@ -662,12 +681,12 @@ One row per session. Aggregates over every fact above. Must populate last.
 | delegated_output_tokens | BIGINT | Output tokens of the directly spawned agents, from their own usage rows |
 | total_hook_progress_events | BIGINT | From fact_progress_events |
 | total_bash_progress_events | BIGINT | From fact_progress_events |
-| total_attachments | BIGINT | From fact_attachments |
+| total_attachments | BIGINT | `fact_entry_events` rows of type `attachment` |
 | total_diagnostics | BIGINT | From fact_diagnostics |
-| total_hook_successes | BIGINT | From fact_attachments |
-| permission_mode_transition_count | BIGINT | From fact_meta_events |
-| current_permission_mode | VARCHAR | Latest permission mode, from fact_meta_events |
-| total_file_history_snapshots | BIGINT | From fact_file_history_snapshots |
+| total_hook_successes | BIGINT | Attachments of subtype `hook_success` |
+| permission_mode_transition_count | BIGINT | CHANGES of permission mode: `permission-mode` entries whose mode differs from the one before in file order. The first entry states the starting mode and is not counted |
+| current_permission_mode | VARCHAR | Latest permission mode, from `dim_session.permission_mode` |
+| total_file_history_snapshots | BIGINT | `fact_entry_events` rows of type `file-history-snapshot` |
 
 Note: there is no `unique_files_touched` column on this table -- use `semantic_session_files` (grouped by `session_key`) or `semantic_project_files` for distinct-file counts.
 
@@ -683,7 +702,7 @@ All views use the `semantic_` prefix and join facts with dimensions for easy que
 - `semantic_session_chains` -- chain aggregates across all member sessions
 - `semantic_agent_delegations` -- one row per Agent/Task spawn, joined to the child session, with derived `completion_state` and rollups (a table until 1.0.0; documented above under facts)
 - `semantic_plan_revisions` -- plan revision chain with outcomes, feedback, resolution timing
-- `semantic_decisions` -- unified decision timeline UNIONing plan revisions, permission-mode changes, stop events, API errors, and compact boundaries from their source facts (the "fact_decisions backbone" as a pure projection; `source_key`/`source_table` link back to the underlying row)
+- `semantic_decisions` -- unified decision timeline UNIONing plan revisions, permission-mode changes, stop events, API errors, and compact boundaries from their source facts (`source_key`/`source_table` link back to the underlying row). A permission-mode change is an entry whose mode differs from the one before it in file order, not every permission-mode entry. `timestamp` is stated and is NULL on those rows; `derived_timestamp` places them, so order a timeline by `COALESCE(timestamp, derived_timestamp)`
 - `semantic_file_evolution` -- cross-session file activity (files touched in 2+ sessions)
 - `semantic_tool_patterns` -- common tool sequences with frequency and error rates
 - `semantic_project_context` -- sessions enriched with first/last messages for catching up on a project
@@ -754,12 +773,22 @@ WHERE ftu.tool_name = 'Bash'
 ORDER BY ftu.timestamp DESC
 LIMIT 20;
 
--- Permission-mode time series for a session (R12 -- full history, not last-value)
-SELECT timestamp, meta_value AS permission_mode
-FROM fact_meta_events
-WHERE meta_type = 'permission-mode'
+-- Every permission-mode entry of a session, in file order. The source states
+-- no timestamp on these, so order by position; derived_timestamp places each.
+SELECT sequence_num, derived_timestamp, value_text AS permission_mode
+FROM fact_entry_events
+WHERE entry_type = 'permission-mode'
   AND session_id = '<your session id>'
-ORDER BY timestamp;
+  AND is_deleted = FALSE
+ORDER BY sequence_num;
+
+-- Only the changes of mode, with their place in the session's timeline
+SELECT COALESCE(timestamp, derived_timestamp) AS changed_at,
+       decision_value AS new_mode
+FROM semantic_decisions
+WHERE decision_type = 'permission_mode_change'
+  AND session_id = '<your session id>'
+ORDER BY changed_at;
 
 -- Progress events by variant (R-coverage -- v0.14 captured ~2%)
 SELECT data_type, COUNT(*) AS events

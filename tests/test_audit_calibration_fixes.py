@@ -94,7 +94,7 @@ def loaded(conn, tmp_path):
 
 class TestSessionMetaColumnsArePopulated:
     """custom_title and permission_mode were NULL on every one of 2,994
-    sessions while fact_meta_events held the values."""
+    sessions while the meta entries (now in fact_entry_events) held the values."""
 
     def test_custom_title_is_the_last_one_stated(self, loaded):
         row = loaded.execute(
@@ -116,7 +116,7 @@ class TestFileHistorySnapshotsCarryTheirTimestamp:
     def test_timestamp_and_keys_come_from_the_snapshot(self, loaded):
         row = loaded.execute(
             "SELECT timestamp IS NOT NULL, date_key, time_key "
-            "FROM fact_file_history_snapshots"
+            "FROM fact_entry_events WHERE entry_type = 'file-history-snapshot'"
         ).fetchone()
         assert row[0] is True
         assert row[1] == 20260419

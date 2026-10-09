@@ -16,9 +16,7 @@ import pytest
 
 from ccutils import create_star_schema
 from ccutils.etl.entry_type_facts import (
-    populate_fact_attachments,
-    populate_fact_file_history_snapshots,
-    populate_fact_meta_events,
+    populate_fact_entry_events,
     populate_fact_progress_events,
     populate_fact_system_events,
 )
@@ -52,11 +50,9 @@ def _populate_everything(conn, run):
     populate_fact_messages(conn, run=run)
     populate_fact_tool_calls(conn, run=run)
     populate_fact_token_usage(conn, run=run)
-    populate_fact_attachments(conn, run=run)
+    populate_fact_entry_events(conn, run=run)
     populate_fact_progress_events(conn, run=run)
     populate_fact_system_events(conn, run=run)
-    populate_fact_meta_events(conn, run=run)
-    populate_fact_file_history_snapshots(conn, run=run)
 
 
 @pytest.fixture
@@ -153,11 +149,12 @@ def rich_session(tmp_path):
         {"type": "progress", "uuid": "p2", "sessionId": "rich-s",
          "timestamp": "2026-04-19T10:00:12Z",
          "data": {"type": "bash_progress", "stdout": "running"}},
-        # 14. Permission-mode transition
-        {"type": "permission-mode", "sessionId": "rich-s",
-         "timestamp": "2026-04-19T10:00:13Z", "permissionMode": "acceptEdits"},
-        {"type": "permission-mode", "sessionId": "rich-s",
-         "timestamp": "2026-04-19T10:00:14Z", "permissionMode": "plan"},
+        # 14. Permission-mode entries, the way the source writes them: no
+        # timestamp, and the current mode restated more often than changed.
+        # Three entries, ONE transition (acceptEdits -> plan).
+        {"type": "permission-mode", "sessionId": "rich-s", "permissionMode": "acceptEdits"},
+        {"type": "permission-mode", "sessionId": "rich-s", "permissionMode": "acceptEdits"},
+        {"type": "permission-mode", "sessionId": "rich-s", "permissionMode": "plan"},
         # 16. File history snapshot
         {"type": "file-history-snapshot", "uuid": "fh1", "sessionId": "rich-s",
          "timestamp": "2026-04-19T10:00:15Z",
@@ -265,8 +262,11 @@ class TestSessionSummaryView:
         assert row[3] == 2  # 2 attachments
         assert row[4] == 1  # diagnostics
         assert row[5] == 1  # hook_success
-        assert row[6] == 2  # 2 permission-mode transitions
-        # current_permission_mode is the LAST timestamp value -> "plan"
+        # A transition is a CHANGE of mode. Three entries were written, the
+        # first states the starting mode and the second restates it. Counting
+        # entries, as this column once did, counted restatements.
+        assert row[6] == 1
+        # current_permission_mode is the last one stated, by file position
         assert row[7] == "plan"
         assert row[8] == 1  # 1 file_history_snapshot
 

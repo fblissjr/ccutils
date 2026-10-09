@@ -1,7 +1,7 @@
 """Tests for the v0.15 fact_diagnostics populator (Phase D).
 
 Grain: one row per LSP diagnostic emitted during a session. Derived
-from fact_attachments where attachment_type='diagnostics'. A single
+from the diagnostics attachments in fact_entry_events. A single
 attachment entry carries diagnostics for multiple files; the populator
 flattens to one row per individual diagnostic.
 
@@ -17,7 +17,7 @@ import json
 import pytest
 
 from ccutils import create_star_schema
-from ccutils.etl.entry_type_facts import populate_fact_attachments
+from ccutils.etl.entry_type_facts import populate_fact_entry_events
 from ccutils.etl.fact_diagnostics import populate_fact_diagnostics
 from ccutils.etl.fact_file_operations import populate_dim_file
 from ccutils.etl.fact_messages import populate_fact_messages
@@ -118,7 +118,7 @@ def _populate(conn, jsonl_path, tmp_path):
     load_session_to_staging(conn, log_path)
     populate_fact_messages(conn, run=run)
     populate_fact_tool_calls(conn, run=run)
-    populate_fact_attachments(conn, run=run)
+    populate_fact_entry_events(conn, run=run)
     populate_dim_file(conn, run=run)
     populate_fact_diagnostics(conn, run=run)
     return run

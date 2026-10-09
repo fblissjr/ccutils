@@ -3,7 +3,7 @@
 One unified decision timeline over facts the v0.15 ETL already
 populates -- no new ETL, pure projection:
     fact_plan_revisions            -> decision_type 'plan_revision'
-    fact_meta_events               -> decision_type 'permission_mode_change'
+    fact_entry_events (permission-mode) -> decision_type 'permission_mode_change'
     fact_system_events (3 subtypes)-> 'stop_event' / 'api_error' / 'compact_boundary'
 """
 
@@ -40,18 +40,27 @@ def _insert_plan_revision(conn, session_id="s1", outcome="accepted"):
     )
 
 
-def _insert_permission_toggle(conn, session_id="s1", mode="plan"):
+def _insert_permission_entry(conn, seq, mode, session_id="s1",
+                             derived="2026-04-19 10:05:00"):
+    """A permission-mode entry as the source writes it: no stated timestamp,
+    ordered only by its position in the file."""
     conn.execute(
         f"""
-        INSERT INTO fact_meta_events (
+        INSERT INTO fact_entry_events (
             {_LINEAGE}, entry_id, session_id, session_key,
-            timestamp, meta_type, meta_value
+            sequence_num, timestamp, derived_timestamp, entry_type, value_text
         ) VALUES (
-            {_LINEAGE_VALS}, 'e-perm', '{session_id}', md5('{session_id}'),
-            TIMESTAMP '2026-04-19 10:05:00', 'permission-mode', '{mode}'
+            {_LINEAGE_VALS}, 'e-perm-{seq}', '{session_id}', md5('{session_id}'),
+            {seq}, NULL, TIMESTAMP '{derived}', 'permission-mode', '{mode}'
         )
         """
     )
+
+
+def _insert_permission_toggle(conn, session_id="s1", mode="plan"):
+    """The session starts in `default` and changes to `mode`."""
+    _insert_permission_entry(conn, 1, "default", session_id, "2026-04-19 10:04:00")
+    _insert_permission_entry(conn, 5, mode, session_id, "2026-04-19 10:05:00")
 
 
 def _insert_system_event(conn, subtype, session_id="s1", **cols):
@@ -95,15 +104,47 @@ class TestSemanticDecisionsView:
         ).fetchall()
         assert rows == [("permission_mode_change", "acceptEdits")]
 
+    def test_a_restated_mode_is_not_a_change(self, conn):
+        """Claude Code restates the current mode far more often than it
+        changes it. The view once projected every permission-mode entry as a
+        change; measured on the corpus that reported a change on entries
+        that repeat the mode before them almost every time (the record is in
+        CHANGELOG.md). A change is an entry whose mode differs from the one
+        before it in file order, and the first entry is a starting mode."""
+        for seq, mode in [(1, "default"), (3, "default"), (5, "plan"),
+                          (7, "plan"), (9, "plan"), (11, "default")]:
+            _insert_permission_entry(conn, seq, mode)
+        rows = conn.execute(
+            "SELECT decision_value, source_key FROM semantic_decisions "
+            "ORDER BY source_key"
+        ).fetchall()
+        assert rows == [("default", "e-perm-11"), ("plan", "e-perm-5")]
+
+    def test_a_change_with_no_stated_time_carries_a_derived_one(self, conn):
+        """`timestamp` is stated or NULL; the placement is its own column,
+        and the date follows whichever exists so a date filter keeps the row."""
+        _insert_permission_toggle(conn)
+        row = conn.execute(
+            "SELECT timestamp, strftime(derived_timestamp, '%H:%M'), "
+            "       CAST(decision_date AS VARCHAR) FROM semantic_decisions"
+        ).fetchone()
+        assert row == (None, "10:05", "2026-04-19")
+        _insert_plan_revision(conn)
+        stated = conn.execute(
+            "SELECT timestamp IS NOT NULL, derived_timestamp FROM semantic_decisions "
+            "WHERE decision_type = 'plan_revision'"
+        ).fetchone()
+        assert stated == (True, None)
+
     def test_other_meta_types_are_not_decisions(self, conn):
         conn.execute(
             f"""
-            INSERT INTO fact_meta_events (
+            INSERT INTO fact_entry_events (
                 {_LINEAGE}, entry_id, session_id, session_key,
-                timestamp, meta_type, meta_value
+                sequence_num, derived_timestamp, entry_type, value_text
             ) VALUES (
                 {_LINEAGE_VALS}, 'e-title', 's1', md5('s1'),
-                TIMESTAMP '2026-04-19 10:00:00', 'custom-title', 'My session'
+                2, TIMESTAMP '2026-04-19 10:00:00', 'custom-title', 'My session'
             )
             """
         )
@@ -149,8 +190,10 @@ class TestSemanticDecisionsView:
         _insert_permission_toggle(conn)
         rows = conn.execute(
             """
-            SELECT session_id, timestamp, decision_date, source_table
-            FROM semantic_decisions ORDER BY timestamp
+            SELECT session_id, COALESCE(timestamp, derived_timestamp),
+                   decision_date, source_table
+            FROM semantic_decisions
+            ORDER BY COALESCE(timestamp, derived_timestamp)
             """
         ).fetchall()
         assert len(rows) == 2
@@ -158,4 +201,4 @@ class TestSemanticDecisionsView:
         assert rows[0][1] < rows[1][1]
         assert str(rows[0][2]) == "2026-04-19"
         assert rows[0][3] == "fact_plan_revisions"
-        assert rows[1][3] == "fact_meta_events"
+        assert rows[1][3] == "fact_entry_events"

@@ -626,16 +626,24 @@ def _create_objects(conn) -> None:
     )
 
     # =========================================================================
-    # New entry-type facts (Phase C4)
+    # Entry-type facts
     # =========================================================================
-    # Each captures one Claude Code top-level entry type that the legacy ETL
-    # either dropped entirely or sampled sparsely. All follow the v0.15
-    # lineage + degenerate-dim convention.
+    # The top-level entry types that are not messages. All follow the lineage
+    # + degenerate-dim convention.
 
-    # Grain: one row per attachment entry attached to a user message.
+    # Grain: one row per entry of a type in etl/entry_type_facts.py's
+    # ENTRY_EVENT_TYPES: attachment, permission-mode, custom-title,
+    # agent-name, last-prompt, file-history-snapshot, queue-operation, pr-link.
+    # Five tables until 1.0.0, one or two columns each beside the same entry
+    # id, session and timestamp. `subtype` is the sub-kind an entry states
+    # (an attachment's type, a queue operation), `value_text` its one scalar
+    # (a mode, a title, a prompt, a URL, a message id), and `payload_json`
+    # the staged payload whole, so nothing the narrower tables held is lost.
+    # One row per ENTRY: a meta entry restates the current value far more
+    # often than it changes it.
     conn.execute(
         """
-        CREATE TABLE IF NOT EXISTS fact_attachments (
+        CREATE TABLE IF NOT EXISTS fact_entry_events (
             created_at TIMESTAMP NOT NULL DEFAULT current_timestamp,
             created_by_version_key VARCHAR NOT NULL,
             last_updated_at TIMESTAMP NOT NULL DEFAULT current_timestamp,
@@ -649,13 +657,28 @@ def _create_objects(conn) -> None:
             entry_id VARCHAR NOT NULL,
             session_id VARCHAR NOT NULL,
             session_key VARCHAR,
+            -- From `timestamp`, or from `derived_timestamp` where the entry
+            -- states no time, so a date filter does not drop those rows.
             date_key INTEGER,
             time_key INTEGER,
+            -- The entry's position in its transcript: the same column
+            -- fact_messages carries. For the meta entry types it is the ONLY
+            -- order there is.
+            sequence_num INTEGER,
+            -- STATED, and NULL on every permission-mode, custom-title,
+            -- agent-name and last-prompt entry: the source writes no time
+            -- on them.
             timestamp TIMESTAMP,
-            attachment_type VARCHAR NOT NULL,
-            attachment_json VARCHAR
+            -- DERIVED, only where `timestamp` is NULL: the stated time of
+            -- the nearest entry before this one in the file (after it, when
+            -- nothing timestamped precedes).
+            derived_timestamp TIMESTAMP,
+            entry_type VARCHAR NOT NULL,
+            subtype VARCHAR,
+            value_text VARCHAR,
+            payload_json VARCHAR
         )
-        """
+    """
     )
 
     # Grain: one row per progress entry emitted during tool/hook execution.
@@ -739,116 +762,6 @@ def _create_objects(conn) -> None:
         )
         """
     )
-
-    # Grain: one row per meta entry (custom-title, agent-name, permission-mode,
-    # last-prompt) AT THE MOMENT IT OCCURRED. Time-series, NOT last-value-only.
-    conn.execute(
-        """
-        CREATE TABLE IF NOT EXISTS fact_meta_events (
-            created_at TIMESTAMP NOT NULL DEFAULT current_timestamp,
-            created_by_version_key VARCHAR NOT NULL,
-            last_updated_at TIMESTAMP NOT NULL DEFAULT current_timestamp,
-            last_updated_by_version_key VARCHAR NOT NULL,
-            etl_run_id VARCHAR NOT NULL,
-            record_source VARCHAR NOT NULL,
-            hash_diff VARCHAR NOT NULL,
-            is_deleted BOOLEAN NOT NULL DEFAULT FALSE,
-            deleted_at TIMESTAMP,
-
-            entry_id VARCHAR NOT NULL,
-            session_id VARCHAR NOT NULL,
-            session_key VARCHAR,
-            date_key INTEGER,
-            time_key INTEGER,
-            timestamp TIMESTAMP,
-            meta_type VARCHAR NOT NULL,
-            meta_value VARCHAR
-        )
-        """
-    )
-
-    # Grain: one row per file-history-snapshot entry; carries trackedFileBackups
-    # JSON for restore-point analysis.
-    conn.execute(
-        """
-        CREATE TABLE IF NOT EXISTS fact_file_history_snapshots (
-            created_at TIMESTAMP NOT NULL DEFAULT current_timestamp,
-            created_by_version_key VARCHAR NOT NULL,
-            last_updated_at TIMESTAMP NOT NULL DEFAULT current_timestamp,
-            last_updated_by_version_key VARCHAR NOT NULL,
-            etl_run_id VARCHAR NOT NULL,
-            record_source VARCHAR NOT NULL,
-            hash_diff VARCHAR NOT NULL,
-            is_deleted BOOLEAN NOT NULL DEFAULT FALSE,
-            deleted_at TIMESTAMP,
-
-            entry_id VARCHAR NOT NULL,
-            session_id VARCHAR NOT NULL,
-            session_key VARCHAR,
-            date_key INTEGER,
-            time_key INTEGER,
-            timestamp TIMESTAMP,
-            message_id_link VARCHAR,
-            is_snapshot_update BOOLEAN,
-            snapshot_json VARCHAR
-        )
-        """
-    )
-
-    # Grain: one row per queue-operation entry (user prompt enqueue/dequeue
-    # mid-turn).
-    conn.execute(
-        """
-        CREATE TABLE IF NOT EXISTS fact_queue_operations (
-            created_at TIMESTAMP NOT NULL DEFAULT current_timestamp,
-            created_by_version_key VARCHAR NOT NULL,
-            last_updated_at TIMESTAMP NOT NULL DEFAULT current_timestamp,
-            last_updated_by_version_key VARCHAR NOT NULL,
-            etl_run_id VARCHAR NOT NULL,
-            record_source VARCHAR NOT NULL,
-            hash_diff VARCHAR NOT NULL,
-            is_deleted BOOLEAN NOT NULL DEFAULT FALSE,
-            deleted_at TIMESTAMP,
-
-            entry_id VARCHAR NOT NULL,
-            session_id VARCHAR NOT NULL,
-            session_key VARCHAR,
-            date_key INTEGER,
-            time_key INTEGER,
-            timestamp TIMESTAMP,
-            operation VARCHAR,
-            content VARCHAR
-        )
-        """
-    )
-
-    # Grain: one row per pr-link entry binding a session to a GitHub PR.
-    conn.execute(
-        """
-        CREATE TABLE IF NOT EXISTS fact_pr_links (
-            created_at TIMESTAMP NOT NULL DEFAULT current_timestamp,
-            created_by_version_key VARCHAR NOT NULL,
-            last_updated_at TIMESTAMP NOT NULL DEFAULT current_timestamp,
-            last_updated_by_version_key VARCHAR NOT NULL,
-            etl_run_id VARCHAR NOT NULL,
-            record_source VARCHAR NOT NULL,
-            hash_diff VARCHAR NOT NULL,
-            is_deleted BOOLEAN NOT NULL DEFAULT FALSE,
-            deleted_at TIMESTAMP,
-
-            entry_id VARCHAR NOT NULL,
-            session_id VARCHAR NOT NULL,
-            session_key VARCHAR,
-            date_key INTEGER,
-            time_key INTEGER,
-            timestamp TIMESTAMP,
-            pr_number INTEGER,
-            pr_url VARCHAR,
-            pr_repository VARCHAR
-        )
-        """
-    )
-
 
     conn.execute(
         """
@@ -1056,7 +969,7 @@ def _create_objects(conn) -> None:
     conn.execute(
         """
         -- Grain: one row per LSP diagnostic emitted during a session.
-        -- Derived from fact_attachments.attachment_type='diagnostics'; the
+        -- Derived from fact_entry_events attachments of subtype 'diagnostics'; the
         -- attachment_json carries a list of diagnostic objects that get
         -- flattened here. natural_key is diagnostic_id = md5(entry_id || index).
         CREATE TABLE IF NOT EXISTS fact_diagnostics (
@@ -1469,21 +1382,34 @@ def _create_objects(conn) -> None:
                    SUM(CASE WHEN data_type = 'bash_progress' THEN 1 ELSE 0 END)::BIGINT AS total_bash_progress_events
             FROM fact_progress_events WHERE is_deleted = FALSE GROUP BY session_id
         ),
-        attachment_rollup AS (
+        entry_rollup AS (
             SELECT session_id,
-                   COUNT(*) AS total_attachments,
-                   SUM(CASE WHEN attachment_type = 'diagnostics' THEN 1 ELSE 0 END)::BIGINT AS total_diagnostics,
-                   SUM(CASE WHEN attachment_type = 'hook_success' THEN 1 ELSE 0 END)::BIGINT AS total_hook_successes
-            FROM fact_attachments WHERE is_deleted = FALSE GROUP BY session_id
+                   COUNT(*) FILTER (WHERE entry_type = 'attachment') AS total_attachments,
+                   COUNT(*) FILTER (WHERE entry_type = 'attachment'
+                                      AND subtype = 'diagnostics') AS total_diagnostics,
+                   COUNT(*) FILTER (WHERE entry_type = 'attachment'
+                                      AND subtype = 'hook_success') AS total_hook_successes,
+                   COUNT(*) FILTER (WHERE entry_type = 'file-history-snapshot')
+                       AS total_file_history_snapshots
+            FROM fact_entry_events WHERE is_deleted = FALSE GROUP BY session_id
         ),
-        meta_rollup AS (
-            SELECT session_id,
-                   SUM(CASE WHEN meta_type = 'permission-mode' THEN 1 ELSE 0 END)::BIGINT AS permission_mode_transition_count
-            FROM fact_meta_events WHERE is_deleted = FALSE GROUP BY session_id
-        ),
-        file_history_rollup AS (
-            SELECT session_id, COUNT(*) AS total_file_history_snapshots
-            FROM fact_file_history_snapshots WHERE is_deleted = FALSE GROUP BY session_id
+        -- A transition is a CHANGE of mode. Counting permission-mode entries
+        -- counts restatements: the source writes the current mode again far
+        -- more often than it changes it. The first entry states the starting
+        -- mode and is not a transition.
+        mode_rollup AS (
+            SELECT session_id, COUNT(*) AS permission_mode_transition_count
+            FROM (
+                SELECT session_id, value_text,
+                       LAG(value_text) OVER (
+                           PARTITION BY session_id ORDER BY sequence_num) AS previous_mode,
+                       ROW_NUMBER() OVER (
+                           PARTITION BY session_id ORDER BY sequence_num) AS nth
+                FROM fact_entry_events
+                WHERE is_deleted = FALSE AND entry_type = 'permission-mode'
+            )
+            WHERE nth > 1 AND value_text IS DISTINCT FROM previous_mode
+            GROUP BY session_id
         ),
         -- What this session delegated, read from the spawn calls and the
         -- child sessions directly. NOT from semantic_agent_delegations: that
@@ -1544,12 +1470,12 @@ def _create_objects(conn) -> None:
             COALESCE(pr.total_progress_events, 0) AS total_progress_events,
             COALESCE(pr.total_hook_progress_events, 0) AS total_hook_progress_events,
             COALESCE(pr.total_bash_progress_events, 0) AS total_bash_progress_events,
-            COALESCE(ar.total_attachments, 0) AS total_attachments,
-            COALESCE(ar.total_diagnostics, 0) AS total_diagnostics,
-            COALESCE(ar.total_hook_successes, 0) AS total_hook_successes,
-            COALESCE(metar.permission_mode_transition_count, 0) AS permission_mode_transition_count,
+            COALESCE(er.total_attachments, 0) AS total_attachments,
+            COALESCE(er.total_diagnostics, 0) AS total_diagnostics,
+            COALESCE(er.total_hook_successes, 0) AS total_hook_successes,
+            COALESCE(mor.permission_mode_transition_count, 0) AS permission_mode_transition_count,
             ds.permission_mode AS current_permission_mode,
-            COALESCE(fhr.total_file_history_snapshots, 0) AS total_file_history_snapshots,
+            COALESCE(er.total_file_history_snapshots, 0) AS total_file_history_snapshots,
             COALESCE(dr.total_delegations, 0) AS total_delegations,
             COALESCE(dr.total_spawn_failures, 0) AS total_spawn_failures,
             dr.max_child_depth,
@@ -1560,9 +1486,8 @@ def _create_objects(conn) -> None:
         LEFT JOIN tool_rollup tur ON tur.session_id = ds.session_id
         LEFT JOIN system_rollup sr ON sr.session_id = ds.session_id
         LEFT JOIN progress_rollup pr ON pr.session_id = ds.session_id
-        LEFT JOIN attachment_rollup ar ON ar.session_id = ds.session_id
-        LEFT JOIN meta_rollup metar ON metar.session_id = ds.session_id
-        LEFT JOIN file_history_rollup fhr ON fhr.session_id = ds.session_id
+        LEFT JOIN entry_rollup er ON er.session_id = ds.session_id
+        LEFT JOIN mode_rollup mor ON mor.session_id = ds.session_id
         LEFT JOIN delegation_rollup dr ON dr.session_id = ds.session_id
     """
     )
@@ -1964,6 +1889,7 @@ def _create_objects(conn) -> None:
             outcome_signal AS decision_signal,
             user_feedback_text AS decision_detail,
             plan_timestamp AS timestamp,
+            CAST(NULL AS TIMESTAMP) AS derived_timestamp,
             CAST(plan_timestamp AS DATE) AS decision_date,
             revision_key AS source_key,
             'fact_plan_revisions' AS source_table
@@ -1976,15 +1902,30 @@ def _create_objects(conn) -> None:
             session_id,
             session_key,
             'permission_mode_change' AS decision_type,
-            meta_value AS decision_value,
+            value_text AS decision_value,
             NULL AS decision_signal,
             NULL AS decision_detail,
+            -- STATED, and the source states none on a permission-mode entry.
             timestamp,
-            CAST(timestamp AS DATE) AS decision_date,
+            -- The entry's placement by its neighbours in the file.
+            derived_timestamp,
+            CAST(COALESCE(timestamp, derived_timestamp) AS DATE) AS decision_date,
             entry_id AS source_key,
-            'fact_meta_events' AS source_table
-        FROM fact_meta_events
-        WHERE meta_type = 'permission-mode' AND is_deleted = FALSE
+            'fact_entry_events' AS source_table
+        FROM (
+            -- A CHANGE of mode, not every permission-mode entry: Claude Code
+            -- restates the current mode far more often than it changes it.
+            -- The first entry of a session states the starting mode and is
+            -- not a change. File position is the only order these have.
+            SELECT *,
+                   LAG(value_text) OVER (
+                       PARTITION BY session_id ORDER BY sequence_num) AS previous_mode,
+                   ROW_NUMBER() OVER (
+                       PARTITION BY session_id ORDER BY sequence_num) AS nth
+            FROM fact_entry_events
+            WHERE entry_type = 'permission-mode' AND is_deleted = FALSE
+        )
+        WHERE nth > 1 AND value_text IS DISTINCT FROM previous_mode
 
         UNION ALL
 
@@ -2012,6 +1953,7 @@ def _create_objects(conn) -> None:
                          || COALESCE(CAST(compact_pre_tokens AS VARCHAR), 'NULL')
             END AS decision_detail,
             timestamp,
+            CAST(NULL AS TIMESTAMP) AS derived_timestamp,
             CAST(timestamp AS DATE) AS decision_date,
             entry_id AS source_key,
             'fact_system_events' AS source_table
@@ -2576,11 +2518,7 @@ TABLE_COVERAGE = {
     "fact_token_usage": ("table", "populated", "session", "one row per API response (api_message_id), token and cache breakdown"),
     "fact_system_events": ("table", "populated", "session", "one row per system entry, 20 typed columns across its subtypes"),
     "fact_progress_events": ("table", "populated", "session", "one row per progress entry (hooks, agent progress)"),
-    "fact_attachments": ("table", "populated", "session", "one row per attachment entry (1.0.0: collapsing into fact_entry_events)"),
-    "fact_meta_events": ("table", "populated", "session", "custom-title / agent-name / permission-mode time series (1.0.0: collapsing into fact_entry_events)"),
-    "fact_queue_operations": ("table", "populated", "session", "queue operation entries (1.0.0: collapsing into fact_entry_events)"),
-    "fact_pr_links": ("table", "populated", "session", "PR link entries (1.0.0: collapsing into fact_entry_events)"),
-    "fact_file_history_snapshots": ("table", "populated", "session", "file-history-snapshot entries (1.0.0: collapsing into fact_entry_events)"),
+    "fact_entry_events": ("table", "populated", "session", "one row per attachment, meta (permission-mode / custom-title / agent-name / last-prompt), file-history-snapshot, queue-operation or pr-link entry; five tables until 1.0.0"),
     "fact_file_operations": ("table", "populated", "session", "one row per file tool call; Bash-derived writes are NOT captured yet (1.1.0)"),
     "fact_diagnostics": ("table", "populated", "session", "LSP diagnostics flattened from attachments"),
     "fact_plan_revisions": ("table", "populated", "session", "ExitPlanMode outcomes with revision chain"),
@@ -2618,12 +2556,6 @@ TABLE_COVERAGE = {
 AUDIT_EXCEPTIONS: dict[tuple[str, str, str | None], str] = {
     ("fk_unresolved", "dim_session", "parent_session_key"):
         "agent whose parent transcript was pruned upstream; the key names a real session and is kept",
-    ("null_column", "fact_meta_events", "timestamp"):
-        "custom-title / agent-name / permission-mode entries carry no timestamp in the source",
-    ("null_column", "fact_meta_events", "date_key"):
-        "no source timestamp (see fact_meta_events.timestamp)",
-    ("null_column", "fact_meta_events", "time_key"):
-        "no source timestamp (see fact_meta_events.timestamp)",
     ("null_column", "fact_session_facets", "prompt_version"):
         "Tier 2 (LLM) facets only; NULL on every Tier 1 row",
     ("null_column", "fact_session_facets", "extraction_metadata_json"):
@@ -2653,13 +2585,9 @@ def _seed_table_coverage(conn) -> None:
 # fails if a populator declares a key this map disagrees with.
 NATURAL_KEYS = {
     "fact_messages": "entry_id",
-    "fact_attachments": "entry_id",
+    "fact_entry_events": "entry_id",
     "fact_progress_events": "entry_id",
     "fact_system_events": "entry_id",
-    "fact_meta_events": "entry_id",
-    "fact_file_history_snapshots": "entry_id",
-    "fact_queue_operations": "entry_id",
-    "fact_pr_links": "entry_id",
     "fact_token_usage": "entry_id",
     "fact_tool_calls": "tool_use_id",
     "fact_file_operations": "tool_use_id",

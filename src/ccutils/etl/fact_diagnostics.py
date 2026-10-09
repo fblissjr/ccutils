@@ -1,11 +1,11 @@
-"""Populate fact_diagnostics from fact_attachments where type='diagnostics'.
+"""Populate fact_diagnostics from the diagnostics attachments in fact_entry_events.
 
 A single diagnostics attachment carries a nested `files` list, each
 file carries a list of `diagnostics`. We flatten to one fact row per
 individual diagnostic with the file_uri promoted to a column and
 file_key looked up against dim_file (NULL if the file isn't tracked).
 
-Run AFTER populate_fact_attachments (and after populate_dim_file if
+Run AFTER populate_fact_entry_events (and after populate_dim_file if
 you want file_key FKs populated).
 """
 
@@ -43,14 +43,15 @@ def populate_fact_diagnostics(conn, *, run: EtlRun) -> None:
                 fa.timestamp,
                 json_extract_string(file_entry, '$.uri') AS file_uri,
                 json_extract(file_entry, '$.diagnostics') AS diag_list_json
-            FROM fact_attachments fa,
+            FROM fact_entry_events fa,
             LATERAL (
-                SELECT unnest(json_extract(fa.attachment_json, '$.files')::JSON[])
+                SELECT unnest(json_extract(fa.payload_json, '$.files')::JSON[])
                     AS file_entry
             )
             WHERE fa.is_deleted = FALSE
-              AND fa.attachment_type = 'diagnostics'
-              AND json_type(fa.attachment_json, '$.files') = 'ARRAY'
+              AND fa.entry_type = 'attachment'
+              AND fa.subtype = 'diagnostics'
+              AND json_type(fa.payload_json, '$.files') = 'ARRAY'
               -- Scope to current session: prior sessions' diagnostics
               -- are already in target and would no-op through hash_diff.
               AND fa.session_id IN (

@@ -26,19 +26,15 @@ from ..etl.orchestrator import run_v15_etl
 
 # Tables `_count_rows` polls for the progress display. Every fact table
 # `run_v15_etl` populates -- omitting one undercounts row totals by
-# multiples on real corpora (fact_attachments and fact_file_operations
+# multiples on real corpora (fact_entry_events and fact_file_operations
 # in particular dwarf fact_messages). Order doesn't matter (SUM).
 _PROGRESS_TABLES = (
     "fact_messages",
     "fact_tool_calls",
     "fact_token_usage",
-    "fact_attachments",
+    "fact_entry_events",
     "fact_progress_events",
     "fact_system_events",
-    "fact_meta_events",
-    "fact_file_history_snapshots",
-    "fact_queue_operations",
-    "fact_pr_links",
     "fact_file_operations",
     "fact_diagnostics",
     "fact_plan_revisions",

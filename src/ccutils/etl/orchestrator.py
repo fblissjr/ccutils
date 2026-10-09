@@ -11,13 +11,9 @@ Pipeline:
             ->  populate_fact_messages
             ->  populate_fact_tool_calls
             ->  populate_fact_token_usage
-            ->  populate_fact_attachments
+            ->  populate_fact_entry_events
             ->  populate_fact_progress_events
             ->  populate_fact_system_events
-            ->  populate_fact_meta_events
-            ->  populate_fact_file_history_snapshots
-            ->  populate_fact_queue_operations
-            ->  populate_fact_pr_links
 
 The EtlRun lifecycle ensures any exception marks the run failed in
 etl.runs instead of leaving 'running' rows around.
@@ -35,12 +31,8 @@ from pathlib import Path
 from typing import Any
 
 from ccutils.etl.entry_type_facts import (
-    populate_fact_attachments,
-    populate_fact_file_history_snapshots,
-    populate_fact_meta_events,
-    populate_fact_pr_links,
+    populate_fact_entry_events,
     populate_fact_progress_events,
-    populate_fact_queue_operations,
     populate_fact_system_events,
 )
 from ccutils.etl.facets import FacetExtractor
@@ -384,22 +376,18 @@ def run_v15_etl(
             with run.step("subagent_enrichment", table="dim_session"):
                 populate_subagent_dim_session(conn, run=run)
 
-            # Populate every v0.15 fact in order. semantic_session_summary MUST be
-            # last -- it aggregates over the others.
+            # Populate every fact in dependency order. Nothing has to run
+            # last: the session summary is a view.
             populate_fact_messages(conn, run=run)
             populate_fact_tool_calls(conn, run=run)
             populate_fact_token_usage(conn, run=run)
-            populate_fact_attachments(conn, run=run)
+            populate_fact_entry_events(conn, run=run)
             populate_fact_progress_events(conn, run=run)
             populate_fact_system_events(conn, run=run)
-            populate_fact_meta_events(conn, run=run)
-            populate_fact_file_history_snapshots(conn, run=run)
-            populate_fact_queue_operations(conn, run=run)
-            populate_fact_pr_links(conn, run=run)
             # dim_file + fact_file_operations depend on fact_tool_calls
             populate_dim_file(conn, run=run)
             populate_fact_file_operations(conn, run=run)
-            # fact_diagnostics flattens fact_attachments where type='diagnostics'
+            # fact_diagnostics flattens the diagnostics attachments in fact_entry_events
             populate_fact_diagnostics(conn, run=run)
             # Diagnostics name files no tool ever touched; a second pass
             # gives them a dim_file row so file_key resolves (idempotent).

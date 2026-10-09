@@ -43,7 +43,8 @@ soft-deleted rows. Drop to raw facts only when the view lacks a column.
 | How memories reference each other / what the index catalogues | `semantic_memory_links` (filter `link_syntax`) |
 | Facets (F01–F19 SQL, F20+ LLM) | `fact_session_facets` + `dim_facet_type` (EAV — see gotchas) |
 | ETL observability / did my export work | `semantic_etl_runs`, `etl.batch_runs` |
-| Permission modes, compactions, API errors, turn durations | `fact_meta_events`, `fact_system_events` |
+| Permission modes, titles, attachments, queue operations, PR links | `fact_entry_events` (filter on `entry_type`) |
+| Compactions, API errors, turn durations | `fact_system_events` |
 
 ## 3. Rules that prevent wrong answers
 
