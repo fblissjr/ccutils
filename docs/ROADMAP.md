@@ -15,10 +15,11 @@ machine that has it; nothing here depends on it.
 ## Where things stand
 
 - **Released:** 0.20.1, tagged 2026-08-28.
-- **In progress toward 1.0.0 (paused 2026-09-10, resume here).** All
-  eight numbered steps landed, plus the first two of the four merges
-  decided the same day: `fact_tool_calls` (uses + results + chain steps +
-  errors in one table) and the summary and session-file bridge as views.
+- **In progress toward 1.0.0 (resumed 2026-10-09).** All eight numbered
+  steps landed, plus three of the four merges decided on 2026-09-10:
+  `fact_tool_calls` (uses + results + chain steps + errors in one table),
+  the summary and session-file bridge as views, and delegations as a view
+  with `--embed` retired.
   `ccutils audit` exits clean on the full corpus and on a one-project
   subset build apart from columns that project never fills. Version is
   still 0.20.1; the tag waits on the list under "Next session".
@@ -41,38 +42,43 @@ machine that has it; nothing here depends on it.
 Resume in this order. Each item was designed and its reads done on
 2026-09-10; nothing below is open-ended.
 
-1. **Start from a green suite.** The full suite passed on 2026-10-09 with
-   the lockfile refreshed that day, the claim 5 canary corrected and lake
-   format 3 in (1,469 passed, 1 skipped). Rerun
+1. **Start from a green suite.** Rerun
    `uv run pytest tests/ --confcutdir=tests` once to confirm the tree is
-   as left, then begin step 2.
-2. **Delegations become a view; `--embed` is retired.** Delete
-   `fact_agent_delegations`, its populator, `populate_delegation_completion`
-   and `run_post_session_reconciliation` (and the `reconciliation` run
-   kind). `semantic_agent_delegations` is a view: the spawn row from
-   `fact_tool_calls` where the tool is Agent or Task (task description,
-   prompt, subagent type, `agent_is_async`, `agent_id`, the stated rollup
-   columns, `is_error` as spawn failure) joined to the child `dim_session`
-   on `md5('agent-' || agent_id)` and to `semantic_session_summary` for the
-   derived duration, tokens and tool count. `completion_state`: spawn
-   failed when the spawn row is an error; `completed` when the child's last
-   assistant message carries a stop reason (compare the two maxima, never
-   `arg_max`, which skips NULLs); `no_completion_recorded` otherwise; NULL
-   when the child transcript is absent. Derived columns keep the
-   `derived_` prefix; stated and derived never share a column. Add
-   delegation features to `semantic_session_summary` (delegation count,
-   spawn failures, max child depth, delegated output tokens). `--embed`
-   goes with it: `embed_sessions` and `cluster_sessions` were dead and
-   `match_delegations` wrote into the table being removed; delete
-   `schemas/star/embeddings.py`, `fact_session_embeddings`, the flag on
-   both commands, the `colbert` extra, and the README lines. Tests to port
-   from `test_fact_agent_delegations_v15.py`: one row per spawn, task input
-   captured, refused spawn is `spawn_failed`, async spawn re-derived from
-   the child transcript, sync spawn keeps stated values, no completion
-   leaves derived NULL, stated and derived never share a column. Update
-   the audit's ground-truth check to read the view, `test_etl_metadata`
-   and `test_cli_surface` for the removed run kind and flag, and the
-   downstream consumer's queries (it reads `semantic_agent_delegations`).
+   as left (the last result is in the commit that landed step 2), then
+   begin step 3.
+2. **Delegations become a view; `--embed` is retired. DONE 2026-10-09.**
+   `fact_agent_delegations`, its populator, the completion pass,
+   `run_post_session_reconciliation` and the `reconciliation` run kind are
+   deleted. `semantic_agent_delegations` is a view over the Agent / Task
+   rows of `fact_tool_calls`, joined to the child session and to
+   `semantic_session_summary`. Stated and derived values are in separate
+   columns, per "Agent rollup provenance" below, which this step brought
+   forward from 1.3.0. `semantic_session_summary` gained
+   `total_delegations`, `total_spawn_failures`, `max_child_depth` and
+   `delegated_output_tokens`. `--embed`, `schemas/star/embeddings.py`,
+   `fact_session_embeddings` and the `colbert` extra are gone. Verified on
+   a one-project build of the real corpus against the 2026-09-18 warehouse
+   of the same project: every value the old table held is in the view
+   under its stated or derived name, on every delegation both hold; the
+   record is in `CHANGELOG.md`. Still owed from this step:
+   - The downstream consumer's queries. The view's columns changed
+     (`docs/STAR_SCHEMA.md` lists what moved), and that repo was not
+     touched from here.
+   - `.claude/skills/query-warehouse/references/query-recipes.md` and
+     `gotchas.md`, and `.claude/skills/etl-dev/SKILL.md` and
+     `new-fact/SKILL.md`, still name the old columns, the table,
+     `run_post_session_reconciliation` and `--embed`. Step 4 already
+     edits the query-warehouse skill; do these with it.
+   - The accepted cost, measured on the full corpus at the gate: how many
+     synchronous delegations have a stated status and no agent transcript
+     (the query is in `docs/STAR_SCHEMA.md`). It is zero on the
+     one-project build.
+   - Two readings of the step's text were settled by what the code already
+     measured, and are the owner's to overrule. `spawn_failed` needs a
+     stated error AND no agent id AND no status, not an error alone, so a
+     launch that worked but named no agent is not counted as refused.
+     `max_child_depth` is the deepest `spawn_depth` a directly spawned
+     agent's sidecar states; it does not walk to descendants.
 3. **Collapse the five thin entry facts** (`fact_attachments`,
    `fact_meta_events`, `fact_queue_operations`, `fact_pr_links`,
    `fact_file_history_snapshots`) into
@@ -425,19 +431,9 @@ they land.
   (nine branches). Its results carry no agent payload; it is the task-list
   tool. Harmless but misleading, and nothing asserts the extraction list and
   `_AGENT_TOOL_NAMES` agree.
-- **`--embed` ships partly dead output.** In `schemas/star/embeddings.py`,
-  `embed_sessions` and `fact_session_embeddings` have no consumer and store a
-  mean-pooled ColBERT vector, which discards the late interaction that is the
-  reason to use ColBERT. `cluster_sessions` writes `cluster_N` into
-  `dim_session.domain`, injecting a second vocabulary into a column of real
-  labels. `match_delegations` in the same module is live and correct. Retire
-  the first two, delete the third, keep the last.
 - **`semantic_cost_analysis.cache_hit_rate_pct` discriminates nothing.** It
   reads near 100% for every project because `input_tokens` is
   post-breakpoint by construction. Redefine or drop.
-- **`fact_agent_delegations.agent_total_tool_use_count` is NULL, not 0, when
-  an agent used no tools** (LEFT JOIN over `fact_tool_uses`), conflating
-  "used none" with "unknown".
 
 ### 1.1.0
 
@@ -595,22 +591,16 @@ here and stays local.
   the lake archive should ever honour in-app deletions. Context in
   `docs/HARNESS_ARCHITECTURE.md`.
 
-- **Agent rollup provenance: DECIDED 2026-09-10.** `fact_tool_results` is
-  the only home for the stated rollup (`status`, `totalDurationMs`,
-  `totalTokens`, `totalToolUseCount`, `wasInterrupted`, `resolvedModel`).
-  `fact_agent_delegations` stops copying those columns and keeps only the
-  spawn-side identity (tool use id, parent and agent keys, timestamps, task
-  prompt, subagent type, `agent_is_async`). Every outcome value is derived
-  from the agent's own transcript under a `derived_` name, in a view rather
-  than the post-loop reconciliation pass, so it cannot go stale or be skipped
-  by one entry point. Consumers wanting the API's stated number join back to
-  `fact_tool_results`. Today `agent_total_duration_ms` and
-  `agent_total_tool_use_count` hold a stated value on sync rows and a derived
-  one on async rows under one name; the split ends that. Known cost to
-  measure first: sync delegations whose agent transcript was pruned lose
-  their outcome numbers, which `ccutils audit` should report as coverage.
-  Lands with the 1.3.0 rewrite; `semantic_agent_delegations` becomes the
-  derived view instead of being deleted.
+- **Agent rollup provenance: DECIDED 2026-09-10, BUILT 2026-10-09.**
+  `fact_tool_calls` is the only home for the stated rollup (`status`,
+  `totalDurationMs`, `totalTokens`, `totalToolUseCount`, `resolvedModel`).
+  Every outcome value is derived from the agent's own transcript under a
+  `derived_` name, in the view `semantic_agent_delegations`, so it cannot
+  go stale or be skipped by one entry point. The view also carries the
+  stated columns beside the derived ones, so a consumer does not have to
+  join back for them; no column holds both. Known cost: synchronous
+  delegations whose agent transcript was pruned have no derived outcome.
+  It was planned for the 1.3.0 rewrite and landed with 1.0.0 step 2.
 - **TypeSafe Jev for Tier 2 enum facets: EXPLORING, decide before the
   1.0.0 tag.** Jev (a hosted classifier: choice / score / yes-no questions
   over one state, returning per-option probabilities, no text generation)
@@ -643,11 +633,10 @@ here and stays local.
 - **`recursive=` on `find_agent_sessions` is a documented no-op.** If a real
   depth selector is ever wanted, build it from the sidecar's stated
   `spawnDepth`.
-- **Corrections owed to `docs/ETL_ARCHITECTURE.md`**, to land with the items
-  that touch them: the reconciliation pass addresses a temporal dependency,
-  not an extraction one, so it does not dissolve when extraction moves to
-  staging; and the verification section names baseline assets that no
-  longer exist and, by decision, will not be rebuilt.
+- **Correction owed to `docs/ETL_ARCHITECTURE.md`**, to land with the item
+  that touches it: the verification section names baseline assets that no
+  longer exist and, by decision, will not be rebuilt. (The other one, about
+  the reconciliation pass, was made on 2026-10-09 when the pass was removed.)
 
 ### Antigravity lake: known gaps
 

@@ -18,7 +18,6 @@ from .utils import (
     build_facet_extractor_or_exit,
     default_archive_output,
     maybe_open_browser,
-    run_embedding_pipeline,
     warn_private_best_effort,
 )
 
@@ -113,14 +112,6 @@ from .utils import (
     is_flag=True,
     help="Skip search index generation.",
 )
-@optgroup.group("Embeddings")
-@optgroup.option(
-    "--embed",
-    default=None,
-    is_flag=False,
-    flag_value="default",
-    help="Run ColBERT embeddings (optionally specify model name).",
-)
 @optgroup.group("Enrichment")
 @optgroup.option(
     "--batch-llm-facets",
@@ -148,7 +139,6 @@ def all_cmd(
     batch_size,
     quiet,
     no_search_index,
-    embed,
     batch_llm_facets,
 ):
     """Convert all local Claude Code sessions to HTML, DuckDB, or JSON archives.
@@ -174,8 +164,6 @@ def all_cmd(
     # formats (html, markdown) sanitize on the render path and are exempt.
     # --no-thinking IS wired (truncates etl.log_entries;
     # fact_messages.content_text already excludes thinking by SQL projection).
-    # --embed against --format json discards the embeddings (DB is built in
-    # a tempdir and thrown away after export).
     if output_format in ("duckdb", "json", "both") and private:
         raise click.UsageError(
             "--private is not yet wired through the v0.15 ETL; it only "
@@ -184,23 +172,11 @@ def all_cmd(
         )
     if private:
         warn_private_best_effort()
-    if embed and output_format == "json":
-        raise click.UsageError(
-            "--embed cannot combine with --format json: the JSON archive is "
-            "built in a temporary DuckDB that's discarded after export, so "
-            "the embeddings would be lost. Use --format duckdb if you need "
-            "embeddings."
-        )
 
     # Build the Tier 2 facet extractor at the CLI boundary so credential
     # failures exit cleanly here rather than as a stack trace deep in the
     # batch.
     facet_extractor = build_facet_extractor_or_exit(batch_llm_facets)
-
-    # Resolve embed model
-    embed_model = None
-    if embed and embed != "default":
-        embed_model = embed
 
     # Default source folder
     if source is None:
@@ -349,14 +325,6 @@ def all_cmd(
         )
         if stats is None:
             stats = duckdb_stats
-
-    # Run embedding pipeline if requested
-    if embed and duckdb_stats and duckdb_stats.get("db_path"):
-        import duckdb as _duckdb
-
-        emb_conn = _duckdb.connect(str(duckdb_stats["db_path"]))
-        run_embedding_pipeline(emb_conn, embed_model, quiet=quiet)
-        emb_conn.close()
 
     # Generate JSON archive if requested (v0.15 star schema as JSON dir)
     if output_format == "json":

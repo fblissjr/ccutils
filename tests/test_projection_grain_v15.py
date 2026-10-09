@@ -184,9 +184,11 @@ class TestProjectionEmitsDeclaredGrain:
         )
 
     def test_agent_delegations_inherit_uniqueness(self, conn, tmp_path):
-        """`fact_agent_delegations` is named as an inheriting fact but the
-        shared fixture uses Bash, which its `tool_name IN ('Task','Agent')`
-        filter excludes -- so the claim was asserted only in prose."""
+        """`semantic_agent_delegations` inherits its one-row-per-spawn grain
+        from `fact_tool_calls`, and as a view it has no key assertion of its
+        own to fall back on. The shared fixture uses Bash, which the
+        `tool_name IN ('Task','Agent')` filter excludes -- so the claim was
+        asserted only in prose."""
         from ccutils.etl.orchestrator import run_v15_etl
 
         proj = tmp_path / "projects" / "-Users-dev-myrepo"
@@ -217,13 +219,13 @@ class TestProjectionEmitsDeclaredGrain:
 
         dups = conn.execute(
             "SELECT COUNT(*) FROM (SELECT delegation_key FROM "
-            "fact_agent_delegations WHERE NOT is_deleted "
+            "semantic_agent_delegations "
             "GROUP BY 1 HAVING COUNT(*) > 1)"
         ).fetchone()[0]
         assert dups == 0
         # Non-vacuity: the fixture must actually produce a delegation.
         n = conn.execute(
-            "SELECT COUNT(*) FROM fact_agent_delegations WHERE NOT is_deleted"
+            "SELECT COUNT(*) FROM semantic_agent_delegations"
         ).fetchone()[0]
         assert n == 1
 

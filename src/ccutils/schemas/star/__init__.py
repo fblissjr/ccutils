@@ -1,12 +1,10 @@
 """Star schema package: DDL + utilities.
 
-Per-session ETL lives in `ccutils.etl.orchestrator.run_v15_etl`; the
-optional ColBERT embedding pipeline lives in `.embeddings`. Heuristic
+Per-session ETL lives in `ccutils.etl.orchestrator.run_v15_etl`. Heuristic
 classifiers, the legacy per-session ETL, and the history.jsonl loader
-were removed when v0.15 landed.
+were removed when v0.15 landed; the ColBERT embedding pipeline went in 1.0.0.
 """
 
-from .embeddings import EmbeddingPipeline
 from .json_export import export_star_schema_to_json
 from .schema import create_star_schema
 from .utils import (
@@ -20,7 +18,6 @@ from .utils import (
 __all__ = [
     "create_star_schema",
     "export_star_schema_to_json",
-    "EmbeddingPipeline",
     "generate_dimension_key",
     "get_tool_category",
     "get_model_family",

@@ -8,7 +8,6 @@ from .schemas.star import (
     get_time_of_day,
     get_tool_category,
     export_star_schema_to_json,
-    EmbeddingPipeline,
     TOOL_CATEGORIES,
 )
 

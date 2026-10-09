@@ -1,12 +1,13 @@
 """Sources that are global to the machine rather than per-session.
 
-`dim_prompt` from history.jsonl, auto memory, and the cross-session
-delegation reconciliation. All three run once after the per-session loop,
-and all three must run on EVERY path that builds a warehouse.
+`dim_prompt` from history.jsonl and auto memory. Both run once after the
+per-session loop, and both must run on EVERY path that builds a warehouse.
 
 That last part is the whole reason this module exists. These steps used to
-live inline in the batch exporter, and the single-session path ran one of
-the three -- so `ccutils <file> --format duckdb` produced a warehouse with
+live inline in the batch exporter, with a third beside them (the
+cross-session delegation reconciliation, gone since
+`semantic_agent_delegations` became a view in 1.0.0), and the single-session
+path ran one of the three -- so `ccutils <file> --format duckdb` produced a warehouse with
 `fact_messages.prompt_id` populated and `dim_prompt` empty, an FK pointing
 at nothing, plus no memory tables at all. An external audit read that as a
 defect in the ETL. It was a defect in the entry point, and the shape of it
@@ -72,16 +73,10 @@ def run_global_sources(conn, *, batch_run_id: str | None = None,
                        scope_to_covered_projects: bool = False) -> None:
     """Run every global source, in dependency order.
 
-    Ordering: reconciliation first, because it derives delegation rollups
-    from sessions and nothing else depends on it; then the two additive
-    imports.
-
-    Error handling differs per source ON PURPOSE, by whether the output is
-    load-bearing. Reconciliation RE-RAISES: a silent failure there puts the
-    warehouse back to reporting spawn-acknowledgment latency as agent
-    duration, which is worse than no warehouse. History is best-effort and
-    swallowed -- it is optional and unrecorded. Memory is additive and
-    records its own failure as a failed run rather than vanishing.
+    Both are additive imports, and each records its own failure as a failed
+    run rather than raising or vanishing: a warehouse without prompts or
+    memory is still a correct warehouse of the sessions it holds. A source
+    whose output is load-bearing would re-raise instead.
 
     ``claude_home`` is injected rather than read from ``Path.home()`` here so
     a test can point the whole thing at a temp directory. Reading the real
@@ -104,11 +99,7 @@ def run_global_sources(conn, *, batch_run_id: str | None = None,
     where the user asked for a subset, whereas dropping rows is a data-loss
     problem everywhere.
     """
-    from .orchestrator import run_post_session_reconciliation
-
     home = Path(claude_home) if claude_home else Path.home() / ".claude"
-
-    run_post_session_reconciliation(conn, batch_run_id=batch_run_id)
 
     _run_history_import(
         conn, home / "history.jsonl",

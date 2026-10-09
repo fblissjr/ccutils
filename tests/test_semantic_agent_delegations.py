@@ -1,19 +1,24 @@
-"""Tests for the v0.15 fact_agent_delegations populator (Phase D).
+"""semantic_agent_delegations: the delegation edge, as a view.
 
-Grain: one row per Task tool_use (parent-side subagent spawn).
+Grain: one row per Agent / Task tool call in `fact_tool_calls` (the
+parent-side spawn), joined to the agent's own session where its transcript
+is in the warehouse.
 
-The legacy populator tried to cross-link parent and subagent sessions
-via heuristic matching. In v0.15 the agent rollup metrics (totalDurationMs,
-totalTokens, totalToolUseCount, status, subagent_type) are captured
-structurally on fact_tool_calls.agent_* columns from the R1 toolUseResult
-payload, so the parent-side fact stands on its own.
+Until 1.0.0 this was a table, `semantic_agent_delegations`, written by a
+per-session populator and then repaired by a post-loop reconciliation pass,
+because a parent is normally loaded before its agents and a per-session
+populator cannot see rows that do not exist yet. Every column in it was a
+projection of `fact_tool_calls` or a rollup of the agent's own facts, so it
+is a view now: nothing to order, nothing to repair, nothing that can go
+stale or be skipped by one entry point.
 
-agent_session_key / parent_session_key are NULL for now -- cross-session
-subagent linkage (reading .meta.json sidecars to mark dim_session.is_agent
-and parent_session_key) is a separate Phase D follow-up. session_id on
-this fact is the PARENT session that delegated.
-
-Run AFTER populate_fact_tool_calls + populate_fact_tool_calls.
+These tests were ported from the table's suite. What each one guards did
+not change with the storage: a stated value and a derived one never share a
+column where they measure different things, a background launch's
+acknowledgment is never reported as the agent's outcome, and no state claims
+more than the transcript records. The fixtures still load the parent FIRST
+and the agent SECOND, because that ordering is what the table could not
+survive without its repair pass.
 """
 
 from __future__ import annotations
@@ -24,12 +29,7 @@ import json
 import pytest
 
 from ccutils import create_star_schema
-from ccutils.etl.fact_agent_delegations import populate_fact_agent_delegations
-from ccutils.etl.fact_messages import populate_fact_messages
-from ccutils.etl.fact_tool_calls import populate_fact_tool_calls
-from ccutils.etl.lineage import EtlRun
-from ccutils.etl.staging import load_session_to_staging
-from ccutils.parsers.parquet_writer import write_session_to_parquet
+from ccutils.etl.orchestrator import run_v15_etl
 
 
 @pytest.fixture
@@ -105,38 +105,17 @@ def agent_session(tmp_path):
 
 
 def _populate(conn, jsonl_path, tmp_path):
-    run = EtlRun.start(conn, source_path=str(jsonl_path))
-    log_path, _ = write_session_to_parquet(
-        jsonl_path, tmp_path / "lake",
-        etl_run_id=run.etl_run_id, project_slug="test-project",
-    )
-    load_session_to_staging(conn, log_path)
-    conn.execute(
-        """
-        INSERT INTO dim_tool (tool_key, tool_name, tool_category)
-        SELECT DISTINCT md5(tool_name), tool_name, 'unknown' FROM (
-            SELECT json_extract_string(b.block, '$.name') AS tool_name
-            FROM etl.log_entries sle, LATERAL (
-                SELECT unnest(json_extract(sle.message_json, '$.content')::JSON[]) AS block
-            ) b
-            WHERE sle.type = 'assistant'
-              AND json_type(sle.message_json, '$.content') = 'ARRAY'
-              AND json_extract_string(b.block, '$.type') = 'tool_use'
-        ) WHERE tool_name IS NOT NULL
-          AND NOT EXISTS (SELECT 1 FROM dim_tool dt WHERE dt.tool_key = md5(tool_name))
-        """
-    )
-    populate_fact_messages(conn, run=run)
-    populate_fact_tool_calls(conn, run=run)
-    populate_fact_agent_delegations(conn, run=run)
-    return run
+    """Load one transcript through the real pipeline. There is no delegation
+    step to call: the view reads what the ordinary populators wrote."""
+    run_v15_etl(conn, jsonl_path, project_name="test-project",
+                parquet_lake_root=tmp_path / "lake")
 
 
-class TestFactAgentDelegations:
+class TestOneRowPerSpawn:
     def test_one_row_per_task_tool_use(self, conn, agent_session, tmp_path):
         _populate(conn, agent_session, tmp_path)
         n = conn.execute(
-            "SELECT COUNT(*) FROM fact_agent_delegations"
+            "SELECT COUNT(*) FROM semantic_agent_delegations"
         ).fetchone()[0]
         assert n == 2
 
@@ -145,7 +124,7 @@ class TestFactAgentDelegations:
         row = conn.execute(
             """
             SELECT task_description, task_prompt, subagent_type
-            FROM fact_agent_delegations
+            FROM semantic_agent_delegations
             WHERE tool_use_id = 'tu_t1'
             """
         ).fetchone()
@@ -157,7 +136,7 @@ class TestFactAgentDelegations:
             """
             SELECT agent_status, agent_total_duration_ms, agent_total_tokens,
                    agent_total_tool_use_count
-            FROM fact_agent_delegations
+            FROM semantic_agent_delegations
             WHERE tool_use_id = 'tu_t1'
             """
         ).fetchone()
@@ -173,41 +152,40 @@ class TestFactAgentDelegations:
         row = conn.execute(
             """
             SELECT agent_status
-            FROM fact_agent_delegations
+            FROM semantic_agent_delegations
             WHERE tool_use_id = 'tu_t2'
             """
         ).fetchone()
         assert row[0] == "interrupted"
 
-    def test_seconds_to_completion_computed(
+    def test_result_time_is_stated_and_nothing_is_derived_without_the_agent(
         self, conn, agent_session, tmp_path
     ):
+        """The parent's result time is stated; with no agent transcript in
+        the warehouse there is nothing to derive a completion from."""
         _populate(conn, agent_session, tmp_path)
         row = conn.execute(
             """
-            SELECT seconds_to_completion FROM fact_agent_delegations
-            WHERE tool_use_id = 'tu_t1'
+            SELECT EXTRACT(EPOCH FROM (result_timestamp - delegation_timestamp)),
+                   derived_completion_timestamp, derived_seconds_to_completion
+            FROM semantic_agent_delegations WHERE tool_use_id = 'tu_t1'
             """
         ).fetchone()
-        # Delegation at 10:00:01, completion at 10:01:00 -> 59s
-        assert row[0] == 59.0
+        # Delegation at 10:00:01, result at 10:01:00 -> 59s, as the parent saw it.
+        assert row == (59.0, None, None)
 
-    def test_parent_session_key_set_to_delegating_session(
+    def test_parent_session_key_is_the_delegating_session(
         self, conn, agent_session, tmp_path
     ):
-        """parent_session_key points at the session that did the
-        delegating -- same as session_key on this fact."""
         _populate(conn, agent_session, tmp_path)
         rows = conn.execute(
-            """
-            SELECT parent_session_key, session_key
-            FROM fact_agent_delegations
-            """
+            "SELECT parent_session_key, parent_session_id "
+            "FROM semantic_agent_delegations"
         ).fetchall()
-        assert rows  # smoke
-        for parent_sk, session_sk in rows:
-            assert parent_sk == session_sk
-            assert parent_sk is not None
+        assert len(rows) == 2
+        for parent_sk, parent_id in rows:
+            assert parent_id == "agent-s"
+            assert parent_sk == hashlib.md5(b"agent-s").hexdigest()
 
     def test_agent_session_key_derived_without_the_subagent_loaded(
         self, conn, agent_session, tmp_path
@@ -232,7 +210,7 @@ class TestFactAgentDelegations:
         rows = conn.execute(
             """
             SELECT ftr.agent_id, fad.agent_session_key
-            FROM fact_agent_delegations fad
+            FROM semantic_agent_delegations fad
             JOIN fact_tool_calls ftr USING (tool_use_id)
             ORDER BY ftr.agent_id
             """
@@ -255,8 +233,6 @@ class TestFactAgentDelegations:
         while producing zero linkage on a real corpus, because nothing here
         exercises parent-then-agent ordering.
         """
-        from ccutils.etl.orchestrator import run_v15_etl
-
         parent = tmp_path / "p.jsonl"
         parent.write_text("\n".join(json.dumps(d) for d in [
             {"type": "user", "uuid": "u1", "sessionId": "ord-parent",
@@ -286,7 +262,7 @@ class TestFactAgentDelegations:
         run_v15_etl(conn, parent, project_name="test-project",
                     parquet_lake_root=tmp_path / "lake")
         row = conn.execute(
-            "SELECT agent_session_key FROM fact_agent_delegations "
+            "SELECT agent_session_key FROM semantic_agent_delegations "
             "WHERE tool_use_id = 'tu_ord'"
         ).fetchone()
         assert row[0] == hashlib.md5(b"agent-ord-agent-1").hexdigest()
@@ -307,7 +283,7 @@ class TestFactAgentDelegations:
         _populate(conn, agent_session, tmp_path)
         rows = conn.execute(
             "SELECT tool_use_id, agent_resolved_model "
-            "FROM fact_agent_delegations ORDER BY tool_use_id"
+            "FROM semantic_agent_delegations ORDER BY tool_use_id"
         ).fetchall()
         assert rows, "no delegations produced"
         models = {r[1] for r in rows}
@@ -315,8 +291,6 @@ class TestFactAgentDelegations:
 
     def test_resolved_model_null_when_absent(self, conn, tmp_path):
         """Older transcripts predate resolvedModel; absence must not error."""
-        from ccutils.etl.orchestrator import run_v15_etl
-
         jsonl = tmp_path / "nomodel.jsonl"
         jsonl.write_text("\n".join(json.dumps(d) for d in [
             {"type": "user", "uuid": "u1", "sessionId": "nomodel-s",
@@ -344,7 +318,7 @@ class TestFactAgentDelegations:
         run_v15_etl(conn, jsonl, project_name="test-project",
                     parquet_lake_root=tmp_path / "lake")
         row = conn.execute(
-            "SELECT agent_resolved_model FROM fact_agent_delegations "
+            "SELECT agent_resolved_model FROM semantic_agent_delegations "
             "WHERE tool_use_id = 'tu_nm'"
         ).fetchone()
         assert row == (None,)
@@ -375,9 +349,7 @@ class TestAsyncLaunchIsNotACompletion:
     internal/plans/2026-08-01_agent_delegation_capture_gap.md.
     """
 
-    def test_async_launch_nulls_the_misleading_columns(self, conn, tmp_path):
-        from ccutils.etl.orchestrator import run_v15_etl
-
+    def test_async_launch_ack_is_never_reported_as_a_completion(self, conn, tmp_path):
         jsonl = tmp_path / "async.jsonl"
         jsonl.write_text("\n".join(json.dumps(d) for d in [
             {"type": "user", "uuid": "u1", "sessionId": "async-s",
@@ -404,79 +376,55 @@ class TestAsyncLaunchIsNotACompletion:
                  "resolvedModel": "claude-sonnet-5",
                  "description": "go"}},
         ]))
-        run_v15_etl(conn, jsonl, project_name="test-project",
-                    parquet_lake_root=tmp_path / "lake")
+        _populate(conn, jsonl, tmp_path)
         row = conn.execute(
             """
-            SELECT agent_is_async, completion_timestamp,
-                   seconds_to_completion, agent_output_text,
-                   agent_status, agent_resolved_model
-            FROM fact_agent_delegations WHERE tool_use_id = 'tu_async'
+            SELECT agent_is_async, derived_completion_timestamp,
+                   derived_seconds_to_completion, agent_output_text,
+                   agent_status, agent_resolved_model, result_timestamp
+            FROM semantic_agent_delegations WHERE tool_use_id = 'tu_async'
             """
         ).fetchone()
         assert row[0] is True, "isAsync is stated in the payload; capture it"
-        # The three that lied are NULL...
-        assert row[1] is None, "completion_timestamp was the ack timestamp"
-        assert row[2] is None, "seconds_to_completion was ack latency"
+        # Nothing under a completion name holds the acknowledgment...
+        assert row[1] is None, "no agent transcript, so no completion to derive"
+        assert row[2] is None, "and no duration: 2s here would be ack latency"
         assert row[3] is None, "agent_output_text was the ack text"
-        # ...while everything genuinely stated at spawn time survives.
+        # ...while everything genuinely stated at spawn time survives, the
+        # acknowledgment's own time included, under a name that says what it is.
         assert row[4] == "async_launched"
         assert row[5] == "claude-sonnet-5"
+        assert row[6].strftime("%H:%M:%S") == "10:00:03"
+        columns = {r[0] for r in conn.execute(
+            "DESCRIBE semantic_agent_delegations").fetchall()}
+        assert not {"completion_timestamp", "seconds_to_completion"} & columns, (
+            "an unqualified completion column would hold the ack on async rows"
+        )
 
-    def test_synchronous_completion_keeps_its_metrics(
+    def test_synchronous_delegation_keeps_what_its_parent_stated(
         self, conn, agent_session, tmp_path
     ):
-        """The nulling must be gated on isAsync, not applied to everything."""
+        """The withholding is gated on isAsync, not applied to everything."""
         _populate(conn, agent_session, tmp_path)
         rows = conn.execute(
-            "SELECT agent_is_async, completion_timestamp, "
-            "seconds_to_completion, agent_output_text "
-            "FROM fact_agent_delegations"
+            "SELECT agent_is_async, result_timestamp, "
+            "agent_total_duration_ms, agent_output_text "
+            "FROM semantic_agent_delegations"
         ).fetchall()
-        assert rows
-        for is_async, completion_ts, secs, output in rows:
+        assert len(rows) == 2
+        for is_async, result_ts, duration, output in rows:
             assert not is_async
-            assert completion_ts is not None
-            assert secs is not None
+            assert result_ts is not None
+            assert duration is not None
             assert output is not None
-
-
-    def test_lineage_block_populated(self, conn, agent_session, tmp_path):
-        _populate(conn, agent_session, tmp_path)
-        row = conn.execute(
-            """
-            SELECT created_at, last_updated_at, etl_run_id, record_source,
-                   hash_diff, is_deleted
-            FROM fact_agent_delegations LIMIT 1
-            """
-        ).fetchone()
-        assert row[0] is not None
-        assert row[1] is not None
-        assert row[2] is not None
-        assert row[3] == "claude_code_jsonl"
-        assert row[4] is not None
-        assert row[5] is False
-
-    def test_idempotent_reetl(self, conn, agent_session, tmp_path):
-        _populate(conn, agent_session, tmp_path)
-        first = conn.execute(
-            "SELECT last_updated_at FROM fact_agent_delegations ORDER BY tool_use_id"
-        ).fetchall()
-        _populate(conn, agent_session, tmp_path)
-        second = conn.execute(
-            "SELECT last_updated_at FROM fact_agent_delegations ORDER BY tool_use_id"
-        ).fetchall()
-        assert first == second
 
     def test_agent_session_key_resolves_when_subagent_also_loaded(
         self, conn, tmp_path
     ):
         """When both the parent session (with the Task tool_use) AND the
         subagent JSONL (which gets is_agent=TRUE + agent_id set) are
-        loaded, agent_session_key on fact_agent_delegations resolves
+        loaded, agent_session_key on semantic_agent_delegations resolves
         via dim_session.agent_id."""
-        from ccutils.etl.orchestrator import run_v15_etl
-
         # Parent session with one Task whose toolUseResult carries agentId
         parent_jsonl = tmp_path / "parent.jsonl"
         parent_lines = [
@@ -532,7 +480,7 @@ class TestAsyncLaunchIsNotACompletion:
         row = conn.execute(
             """
             SELECT fad.agent_session_key, ds.session_id AS agent_session_id
-            FROM fact_agent_delegations fad
+            FROM semantic_agent_delegations fad
             JOIN dim_session ds ON fad.agent_session_key = ds.session_key
             WHERE fad.tool_use_id = 'tu_link'
             """
@@ -567,12 +515,12 @@ class TestAsyncLaunchIsNotACompletion:
         jsonl.write_text("\n".join(json.dumps(d) for d in lines))
         _populate(conn, jsonl, tmp_path)
         n = conn.execute(
-            "SELECT COUNT(*) FROM fact_agent_delegations"
+            "SELECT COUNT(*) FROM semantic_agent_delegations"
         ).fetchone()[0]
         assert n == 0
 
 
-class TestAsyncCompletionReconciliation:
+class TestAsyncCompletionIsDerivedFromTheAgent:
     """Roadmap 0e step 2: re-derive async rollups from the AGENT's transcript.
 
     Claim each test encodes -- delete it and this breaks silently:
@@ -586,9 +534,10 @@ class TestAsyncCompletionReconciliation:
     - The agent session is normally ETL'd AFTER its parent, so a per-session
       populator cannot see it. That ordering is what left agent_session_key
       NULL on 941/941 rows before it was derived instead of joined. These
-      tests drive the parent FIRST and the agent SECOND on purpose: if the
-      reconciliation is ever moved back into the per-session populator, they
-      fail.
+      tests drive the parent FIRST and the agent SECOND on purpose, and
+      run no step after the second load: a view sees the agent's rows the
+      moment they exist. Under the table this needed a post-loop pass, and a
+      warehouse built by an entry point that skipped the pass was wrong.
     - completion_state must distinguish a refused spawn from a finished one.
       29 of 30 NULL-agent_status rows on the real corpus never spawned an
       agent at all (fork-inside-fork, depth limit 3 of 3, cancellation).
@@ -656,135 +605,116 @@ class TestAsyncCompletionReconciliation:
         agent_jsonl.write_text("\n".join(json.dumps(d) for d in lines))
         return agent_jsonl
 
-    def _reconcile(self, conn):
-        from ccutils.etl.fact_agent_delegations import (
-            populate_delegation_completion,
-        )
-        run = EtlRun.start(conn, source_path="reconcile")
-        populate_delegation_completion(conn, run=run)
-
-    def test_async_rollup_rederived_from_agent_transcript(self, conn, tmp_path):
-        """The whole point: an async delegation gets REAL metrics back."""
-        from ccutils.etl.orchestrator import run_v15_etl
-
+    def test_async_rollup_derived_from_agent_transcript(self, conn, tmp_path):
+        """The whole point: an async delegation gets REAL metrics."""
         parent = self._parent_with_async_spawn(tmp_path)
         agent = self._agent_transcript(tmp_path)
-        # Parent FIRST, agent SECOND -- the ordering that defeats a
-        # per-session populator.
+        # Parent FIRST, agent SECOND -- the ordering that defeated a
+        # per-session populator. Nothing runs after the second load.
         run_v15_etl(conn, parent, project_name="p",
                     parquet_lake_root=tmp_path / "lake")
         run_v15_etl(conn, agent, project_name="p",
                     parquet_lake_root=tmp_path / "lake")
-        self._reconcile(conn)
 
         row = conn.execute("""
-            SELECT completion_state, agent_derived_io_tokens,
-                   completion_timestamp, seconds_to_completion
-            FROM fact_agent_delegations WHERE tool_use_id = 'tu_async1'
+            SELECT completion_state, derived_io_tokens,
+                   derived_completion_timestamp, derived_seconds_to_completion,
+                   derived_duration_ms
+            FROM semantic_agent_delegations WHERE tool_use_id = 'tu_async1'
         """).fetchone()
         assert row[0] == "completed", "terminal stop_reason => completed"
-        # Reads agent_derived_io_tokens, NOT agent_total_tokens: the derived
-        # sum does not reproduce the API's stated totalTokens (12/188 within
-        # 10% on ground truth) so the two are kept in separate columns.
         assert row[1] == 9808, "20 in + 9788 out, summed from the agent file"
         # 10:03:57 is the agent's last timestamp, NOT 10:00:03 (the ack).
         assert row[2].strftime("%H:%M:%S") == "10:03:57"
         # 10:00:01 spawn -> 10:03:57 done = 236s, not the 2s ack latency.
         assert row[3] == pytest.approx(236.0, abs=1.0)
+        # 10:02:11 first entry -> 10:03:57 last = 106s of agent time.
+        assert row[4] == 106000.0
 
-    def test_agent_final_report_is_rederived(self, conn, tmp_path):
+    def test_agent_final_report_is_derived(self, conn, tmp_path):
         """The agent's final report is the value of the delegation.
 
-        On a background launch `agent_output_text` holds the launch
-        acknowledgment, so it is deliberately NULLed -- which left the
+        On a background launch `agent_output_text` would hold the launch
+        acknowledgment, so it is NULL -- which alone would leave the
         warehouse recording that work was delegated and nothing about what
         came back. The agent's own terminal assistant message is in the
-        warehouse already; re-derive from it.
-
-        Kept in its own column, per the rule this file states for tokens:
-        a STATED value and a DERIVED one never share a column. The stated
-        `agent_output_text` must remain NULL here, or a consumer cannot
-        tell which provenance it is reading.
+        warehouse already; the report is derived from it, in its own column.
         """
-        from ccutils.etl.orchestrator import run_v15_etl
-
         parent = self._parent_with_async_spawn(tmp_path)
         agent = self._agent_transcript(tmp_path)
         run_v15_etl(conn, parent, project_name="p",
                     parquet_lake_root=tmp_path / "lake")
         run_v15_etl(conn, agent, project_name="p",
                     parquet_lake_root=tmp_path / "lake")
-        self._reconcile(conn)
 
         stated, derived = conn.execute("""
-            SELECT agent_output_text, agent_derived_output_text
-            FROM fact_agent_delegations WHERE tool_use_id = 'tu_async1'
+            SELECT agent_output_text, derived_output_text
+            FROM semantic_agent_delegations WHERE tool_use_id = 'tu_async1'
         """).fetchone()
         assert stated is None, "the async ack is not the agent's output"
         assert derived == "audit complete"
 
-    def test_in_flight_agent_output_is_not_rederived(self, conn, tmp_path):
+    def test_unfinished_agent_output_is_not_derived(self, conn, tmp_path):
         """A partial answer is worse than no answer.
 
-        Same reasoning the rollups already use: an unfinished agent's last
-        message is indistinguishable from a finished one's, so writing it
-        would report a half-done delegation as complete.
+        An unfinished agent's last message is indistinguishable from a
+        finished one's, so reporting it would present a half-done delegation
+        as complete.
         """
-        from ccutils.etl.orchestrator import run_v15_etl
-
         parent = self._parent_with_async_spawn(tmp_path)
         agent = self._agent_transcript(tmp_path, stop_reason=None)
         run_v15_etl(conn, parent, project_name="p",
                     parquet_lake_root=tmp_path / "lake")
         run_v15_etl(conn, agent, project_name="p",
                     parquet_lake_root=tmp_path / "lake")
-        self._reconcile(conn)
 
         state, derived = conn.execute("""
-            SELECT completion_state, agent_derived_output_text
-            FROM fact_agent_delegations WHERE tool_use_id = 'tu_async1'
+            SELECT completion_state, derived_output_text
+            FROM semantic_agent_delegations WHERE tool_use_id = 'tu_async1'
         """).fetchone()
         assert state != "completed"
         assert derived is None
 
-    def test_synchronous_delegation_keeps_its_stated_output(self, conn, tmp_path):
-        """No regression: a sync delegation's stated output is untouched."""
-        _ = tmp_path
-        rows = conn.execute(
-            "SELECT agent_output_text FROM fact_agent_delegations "
-            "WHERE agent_is_async IS NOT TRUE AND agent_output_text IS NOT NULL"
-        ).fetchall()
-        assert rows == [] or all(r[0] for r in rows)
+    def test_synchronous_delegation_keeps_its_stated_output(
+        self, conn, agent_session, tmp_path
+    ):
+        """A sync delegation's tool result IS the agent's output, and stays.
 
-    def test_in_flight_agent_leaves_rollups_null(self, conn, tmp_path):
-        """No terminal stop_reason => in_flight, and a partial sum is NOT
-        written. A partial sum is indistinguishable from a fast agent."""
-        from ccutils.etl.orchestrator import run_v15_etl
+        The table's version of this test queried a warehouse nothing had been
+        loaded into, so it passed on an empty set whatever the code did.
+        """
+        _populate(conn, agent_session, tmp_path)
+        rows = dict(conn.execute(
+            "SELECT tool_use_id, agent_output_text FROM semantic_agent_delegations"
+        ).fetchall())
+        assert "Findings report" in rows["tu_t1"]
+        assert rows["tu_t2"] == "Interrupted"
 
+    def test_no_recorded_completion_leaves_every_derived_value_null(self, conn, tmp_path):
+        """No terminal stop_reason => no partial sums. A partial sum is
+        indistinguishable from a fast agent."""
         parent = self._parent_with_async_spawn(tmp_path)
         agent = self._agent_transcript(tmp_path, stop_reason=None)
         run_v15_etl(conn, parent, project_name="p",
                     parquet_lake_root=tmp_path / "lake")
         run_v15_etl(conn, agent, project_name="p",
                     parquet_lake_root=tmp_path / "lake")
-        self._reconcile(conn)
 
         row = conn.execute("""
-            SELECT completion_state, agent_total_tokens, seconds_to_completion
-            FROM fact_agent_delegations WHERE tool_use_id = 'tu_async1'
+            SELECT completion_state, derived_io_tokens, derived_duration_ms,
+                   derived_tool_use_count, derived_seconds_to_completion,
+                   derived_completion_timestamp, derived_output_text
+            FROM semantic_agent_delegations WHERE tool_use_id = 'tu_async1'
         """).fetchone()
         assert row[0] == "no_completion_recorded"
-        assert row[1] is None, "no partial sums -- NULL is honest"
-        assert row[2] is None
+        assert row[1:] == (None,) * 6, "no partial sums -- NULL is honest"
 
-    def test_api_stated_and_derived_tokens_never_share_a_column(
-        self, conn, tmp_path
-    ):
-        """`agent_total_tokens` is the API's number or nothing.
+    def test_stated_and_derived_never_share_a_column(self, conn, tmp_path):
+        """A column holds what the API stated or what was derived, never both.
 
-        The derived input+output sum does NOT reproduce the API's stated
-        `totalTokens`. Ground truth: 188 synchronous delegations carry both a
-        stated rollup and an ingested agent transcript, so the async
+        Tokens are why. The derived input+output sum does NOT reproduce the
+        API's stated `totalTokens`. Ground truth: 188 synchronous delegations
+        carry both a stated rollup and an ingested agent transcript, so the
         derivation can be scored where the answer is known. Duration matched
         188/188 and tool count 188/188 exactly -- but tokens matched only
         12/188 within 10%, with the per-row ratio spanning p10 0.063 to p90
@@ -792,94 +722,93 @@ class TestAsyncCompletionReconciliation:
         +cache_read, total_uncached_equivalent, the 5m/1h splits), it is not a
         capture gap (median 23 assistant records, 23 carrying usage), and not
         a nested-agent rollup (all 188 spawned none). They measure different
-        things.
+        things. Writing the derived sum into the stated column made async
+        delegations look 3x cheaper than sync ones (median 19,444 vs 61,362)
+        while measuring 2x longer.
 
-        Writing the derived sum into the stated column made async delegations
-        look 3x cheaper than sync ones (median 19,444 vs 61,362) while
-        measuring 2x longer -- backwards, and silently, in the one column a
-        cost analysis would reach for.
+        Duration and tool count DID validate, and the table kept those two
+        blended under one name (stated on sync rows, derived on async). That
+        ended with the view: a reader of `agent_total_duration_ms` should
+        not need `agent_is_async` to know whose number it is.
 
-        Delete this and the two definitions merge back into one column.
+        Delete this and the two provenances merge back into one column.
         """
-        from ccutils.etl.orchestrator import run_v15_etl
-
         parent = self._parent_with_async_spawn(tmp_path)
         agent = self._agent_transcript(tmp_path)
         run_v15_etl(conn, parent, project_name="p",
                     parquet_lake_root=tmp_path / "lake")
         run_v15_etl(conn, agent, project_name="p",
                     parquet_lake_root=tmp_path / "lake")
-        self._reconcile(conn)
 
         row = conn.execute("""
-            SELECT completion_state, agent_total_tokens,
-                   agent_derived_io_tokens, agent_total_duration_ms,
-                   agent_total_tool_use_count
-            FROM fact_agent_delegations WHERE tool_use_id = 'tu_async1'
+            SELECT completion_state,
+                   agent_total_tokens, agent_total_duration_ms,
+                   agent_total_tool_use_count,
+                   derived_io_tokens, derived_duration_ms,
+                   derived_tool_use_count
+            FROM semantic_agent_delegations WHERE tool_use_id = 'tu_async1'
         """).fetchone()
         assert row[0] == "completed"
-        assert row[1] is None, (
-            "the API never stated a token count for a background launch; "
-            "the derived sum is a different measure and must not stand in"
+        assert row[1:4] == (None, None, None), (
+            "the API states no rollup for a background launch, and a derived "
+            "value must not stand in under a stated name"
         )
-        assert row[2] == 9808, (
-            "20 in + 9788 out, summed from the agent's own transcript, kept "
-            "in its own column"
-        )
-        # Non-vacuity: the derivations that DID validate against ground truth
-        # stay in the shared columns. If this drifts to None the test above
-        # would pass for the wrong reason -- a reconciliation that wrote
-        # nothing at all.
-        assert row[3] is not None, "duration derivation validated 188/188"
-        # row[4] (tool count) is deliberately not asserted here: this
-        # fixture's agent calls no tools, so there is no fact_tool_calls row
-        # to count and the value is NULL for a reason unrelated to tokens.
+        # Non-vacuity: the derivation ran. If these drift to None the
+        # assertion above would pass for the wrong reason -- a view that
+        # derived nothing at all.
+        assert row[4] == 9808, "20 in + 9788 out, from the agent's own usage"
+        assert row[5] == 106000.0
+        assert row[6] == 0, "this fixture's agent calls no tools"
 
     def test_sync_delegation_keeps_api_stated_tokens(self, conn, tmp_path):
         """The other half: a synchronous row's stated tokens are untouched,
         and it gets no derived value invented for it."""
-        from ccutils.etl.orchestrator import run_v15_etl
-
         proj = tmp_path / "projects" / "-Users-dev-myrepo"
         proj.mkdir(parents=True, exist_ok=True)
         jsonl = proj / "syncdel.jsonl"
-        lines = [
-            {"type": "user", "uuid": "u1", "sessionId": "syncdel",
-             "timestamp": "2026-04-19T10:00:00Z", "cwd": "/work",
-             "gitBranch": "main", "version": "2.1.198",
-             "message": {"role": "user", "content": "delegate"}},
-            {"type": "assistant", "uuid": "a1", "parentUuid": "u1",
-             "sessionId": "syncdel", "timestamp": "2026-04-19T10:00:01Z",
-             "requestId": "r1",
-             "message": {"role": "assistant", "model": "claude-opus-5",
-                         "content": [{"type": "tool_use", "id": "tu_sync1",
-                                      "name": "Agent",
-                                      "input": {"description": "d",
-                                                "prompt": "p"}}]}},
-            {"type": "user", "uuid": "u2", "parentUuid": "a1",
-             "sessionId": "syncdel", "timestamp": "2026-04-19T10:05:00Z",
-             "message": {"role": "user", "content": [
-                 {"type": "tool_result", "tool_use_id": "tu_sync1",
-                  "content": "done"}]},
-             "toolUseResult": {"status": "completed", "agentId": "zzz999",
-                               "totalTokens": 62150,
-                               "totalDurationMs": 91747,
-                               "totalToolUseCount": 14}},
-        ]
-        jsonl.write_text("\n".join(json.dumps(d) for d in lines))
+        jsonl.write_text("\n".join(json.dumps(d) for d in self._sync_parent(
+            "syncdel", "tu_sync1", agent_id="zzz999", tokens=62150,
+            duration_ms=91747, tool_uses=14)))
         run_v15_etl(conn, jsonl, project_name="p",
                     parquet_lake_root=tmp_path / "lake")
-        self._reconcile(conn)
 
         row = conn.execute("""
-            SELECT agent_total_tokens, agent_derived_io_tokens
-            FROM fact_agent_delegations WHERE tool_use_id = 'tu_sync1'
+            SELECT agent_total_tokens, derived_io_tokens
+            FROM semantic_agent_delegations WHERE tool_use_id = 'tu_sync1'
         """).fetchone()
         assert row[0] == 62150, "the API's stated number, preserved verbatim"
         assert row[1] is None, (
             "no agent transcript in the warehouse => nothing to derive; a "
             "zero here would read as 'the agent used no tokens'"
         )
+
+    @staticmethod
+    def _sync_parent(session_id, tool_use_id, *, agent_id, tokens, duration_ms,
+                     tool_uses):
+        """A parent that ran one agent synchronously and saw it complete."""
+        return [
+            {"type": "user", "uuid": "u1", "sessionId": session_id,
+             "timestamp": "2026-04-19T10:00:00Z", "cwd": "/work",
+             "gitBranch": "main", "version": "2.1.114",
+             "message": {"role": "user", "content": "delegate"}},
+            {"type": "assistant", "uuid": "a1", "parentUuid": "u1",
+             "sessionId": session_id, "timestamp": "2026-04-19T10:00:01Z",
+             "requestId": "r1",
+             "message": {"role": "assistant", "model": "claude-opus-5",
+                         "content": [{"type": "tool_use", "id": tool_use_id,
+                                      "name": "Agent",
+                                      "input": {"description": "quick",
+                                                "prompt": "go"}}]}},
+            {"type": "user", "uuid": "u2", "parentUuid": "a1",
+             "sessionId": session_id, "timestamp": "2026-04-19T10:05:00Z",
+             "message": {"role": "user", "content": [
+                 {"type": "tool_result", "tool_use_id": tool_use_id,
+                  "content": "done"}]},
+             "toolUseResult": {"status": "completed", "agentId": agent_id,
+                               "totalTokens": tokens,
+                               "totalDurationMs": duration_ms,
+                               "totalToolUseCount": tool_uses}},
+        ]
 
     def test_successful_background_launch_is_not_spawn_failed(
         self, conn, tmp_path
@@ -896,8 +825,6 @@ class TestAsyncCompletionReconciliation:
         Delete this and spawn_failed silently absorbs successful launches
         whose agent id is not stated.
         """
-        from ccutils.etl.orchestrator import run_v15_etl
-
         proj = tmp_path / "projects" / "-Users-dev-myrepo"
         proj.mkdir(parents=True, exist_ok=True)
         jsonl = proj / "forked.jsonl"
@@ -924,10 +851,9 @@ class TestAsyncCompletionReconciliation:
         jsonl.write_text("\n".join(json.dumps(d) for d in lines))
         run_v15_etl(conn, jsonl, project_name="p",
                     parquet_lake_root=tmp_path / "lake")
-        self._reconcile(conn)
 
         state = conn.execute("""
-            SELECT completion_state FROM fact_agent_delegations
+            SELECT completion_state FROM semantic_agent_delegations
             WHERE tool_use_id = 'tu_forked'
         """).fetchone()[0]
         assert state != "spawn_failed", (
@@ -951,19 +877,16 @@ class TestAsyncCompletionReconciliation:
         `archetype`/`label`/`bucket` column names: a claim the data cannot
         support must not re-enter the schema through a value name.
         """
-        from ccutils.etl.orchestrator import run_v15_etl
-
         parent = self._parent_with_async_spawn(tmp_path)
         agent = self._agent_transcript(tmp_path, stop_reason=None)
         run_v15_etl(conn, parent, project_name="p",
                     parquet_lake_root=tmp_path / "lake")
         run_v15_etl(conn, agent, project_name="p",
                     parquet_lake_root=tmp_path / "lake")
-        self._reconcile(conn)
 
         states = [
             r[0] for r in conn.execute(
-                "SELECT DISTINCT completion_state FROM fact_agent_delegations "
+                "SELECT DISTINCT completion_state FROM semantic_agent_delegations "
                 "WHERE completion_state IS NOT NULL"
             ).fetchall()
         ]
@@ -980,8 +903,6 @@ class TestAsyncCompletionReconciliation:
     def test_refused_spawn_is_spawn_failed_not_completed(self, conn, tmp_path):
         """29 of 30 NULL-status rows on the real corpus: the agent was never
         created. Distinct from completed, in_flight, and from plain NULL."""
-        from ccutils.etl.orchestrator import run_v15_etl
-
         proj = tmp_path / "projects" / "-Users-dev-myrepo"
         proj.mkdir(parents=True, exist_ok=True)
         jsonl = proj / "refused.jsonl"
@@ -1009,11 +930,10 @@ class TestAsyncCompletionReconciliation:
         jsonl.write_text("\n".join(json.dumps(d) for d in lines))
         run_v15_etl(conn, jsonl, project_name="p",
                     parquet_lake_root=tmp_path / "lake")
-        self._reconcile(conn)
 
         row = conn.execute("""
             SELECT completion_state, agent_session_key, agent_total_tokens
-            FROM fact_agent_delegations WHERE tool_use_id = 'tu_refused'
+            FROM semantic_agent_delegations WHERE tool_use_id = 'tu_refused'
         """).fetchone()
         assert row[0] == "spawn_failed", (
             "no agentId in the payload and an error result => never spawned"
@@ -1021,69 +941,102 @@ class TestAsyncCompletionReconciliation:
         assert row[1] is None, "no agent session to link to"
         assert row[2] is None
 
-    def test_sync_delegation_keeps_its_parent_side_metrics(self, conn, tmp_path):
-        """Non-vacuity guard: the 222 synchronous rows already work. The
-        reconciliation must not overwrite or NULL them."""
-        from ccutils.etl.orchestrator import run_v15_etl
+    def test_sync_delegation_without_its_agent_keeps_stated_and_derives_nothing(
+        self, conn, tmp_path
+    ):
+        """What the parent saw stays stated; what nobody can derive stays NULL.
 
+        This is the known cost of separating the two, accepted on
+        2026-09-10: a synchronous delegation whose agent transcript was
+        pruned upstream has no derived outcome at all. The table answered
+        'completed' here by copying the parent's stated status into the
+        derived state. The stated status is still on the row, under its own
+        name, and a reader who wants either reading can have it.
+        """
         proj = tmp_path / "projects" / "-Users-dev-myrepo"
         proj.mkdir(parents=True, exist_ok=True)
         jsonl = proj / "sync.jsonl"
-        lines = [
-            {"type": "user", "uuid": "u1", "sessionId": "sync-s",
-             "timestamp": "2026-04-19T10:00:00Z", "cwd": "/work",
-             "gitBranch": "main", "version": "2.1.114",
-             "message": {"role": "user", "content": "delegate"}},
-            {"type": "assistant", "uuid": "a1", "parentUuid": "u1",
-             "sessionId": "sync-s", "timestamp": "2026-04-19T10:00:01Z",
-             "requestId": "r1",
-             "message": {"role": "assistant", "model": "claude-opus-5",
-                         "content": [{"type": "tool_use", "id": "tu_sync",
-                                      "name": "Agent",
-                                      "input": {"description": "quick",
-                                                "prompt": "go"}}]}},
-            {"type": "user", "uuid": "u2", "parentUuid": "a1",
-             "sessionId": "sync-s", "timestamp": "2026-04-19T10:01:43Z",
-             "message": {"role": "user", "content": [
-                 {"type": "tool_result", "tool_use_id": "tu_sync",
-                  "content": "done"}]},
-             "toolUseResult": {"status": "completed", "totalTokens": 4242,
-                               "totalDurationMs": 102450,
-                               "totalToolUseCount": 7,
-                               "agentId": "syncagent1"}},
-        ]
-        jsonl.write_text("\n".join(json.dumps(d) for d in lines))
+        jsonl.write_text("\n".join(json.dumps(d) for d in self._sync_parent(
+            "sync-s", "tu_sync", agent_id="syncagent1", tokens=4242,
+            duration_ms=102450, tool_uses=7)))
         run_v15_etl(conn, jsonl, project_name="p",
                     parquet_lake_root=tmp_path / "lake")
-        self._reconcile(conn)
 
         row = conn.execute("""
-            SELECT completion_state, agent_total_tokens, seconds_to_completion
-            FROM fact_agent_delegations WHERE tool_use_id = 'tu_sync'
+            SELECT agent_status, agent_total_tokens, agent_total_duration_ms,
+                   agent_total_tool_use_count,
+                   completion_state, derived_duration_ms, derived_tool_use_count
+            FROM semantic_agent_delegations WHERE tool_use_id = 'tu_sync'
         """).fetchone()
-        assert row[0] == "completed"
-        assert row[1] == 4242, "parent-side metric preserved, not clobbered"
-        assert row[2] == pytest.approx(102.0, abs=1.0)
+        assert row[:4] == ("completed", 4242, 102450.0, 7), "stated, untouched"
+        assert row[4:] == (None, None, None), "no transcript, nothing derived"
 
+    def test_sync_delegation_with_its_agent_carries_both_side_by_side(
+        self, conn, tmp_path
+    ):
+        """Where both exist they sit in different columns and can be compared.
 
-class TestSoftDeletedResultsDoNotFanOut:
-    """A soft-deleted fact_tool_calls twin must not fan out the inbound.
+        This is the shape `ccutils audit` scores: the stated tool count
+        against the one counted from the agent's own calls.
+        """
+        proj = tmp_path / "projects" / "-Users-dev-myrepo"
+        (proj / "parent-uuid").mkdir(parents=True, exist_ok=True)
+        jsonl = proj / "parent-uuid.jsonl"
+        jsonl.write_text("\n".join(json.dumps(d) for d in self._sync_parent(
+            "parent-uuid", "tu_both", agent_id="abc123def", tokens=5000,
+            duration_ms=106000, tool_uses=0)))
+        agent = self._agent_transcript(tmp_path)
+        run_v15_etl(conn, jsonl, project_name="p",
+                    parquet_lake_root=tmp_path / "lake")
+        run_v15_etl(conn, agent, project_name="p",
+                    parquet_lake_root=tmp_path / "lake")
 
-    Same defect class as the file-operations test of the same name: this
-    populator derives from fact_tool_calls JOIN fact_tool_calls, and a
-    repaired (soft-deleted) duplicate result row must not re-enter through
-    the join. Observed on a real pre-R23 warehouse: 1 session failed with
-    2 duplicate delegation_keys after the open-time repair had run.
+        row = conn.execute("""
+            SELECT agent_status, completion_state,
+                   agent_total_duration_ms, derived_duration_ms,
+                   agent_total_tool_use_count, derived_tool_use_count,
+                   agent_total_tokens, derived_io_tokens
+            FROM semantic_agent_delegations WHERE tool_use_id = 'tu_both'
+        """).fetchone()
+        assert row[:2] == ("completed", "completed")
+        assert row[2:4] == (106000.0, 106000.0)
+        assert row[4:6] == (0, 0)
+        assert row[6:] == (5000, 9808), "two measures, not one corrected by the other"
+
+        from ccutils.audit import check_delegation_ground_truth
+
+        assert list(check_delegation_ground_truth(conn)) == []
+        # The oracle can fail: a child tool call the parent never counted.
+        conn.execute(
+            "UPDATE fact_tool_calls SET session_id = 'agent-abc123def', "
+            "session_key = md5('agent-abc123def') WHERE tool_use_id = 'tu_both'"
+        )
+        conn.execute(
+            "INSERT INTO fact_tool_calls SELECT * REPLACE ("
+            "  'parent-uuid' AS session_id, md5('parent-uuid') AS session_key,"
+            "  'tu_both2' AS tool_use_id, 'e_both2' AS entry_id) "
+            "FROM fact_tool_calls WHERE tool_use_id = 'tu_both'"
+        )
+        findings = list(check_delegation_ground_truth(conn))
+        assert findings and findings[0].check == "delegation_ground_truth"
+
+class TestSoftDeletedToolCallsStayOut:
+    """A soft-deleted `fact_tool_calls` row is not a delegation.
+
+    The table had this as a fan-out test: a repaired (soft-deleted) duplicate
+    re-entering its populator's join raised on the natural key. A view has no
+    key assertion to catch that, so the filter is all there is, and without
+    it the twin would simply be a second row for the same spawn.
     """
 
-    def test_repaired_twin_does_not_duplicate_the_inbound(
+    def test_a_soft_deleted_twin_is_not_a_second_delegation(
         self, conn, agent_session, tmp_path
     ):
         _populate(conn, agent_session, tmp_path)
         before = conn.execute(
-            "SELECT COUNT(*) FROM fact_agent_delegations WHERE NOT is_deleted"
+            "SELECT COUNT(*) FROM semantic_agent_delegations"
         ).fetchone()[0]
-        assert before > 0, "fixture must produce at least one delegation"
+        assert before == 2, "fixture must produce its two delegations"
 
         conn.execute(
             "INSERT INTO fact_tool_calls SELECT * REPLACE ("
@@ -1093,11 +1046,148 @@ class TestSoftDeletedResultsDoNotFanOut:
             "ORDER BY tool_use_id LIMIT 1"
         )
 
-        _populate(conn, agent_session, tmp_path)  # must not raise
+        rows = conn.execute(
+            "SELECT delegation_key FROM semantic_agent_delegations"
+        ).fetchall()
+        assert len(rows) == before
+        assert len({r[0] for r in rows}) == before
 
-        dup = conn.execute(
-            "SELECT COUNT(*) FROM (SELECT delegation_key FROM "
-            "fact_agent_delegations WHERE NOT is_deleted GROUP BY 1 "
-            "HAVING COUNT(*) > 1)"
-        ).fetchone()[0]
-        assert dup == 0
+
+class TestItIsAViewAndNothingRepairsIt:
+    """The table, its populator and the reconciliation run are gone.
+
+    Guards against a half-restoration: a table that is created and never
+    filled reads as "no delegations", and a reconciliation run kind with no
+    pass behind it reads as "reconciled".
+    """
+
+    def test_the_table_and_its_machinery_do_not_exist(self, conn):
+        import importlib
+
+        kinds = dict(conn.execute(
+            "SELECT table_name, table_type FROM information_schema.tables"
+        ).fetchall())
+        assert kinds.get("semantic_agent_delegations") == "VIEW"
+        assert "fact_agent_delegations" not in kinds
+
+        with pytest.raises(ModuleNotFoundError):
+            importlib.import_module("ccutils.etl.fact_agent_delegations")
+        orchestrator = importlib.import_module("ccutils.etl.orchestrator")
+        assert not hasattr(orchestrator, "run_post_session_reconciliation")
+
+        from ccutils.export.duckdb_archive import _PROGRESS_TABLES
+        from ccutils.schemas.star.schema import NATURAL_KEYS, TABLE_COVERAGE
+
+        assert "fact_agent_delegations" not in NATURAL_KEYS
+        assert "fact_agent_delegations" not in TABLE_COVERAGE
+        assert "fact_agent_delegations" not in _PROGRESS_TABLES
+
+    def test_a_build_records_no_reconciliation_run(self, conn, agent_session, tmp_path):
+        from ccutils.etl.global_sources import run_global_sources
+
+        _populate(conn, agent_session, tmp_path)
+        run_global_sources(conn)
+        kinds = {r[0] for r in conn.execute("SELECT DISTINCT run_kind FROM etl.runs").fetchall()}
+        assert "reconciliation" not in kinds
+        assert "session" in kinds
+
+
+class TestToolCountIsZeroNotNull:
+    """An agent that finished without calling a tool used ZERO tools.
+
+    The table left its (blended) tool count NULL there (a LEFT JOIN over
+    the agent's tool calls found no rows), which made "used none" read the
+    same as "unknown". `derived_tool_use_count` comes from the agent's
+    session summary, where no rows is a counted zero.
+    """
+
+    def test_completed_async_agent_with_no_tools_counts_zero(self, conn, tmp_path):
+        helper = TestAsyncCompletionIsDerivedFromTheAgent()
+        parent = helper._parent_with_async_spawn(tmp_path)
+        agent = helper._agent_transcript(tmp_path)
+        _populate(conn, parent, tmp_path)
+        _populate(conn, agent, tmp_path)
+        state, tools = conn.execute(
+            "SELECT completion_state, derived_tool_use_count "
+            "FROM semantic_agent_delegations WHERE tool_use_id = 'tu_async1'"
+        ).fetchone()
+        assert state == "completed"
+        assert tools == 0
+
+    def test_an_unfinished_agent_still_reports_no_count(self, conn, tmp_path):
+        helper = TestAsyncCompletionIsDerivedFromTheAgent()
+        parent = helper._parent_with_async_spawn(tmp_path)
+        agent = helper._agent_transcript(tmp_path, stop_reason=None)
+        _populate(conn, parent, tmp_path)
+        _populate(conn, agent, tmp_path)
+        assert conn.execute(
+            "SELECT derived_tool_use_count FROM semantic_agent_delegations "
+            "WHERE tool_use_id = 'tu_async1'"
+        ).fetchone() == (None,)
+
+
+class TestSessionSummaryCarriesDelegationFeatures:
+    """The parent's summary row says how much it delegated.
+
+    Read from `fact_tool_calls` and the child sessions directly, never from
+    `semantic_agent_delegations`: that view reads the summary for the child,
+    so the reverse reference would be a cycle.
+    """
+
+    def _summary(self, conn, session_id):
+        return conn.execute(
+            "SELECT total_delegations, total_spawn_failures, max_child_depth, "
+            "delegated_output_tokens FROM semantic_session_summary "
+            "WHERE session_id = ?", [session_id]
+        ).fetchone()
+
+    def test_a_session_that_delegated_nothing_reads_zero(self, conn, tmp_path):
+        jsonl = tmp_path / "plain.jsonl"
+        jsonl.write_text(json.dumps(
+            {"type": "user", "uuid": "u1", "sessionId": "plain-s",
+             "timestamp": "2026-04-19T10:00:00Z", "cwd": "/p",
+             "message": {"role": "user", "content": "hello"}}))
+        _populate(conn, jsonl, tmp_path)
+        assert self._summary(conn, "plain-s") == (0, 0, None, 0)
+
+    def test_spawns_and_child_output_are_counted_on_the_parent(self, conn, tmp_path):
+        helper = TestAsyncCompletionIsDerivedFromTheAgent()
+        parent = helper._parent_with_async_spawn(tmp_path)
+        agent = helper._agent_transcript(tmp_path)
+        _populate(conn, parent, tmp_path)
+        # Before the child is loaded: one spawn, nothing known about it.
+        assert self._summary(conn, "parent-uuid") == (1, 0, None, 0)
+        # The sidecar states the child's depth; nothing here infers one.
+        agent.with_suffix(".meta.json").write_text(
+            json.dumps({"agentType": "general-purpose", "spawnDepth": 1}))
+        _populate(conn, agent, tmp_path)
+        delegations, failures, depth, out_tokens = self._summary(conn, "parent-uuid")
+        assert (delegations, failures) == (1, 0)
+        assert out_tokens == 9788, "the child's output tokens, from its own usage"
+        assert depth == 1
+        # The child's own summary row counts nothing as delegated.
+        assert self._summary(conn, "agent-abc123def")[0] == 0
+
+    def test_a_refused_spawn_is_a_spawn_failure(self, conn, tmp_path):
+        jsonl = tmp_path / "refused.jsonl"
+        jsonl.write_text("\n".join(json.dumps(d) for d in [
+            {"type": "user", "uuid": "u1", "sessionId": "refused-s",
+             "timestamp": "2026-04-19T10:00:00Z", "cwd": "/work",
+             "message": {"role": "user", "content": "delegate"}},
+            {"type": "assistant", "uuid": "a1", "parentUuid": "u1",
+             "sessionId": "refused-s", "timestamp": "2026-04-19T10:00:01Z",
+             "requestId": "r1",
+             "message": {"role": "assistant", "model": "claude-opus-5",
+                         "content": [{"type": "tool_use", "id": "tu_r",
+                                      "name": "Agent",
+                                      "input": {"description": "nested",
+                                                "prompt": "go"}}]}},
+            {"type": "user", "uuid": "u2", "parentUuid": "a1",
+             "sessionId": "refused-s", "timestamp": "2026-04-19T10:00:02Z",
+             "message": {"role": "user", "content": [
+                 {"type": "tool_result", "tool_use_id": "tu_r",
+                  "content": "Subagent nesting limit reached (depth 3 of 3).",
+                  "is_error": True}]}},
+        ]))
+        _populate(conn, jsonl, tmp_path)
+        assert self._summary(conn, "refused-s")[:2] == (1, 1)

@@ -3,7 +3,7 @@
 *Companion to `STAR_SCHEMA.md`. Defines the data, transforms, and pipeline layers that turn the v0.15 transcript archive into a queryable map of usage patterns. Use cases are derived from the data we capture, not the other way around.*
 
 **Status:** Steps 1-4.5 landed. DDL + Tier 1 registry, Tier 1 SQL populator (F01-F19, `src/ccutils/etl/fact_session_facets.py`), Tier 2 extractor protocol (`AnthropicFacetExtractor` + `CannedFacetExtractor`, `src/ccutils/etl/facets/`), F20 `task_description` populator end-to-end, CLI flags `--llm-facets`. `FACET_SPECS` in `etl/facets/catalog.py` still holds only F20 -- F21+ are cataloged below as design, not yet implemented. Step 5 (embedding + clustering) not yet started; the `fact_facet_embeddings` table exists as a DDL stub (unpopulated), and `fact_clustering_run` / `dim_cluster` / `bridge_cluster_session` / `fact_cluster_metrics` described in §4 don't exist in the DDL yet. Awaiting first F20 sample run on a real corpus to inform the embedding-model choice.
-**Last updated:** 2026-08-05
+**Last updated:** 2026-10-09
 
 ---
 
@@ -36,7 +36,7 @@ Inventory of the v0.15 facts and dimensions, with the fields relevant to facet e
 | `fact_attachments` | attachment subtypes (23 variants) |
 | `fact_pr_links` | PR URLs referenced |
 | `fact_plan_revisions` | plan content over time |
-| `fact_agent_delegations` | subagent fan-out, agent types |
+| `fact_tool_calls` (Agent/Task rows; `semantic_agent_delegations`) | subagent fan-out, agent types |
 | `dim_session` | session id, cwd, git_branch, agent_id, parent_session_key, first/last timestamp, intent/complexity/outcome/domain (heuristic columns, `etl/heuristics.py`) |
 | `dim_project` | project name, project path |
 | `dim_model` | model name, family |
@@ -77,7 +77,7 @@ These are cheap, deterministic, and run inline with the existing `run_v15_etl()`
 | F14 | `human_message_count` | int | `fact_messages` | — |
 | F15 | `tokens_in` / `tokens_out` / `cost_usd` | num | `semantic_session_summary` | Already aggregated. **Implemented as a single value**: current populator emits only summed `input_tokens` from `fact_token_usage` (deliberately independent of `semantic_session_summary`'s populator order); `tokens_out` and `cost_usd` are not computed anywhere in the codebase yet -- there is no USD pricing calculation at all |
 | F16 | `local_hour` / `local_dow` | enum | `dim_time` | For temporal patterns |
-| F17 | `had_subagents` | bool | `fact_agent_delegations` count | — |
+| F17 | `had_subagents` | bool | an Agent/Task call in `fact_tool_calls` | — |
 | F18 | `pr_referenced` | bool | `fact_pr_links` | Was a PR opened/referenced in-session |
 | F19 | `had_plan_revision` | bool | `fact_plan_revisions` | Did the session reshape its plan mid-flight |
 

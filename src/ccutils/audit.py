@@ -251,27 +251,25 @@ def check_single_valued_columns(conn, tables):
 
 
 def check_delegation_ground_truth(conn):
-    """Where a delegation states a rollup AND its agent transcript was
-    ingested, the derivation can be scored on the stated rows."""
+    """Where a delegation states a tool count AND its agent's transcript
+    records a completion, the derived count can be scored against the stated
+    one. Both are columns of the same view row, under different names."""
     row = conn.execute(
         """
         SELECT COUNT(*),
-               COUNT(*) FILTER (WHERE d.agent_total_tool_use_count <> u.n)
-        FROM fact_agent_delegations d
-        JOIN (
-            SELECT session_key, COUNT(*) AS n FROM fact_tool_calls
-            WHERE is_deleted = FALSE GROUP BY session_key
-        ) u ON u.session_key = d.agent_session_key
-        WHERE d.is_deleted = FALSE AND d.agent_is_async IS NOT TRUE
-          AND d.completion_state = 'completed'
-          AND d.agent_total_tool_use_count IS NOT NULL
+               COUNT(*) FILTER (
+                   WHERE agent_total_tool_use_count <> derived_tool_use_count)
+        FROM semantic_agent_delegations
+        WHERE completion_state = 'completed'
+          AND agent_total_tool_use_count IS NOT NULL
+          AND derived_tool_use_count IS NOT NULL
         """
     ).fetchone()
     scored, wrong = row
     if scored and wrong:
-        yield Finding("delegation_ground_truth", "fact_agent_delegations",
-                      "agent_total_tool_use_count",
-                      f"stated value disagrees with the agent's own tool uses on {wrong} of {scored} scorable rows")
+        yield Finding("delegation_ground_truth", "semantic_agent_delegations",
+                      "derived_tool_use_count",
+                      f"derived value disagrees with the stated one on {wrong} of {scored} scorable rows")
 
 
 # --------------------------------------------------------------------------

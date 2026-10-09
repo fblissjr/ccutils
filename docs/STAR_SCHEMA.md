@@ -1,6 +1,6 @@
 # Star Schema DuckDB Implementation
 
-Last updated: 2026-08-05
+Last updated: 2026-10-09
 
 A dimensional data model for Claude Code transcript analytics, built on a four-tier ETL pipeline with full lineage tracking. The star schema is now the only schema (the legacy 4-table simple schema was removed when v0.15 stabilized).
 
@@ -30,7 +30,7 @@ DuckDB:
     fact_system_events, fact_meta_events,
     fact_file_history_snapshots, fact_queue_operations,
     fact_pr_links, fact_file_operations, fact_diagnostics,
-    fact_plan_revisions, fact_agent_delegations,
+    fact_plan_revisions,
     fact_session_facets,
     semantic_session_summary                         (Tier 3 -- warehouse)
 ```
@@ -92,7 +92,6 @@ The orchestrator at `src/ccutils/etl/orchestrator.py` (`run_v15_etl`) runs per s
    - `semantic_session_files` (aggregates fact_file_operations)
    - `fact_diagnostics` (flattens fact_attachments where type='diagnostics')
    - `fact_plan_revisions` (ExitPlanMode outcome classification via R16 tri-state `is_error`)
-   - `fact_agent_delegations` (Task tool spawns + agent rollup metrics)
    - `dim_session` heuristic enrichment (intent / complexity / outcome / domain)
    - `dim_session_chain` (slug-grouped chain aggregate)
    - `fact_session_facets` Tier 1 (F01..F19, SQL-computed)
@@ -126,8 +125,8 @@ After the per-session loop, two global sources are best-effort populated, both o
 `object_type`, `status`, `populated_by` and `reason`. A drift test pins the
 dict to the DDL, so nothing ships undeclared. Table statuses are
 `populated` (a step writes it on every run of its source) or `conditional`
-(written only when a flag is on; today only `fact_session_embeddings`, by
-`--embed`). There is no stub status: the seven tables that used to be
+(written only when a flag is on; no table is conditional since `--embed`
+and `fact_session_embeddings` were removed at 1.0.0). There is no stub status: the seven tables that used to be
 declared empty (`fact_content_blocks`, `fact_code_blocks`,
 `fact_entity_mentions`, `fact_tool_input_params`, `fact_facet_embeddings`,
 `fact_turn_durations`, `fact_stop_events`) were deleted at 1.0.0; a table
@@ -283,11 +282,11 @@ Columns: `memory_key` (PK), `memory_id`, `project_key` (FK to dim_project via `p
 
 `date_key`/`time_key` describe when the memory was WRITTEN (`modified_at`, falling back to `file_mtime`), not when ccutils observed it.
 
-**Recorded as a real ETL run.** Populated by `run_memory_import` (`etl/dim_memory.py`), which wraps `import_memories` in an `EtlRun` with `run_kind = 'global_source'` and a `dim_memory` step, following `run_post_session_reconciliation`. Memory is a per-repository source so it cannot live inside `run_v15_etl` -- but that is a reason to run it after the per-session loop, not a reason to run it outside the run-metadata system. A global source writing rows without a run is invisible: nothing reports how many versions a run wrote, no row says which run observed it, and a failure leaves no trace.
+**Recorded as a real ETL run.** Populated by `run_memory_import` (`etl/dim_memory.py`), which wraps `import_memories` in an `EtlRun` with `run_kind = 'global_source'` and a `dim_memory` step. Memory is a per-repository source so it cannot live inside `run_v15_etl` -- but that is a reason to run it after the per-session loop, not a reason to run it outside the run-metadata system. A global source writing rows without a run is invisible: nothing reports how many versions a run wrote, no row says which run observed it, and a failure leaves no trace.
 
 Rows carry `created_at`, `created_by_version_key`, `etl_run_id` and `record_source` (`<auto-memory>`), so a Type 2 row can answer "which run observed this version". They deliberately carry **no `is_deleted`/`deleted_at`** -- `is_current`/`valid_to` ARE this table's deletion mechanism, and a second one would let a row be closed by one convention and deleted by the other -- and **no `hash_diff`**, since `content_hash` is the change detector.
 
-Unlike the cross-session reconciliation pass, a memory-import failure is **recorded, not raised**: the run row carries the error and the archive still completes, because memory is additive and losing it corrupts nothing else. What it must never do is vanish -- a swallowed failure leaves a warehouse indistinguishable from one built where auto memory was disabled.
+A memory-import failure is **recorded, not raised** (a source whose output is load-bearing would re-raise instead): the run row carries the error and the archive still completes, because memory is additive and losing it corrupts nothing else. What it must never do is vanish -- a swallowed failure leaves a warehouse indistinguishable from one built where auto memory was disabled.
 
 Scoped to the projects already in `dim_project` so a filtered run does not ingest the whole machine's memory corpus. A memory file that disappears is **closed, not deleted** (`is_current = FALSE`, `valid_to` set) -- a retired memory is a fact about the project's history. Retirement keys off the owners that were *scanned*, not the files that came back, or emptying a memory directory would leave its rows marked current forever.
 
@@ -539,37 +538,47 @@ One row per `ExitPlanMode` tool invocation, linked into a per-session revision c
 
 Outcome classification precedence (first match wins): `superseded` (later ExitPlanMode in same session), `accepted` (is_error=FALSE or approval signature), `rejected` (is_error=TRUE), `pending` (no tool_result yet), `unknown` (tool_result present but is_error is NULL).
 
-#### fact_agent_delegations
-Task tool spawns + agent rollup metrics from R1 structured `toolUseResult` capture. Cross-session linkage via `dim_session.agent_id`.
+#### semantic_agent_delegations (view)
+The delegation edge: one row per `Agent` / `Task` tool call in `fact_tool_calls` (the parent-side spawn), joined to the agent's own session where its transcript is in the warehouse.
+
+A view since 1.0.0. It was the table `fact_agent_delegations`, written per session and then repaired by a post-loop reconciliation run, because a parent is normally loaded before its agents and a per-session populator cannot see rows that do not exist yet. Every column is a projection of `fact_tool_calls` or a rollup of the agent's own facts, so there is nothing to order and nothing to repair. It reads `semantic_session_summary` for the agent's token and tool rollups; the summary's own delegation columns therefore read `fact_tool_calls` directly, never this view.
+
+**A stated value and a derived one never share a column** (decided 2026-09-10). The table held the stated duration and tool count on synchronous rows and derived ones on background rows under one name, and blended the completion time the same way. Here the `agent_*` columns are what the parent's tool result stated, untouched, and every `derived_*` column comes from the agent's own transcript. Columns that changed name or meaning from the table: `completion_timestamp` and `seconds_to_completion` are gone (see `result_timestamp` and the two `derived_` columns), `agent_derived_io_tokens` is `derived_io_tokens`, `agent_derived_output_text` is `derived_output_text`, and `agent_total_duration_ms` / `agent_total_tool_use_count` are stated-only, so they are NULL on background launches.
 
 | Column | Type | Description |
 |--------|------|-------------|
-| delegation_key | VARCHAR | PK |
-| tool_use_id | VARCHAR | FK to fact_tool_calls (the Agent tool_use that spawned the agent) |
-| session_key | VARCHAR | FK to dim_session (parent session) |
-| parent_session_key | VARCHAR | FK to dim_session (parent) |
-| agent_session_key | VARCHAR | FK to dim_session (agent) -- NULL if agent session not yet ETL'd |
-| date_key | INTEGER | FK to dim_date |
-| time_key | INTEGER | FK to dim_time |
-| task_description | TEXT | From tool input |
-| task_prompt | TEXT | Task prompt text |
-| subagent_type | VARCHAR | "Explore", "Plan", etc. |
-| agent_status | VARCHAR | From toolUseResult rollup |
+| delegation_key | VARCHAR | `md5(parent session_id \|\| '\|' \|\| tool_use_id)`; unique per row |
+| tool_use_id | VARCHAR | The spawn call in `fact_tool_calls` |
+| parent_session_key / parent_session_id | VARCHAR | The session that delegated. `parent_cwd` and `project_name` come from its `dim_session` row |
+| agent_id | VARCHAR | Stated `toolUseResult.agentId`. NULL when the spawn was refused or the launch named none |
+| agent_session_key | VARCHAR | `md5('agent-' \|\| agent_id)`. May name a session that was never ingested |
+| agent_session_id / agent_depth_level | | From the agent's `dim_session` row; NULL when its transcript is not in the warehouse |
+| task_description / task_prompt / subagent_type | TEXT | From the spawn call's input |
+| delegation_timestamp / delegation_date / time_of_day | | When the agent was invoked |
 | agent_is_async | BOOLEAN | Stated `toolUseResult.isAsync`. TRUE = the parent's result is a launch acknowledgment, not an outcome |
-| completion_state | VARCHAR | `completed` / `no_completion_recorded` / `spawn_failed` / NULL (not reconciled). See below |
-| agent_resolved_model | VARCHAR | The model the subagent actually ran on. May carry a context-window suffix (`claude-opus-4-8[1m]`) |
-| agent_total_duration_ms | FLOAT | Stated for sync rows; re-derived from the agent's transcript for completed async rows (validated 188/188 against ground truth) |
-| agent_total_tokens | INTEGER | **API-stated only.** NULL on async rows -- the API never states one for a background launch. Do NOT compare with `agent_derived_io_tokens` |
-| agent_derived_io_tokens | INTEGER | Input+output summed from the agent's OWN transcript. A *different measure* from `agent_total_tokens`, not a fallback for it |
-| agent_total_tool_use_count | INTEGER | Stated for sync rows; re-derived for completed async rows (validated 188/188). NULL when the agent used no tools |
-| agent_output_text | TEXT | Agent result text. NULL on background launches (it held "Async agent launched successfully.") |
-| delegation_timestamp | TIMESTAMP | When agent was invoked |
-| completion_timestamp | TIMESTAMP | When agent completed. NULL unless `completion_state = 'completed'` |
-| seconds_to_completion | DOUBLE | completion_timestamp - delegation_timestamp. NULL unless `completion_state = 'completed'` |
+| agent_resolved_model | VARCHAR | Stated. The model the subagent actually ran on. May carry a context-window suffix (`claude-opus-4-8[1m]`) |
+| agent_status | VARCHAR | Stated by the parent's tool result (`completed`, `interrupted`, `async_launched`, ...) |
+| spawn_is_error | BOOLEAN | Stated `is_error` on the spawn's result; absent means not an error |
+| result_timestamp | TIMESTAMP | Stated: when the parent received the tool result. On a background launch that is the acknowledgment, moments after the spawn, which is why it is not called a completion time |
+| agent_total_duration_ms | FLOAT | Stated `totalDurationMs`. NULL on background launches |
+| agent_total_tokens | INTEGER | Stated `totalTokens`. NULL on background launches. Do NOT compare with `derived_io_tokens` |
+| agent_total_tool_use_count | INTEGER | Stated `totalToolUseCount`. NULL on background launches |
+| agent_output_text | TEXT | The parent's tool result. The one stated value that is withheld: NULL on background launches, where it held "Async agent launched successfully." |
+| completion_state | VARCHAR | DERIVED from the agent's transcript: `completed` / `no_completion_recorded` / `spawn_failed` / NULL (the transcript is not in the warehouse). See below |
+| derived_completion_timestamp | TIMESTAMP | The agent's last assistant message |
+| derived_seconds_to_completion | DOUBLE | derived_completion_timestamp - delegation_timestamp |
+| derived_duration_ms | DOUBLE | The agent's first message to its last assistant message |
+| derived_io_tokens | BIGINT | Input+output summed from the agent's OWN usage. A *different measure* from `agent_total_tokens`, not a fallback for it |
+| derived_tool_use_count | INTEGER | The agent's own tool calls; 0, not NULL, for an agent that finished without calling one. `ccutils audit` scores it against `agent_total_tool_use_count` where both exist |
+| derived_output_text | TEXT | The agent's final report: its terminal assistant message |
+
+Every `derived_` column is NULL unless `completion_state = 'completed'`.
+
+**A synchronous delegation whose agent transcript is not in the warehouse derives nothing.** `completion_state` is NULL there even though `agent_status` says `completed`: what the parent saw is stated, and is not copied into a derived column. This is the accepted cost of the separation. Count the rows it affects with `SELECT COUNT(*) FROM semantic_agent_delegations WHERE agent_is_async IS NOT TRUE AND agent_status IS NOT NULL AND completion_state IS NULL`.
 
 **Why the two token columns are separate.** 188 synchronous delegations carry both an API-stated rollup and an ingested agent transcript, which makes the async derivation scoreable against a known answer. Duration matched 188/188 and tool count 188/188 -- but tokens matched only 12/188 within 10%, with the per-row ratio spanning p10 0.063 to p90 1.004. No formula reconciles them (in+out, out alone, +cache_creation, +cache_read, `total_uncached_equivalent`, the 5m/1h splits); it is not a capture gap (median 23 assistant records, 23 carrying usage) and not a nested-agent rollup (all 188 spawned none). Summing them in one column made async delegations read 3x cheaper than synchronous ones (median 19,444 vs 61,362) while measuring 2x longer. Aggregate over one or the other, never across both.
 
-**Rollups are written only for `completed`.** A partial sum from an unfinished agent is indistinguishable from a fast one, so `no_completion_recorded` and `spawn_failed` rows carry NULL for every rollup. `no_completion_recorded` states exactly what is known -- the agent's transcript records no completion -- and deliberately makes no claim about liveness: of 101 rows under its former name `in_flight_at_ingest`, 98 had ended mid-tool-loop a median of 15.7 days before the ETL ran. It absorbs a measured ~10% false-negative rate (19 of 188 agents whose parent saw a synchronous result still fail the terminal-`stop_reason` test; two alternative predicates miss the same 19).
+**Derived rollups exist only for `completed`.** A partial sum from an unfinished agent is indistinguishable from a fast one, so `no_completion_recorded` and `spawn_failed` rows carry NULL in every `derived_` column. `no_completion_recorded` states exactly what is known -- the agent's transcript records no completion -- and deliberately makes no claim about liveness: of 101 rows under its former name `in_flight_at_ingest`, 98 had ended mid-tool-loop a median of 15.7 days before the ETL ran. It absorbs a measured ~10% false-negative rate (19 of 188 agents whose parent saw a synchronous result still fail the terminal-`stop_reason` test; two alternative predicates miss the same 19).
 
 #### fact_session_facets
 One row per (session_key, facet_type_key). Tier 1 facets (F01-F19) populated via SQL; Tier 2 facets (F20+) populated via the LLM extractor when injected.
@@ -630,6 +639,10 @@ One row per session. Aggregates over every fact above. Must populate last.
 | total_stop_events | INTEGER | From fact_system_events |
 | total_prevented_continuations | INTEGER | From fact_system_events |
 | total_progress_events | INTEGER | From fact_progress_events |
+| total_delegations | INTEGER | Agent/Task spawn calls made by this session |
+| total_spawn_failures | INTEGER | Spawns that were refused: a stated error, no agent id, no status |
+| max_child_depth | INTEGER | Deepest `spawn_depth` stated by a directly spawned agent's sidecar; NULL when none is in the warehouse or states one |
+| delegated_output_tokens | BIGINT | Output tokens of the directly spawned agents, from their own usage rows |
 | total_hook_progress_events | INTEGER | From fact_progress_events |
 | total_bash_progress_events | INTEGER | From fact_progress_events |
 | total_attachments | INTEGER | From fact_attachments |
@@ -651,7 +664,7 @@ All views use the `semantic_` prefix and join facts with dimensions for easy que
 - `semantic_messages` -- messages with session, model, and time context
 - `semantic_file_operations` -- file operations with file info, tool, and session context
 - `semantic_session_chains` -- chain aggregates across all member sessions
-- `semantic_agent_delegations` -- delegations with parent/agent session details
+- `semantic_agent_delegations` -- one row per Agent/Task spawn, joined to the child session, with derived `completion_state` and rollups (a table until 1.0.0; documented above under facts)
 - `semantic_plan_revisions` -- plan revision chain with outcomes, feedback, resolution timing
 - `semantic_decisions` -- unified decision timeline UNIONing plan revisions, permission-mode changes, stop events, API errors, and compact boundaries from their source facts (the "fact_decisions backbone" as a pure projection; `source_key`/`source_table` link back to the underlying row)
 - `semantic_file_evolution` -- cross-session file activity (files touched in 2+ sessions)

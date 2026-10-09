@@ -167,7 +167,7 @@ def _create_objects(conn) -> None:
             batch_run_id VARCHAR,               -- FK etl.batch_runs (NULL for standalone runs)
             data_start_ts TIMESTAMP,            -- CDC window: min entry timestamp staged this run
             data_end_ts TIMESTAMP,              -- CDC window: max entry timestamp staged this run
-            run_kind VARCHAR                    -- session | reconciliation | global_source
+            run_kind VARCHAR                    -- session | global_source
         )
     """
     )
@@ -926,82 +926,6 @@ def _create_objects(conn) -> None:
 
 
     # =========================================================================
-    # Agent Delegation Tracking
-    # =========================================================================
-
-    conn.execute(
-        """
-        -- Grain: one row per Task tool_use (parent-side agent spawn).
-        -- Reads fact_tool_calls (tool_name = Agent) to get the
-        -- agent rollup metrics from the v0.15 toolUseResult capture (R1).
-        --
-        -- agent_session_key / parent_session_key are NULL for now -- the
-        -- cross-session subagent linkage (reading .meta.json sidecars
-        -- to mark dim_session.is_agent / parent_session_key) is a
-        -- separate Phase D follow-up. session_id on this fact = parent
-        -- session that did the delegating.
-        CREATE TABLE IF NOT EXISTS fact_agent_delegations (
-            -- Lineage (every v0.15 fact carries this block)
-            created_at TIMESTAMP NOT NULL DEFAULT current_timestamp,
-            created_by_version_key VARCHAR NOT NULL,
-            last_updated_at TIMESTAMP NOT NULL DEFAULT current_timestamp,
-            last_updated_by_version_key VARCHAR NOT NULL,
-            etl_run_id VARCHAR NOT NULL,
-            record_source VARCHAR NOT NULL,
-            hash_diff VARCHAR NOT NULL,
-            is_deleted BOOLEAN NOT NULL DEFAULT FALSE,
-            deleted_at TIMESTAMP,
-
-            -- Degenerate
-            delegation_key VARCHAR NOT NULL,
-            tool_use_id VARCHAR NOT NULL,
-            session_id VARCHAR NOT NULL,
-
-            -- Dimension FKs (session_key = parent session)
-            session_key VARCHAR,
-            parent_session_key VARCHAR,
-            agent_session_key VARCHAR,
-            date_key INTEGER,
-            time_key INTEGER,
-
-            -- Task input (from fact_tool_calls.input_json)
-            task_description TEXT,
-            task_prompt TEXT,
-            subagent_type VARCHAR,
-
-            -- Agent rollup (from fact_tool_calls.agent_* columns)
-            agent_status VARCHAR,
-            agent_total_duration_ms FLOAT,
-            agent_total_tokens INTEGER,
-            agent_total_tool_use_count INTEGER,
-            agent_output_text TEXT,
-
-            -- Re-derived from the agent's OWN transcript, kept separate from
-            -- the stated columns above so provenance is readable off the
-            -- name. On a background launch the stated columns describe the
-            -- launch acknowledgment, not the work, and are deliberately NULL.
-            agent_derived_output_text TEXT,
-            agent_derived_io_tokens INTEGER,
-
-            -- Spawn-side facts about the delegation itself. NULL semantics
-            -- differ from the rollups above: agent_is_async says which shape
-            -- the tool result had, and completion_state says which of the
-            -- delegation's outcomes actually happened -- it is what the
-            -- reconciliation pass keys every rollup on.
-            agent_resolved_model VARCHAR,
-            agent_is_async BOOLEAN,
-            completion_state VARCHAR,
-
-            -- Timing
-            timestamp TIMESTAMP,
-            delegation_timestamp TIMESTAMP,
-            completion_timestamp TIMESTAMP,
-            seconds_to_completion DOUBLE
-        )
-    """
-    )
-
-    # =========================================================================
     # Plan Revision Tracking (ExitPlanMode chain)
     # =========================================================================
 
@@ -1304,26 +1228,6 @@ def _create_objects(conn) -> None:
     )
 
     # =========================================================================
-    # Optional Tables (require pylate)
-    # =========================================================================
-
-    conn.execute(
-        """
-        CREATE TABLE IF NOT EXISTS fact_session_embeddings (
-            embedding_key VARCHAR,
-            session_key VARCHAR,
-            content_type VARCHAR,
-            embedding_model VARCHAR,
-            embedding_dim INTEGER,
-            mean_embedding FLOAT[64],
-            embedded_at TIMESTAMP,
-            content_hash VARCHAR
-        )
-    """
-    )
-
-
-    # =========================================================================
     # Facet & Cluster Pipeline (docs/FACET_CLUSTER_PIPELINE.md)
     # =========================================================================
     # dim_facet_type        - registry of facet definitions (Tier 1/2/3)
@@ -1574,6 +1478,31 @@ def _create_objects(conn) -> None:
         file_history_rollup AS (
             SELECT session_id, COUNT(*) AS total_file_history_snapshots
             FROM fact_file_history_snapshots WHERE is_deleted = FALSE GROUP BY session_id
+        ),
+        -- What this session delegated, read from the spawn calls and the
+        -- child sessions directly. NOT from semantic_agent_delegations: that
+        -- view reads this one for the child's rollup, so the reverse
+        -- reference would be a cycle. The spawn-failure predicate is the
+        -- same three stated facts that view's completion_state uses.
+        child_tokens AS (
+            SELECT session_id, SUM(COALESCE(output_tokens, 0)) AS output_tokens
+            FROM fact_token_usage WHERE is_deleted = FALSE GROUP BY session_id
+        ),
+        delegation_rollup AS (
+            SELECT ftc.session_id,
+                   COUNT(*) AS total_delegations,
+                   SUM(CASE WHEN ftc.is_error IS TRUE AND ftc.agent_id IS NULL
+                             AND ftc.agent_status IS NULL THEN 1 ELSE 0 END)
+                       AS total_spawn_failures,
+                   -- Stated by the child's sidecar (spawnDepth); NULL when
+                   -- no child is in the warehouse or none states a depth.
+                   MAX(cs.spawn_depth) AS max_child_depth,
+                   SUM(COALESCE(ct.output_tokens, 0)) AS delegated_output_tokens
+            FROM fact_tool_calls ftc
+            LEFT JOIN dim_session cs ON cs.session_id = 'agent-' || ftc.agent_id
+            LEFT JOIN child_tokens ct ON ct.session_id = 'agent-' || ftc.agent_id
+            WHERE ftc.is_deleted = FALSE AND ftc.tool_name IN ('Task', 'Agent')
+            GROUP BY ftc.session_id
         )
         SELECT
             ds.session_id,
@@ -1614,7 +1543,11 @@ def _create_objects(conn) -> None:
             COALESCE(ar.total_hook_successes, 0) AS total_hook_successes,
             COALESCE(metar.permission_mode_transition_count, 0) AS permission_mode_transition_count,
             ds.permission_mode AS current_permission_mode,
-            COALESCE(fhr.total_file_history_snapshots, 0) AS total_file_history_snapshots
+            COALESCE(fhr.total_file_history_snapshots, 0) AS total_file_history_snapshots,
+            COALESCE(dr.total_delegations, 0) AS total_delegations,
+            COALESCE(dr.total_spawn_failures, 0) AS total_spawn_failures,
+            dr.max_child_depth,
+            COALESCE(dr.delegated_output_tokens, 0) AS delegated_output_tokens
         FROM dim_session ds
         LEFT JOIN msg_rollup mr ON mr.session_id = ds.session_id
         LEFT JOIN token_rollup tr ON tr.session_id = ds.session_id
@@ -1624,6 +1557,7 @@ def _create_objects(conn) -> None:
         LEFT JOIN attachment_rollup ar ON ar.session_id = ds.session_id
         LEFT JOIN meta_rollup metar ON metar.session_id = ds.session_id
         LEFT JOIN file_history_rollup fhr ON fhr.session_id = ds.session_id
+        LEFT JOIN delegation_rollup dr ON dr.session_id = ds.session_id
     """
     )
 
@@ -1789,43 +1723,192 @@ def _create_objects(conn) -> None:
 
     conn.execute(
         """
+        -- The delegation edge: one row per Agent / Task tool call (the
+        -- parent-side spawn), with the outcome derived from the agent's own
+        -- session where its transcript is in the warehouse.
+        --
+        -- A VIEW since 1.0.0. It was fact_agent_delegations, a table written
+        -- per session and then repaired by a post-loop reconciliation pass,
+        -- because a parent is normally loaded before its agents. Every
+        -- column is a projection of fact_tool_calls or a rollup of the
+        -- agent's facts, so there is nothing to order and nothing to repair.
         CREATE OR REPLACE VIEW semantic_agent_delegations AS
+        WITH spawn AS (
+            SELECT
+                md5(ftc.session_id || '|' || ftc.tool_use_id) AS delegation_key,
+                ftc.tool_use_id,
+                ftc.session_id AS parent_session_id,
+                md5(ftc.session_id) AS parent_session_key,
+                ftc.agent_id,
+                -- DERIVED from the stated agentId, not looked up: an agent's
+                -- session_id is 'agent-<agent_id>'. It may name a session
+                -- that was never ingested; consumers LEFT JOIN dim_session.
+                md5('agent-' || ftc.agent_id) AS agent_session_key,
+                ftc.date_key,
+                ftc.time_key,
+                ftc.timestamp AS delegation_timestamp,
+                ftc.result_timestamp,
+                ftc.is_error,
+                json_extract_string(ftc.input_json, '$.description') AS task_description,
+                json_extract_string(ftc.input_json, '$.prompt') AS task_prompt,
+                COALESCE(json_extract_string(ftc.input_json, '$.subagent_type'),
+                         ftc.agent_subagent_type) AS subagent_type,
+                ftc.agent_status,
+                ftc.agent_is_async,
+                ftc.agent_resolved_model,
+                ftc.agent_total_duration_ms AS stated_duration_ms,
+                ftc.agent_total_tokens AS stated_tokens,
+                ftc.agent_total_tool_use_count AS stated_tool_use_count,
+                -- A list of blocks or, when the parser flattened it, a string.
+                COALESCE(ftc.result_content_text,
+                         CAST(json_extract(ftc.result_payload_json, '$.content') AS VARCHAR))
+                    AS stated_output_text
+            FROM fact_tool_calls ftc
+            WHERE ftc.is_deleted = FALSE
+              -- Claude Code emits both names depending on version.
+              AND ftc.tool_name IN ('Task', 'Agent')
+        ),
+        child AS (
+            -- One row per AGENT session, from that agent's OWN messages.
+            SELECT
+                fm.session_key AS agent_session_key,
+                MIN(fm.timestamp) AS first_ts,
+                -- Terminality is decided by comparing these two maxima, never
+                -- with arg_max(stop_reason, timestamp): arg_max skips NULLs,
+                -- so an unfinished agent whose EARLIER turn had a stop_reason
+                -- would read as terminal. They are equal only when the last
+                -- assistant record itself carries a stop_reason.
+                MAX(fm.timestamp) FILTER (
+                    WHERE fm.message_type = 'assistant') AS last_assistant_ts,
+                MAX(fm.timestamp) FILTER (
+                    WHERE fm.message_type = 'assistant'
+                      AND fm.stop_reason IS NOT NULL) AS last_terminal_ts,
+                -- The final report: the TERMINAL message, not merely the last
+                -- one. An agent still working has a last message too.
+                arg_max(fm.content_text, fm.timestamp) FILTER (
+                    WHERE fm.message_type = 'assistant'
+                      AND fm.stop_reason IS NOT NULL
+                      AND fm.content_text IS NOT NULL) AS terminal_text
+            FROM fact_messages fm
+            WHERE fm.is_deleted = FALSE
+            GROUP BY fm.session_key
+        ),
+        scored AS (
+            SELECT
+                s.*,
+                c.first_ts AS child_first_ts,
+                c.last_assistant_ts AS child_last_ts,
+                c.terminal_text AS child_terminal_text,
+                ss.total_input_tokens + ss.total_output_tokens AS child_io_tokens,
+                ss.total_tool_uses AS child_tool_uses,
+                CASE
+                    -- No agent id, no status, and a STATED error: the spawn
+                    -- was refused and no agent ever existed (nesting limit,
+                    -- cancellation, validation error, user rejection). The
+                    -- is_error gate is load-bearing: a successful background
+                    -- launch can also carry no agentId, and it omits
+                    -- is_error, which by the tri-state rule is not an error.
+                    WHEN s.agent_status IS NULL AND s.agent_id IS NULL
+                         AND s.is_error IS TRUE THEN 'spawn_failed'
+                    -- The agent's transcript is not in the warehouse. NULL
+                    -- means "cannot say", not "observed unfinished". This
+                    -- holds for a synchronous delegation too: what its
+                    -- parent saw is in agent_status, stated, and is not
+                    -- copied into a derived column.
+                    WHEN c.agent_session_key IS NULL THEN NULL
+                    WHEN c.last_terminal_ts IS NOT NULL
+                         AND c.last_terminal_ts = c.last_assistant_ts THEN 'completed'
+                    -- The transcript records no completion, and that is ALL
+                    -- this says: it does not claim the agent is still
+                    -- running, which a transcript cannot establish. Known
+                    -- limit: about one in ten agents whose parent states
+                    -- 'completed' still fail the terminal test, so this
+                    -- state absorbs those too, and there agent_status and
+                    -- completion_state visibly disagree. Erring this way
+                    -- keeps the derived rollups NULL rather than inventing
+                    -- them.
+                    ELSE 'no_completion_recorded'
+                END AS completion_state
+            FROM spawn s
+            LEFT JOIN child c ON c.agent_session_key = s.agent_session_key
+            LEFT JOIN semantic_session_summary ss ON ss.session_key = s.agent_session_key
+        )
         SELECT
-            fad.delegation_key,
-            fad.tool_use_id,
-            fad.task_description,
-            fad.task_prompt,
-            fad.subagent_type,
-            fad.agent_status,
-            fad.completion_state,
-            fad.agent_is_async,
-            fad.agent_resolved_model,
+            sc.delegation_key,
+            sc.tool_use_id,
+            sc.task_description,
+            sc.task_prompt,
+            sc.subagent_type,
+            sc.agent_id,
+            sc.agent_is_async,
+            sc.agent_resolved_model,
             dd.full_date AS delegation_date,
-            fad.delegation_timestamp,
-            fad.completion_timestamp,
-            fad.seconds_to_completion,
+            sc.delegation_timestamp,
             dti.time_of_day,
-            fad.agent_total_tool_use_count,
-            fad.agent_total_duration_ms,
-            -- API-stated; NULL on async rows (the API never states one for a
-            -- background launch). NOT comparable with agent_derived_io_tokens
-            -- below: see STAR_SCHEMA.md "Why the two token columns are
-            -- separate". Filter on completion_state to know why a value is
-            -- absent.
-            fad.agent_total_tokens,
-            fad.agent_derived_io_tokens,
-            fad.agent_output_text,
-            ps.session_id AS parent_session_id,
+
+            -- STATED by the parent's tool result, exactly as fact_tool_calls
+            -- holds it. On a background launch (agent_is_async) that result
+            -- is an acknowledgment landing moments after the spawn: the API
+            -- states no duration, token or tool count there, and
+            -- result_timestamp is the acknowledgment's time, which is why it
+            -- is not called a completion time.
+            sc.agent_status,
+            sc.is_error AS spawn_is_error,
+            sc.result_timestamp,
+            sc.stated_duration_ms AS agent_total_duration_ms,
+            sc.stated_tokens AS agent_total_tokens,
+            sc.stated_tool_use_count AS agent_total_tool_use_count,
+            -- The one stated value that is withheld: on a background launch
+            -- the result text is "Async agent launched successfully", which
+            -- under this column's name would read as the agent's work. The
+            -- report is derived_output_text there.
+            CASE WHEN sc.agent_is_async IS TRUE THEN NULL
+                 ELSE sc.stated_output_text END AS agent_output_text,
+
+            -- DERIVED from the agent's own transcript, and named so. A stated
+            -- value and a derived one never share a column (decided
+            -- 2026-09-10): the table this replaced held the stated duration
+            -- and tool count on synchronous rows and derived ones on
+            -- background rows under one name, and the two token counts
+            -- measure different things outright (STAR_SCHEMA.md, "Why the
+            -- two token columns are separate").
+            --
+            -- Every derived_ column is NULL unless completion_state is
+            -- 'completed': an unfinished agent's partial sum is
+            -- indistinguishable from a fast agent's and silently poisons an
+            -- aggregate. Where a stated and a derived tool count both
+            -- exist, ccutils audit scores one against the other.
+            sc.completion_state,
+            CASE WHEN sc.completion_state = 'completed' THEN sc.child_last_ts
+            END AS derived_completion_timestamp,
+            CASE WHEN sc.completion_state = 'completed'
+                 THEN EXTRACT(EPOCH FROM (sc.child_last_ts - sc.delegation_timestamp))
+            END AS derived_seconds_to_completion,
+            -- Integer microseconds, so a whole number of ms stays whole.
+            CASE WHEN sc.completion_state = 'completed'
+                 THEN date_diff('microsecond', sc.child_first_ts, sc.child_last_ts) / 1000.0
+            END AS derived_duration_ms,
+            CASE WHEN sc.completion_state = 'completed' THEN sc.child_io_tokens
+            END AS derived_io_tokens,
+            -- 0, not NULL, for an agent that finished without calling a tool.
+            CASE WHEN sc.completion_state = 'completed' THEN sc.child_tool_uses
+            END AS derived_tool_use_count,
+            CASE WHEN sc.completion_state = 'completed' THEN sc.child_terminal_text
+            END AS derived_output_text,
+
+            sc.parent_session_key,
+            sc.parent_session_id,
             ps.cwd AS parent_cwd,
+            sc.agent_session_key,
             ags.session_id AS agent_session_id,
             ags.depth_level AS agent_depth_level,
             dp.project_name
-        FROM fact_agent_delegations fad
-        JOIN dim_session ps ON fad.session_key = ps.session_key
-        LEFT JOIN dim_session ags ON fad.agent_session_key = ags.session_key
-        LEFT JOIN dim_project dp ON ps.project_key = dp.project_key
-        LEFT JOIN dim_date dd ON fad.date_key = dd.date_key
-        LEFT JOIN dim_time dti ON fad.time_key = dti.time_key
+        FROM scored sc
+        LEFT JOIN dim_session ps ON ps.session_key = sc.parent_session_key
+        LEFT JOIN dim_session ags ON ags.session_key = sc.agent_session_key
+        LEFT JOIN dim_project dp ON dp.project_key = ps.project_key
+        LEFT JOIN dim_date dd ON dd.date_key = sc.date_key
+        LEFT JOIN dim_time dti ON dti.time_key = sc.time_key
     """
     )
 
@@ -2418,9 +2501,8 @@ def _create_objects(conn) -> None:
             -- run_kind was added to etl.runs to scope the batch rollup
             -- but never surfaced here, so the documented observability view
             -- could not tell a session run from one that is not a session.
-            -- With three kinds in play ('session', 'reconciliation',
-            -- 'global_source') an unqualified row count over this view
-            -- silently mixes them.
+            -- With two kinds in play ('session', 'global_source') an
+            -- unqualified row count over this view silently mixes them.
             r.run_kind,
             r.status,
             r.started_at,
@@ -2496,9 +2578,7 @@ TABLE_COVERAGE = {
     "fact_file_operations": ("table", "populated", "session", "one row per file tool call; Bash-derived writes are NOT captured yet (1.1.0)"),
     "fact_diagnostics": ("table", "populated", "session", "LSP diagnostics flattened from attachments"),
     "fact_plan_revisions": ("table", "populated", "session", "ExitPlanMode outcomes with revision chain"),
-    "fact_agent_delegations": ("table", "populated", "session", "Agent tool spawns with derived outcome (1.0.0: becoming semantic_agent_delegations, a view)"),
     "fact_session_facets": ("table", "populated", "session", "Tier 1 facets per session; Tier 2 rows only with --llm-facets"),
-    "fact_session_embeddings": ("table", "conditional", "flag:--embed", "session vectors; rows only when the export ran with --embed"),
     "bridge_memory_link": ("table", "populated", "global_source", "memory link graph, wiki and markdown syntaxes, dangling links included"),
     # --- views
     "semantic_session_summary": ("view", "keep", None, "per-session rollup over every fact; was a table written last by every run"),
@@ -2507,7 +2587,7 @@ TABLE_COVERAGE = {
     "semantic_messages": ("view", "delete", None, "plain join, no logic"),
     "semantic_file_operations": ("view", "delete", None, "plain join, no logic"),
     "semantic_session_chains": ("view", "delete", None, "plain join, no logic"),
-    "semantic_agent_delegations": ("view", "keep", None, "the delegation edge: parent spawn call to child session, with derived completion_state"),
+    "semantic_agent_delegations": ("view", "keep", None, "the delegation edge: one row per Agent/Task spawn call, joined to the child session, with derived completion_state and rollups (a table until 1.0.0)"),
     "semantic_plan_revisions": ("view", "delete", None, "plain join, no logic"),
     "semantic_decisions": ("view", "keep", None, "plan outcomes classified per session"),
     "semantic_file_evolution": ("view", "keep", None, "per-file operation sequence across sessions"),
@@ -2532,8 +2612,6 @@ TABLE_COVERAGE = {
 AUDIT_EXCEPTIONS: dict[tuple[str, str, str | None], str] = {
     ("fk_unresolved", "dim_session", "parent_session_key"):
         "agent whose parent transcript was pruned upstream; the key names a real session and is kept",
-    ("fk_unresolved", "fact_agent_delegations", "agent_session_key"):
-        "agent transcript pruned upstream or never written; the key is derived from the stated agentId",
     ("null_column", "fact_meta_events", "timestamp"):
         "custom-title / agent-name / permission-mode entries carry no timestamp in the source",
     ("null_column", "fact_meta_events", "date_key"):
@@ -2580,7 +2658,6 @@ NATURAL_KEYS = {
     "fact_tool_calls": "tool_use_id",
     "fact_file_operations": "tool_use_id",
     "fact_diagnostics": "diagnostic_id",
-    "fact_agent_delegations": "delegation_key",
     "fact_plan_revisions": "revision_key",
     "fact_session_facets": "facet_row_key",
 }

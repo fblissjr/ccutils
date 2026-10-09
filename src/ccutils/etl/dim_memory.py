@@ -43,8 +43,8 @@ __all__ = ["import_memories", "run_memory_import"]
 
 
 #: source_path value for the memory import's own ``etl.runs`` row.
-#: Mirrors ``<post-session-reconciliation>`` -- a run that is not a session
-#: still needs a stable, greppable identity in the run table.
+#: A run that is not a session still needs a stable, greppable identity in
+#: the run table.
 MEMORY_RUN_SOURCE = "<auto-memory>"
 
 #: Provenance label stamped on every memory row. Distinct from the run
@@ -83,12 +83,10 @@ def run_memory_import(
     that writes rows without a run is invisible -- nothing reports how many
     memory versions a run wrote, no row says which run observed it, and a
     failure leaves no trace. This wrapper gives it the same three-grain
-    treatment every other populator gets, following
-    ``run_post_session_reconciliation``.
+    treatment every other populator gets.
 
-    **Failures are recorded, not raised.** The reconciliation pass re-raises
-    because its output is load-bearing (without it the warehouse reports
-    acknowledgment latencies as agent durations). Memory is additive: losing
+    **Failures are recorded, not raised.** A source whose output is
+    load-bearing should re-raise instead. Memory is additive: losing
     it costs the memory rows and corrupts nothing else, so an archive build
     should finish. What must NOT happen is the previous ``except Exception:
     pass`` -- that lost the fact that memory was meant to be there at all,

@@ -1,6 +1,6 @@
 # ETL Architecture — target state and the rules behind it
 
-Last updated: 2026-08-05
+Last updated: 2026-10-09
 
 Companion to `STAR_SCHEMA.md`, which describes the warehouse **as built**. This
 document describes the layering the ETL is **moving to**, and — more
@@ -70,7 +70,11 @@ this repo's history:
 - The scaffolding that exists only to manage the ordering: the
   `semantic_session_summary` runs LAST rule, the cross-session reconciliation
   pass, and the "populators reading permanent facts must scope inbound to
-  staged sessions" rule.
+  staged sessions" rule. (The first two are already gone, ahead of the
+  rewrite: the summary became a view, and at 1.0.0 so did
+  `semantic_agent_delegations`, which removed the reconciliation pass. That
+  pass addressed a temporal dependency between sessions, not an extraction
+  one, so it was a view over facts that dissolved it, not staging.)
 
 When extraction moves into staging, all of that scaffolding becomes
 unnecessary rather than merely better-documented.

@@ -75,7 +75,6 @@ ccutils --format duckdb -o ./analytics           # Pick sessions, star schema
 ccutils -p myproject                             # Filter by project name
 ccutils --flat                                   # Single-list picker mode
 ccutils --no-thinking --no-subagents             # Exclude thinking blocks / related agent sessions
-ccutils --format duckdb --embed -o ./out         # With ColBERT embeddings
 ccutils --format duckdb --llm-facets -o ./out    # + Tier 2 LLM facets (F20 via Haiku)
 ```
 
@@ -91,7 +90,6 @@ Batch convert every session. Agents and thinking blocks included by default.
 ccutils --source -o ./archive                    # Flat HTML archive: index + one file per session
 ccutils --source --format markdown -o ./md-archive   # One .md per session, per-project tree
 ccutils --source --format duckdb -o ./analytics  # v0.15 star schema for all sessions
-ccutils --source --format duckdb --embed -o ./out    # With ColBERT embeddings
 ccutils --source --format duckdb --llm-facets -o ./out   # + Tier 2 LLM facets
 ccutils --source -j 4 --batch-size 20 -o ./archive   # Parallel processing
 ccutils --source --no-subagents --no-thinking    # Exclude agents and thinking (any format)
@@ -229,7 +227,7 @@ Subagent transcripts are first-class sessions: agent files carry their parent's 
 - **Dimensions:** `dim_session` (with intent/complexity/outcome/domain enrichment + subagent linkage), `dim_project`, `dim_tool`, `dim_model`, `dim_file`, `dim_session_chain`, `dim_facet_type` (facet registry).
 - **Core facts:** `fact_messages`, `fact_tool_calls` (one row per tool use: the call, its typed `toolUseResult` payload, the derived failure kind, and its position in the agentic run), `fact_token_usage` (R11 cache split: `cache_creation_5m_tokens` + `cache_creation_1h_tokens`), `semantic_session_summary`.
 - **Entry-type facts:** `fact_attachments`, `fact_progress_events`, `fact_system_events`, `fact_meta_events` (permission-mode time series), `fact_file_history_snapshots`, `fact_queue_operations`, `fact_pr_links`.
-- **Derived:** `fact_file_operations` (+ the `semantic_session_files` view), `fact_diagnostics`, `fact_plan_revisions` (structural outcome from `fact_tool_calls.is_error`), `fact_agent_delegations` (cross-session linkage via `dim_session.agent_id`).
+- **Derived:** `fact_file_operations` (+ the `semantic_session_files` view), `fact_diagnostics`, `fact_plan_revisions` (structural outcome from `fact_tool_calls.is_error`), and the `semantic_agent_delegations` view (each Agent/Task spawn joined to the agent's own session).
 - **Facets:** `fact_session_facets` Tier 1 (F01-F19, SQL-computed; always on). Tier 2 (F20+, LLM-extracted via Haiku) is opt-in via `--llm-facets`.
 
 **Populated after the per-session loop** (global sources, not per-session, so they are outside `run_v15_etl` and only the batch archive path reaches them):
@@ -371,9 +369,9 @@ tar czf - ./archive | age -r <recipient-key> > archive.tar.gz.age && rm -rf ./ar
 --private                  Sanitize file paths for sharing (html/markdown only; not wired through the v0.15 ETL)
 
 # Rejected rather than ignored
-# --embed and --llm-facets write to the star schema, so they are a hard
-# error on --format html/markdown rather than a silent no-op. --private is
-# a hard error on duckdb/json for the same reason.
+# --llm-facets writes to the star schema, so it is a hard error on
+# --format html/markdown rather than a silent no-op. --private is a hard
+# error on duckdb/json for the same reason.
 
 # Selection
 --flat                     Flat single-list mode (picker)
@@ -382,7 +380,6 @@ tar czf - ./archive | age -r <recipient-key> > archive.tar.gz.age && rm -rf ./ar
 --dry-run                  Preview without converting (--source)
 
 # Enrichment (star schema only)
---embed [MODEL]            Run ColBERT embeddings (optionally specify model)
 --llm-facets               Extract Tier 2 LLM facets (F20 via Haiku)
 
 # Batch processing (--source)

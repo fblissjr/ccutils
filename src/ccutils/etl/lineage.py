@@ -365,10 +365,9 @@ class BatchRun:
                 MAX(data_end_ts)
             FROM etl.runs
             WHERE batch_run_id = ?
-              -- Sessions only. Cross-session passes (the delegation
-              -- reconciliation) are child runs of this batch but are not
-              -- sessions; counting them reported one more session than the
-              -- CLI actually processed.
+              -- Sessions only. Global sources (history, auto memory) are
+              -- child runs of this batch but are not sessions; counting
+              -- them reported more sessions than the CLI processed.
               AND run_kind = 'session'
             """,
             [self.batch_run_id],

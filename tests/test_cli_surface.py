@@ -100,6 +100,65 @@ class TestRemovedUrlInput:
                 )
 
 
+class TestRemovedEmbed:
+    """`--embed` and the ColBERT pipeline behind it are gone (1.0.0).
+
+    What it wrote had no reader: `fact_session_embeddings` stored a
+    mean-pooled ColBERT vector, which throws away the late interaction that
+    is the reason to use ColBERT, and nothing queried it; `cluster_sessions`
+    was never called; `match_delegations` wrote into `fact_agent_delegations`,
+    which is now a view. Guard against any of it coming back half-wired: a
+    flag that is accepted, a table that is created and never filled, or an
+    extra that pulls in a deep-learning stack for no output.
+    """
+
+    def test_the_flag_is_not_an_option(self, tmp_path):
+        f = _session(tmp_path / "proj")
+        for argv in (
+            [str(f), "--format", "duckdb", "--embed", "-o", str(tmp_path / "o")],
+            ["--source", str(tmp_path), "--format", "duckdb", "--embed", "-o", str(tmp_path / "o2")],
+        ):
+            result = CliRunner().invoke(cli, argv)
+            assert result.exit_code == 2, result.output
+            assert "No such option" in result.output and "--embed" in result.output
+        assert not (tmp_path / "o").exists(), "a rejected flag must not write"
+
+    def test_the_pipeline_is_not_exposed(self):
+        import importlib
+
+        import pytest
+
+        for module in ("ccutils", "ccutils.schemas.star", "ccutils.cli.utils"):
+            mod = importlib.import_module(module)
+            for name in ("EmbeddingPipeline", "run_embedding_pipeline"):
+                assert not hasattr(mod, name), f"{module}.{name} still exists"
+                assert name not in getattr(mod, "__all__", ()), f"{module}.__all__ lists {name}"
+        with pytest.raises(ModuleNotFoundError):
+            importlib.import_module("ccutils.schemas.star.embeddings")
+
+    def test_a_warehouse_has_no_embeddings_table(self, tmp_path):
+        from ccutils import create_star_schema
+        from ccutils.schemas.star.schema import TABLE_COVERAGE
+
+        conn = create_star_schema(tmp_path / "w.duckdb")
+        tables = {r[0] for r in conn.execute(
+            "SELECT table_name FROM information_schema.tables").fetchall()}
+        conn.close()
+        assert "fact_session_embeddings" not in tables
+        assert "fact_session_embeddings" not in TABLE_COVERAGE
+        assert not any(by == "flag:--embed" for _, _, by, _ in TABLE_COVERAGE.values())
+
+    def test_there_is_no_colbert_extra(self):
+        import tomllib
+        from pathlib import Path
+
+        pyproject = tomllib.loads(
+            (Path(__file__).resolve().parents[1] / "pyproject.toml").read_text())
+        extras = pyproject["project"].get("optional-dependencies", {})
+        assert "colbert" not in extras
+        assert not any("pylate" in dep for deps in extras.values() for dep in deps)
+
+
 class TestModeDispatch:
     """Which mode runs is decided by the positional and --source."""
 
@@ -175,30 +234,12 @@ class TestIgnoredFlagsFailLoudly:
     """A flag that cannot do anything must say so, not exit 0.
 
     `--private` already worked this way on duckdb/json and is the model.
-    These three did not: `--embed` was accepted and ignored on every render
-    format and on the single-file path in ANY format, and `--llm-facets`
-    on a render format went further -- it demanded an ANTHROPIC_API_KEY and
-    exited 2 before doing any work, blocking a valid HTML export on a
-    credential that format would never use.
+    `--llm-facets` on a render format did not: it demanded an
+    ANTHROPIC_API_KEY and exited 2 before doing any work, blocking a valid
+    HTML export on a credential that format would never use. (`--embed` had
+    the same defect until the flag itself was removed in 1.0.0; see
+    TestRemovedEmbed.)
     """
-
-    def test_embed_rejected_on_html(self, tmp_path):
-        f = _session(tmp_path / "proj")
-        result = CliRunner().invoke(
-            cli, [str(f), "--format", "html", "--embed", "-o", str(tmp_path / "o")]
-        )
-
-        assert result.exit_code != 0
-        assert "--embed" in result.output
-
-    def test_embed_rejected_on_markdown(self, tmp_path):
-        f = _session(tmp_path / "proj")
-        result = CliRunner().invoke(
-            cli, [str(f), "--format", "markdown", "--embed", "-o", str(tmp_path / "o")]
-        )
-
-        assert result.exit_code != 0
-        assert "--embed" in result.output
 
     def test_llm_facets_rejected_on_html_without_asking_for_credentials(
         self, tmp_path, monkeypatch
@@ -218,16 +259,6 @@ class TestIgnoredFlagsFailLoudly:
         assert result.exit_code != 0
         assert "--llm-facets" in result.output
         assert "api key" not in result.output.lower()
-
-    def test_embed_still_accepted_on_duckdb(self, tmp_path):
-        """No over-correction: the flag works where it means something."""
-        f = _session(tmp_path / "proj")
-        result = CliRunner().invoke(
-            cli, [str(f), "--format", "duckdb", "-o", str(tmp_path / "o"),
-                  "--embed", "--dry-run"]
-        )
-
-        assert "--embed" not in result.output
 
 
 class TestOutputIsADirectory:
@@ -309,15 +340,19 @@ class TestOneWarehouseShape:
         finally:
             conn.close()
         kinds = {r[0] for r in runs}
-        assert "reconciliation" in kinds, (
-            f"post-session reconciliation did not run; run_kinds={kinds}"
+        # The marker used to be the reconciliation run, which this path was
+        # the only one to execute. That run is gone (delegations are a view),
+        # so the evidence is the global sources themselves.
+        assert "global_source" in kinds, (
+            f"the global sources did not run; run_kinds={kinds}"
         )
+        assert "reconciliation" not in kinds
 
 
 class TestModeOnlyFlagsFailLoudly:
     """A flag that does nothing in the chosen mode must say so.
 
-    Same rule the `--embed` / `--llm-facets` guards follow. These were
+    Same rule the `--llm-facets` guard follows. These were
     missed: `ccutils session.jsonl --dry-run -q -j 4` wrote files and
     printed output -- a dry run that creates things and a quiet run that
     talks. `--dry-run` is the worst of them, because being ignored produces

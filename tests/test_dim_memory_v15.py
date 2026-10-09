@@ -695,9 +695,9 @@ class TestEtlIntegration:
     def test_a_failure_does_not_abort_the_archive(
         self, conn, projects_root, monkeypatch
     ):
-        """Memory is additive -- losing it corrupts nothing else, so unlike
-        the cross-session reconciliation pass this one records and returns
-        instead of re-raising."""
+        """Memory is additive -- losing it corrupts nothing else, so it
+        records and returns instead of re-raising the way a load-bearing
+        source would."""
         import ccutils.etl.dim_memory as mod
 
         monkeypatch.setattr(

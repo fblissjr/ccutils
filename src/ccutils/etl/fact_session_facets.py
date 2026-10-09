@@ -18,7 +18,7 @@ orchestrator):
     fact_tool_calls
     fact_file_operations
     fact_token_usage
-    fact_agent_delegations, fact_pr_links, fact_plan_revisions
+    fact_pr_links, fact_plan_revisions
 
 Ordering: F01..F04 read `intent`/`complexity`/`outcome`/`domain` from
 `dim_session`, which `populate_dim_session_heuristics` writes earlier in
@@ -307,15 +307,15 @@ def populate_tier1_facets(conn, *, run: EtlRun) -> None:
     _insert_facet(conn, "F16", "value_numeric",
                   "EXTRACT(hour FROM scope.first_timestamp)::DOUBLE")
 
-    # F17 -- fact_agent_delegations.parent_session_key is the md5 of the
-    # parent session_id (no plain parent_session_id column carried), so hash
-    # inline. Asymmetric with F18/F19 which compare session_id directly.
+    # F17 -- a delegation is an Agent / Task tool call; the same predicate
+    # semantic_agent_delegations uses for its grain.
     _insert_facet(
         conn, "F17", "value_bool",
         """EXISTS (
-            SELECT 1 FROM fact_agent_delegations fad
-            WHERE fad.is_deleted = FALSE
-              AND fad.parent_session_key = md5(scope.session_id)
+            SELECT 1 FROM fact_tool_calls ftc
+            WHERE ftc.is_deleted = FALSE
+              AND ftc.tool_name IN ('Task', 'Agent')
+              AND ftc.session_id = scope.session_id
         )""",
     )
     _insert_facet(

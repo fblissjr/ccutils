@@ -491,13 +491,17 @@ class TestRunKindScoping:
     """run_kind keeps the batch's session rollup honest.
 
     Claim: etl.runs used to be one-row-per-session by construction, so
-    BatchRun.complete counted child rows as sessions. The cross-session
-    reconciliation pass is a child run that is NOT a session. Delete
-    run_kind and every batch reports one more session than the CLI
+    BatchRun.complete counted child rows as sessions. A global source
+    (history, auto memory) is a child run that is NOT a session. Delete
+    run_kind and every batch reports more sessions than the CLI
     processed -- silently, because the number still looks plausible.
+
+    The non-session run this was written against was the cross-session
+    reconciliation pass, removed at 1.0.0 when delegations became a view.
+    The claim never depended on which non-session run it was.
     """
 
-    def test_reconciliation_run_is_not_counted_as_a_session(self, tmp_path):
+    def test_a_global_source_run_is_not_counted_as_a_session(self, tmp_path):
         import duckdb
 
         from ccutils.export.duckdb_archive import generate_duckdb_archive
@@ -517,18 +521,19 @@ class TestRunKindScoping:
                 "SELECT sessions_seen, sessions_succeeded "
                 "FROM etl.batch_runs"
             ).fetchone()
-            assert (seen, ok) == (2, 2), "two sessions, not three"
+            assert (seen, ok) == (2, 2), "two sessions, and only sessions"
 
-            # Non-vacuity: the reconciliation run must actually EXIST and be
+            # Non-vacuity: a non-session run must actually EXIST and be
             # attached to the batch. Without this the test would still pass
-            # if the pass were never wired in at all.
+            # if no global source were wired in at all.
             kinds = dict(conn.execute(
                 "SELECT run_kind, COUNT(*) FROM etl.runs GROUP BY 1"
             ).fetchall())
             assert kinds.get("session") == 2
-            assert kinds.get("reconciliation") == 1, (
-                "the post-loop pass must run, and must be labelled"
+            assert kinds.get("global_source", 0) >= 1, (
+                "a post-loop run must exist, and must be labelled"
             )
+            assert "reconciliation" not in kinds
             orphans = conn.execute(
                 "SELECT COUNT(*) FROM etl.runs WHERE batch_run_id IS NULL"
             ).fetchone()[0]

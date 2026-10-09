@@ -43,7 +43,6 @@ from .utils import (
     build_facet_extractor_or_exit,
     default_archive_output,
     maybe_open_browser,
-    run_embedding_pipeline,
     warn_private_best_effort,
 )
 
@@ -128,14 +127,6 @@ from .utils import (
     is_flag=True,
     help="Sanitize file paths for sharing.",
 )
-@optgroup.group("Embeddings")
-@optgroup.option(
-    "--embed",
-    default=None,
-    is_flag=False,
-    flag_value="default",
-    help="Run ColBERT embeddings (optionally specify model name).",
-)
 @optgroup.option(
     "--dry-run",
     is_flag=True,
@@ -188,7 +179,6 @@ def convert_cmd(
     batch_size,
     quiet,
     no_search_index,
-    embed,
     with_llm_facets,
 ):
     """Convert Claude Code sessions to HTML, Markdown, DuckDB, or JSON.
@@ -210,7 +200,7 @@ def convert_cmd(
     include_thinking = not no_thinking
 
     # A flag that cannot act in the chosen mode is an error, not a no-op --
-    # the same rule --embed and --llm-facets follow below. Checked against
+    # the same rule --llm-facets follows below. Checked against
     # click's parameter SOURCE so a default never trips it: only a value the
     # user actually typed counts.
     ctx = click.get_current_context()
@@ -262,21 +252,14 @@ def convert_cmd(
         warn_private_best_effort()
 
     # A flag that cannot do anything must say so. `--private` on duckdb/json
-    # has always failed this way and is the model; these two did not.
+    # has always failed this way and is the model; `--llm-facets` did not.
     #
-    # `--embed` was accepted and ignored on every render format, exit 0, no
-    # message. `--llm-facets` was worse than ignored: the extractor was
-    # built before the format was dispatched, so an HTML export demanded an
-    # ANTHROPIC_API_KEY and exited 2 on a credential it would never use.
-    # Both checks come BEFORE any credential resolution, so the rejection is
-    # about the format and does not depend on having a key.
+    # It was worse than ignored: the extractor was built before the format
+    # was dispatched, so an HTML export demanded an ANTHROPIC_API_KEY and
+    # exited 2 on a credential it would never use. The check comes BEFORE
+    # any credential resolution, so the rejection is about the format and
+    # does not depend on having a key.
     if output_format in ("html", "markdown"):
-        if embed:
-            raise click.UsageError(
-                f"--embed does nothing with --format {output_format}: "
-                "embeddings are written to the star schema, which the render "
-                "formats do not build. Use --format duckdb, or drop --embed."
-            )
         if with_llm_facets:
             raise click.UsageError(
                 f"--llm-facets does nothing with --format {output_format}: "
@@ -315,7 +298,6 @@ def convert_cmd(
                 batch_size=batch_size,
                 quiet=quiet,
                 no_search_index=no_search_index,
-                embed=embed,
                 batch_llm_facets=with_llm_facets,
             )
             return
@@ -343,7 +325,7 @@ def convert_cmd(
             _interactive_mode(
                 output, output_format, open_browser, flat, expand_chains,
                 project_filter, include_thinking, not no_subagents, private,
-                embed, facet_extractor, include_temp_sessions,
+                facet_extractor, include_temp_sessions,
             )
     except SchemaMismatchError as exc:
         raise click.ClickException(str(exc)) from exc
@@ -403,7 +385,7 @@ def _convert_files(input_files, output, output_format, open_browser,
 
 def _interactive_mode(output, output_format, open_browser, flat, expand_chains,
                       project_filter, include_thinking, include_subagents,
-                      private, embed, facet_extractor=None,
+                      private, facet_extractor=None,
                       include_temp_sessions=False):
     """Interactive session picker followed by export."""
     projects_folder = Path.home() / ".claude" / "projects"
@@ -468,7 +450,6 @@ def _interactive_mode(output, output_format, open_browser, flat, expand_chains,
         private=private,
         open_browser=open_browser,
         agent_map=agent_map,
-        embed=embed,
         facet_extractor=facet_extractor,
     )
 
@@ -524,8 +505,8 @@ def _etl_session_files(
                 failures.append((session_file, exc))
                 click.echo(f"  skipped {session_file.name}: {exc}", err=True)
         # Every global source, after every session is in -- the SAME call
-        # the batch path makes. This path used to run only the
-        # reconciliation third of it, so a single-session warehouse had
+        # the batch path makes. This path used to run only one of the
+        # three steps that then existed, so a single-session warehouse had
         # dim_prompt and the memory tables empty while fact_messages
         # carried prompt_id: an FK pointing at an empty dimension. One
         # warehouse means one shape, so both paths call one function.
@@ -555,7 +536,6 @@ def _run_export_pipeline(
     open_browser=False,
     project_name=None,
     agent_map=None,
-    embed=None,
     facet_extractor=None,
 ):
     """Shared export pipeline for all output formats.
@@ -572,18 +552,12 @@ def _run_export_pipeline(
         open_browser: Open result in browser after HTML export.
         project_name: Override project name (for single-file mode).
         agent_map: Agent session relationships (from interactive picker).
-        embed: Embedding model name, "default", or None.
         facet_extractor: Pre-built FacetExtractor instance (or None).
             Construction happens at the CLI boundary in convert_cmd so
             credential errors exit cleanly before any work starts.
     """
     if agent_map is None:
         agent_map = {}
-
-    # Resolve embed model
-    embed_model = None
-    if embed and embed != "default":
-        embed_model = embed
 
     # github_repo is auto-detected by generate_html() from git push output
     # in the JSONL session data, or from the current working directory's git remote.
@@ -674,8 +648,6 @@ def _run_export_pipeline(
             include_thinking=include_thinking,
             output_format="duckdb",
         )
-        if embed:
-            run_embedding_pipeline(conn, embed_model)
         # The reader's guide is generated from the warehouse and written
         # beside it on every build, so an agent opening the directory cold
         # finds the explanation next to the file.
@@ -707,8 +679,6 @@ def _run_export_pipeline(
             include_thinking=include_thinking,
             output_format="json",
         )
-        if embed:
-            run_embedding_pipeline(conn, embed_model)
 
         export_star_schema_to_json(conn, output_dir)
         conn.close()

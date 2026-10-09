@@ -42,7 +42,6 @@ _PROGRESS_TABLES = (
     "fact_file_operations",
     "fact_diagnostics",
     "fact_plan_revisions",
-    "fact_agent_delegations",
     "fact_session_facets",
 )
 
