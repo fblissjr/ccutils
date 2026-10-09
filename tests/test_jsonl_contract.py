@@ -218,58 +218,133 @@ class TestAssistantBlockShape:
 
 
 # ---------------------------------------------------------------------------
-# Claim 5: thinking text is not persisted.
+# Claim 5: thinking text is persisted on a minority of blocks.
 # ---------------------------------------------------------------------------
 
+# The first Claude Code version in this corpus whose thinking blocks carry
+# text again after the long empty stretch. An identifier, not a measurement:
+# it scopes the canary to the format being written now, so a change in new
+# sessions is not diluted by months of older, uniformly empty transcripts.
+THINKING_TEXT_SINCE = (2, 1, 257)
 
-def thinking_blocks_with_text(entries):
-    """Thinking blocks whose text survived to disk."""
-    found = []
+# Reasoned, not measured: the share at which "most reasoning is on disk"
+# becomes true, and the word "minority" in docs/JSONL_CONTRACT.md claim 5 and
+# in the reader's guide stops holding.
+THINKING_TEXT_MAJORITY = 0.5
+
+
+def _version_tuple(value):
+    try:
+        return tuple(int(part) for part in str(value).split("."))
+    except ValueError:
+        return None
+
+
+def thinking_text_counts(entries, since=None):
+    """(thinking blocks carrying text, all thinking blocks) over `entries`.
+
+    Whitespace-only text counts as absent. With `since`, only entries stamped
+    with that Claude Code version or later are counted; an entry whose
+    version is missing or unparseable is left out rather than guessed at.
+    """
+    with_text = total = 0
     for obj in entries:
+        if since is not None:
+            version = _version_tuple(obj.get("version"))
+            if version is None or version < since:
+                continue
         content = obj.get("message", {}).get("content")
         if not isinstance(content, list):
             continue
         for block in content:
             if not isinstance(block, dict) or block.get("type") != "thinking":
                 continue
+            total += 1
             if (block.get("thinking") or "").strip():
-                found.append(obj.get("uuid"))
-    return found
+                with_text += 1
+    return with_text, total
 
 
-class TestThinkingTextIsAbsent:
-    """Reasoning is not recoverable from these transcripts.
+def thinking_text_is_a_minority(with_text, total):
+    return with_text / total < THINKING_TEXT_MAJORITY
 
-    Corpus-wide at time of writing: 50,214 thinking blocks carrying an empty
-    string against 54 with content. `has_thinking` counts something the
-    source never wrote, which is why no populator stores it.
 
-    This canary is the one most likely to go red for a good reason: if a
-    future Claude Code starts persisting reasoning, nothing else in the
-    pipeline would notice, and the coverage layer would keep telling readers
-    the data does not exist.
+class TestThinkingTextIsAMinority:
+    """Some thinking blocks carry their text on disk, and most do not.
+
+    This class was `TestThinkingTextIsAbsent` and asserted that NO block in a
+    60-file sample carried text. That was an absolute about a rare event,
+    checked on a sample, and it flickered red and green as the corpus grew
+    until the event stopped being rare: from Claude Code 2.1.257 a share of
+    blocks carries short text again. The measurement and its conditions are
+    in CHANGELOG.md; the test prints the current counts (run it with `-s`).
+
+    What replaces it is the claim the docs now make, in the one direction a
+    design decision hangs on. Text being present at all means every surface
+    must treat thinking as real content. Text staying a minority means
+    `has_thinking` still says nothing about whether reasoning can be read,
+    and a populator for it would be mostly empty. If the share crosses
+    `THINKING_TEXT_MAJORITY`, both readings need revisiting.
+
+    Scanned in full, scoped to `THINKING_TEXT_SINCE`: a sample of a corpus
+    that is mostly older transcripts would not see new sessions change.
     """
 
-    def test_corpus_holds(self, corpus_sample):
-        entries = list(_entries(corpus_sample, "assistant"))
-        assert entries, "sample contained no assistant entries"
-        with_text = thinking_blocks_with_text(entries)
-        assert not with_text, (
-            f"{len(with_text)} thinking blocks now carry text, e.g. "
-            f"{with_text[:3]}. Reasoning is being persisted after all -- "
-            "docs/JSONL_CONTRACT.md claim 5 and the coverage layer's entry "
-            "for it are both wrong, and storing it becomes possible."
+    def test_blocks_written_now_mostly_carry_no_text(self):
+        files = _corpus_files()
+        if not files:
+            pytest.skip("no local Claude Code corpus to check the contract against")
+
+        with_text = total = files_with_blocks = files_with_text = 0
+        for f in files:
+            entries = []
+            try:
+                with open(f, errors="replace") as fh:
+                    for line in fh:
+                        if '"thinking"' not in line:
+                            continue
+                        try:
+                            obj = json.loads(line)
+                        except json.JSONDecodeError:
+                            continue
+                        if isinstance(obj, dict) and obj.get("type") == "assistant":
+                            entries.append(obj)
+            except OSError:
+                continue
+            file_text, file_total = thinking_text_counts(
+                entries, since=THINKING_TEXT_SINCE
+            )
+            with_text += file_text
+            total += file_total
+            files_with_blocks += bool(file_total)
+            files_with_text += bool(file_text)
+
+        since = ".".join(str(n) for n in THINKING_TEXT_SINCE)
+        if not total:
+            pytest.skip(f"no thinking blocks written by Claude Code {since} or later")
+        print(
+            f"\nclaim 5, Claude Code {since} or later: {with_text} of {total} "
+            f"thinking blocks carry text, in {files_with_text} of "
+            f"{files_with_blocks} transcripts that hold a thinking block"
+        )
+        assert thinking_text_is_a_minority(with_text, total), (
+            f"{with_text} of {total} thinking blocks written by Claude Code "
+            f"{since} or later carry text, at or over the "
+            f"{THINKING_TEXT_MAJORITY:.0%} line. Most reasoning is on disk "
+            "now: docs/JSONL_CONTRACT.md claim 5 and the reader's guide both "
+            "say a minority, and a populator for it is no longer mostly empty."
         )
 
     def test_the_check_rejects_a_violation(self):
         """The oracle can fail."""
-        entry = {
-            "uuid": "u3",
-            "message": {
-                "content": [{"type": "thinking", "thinking": "actual reasoning"}]
-            },
-        }
-        assert thinking_blocks_with_text([entry])
+        entries = [
+            {"uuid": f"u{i}", "version": "2.1.300",
+             "message": {"content": [{"type": "thinking", "thinking": text}]}}
+            for i, text in enumerate(["actual reasoning", "more of it", ""])
+        ]
+        with_text, total = thinking_text_counts(entries, since=THINKING_TEXT_SINCE)
+        assert (with_text, total) == (2, 3)
+        assert not thinking_text_is_a_minority(with_text, total)
 
     def test_empty_and_whitespace_thinking_are_both_absent(self):
         for value in ("", "   ", "\n"):
@@ -277,4 +352,16 @@ class TestThinkingTextIsAbsent:
                 "uuid": "u4",
                 "message": {"content": [{"type": "thinking", "thinking": value}]},
             }
-            assert not thinking_blocks_with_text([entry]), repr(value)
+            assert thinking_text_counts([entry]) == (0, 1), repr(value)
+
+    def test_older_and_unversioned_entries_are_outside_the_scope(self):
+        """Versions compare as numbers: 2.1.72 is older than 2.1.257."""
+        block = {"content": [{"type": "thinking", "thinking": "reasoning"}]}
+        entries = [
+            {"uuid": "old", "version": "2.1.72", "message": block},
+            {"uuid": "none", "message": block},
+            {"uuid": "odd", "version": "dev", "message": block},
+            {"uuid": "new", "version": "2.1.257", "message": block},
+        ]
+        assert thinking_text_counts(entries, since=THINKING_TEXT_SINCE) == (1, 1)
+        assert thinking_text_counts(entries) == (4, 4)

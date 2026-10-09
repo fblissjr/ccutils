@@ -1,6 +1,6 @@
 # Roadmap and open items
 
-Last updated: 2026-09-22
+Last updated: 2026-10-09
 
 This is the one git-tracked status board. It consolidates what used to live
 only in gitignored `internal/` notes: the release sequence, the next
@@ -41,8 +41,9 @@ machine that has it; nothing here depends on it.
 Resume in this order. Each item was designed and its reads done on
 2026-09-10; nothing below is open-ended.
 
-1. **Start from a green suite.** The full suite passed on 2026-09-22 at
-   `8551031` (1,458 passed, 1 skipped). Rerun
+1. **Start from a green suite.** The full suite passed on 2026-10-09 with
+   the lockfile refreshed that day and the claim 5 canary corrected (1,464
+   passed, 1 skipped). Rerun
    `uv run pytest tests/ --confcutdir=tests` once to confirm the tree is
    as left, then begin step 2.
 2. **Delegations become a view; `--embed` is retired.** Delete
@@ -153,9 +154,10 @@ kept so the ordering argument survives.
    populated, a declared stub, or conditionally populated, and why. This
    replaces the stub list in
    `.claude/skills/query-warehouse/references/gotchas.md`, which two external
-   auditors failed to find. Record here that reasoning text is not on disk
-   (`has_thinking` counts blocks whose `thinking` field is empty at the
-   source), so nobody builds a populator for it.
+   auditors failed to find. The reader's guide carries the note on reasoning
+   text: not ingested, and `has_thinking` counts a block whether or not the
+   source kept its text (`docs/JSONL_CONTRACT.md` claim 5, corrected
+   2026-10-09 from "not on disk").
 7. **`ccutils audit`.** Three check families, walking `NATURAL_KEYS` rather
    than a hand-kept list:
    - Structural invariants: no join key on a populated fact is 100% NULL; no
@@ -351,8 +353,9 @@ Gate: audit clean per harness; delegation depth equals the stated
 
 HTML and markdown from neutral staging. `--no-thinking` must be wired and its
 effect asserted on every new surface: Antigravity's thinking text is real,
-unlike Claude Code's empty blocks, so the flag stops being a no-op that looks
-fine. Anything built for a third party stays `include_thinking=False`.
+and since 2026-09 so is a share of Claude Code's (`docs/JSONL_CONTRACT.md`
+claim 5), so the flag is not a no-op that looks fine on either harness.
+Anything built for a third party stays `include_thinking=False`.
 
 ### Further harnesses, unscheduled
 
@@ -368,16 +371,15 @@ they land.
 
 ### Fix at 1.0.0 or before
 
-- **`docs/JSONL_CONTRACT.md` claim 5 is intermittently red.** On 2026-09-22
-  `tests/test_jsonl_contract.py::TestThinkingTextIsAbsent::test_corpus_holds`
-  failed on a clean `main` (12 thinking blocks in its seeded sample carried
-  text), then passed on a full-suite run later that day: the seed is fixed but
-  the corpus grows, so the draw changes. It is a rare-event absolute checked on
-  a sample, the pattern `CLAUDE.md` warns about. Either Claude Code has started persisting reasoning text or the rare
-  case (54 of 50,268 corpus-wide when the claim was written) moved into the
-  sample. Measure the rate corpus-wide, restate the claim as a rate, and
-  revisit the "reasoning text is not on disk" rule in `CLAUDE.md` and the
-  coverage layer's entry.
+- **Thinking text reaches `dim_session` and the Tier 2 inputs by default.**
+  Found 2026-10-09 while correcting `docs/JSONL_CONTRACT.md` claim 5.
+  `extract_text_from_content_json` defaults to including thinking, so a
+  session whose last assistant entry is a thinking block that kept its text
+  puts that text in `dim_session.last_assistant_message` and in the
+  `SessionInputs` that `--llm-facets` sends to the API. This was harmless
+  while every thinking string was empty and is not now. `--no-thinking`
+  closes it, and the reader's guide states it. Open: whether the default
+  for those two call sites should flip to excluding thinking.
 
 - **Continued sessions replay their history.** 706 `api_message_id`
   values recur across sessions in the same chain (1,403 rows), and the
@@ -552,6 +554,24 @@ here and stays local.
 
 ### Open design questions
 
+- **A source profile: what each harness was asked for against what it gave.**
+  Proposed 2026-10-09, not agreed. The claim 5 correction was a statement
+  about the source frozen into prose and checked only by a test on one
+  machine. The proposal is to measure the source's shape at run time, as
+  counts of structure and never values: a declared list of what each parser
+  reads, an observed profile of entry types, block kinds and field presence,
+  and a view that sorts the two into asked-and-got, asked-and-missing,
+  got-and-unasked, and declared-absent. The reader's guide and
+  `ccutils audit` would read it. Open with the owner: the tier it is measured
+  at, how undeclared key names are recorded without leaking data-bearing
+  keys, whether an unasked arrival fails the audit, and whether it rides the
+  1.0.0 break.
+- **Whether to store reasoning text.** The rule "do not build a populator for
+  it" rested on the text not being on disk. A minority of blocks carry it
+  since Claude Code 2.1.257 (`docs/JSONL_CONTRACT.md` claim 5). Nothing
+  ingests it today and the canary holds the "minority" reading; the decision
+  is the owner's, and a column for it is a schema change, so it belongs with
+  the 1.0.0 break or after it.
 - **More than one harness.** What a project is across harnesses (Claude
   Code's transcript directory vs Antigravity's workspace URI, git root and
   `project_id`); whether `fact_messages` splits into neutral and

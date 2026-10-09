@@ -1,6 +1,6 @@
 # The Claude Code JSONL contract
 
-Last updated: 2026-08-28
+Last updated: 2026-10-09
 
 What this pipeline assumes about the transcript format it reads. Claude Code
 ships continuously and this format is not versioned or documented upstream, so
@@ -96,21 +96,50 @@ Tool results come back as **user** entries whose content contains a
 - Canary: `tests/test_typed_parser.py::TestIsErrorAbsenceContract`.
 - If this changes: error rates and outcome classification invert quietly.
 
-## 5. Thinking text is not persisted
+## 5. Thinking text is persisted on a minority of blocks
 
-Thinking blocks carry an empty `thinking` string plus a signature.
+A thinking block carries a `thinking` string and a signature. The string is
+empty on most blocks and holds short text on some.
 
-- Measured corpus-wide: 50,214 blocks with `"thinking": ""` against 54 with
-  content (0.1%, presumed an older format).
-- Consequence: `has_thinking` is a flag over content the source never wrote.
-  Reasoning cannot be recovered from these transcripts by any means, so a
-  populator for it would be empty by construction. This is recorded in the
-  warehouse's coverage layer so a reader does not conclude the pipeline
-  discarded it.
-- Canary: `tests/test_jsonl_contract.py::TestThinkingTextIsAbsent`. This is the
-  claim most likely to go red for a good reason -- if Claude Code starts
-  persisting reasoning, nothing else in the pipeline would notice and the
-  coverage layer would keep telling readers the data does not exist.
+- Three stretches in this corpus, by the `version` stamped on the entry. The
+  oldest transcripts (2.1.23 to 2.1.72) carry text. No block stamped after
+  2.1.72 and before 2.1.257 does. From 2.1.257, first seen on 2026-09-01, a
+  minority of blocks carry text again, and both kinds sit in the same
+  transcript.
+- Measured corpus-wide, not sampled, on 2026-10-09. The counts and their
+  conditions are in `CHANGELOG.md` under "Claim 5 of the JSONL contract is a
+  rate". To re-derive them on the current corpus:
+  `uv run pytest tests/test_jsonl_contract.py::TestThinkingTextIsAMinority -s`
+  prints blocks and transcripts for 2.1.257 onward.
+- Not established: what decides whether a block keeps its text. Text appears
+  under several model families rather than one, far more often in main
+  sessions than in agent transcripts, and on some days and not others. Treat
+  it as arbitrary.
+- **This claim was written as an absolute** ("thinking text is not
+  persisted"), with the few exceptions presumed to be an older format. Its
+  canary asserted zero on a 60-file sample and flickered as the corpus grew,
+  the same rare-event-on-a-sample mistake as claim 2, until the event stopped
+  being rare. The correction is recorded here for the same reason.
+- Consequence: `has_thinking` counts blocks and says nothing about whether
+  their text can be read.
+- Consequence: thinking is real content. `--no-thinking`, and
+  `include_thinking=False` for anything that leaves the machine, now guard
+  text that exists. Neither was a no-op by design, but both looked like one
+  while every string was empty.
+- Consequence: ccutils does not ingest thinking text as message text.
+  `fact_messages.content_text` excludes thinking blocks by projection. The one
+  path in is `extract_text_from_content_json`, whose default includes
+  thinking: a session whose last assistant entry is a thinking block puts that
+  text in `dim_session.last_assistant_message` and in the Tier 2 facet
+  inputs. The `dim_session` path is pinned by
+  `tests/test_guide.py::TestGuideOnReasoningText`, because the reader's guide
+  states it; the facet-input path is read from
+  `etl/facets/populator.py::_build_session_inputs` and has no test of its own.
+- Canary: `tests/test_jsonl_contract.py::TestThinkingTextIsAMinority`, which
+  scans the whole corpus from `THINKING_TEXT_SINCE` and asserts the share
+  stays under `THINKING_TEXT_MAJORITY`.
+- If the share crosses that line: most reasoning is on disk, a populator for
+  it stops being mostly empty, and the guide's wording needs revisiting.
 
 ## 6. Subagent transcripts live below their parent, in two layouts
 

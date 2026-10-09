@@ -157,9 +157,13 @@ def render_guide(conn) -> str:
     w("")
     w("## What is not in here")
     w("")
-    w("- Reasoning text: thinking blocks are persisted by Claude Code with an empty "
-      "`thinking` field, so `has_thinking` counts blocks whose content the source "
-      "never wrote.")
+    w("- Reasoning text: not ingested. `fact_messages.content_text` leaves thinking "
+      "blocks out, and `has_thinking` counts a block whether or not the source kept "
+      "its text. The one exception is `dim_session.last_assistant_message`, which "
+      "holds the text of a session's last assistant entry even when that entry is a "
+      "thinking block, unless the warehouse was built with `--no-thinking`. Claude "
+      "Code keeps thinking text for some blocks and not others; claim 5 of "
+      "`docs/JSONL_CONTRACT.md` in the ccutils repository has the measurement.")
     w("- Bash-driven file operations: `fact_file_operations` records the file tools "
       "only; writes through `python3 -` heredocs or `cat >` are not derived yet.")
     w("- Large tool outputs: when Claude Code spills a result to `tool-results/`, the "
