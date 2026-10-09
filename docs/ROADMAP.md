@@ -605,35 +605,6 @@ here and stays local.
   join back for them; no column holds both. Known cost: synchronous
   delegations whose agent transcript was pruned have no derived outcome.
   It was planned for the 1.3.0 rewrite and landed with 1.0.0 step 2.
-- **TypeSafe Jev for Tier 2 enum facets: EXPLORING, decide before the
-  1.0.0 tag.** Jev (a hosted classifier: choice / score / yes-no questions
-  over one state, returning per-option probabilities, no text generation)
-  fits the designed-but-unbuilt enum facets F22-F25, F28, F29; not the text
-  facets (F20, F21, F26, F27) and not Tier 3. For a batch ETL its speed and
-  price decide nothing; what it adds over the Haiku path is probabilities.
-  Owner decisions so far: opt-in flag like `--llm-facets`; if a test run
-  earns it, `confidence` and `probabilities_json` become real columns on
-  `fact_session_facets` before the tag (the metadata JSON is excluded from
-  `hash_cols`, so a confidence change there would never update a row; after
-  the tag a new column forces a rebuild); call the HTTP API directly, not
-  the young SDK; send only scrubbed excerpts from sessions and fields the
-  owner selects. Scrubbing by listing bad shapes failed an adversarial
-  check (about 20 surviving shape classes, plus a username scrub that no-opped
-  when `$USER` was unset). The harness now gates with a token allowlist: only
-  plain words, short numbers and punctuation pass, and everything else
-  becomes a category placeholder. It also has an independent residue check
-  that blocks the session, and credential and identity checks that fail
-  closed. Against an independently written probe file
-  (`internal/egress_probes/`, 254 probes) it passes 252. The 2 misses are
-  deliberate over-scrubs. Those probes then informed rule changes, so a fresh
-  author must write new ones before that file counts as independent again. A
-  Jev extractor must build its inputs with
-  `include_thinking=False` whatever `--no-thinking` says:
-  `_build_session_inputs` passes the flag to `extract_text_from_content_json`,
-  whose default concatenates thinking blocks into the message text. The test
-  harness is in untracked `internal/jev_spike/`.
-  It has not run: no key yet. Claude-written labels are evaluation data
-  only, never training data for another vendor's model.
 - **`recursive=` on `find_agent_sessions` is a documented no-op.** If a real
   depth selector is ever wanted, build it from the sidecar's stated
   `spawnDepth`.
@@ -751,6 +722,14 @@ if it is deleted.
   in a separate tree. Decided 2026-09-22.
 - **`TaskCreate` is not an agent spawn.** `Agent` is the only tool name in
   the corpus carrying an agent rollup; `Task` is kept for older transcripts.
+- **TypeSafe Jev for Tier 2 enum facets is closed.** The owner ended the
+  exploration on 2026-10-09. It never ran against the service, and its
+  untracked test harness and probe file are deleted. It no longer gates
+  the 1.0.0 tag, and `fact_session_facets` gains no `confidence` or
+  `probabilities_json` column for it. What it leaves behind is the egress
+  rule in `CLAUDE.md`: anything that sends transcript text off the machine
+  is an allowlist that fails closed, checked by probes its author has not
+  seen.
 
 ## Local-only references
 
