@@ -122,17 +122,15 @@ class TestCreateStarSchema:
         assert result is not None
         conn.close()
 
-    def test_creates_fact_tool_uses_and_results_tables(self, output_dir):
-        """v0.15 replaces legacy fact_tool_calls with fact_tool_calls + fact_tool_calls."""
+    def test_creates_fact_tool_calls_table(self, output_dir):
+        """Tool uses and results are one table, fact_tool_calls."""
         db_path = output_dir / "test.duckdb"
         conn = create_star_schema(db_path)
 
-        for tbl in ("fact_tool_calls", "fact_tool_calls"):
-            result = conn.execute(
-                "SELECT name FROM sqlite_master WHERE type='table' AND name=?",
-                [tbl],
-            ).fetchone()
-            assert result is not None, f"missing {tbl}"
+        result = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='fact_tool_calls'"
+        ).fetchone()
+        assert result is not None
         conn.close()
 
     def test_creates_session_summary_view(self, output_dir):
