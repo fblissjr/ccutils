@@ -301,10 +301,10 @@ class TestFactMessagesTable:
         conn.close()
 
 
-class TestFactToolUsesAndResultsTables:
-    """v0.15 split fact_tool_calls into fact_tool_calls + fact_tool_calls."""
+class TestFactToolCallsTable:
+    """Tool uses and results share one table, fact_tool_calls."""
 
-    def test_fact_tool_uses_has_dimension_keys(self, output_dir):
+    def test_fact_tool_calls_has_dimension_keys(self, output_dir):
         db_path = output_dir / "test.duckdb"
         conn = create_star_schema(db_path)
 
@@ -313,7 +313,7 @@ class TestFactToolUsesAndResultsTables:
             assert col in columns
         conn.close()
 
-    def test_fact_tool_results_has_is_error_tri_state(self, output_dir):
+    def test_fact_tool_calls_has_is_error_tri_state(self, output_dir):
         """R16: is_error is nullable BOOLEAN so we can preserve missing-vs-false."""
         db_path = output_dir / "test.duckdb"
         conn = create_star_schema(db_path)
