@@ -67,11 +67,28 @@ must contain every DATA fact `run_v15_etl` populates and exclude the audit
 tables (`etl.runs` / `etl.batch_runs` / `etl.steps`) — stale
 entries undercount the display; audit rows would inflate it.
 
-## 6. Optional semantic view
+## 6. Declare it
 
-If consumers need a joined shape, add a `semantic_*` view in
-`create_star_schema()`. View creation validates column references on every
-call, so a bad reference fails fast. Filter `is_deleted = FALSE` in the view.
+Two dicts beside the DDL in `schemas/star/schema.py`, each pinned by a drift
+test that fails until the table is in it:
+
+- `NATURAL_KEYS`: table -> the key the projection emits one row per.
+  `lineage_upsert` raises on a duplicate, and `ccutils audit` walks this dict.
+- `TABLE_COVERAGE`: status, what writes it, and why it exists. The reader's
+  guide and the audit's coverage check are generated from it.
+
+## 6b. A view, only if it earns one
+
+`docs/ETL_ARCHITECTURE.md` rule 3: an object exists because it encodes
+something a consumer would get wrong, not because it saves a JOIN. The
+plain-join views are being deleted (`docs/ROADMAP.md`), so do not add
+another. A view that does earn its place filters `is_deleted = FALSE`, and
+is validated on every `create_star_schema()` call, so a bad column
+reference fails fast.
+
+If the table is only a rollup of other facts, it should BE the view:
+`semantic_session_summary` and `semantic_agent_delegations` were both tables
+first, and both went stale or needed a repair pass until they were not.
 
 ## 7. Docs + changelog
 
@@ -82,5 +99,8 @@ call, so a bad reference fails fast. Filter `is_deleted = FALSE` in the view.
 ## 8. Verify
 
 `uv run pytest tests/ --confcutdir=tests` fully green (+1 skipped live-API),
-then an end-to-end smoke: `uv run ccutils --source --format duckdb -o /tmp/etl-smoke`
-against a fixture or real source, and query the new table.
+then against the real corpus, because fixtures agree with whoever wrote
+them: a one-project build, `uv run ccutils --source --format duckdb -o <dir>
+-p <project>`, then `uv run ccutils audit -o <dir>`, and query the new table.
+Keep `<dir>` out of any git worktree: a warehouse holds unredacted
+transcripts.

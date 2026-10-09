@@ -12,7 +12,6 @@ SELECT ds.session_id, fss.total_input_tokens, fss.total_output_tokens,
        fss.total_cache_read_tokens, fss.total_uncached_equivalent_tokens
 FROM semantic_session_summary fss
 JOIN dim_session ds USING (session_key)
-WHERE fss.is_deleted = FALSE
 ORDER BY total_uncached_equivalent_tokens DESC LIMIT 20;
 
 -- Token usage by model (view pre-filters soft deletes)
@@ -80,7 +79,6 @@ GROUP BY ALL HAVING COUNT(*) >= 5 ORDER BY freq DESC LIMIT 20;
 -- Most-modified files overall
 SELECT df.file_path, SUM(bsf.write_count + bsf.edit_count) AS modifications
 FROM semantic_session_files bsf JOIN dim_file df USING (file_key)
-WHERE bsf.is_deleted = FALSE
 GROUP BY df.file_path ORDER BY modifications DESC LIMIT 20;
 
 -- Files touched across the most sessions (hotspots)
@@ -106,27 +104,39 @@ FROM semantic_decisions WHERE session_id = '<id>' ORDER BY timestamp;
 
 ```sql
 -- Delegations with rollup metrics.
+-- agent_* columns are what the parent's tool result STATED; derived_* columns
+-- come from the agent's own transcript. No column holds both. On a
+-- background launch (agent_is_async) the parent states no duration, tokens
+-- or tool count, so read the derived_ columns there.
 -- The two token columns are DIFFERENT MEASURES and must never be summed
--- together or compared: agent_total_tokens is the API's stated number and is
--- NULL on every async row (the API states none for a background launch);
--- agent_derived_io_tokens is input+output summed from the agent's own
--- transcript. Scored against ground truth they agree on only 12 of 188 rows.
--- completion_state tells you WHY a rollup is absent (completed /
--- no_completion_recorded / spawn_failed / NULL = not reconciled).
+-- together or compared: agent_total_tokens is the API's stated number;
+-- derived_io_tokens is input+output summed from the agent's own usage.
+-- completion_state is derived from the agent's transcript (completed /
+-- no_completion_recorded / spawn_failed / NULL = transcript not in the
+-- warehouse); every derived_ column is NULL unless it is 'completed'.
 SELECT parent_session_id, subagent_type, task_description,
-       agent_status, completion_state, agent_is_async,
-       agent_total_duration_ms,
-       agent_total_tokens,        -- API-stated; NULL when agent_is_async
-       agent_derived_io_tokens    -- derived; NOT comparable with the above
+       agent_is_async,
+       agent_status,              -- stated by the parent
+       agent_total_duration_ms,   -- stated; NULL when agent_is_async
+       agent_total_tokens,        -- stated; NULL when agent_is_async
+       completion_state,          -- derived
+       derived_duration_ms,
+       derived_io_tokens          -- NOT comparable with agent_total_tokens
 FROM semantic_agent_delegations ORDER BY delegation_timestamp DESC LIMIT 20;
 
 -- Cost-style aggregate: pick ONE measure and say which.
 SELECT subagent_type,
        COUNT(*) AS delegations,
-       CAST(median(agent_derived_io_tokens) AS BIGINT) AS median_io_tokens
+       CAST(median(derived_io_tokens) AS BIGINT) AS median_io_tokens
 FROM semantic_agent_delegations
-WHERE completion_state = 'completed' AND agent_derived_io_tokens IS NOT NULL
+WHERE completion_state = 'completed'
 GROUP BY 1 ORDER BY delegations DESC;
+
+-- How much each session delegated (from the summary, no join needed)
+SELECT session_id, total_delegations, total_spawn_failures,
+       delegated_output_tokens
+FROM semantic_session_summary
+WHERE total_delegations > 0 ORDER BY total_delegations DESC LIMIT 20;
 
 -- Agent tree under a parent session
 SELECT session_id, agent_type, agent_description, depth_level

@@ -5,8 +5,8 @@
 Ask the warehouse, not this file: `SELECT * FROM etl.table_coverage` lists
 every table and view with its status, writer and reason, and
 `SELECT DISTINCT table_name FROM etl.steps` says what this file was actually
-written by. There are no empty-by-design tables since 1.0.0. The one
-conditional table is `fact_session_embeddings` (rows only with `--embed`).
+written by. There are no empty-by-design tables since 1.0.0, and no
+conditional ones either (`--embed` and its table were removed).
 Turn durations and stop events live in `fact_system_events` by `subtype`.
 
 ## Soft deletes
@@ -74,8 +74,12 @@ Cache-creation pricing differs: 5m tokens bill at 1.25x, 1h at 2x.
 - Identity is the FILE stem: `dim_session.session_id = 'agent-<id>'`. Raw JSON
   payloads (`$.sessionId` anywhere) carry the PARENT's id — never derive
   identity from them.
-- `fact_agent_delegations.agent_session_key` is NULL when the agent's own
-  transcript wasn't ETL'd — LEFT JOIN accordingly.
+- Delegations are the view `semantic_agent_delegations` (one row per
+  Agent/Task call in `fact_tool_calls`); there is no delegations table. Its
+  `agent_session_key` is derived from the stated agent id and may name a
+  session that was never ingested — LEFT JOIN `dim_session` accordingly. Its
+  `agent_*` columns are stated by the parent and its `derived_*` columns come
+  from the agent's transcript; `docs/STAR_SCHEMA.md` has the column table.
 - Pre-2026 short agent ids can collide across parents (accepted limitation).
 - An agent whose parent was pruned keeps `depth_level = 0`.
 - Exclude sidechains from "human conversation" metrics:

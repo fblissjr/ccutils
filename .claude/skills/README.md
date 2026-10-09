@@ -16,9 +16,16 @@ hierarchy so each task loads only the context it needs:
 | Skill | Scenario |
 |---|---|
 | `query-warehouse` | Answering questions against a ccutils DuckDB warehouse (usage, cost, tools, files, plans, agents, ETL health) |
-| `etl-dev` | Extending the ETL: new facts, new columns, facets, migrations, releases |
-| `render-exports` | HTML/markdown exporters, Jinja2 templates, search UI, `--private` |
+| `etl-dev` | Extending the ETL: new facts, new dimensions, new columns, facets, releases |
+| `render-exports` | HTML/markdown exporters, Jinja2 templates, filter UI, `--private`, `--no-thinking` |
+| `release` | The version bump and tag checklist (user-invoked only) |
 
-Keep this drift-free: a new fact table touches `query-warehouse` routing +
-recipes; a schema change touches `etl-dev` references only if the *contract*
-changed (not just the column list -- that lives in `docs/STAR_SCHEMA.md`).
+Rules that apply in every session live in `CLAUDE.md` and are not repeated
+in a skill: a second copy goes stale the first time the rule changes. A
+skill holds what only matters during its task.
+
+What keeps this from drifting: `tests/test_query_recipes.py` runs every SQL
+recipe in `query-warehouse` against the current schema, so a renamed table or
+column fails the suite. A schema change touches `etl-dev` references only if
+the *contract* changed (not just the column list -- that lives in
+`docs/STAR_SCHEMA.md`).

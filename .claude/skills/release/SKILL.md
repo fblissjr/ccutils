@@ -36,9 +36,19 @@ indistinguishable:
 3. `CHANGELOG.md` -- promote `[Unreleased]` to `## {new_version}` (rename
    the heading; leave a fresh empty `[Unreleased]` above it for subsequent work)
 
-### Step 4: Run doc-drift-checker
+### Step 4: Check the prose against the code
 
-Use the doc-drift-checker subagent to verify no hardcoded counts are stale. Fix any drift found before proceeding.
+A release is when a stale sentence gets published. Before tagging:
+
+1. `uv run pytest tests/test_query_recipes.py --confcutdir=tests` -- every
+   SQL recipe in the query-warehouse skill still binds against the schema.
+2. For each name the promoted CHANGELOG section says was removed or renamed,
+   grep `README.md`, `docs/`, `.claude/skills/` and the CLI help for it.
+3. If the `claim-audit` skill is installed, run it over `README.md` and the
+   promoted CHANGELOG section. It re-derives each claim by running a
+   command instead of reading and agreeing.
+
+Fix what they find before proceeding.
 
 ### Step 5: Commit and tag
 

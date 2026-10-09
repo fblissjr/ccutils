@@ -64,11 +64,13 @@ Resume in this order. Each item was designed and its reads done on
    - The downstream consumer's queries. The view's columns changed
      (`docs/STAR_SCHEMA.md` lists what moved), and that repo was not
      touched from here.
-   - `.claude/skills/query-warehouse/references/query-recipes.md` and
-     `gotchas.md`, and `.claude/skills/etl-dev/SKILL.md` and
-     `new-fact/SKILL.md`, still name the old columns, the table,
-     `run_post_session_reconciliation` and `--embed`. Step 4 already
-     edits the query-warehouse skill; do these with it.
+   - Done 2026-10-09: the skills were brought in line. `new-fact`,
+     `new-dimension` and `test-schema` are deleted (the dimension workflow
+     is now `etl-dev/references/new-dimension.md`), `etl-dev` no longer
+     repeats `CLAUDE.md`'s rules, and `tests/test_query_recipes.py` runs
+     every SQL recipe in `query-warehouse` against the schema. That test
+     will fail at step 4 on the recipes naming the views it deletes, which
+     is the point.
    - The accepted cost, measured on the full corpus at the gate: how many
      synchronous delegations have a stated status and no agent transcript
      (the query is in `docs/STAR_SCHEMA.md`). It is zero on the
@@ -89,7 +91,9 @@ Resume in this order. Each item was designed and its reads done on
    unaffected.
 4. **Delete the five plain-join views** marked `delete` in
    `TABLE_COVERAGE` and update the query-warehouse skill's routing table
-   and recipes, which still name them.
+   and recipes, which still name them (`tests/test_query_recipes.py` lists
+   the recipes; the routing table in its `SKILL.md` is prose and needs a
+   read).
 5. **Gate and tag.** One full-corpus build (about 15 minutes), `ccutils
    audit` clean, then `docs/STAR_SCHEMA.md` table list, `README.md`,
    `CHANGELOG.md` promoted from Unreleased, `pyproject.toml` and
