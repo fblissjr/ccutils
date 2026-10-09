@@ -1,4 +1,4 @@
-"""Every SQL recipe in the query-warehouse skill runs against the current schema.
+"""Every SQL recipe a reader is shown runs against the current schema.
 
 Claim: the recipes are instructions an agent copies, and nothing connected
 them to the DDL. At 1.0.0 `semantic_agent_delegations` changed its columns
@@ -24,8 +24,14 @@ import pytest
 
 from ccutils import create_star_schema
 
-SKILL_DIR = Path(__file__).resolve().parents[1] / ".claude" / "skills" / "query-warehouse"
-RECIPE_FILES = sorted(SKILL_DIR.rglob("*.md"))
+REPO = Path(__file__).resolve().parents[1]
+SKILL_DIR = REPO / ".claude" / "skills" / "query-warehouse"
+# The skill's recipes, plus the two tracked docs that show a reader SQL to
+# copy. Same failure, same check.
+RECIPE_FILES = sorted(SKILL_DIR.rglob("*.md")) + [
+    REPO / "docs" / "STAR_SCHEMA.md",
+    REPO / "README.md",
+]
 
 _SQL_BLOCK = re.compile(r"^```sql\n(.*?)^```", re.M | re.S)
 
@@ -59,8 +65,12 @@ def warehouse(tmp_path_factory):
 
 def test_the_skill_has_recipes_to_check():
     """Non-vacuity: a moved file or a changed fence would leave nothing to run."""
-    assert RECIPE_FILES, f"no markdown under {SKILL_DIR}"
-    assert sum(len(sql_statements(p.read_text())) for p in RECIPE_FILES) >= 10
+    assert list(SKILL_DIR.rglob("*.md")), f"no markdown under {SKILL_DIR}"
+    for path in RECIPE_FILES:
+        assert path.is_file(), path
+    counts = {p.name: len(sql_statements(p.read_text())) for p in RECIPE_FILES}
+    assert counts["query-recipes.md"] >= 10, counts
+    assert counts["STAR_SCHEMA.md"] >= 1 and counts["README.md"] >= 1, counts
 
 
 @pytest.mark.parametrize("statement", list(_recipes()))

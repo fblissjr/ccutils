@@ -397,6 +397,20 @@ they land.
 
 ### Fix at 1.0.0 or before
 
+- **Integer sums in views are HUGEINT, which reaches Arrow as
+  `decimal128(38, 0)`.** Found 2026-10-09 by the new doc test, which
+  compares `docs/STAR_SCHEMA.md` with `DESCRIBE`. DuckDB types `SUM` over an
+  integer column as HUGEINT, so every summed column in a view carries it;
+  count them with `SELECT table_name, COUNT(*) FROM
+  information_schema.columns WHERE table_schema = 'main' AND data_type =
+  'HUGEINT' GROUP BY 1`. `semantic_session_summary` held INTEGER and BIGINT
+  while it was a table, so this arrived unannounced when it became a view.
+  Python's `fetchall` still returns `int`; an Arrow or dataframe consumer
+  gets a decimal. The doc now states the real types. The fix is a
+  `::BIGINT` on each sum in `schemas/star/schema.py` and a test that no
+  column in `main` is HUGEINT; views are not fingerprinted, so no rebuild.
+  Open: the owner's go-ahead, since it changes the type a consumer sees.
+
 - **Thinking text reaches `dim_session.last_assistant_message` by default.**
   Found 2026-10-09 while correcting `docs/JSONL_CONTRACT.md` claim 5.
   `extract_text_from_content_json` defaults to including thinking, so a

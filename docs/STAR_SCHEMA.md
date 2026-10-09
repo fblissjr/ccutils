@@ -226,6 +226,15 @@ One row per Claude Code session. Stub fields populated during ETL; heuristic col
 | permission_mode | VARCHAR | Last-known permission mode (see `fact_meta_events` for the full time series) |
 | agent_type | VARCHAR | From .meta.json sidecar (Explore, Plan, etc.) |
 | agent_description | VARCHAR | From .meta.json sidecar |
+| spawn_depth | INTEGER | STATED by the agent's `.meta.json` sidecar (`spawnDepth`). Depth exists nowhere else: every agent carries the root's `sessionId` and nested agents are flat siblings on disk. NULL when there is no sidecar or it states none |
+| parent_agent_id | VARCHAR | Stated `parentAgentId`: the agent that spawned this one, for a nested agent |
+| spawn_tool_use_id | VARCHAR | Stated `toolUseId`: the spawn call in the parent's transcript |
+| agent_model | VARCHAR | Stated `model` |
+| is_fork | BOOLEAN | Stated `isFork` |
+| agent_name | VARCHAR | Stated `name` |
+| worktree_path | VARCHAR | Stated `worktreePath`, when the agent ran in its own git worktree |
+| worktree_branch | VARCHAR | Stated `worktreeBranch` |
+| stopped_by_user | BOOLEAN | Stated `stoppedByUser` |
 
 #### Subagent session identity
 
@@ -331,6 +340,7 @@ sessions replay their history").
 | entry_id | VARCHAR | PK: a file-and-line surrogate, `generate_dimension_key(source_path, sequence_num)` (md5), stamped at Tier 1. Unique in the warehouse; NOT the JSONL `uuid`, and not stable across machines or a moved file |
 | message_id | VARCHAR | The JSONL `uuid`. Repeats across replayed history; neither `message_id` nor `(session_id, message_id)` is unique |
 | session_key | VARCHAR | FK to dim_session |
+| session_id | VARCHAR | The session's id, carried so a query needs no `dim_session` join |
 | project_key | VARCHAR | FK to dim_project |
 | message_type | VARCHAR | user, assistant, system |
 | model_key | VARCHAR | FK to dim_model |
@@ -373,6 +383,7 @@ One row per `tool_use_id`: the assistant's `tool_use` block, its result (the `to
 | entry_id | VARCHAR | Degenerate dim: the assistant entry carrying the tool_use block |
 | message_id | VARCHAR | FK to fact_messages (assistant turn) |
 | session_key | VARCHAR | FK to dim_session |
+| session_id | VARCHAR | The session's id, carried so a query needs no `dim_session` join |
 | project_key | VARCHAR | FK to dim_project |
 | tool_key | VARCHAR | FK to dim_tool |
 | date_key | INTEGER | FK to dim_date |
@@ -409,6 +420,8 @@ One row per `tool_use_id`: the assistant's `tool_use` block, its result (the `to
 | agent_total_duration_ms | FLOAT | Task/Agent rollup |
 | agent_total_tokens | INTEGER | Task/Agent rollup |
 | agent_total_tool_use_count | INTEGER | Task/Agent rollup |
+| agent_resolved_model | VARCHAR | Task/Agent rollup: `resolvedModel`, the model the subagent actually ran on |
+| agent_is_async | BOOLEAN | Task/Agent rollup: `isAsync`. TRUE = this result is a launch acknowledgment, not an outcome |
 | agent_subagent_type | VARCHAR | Task/Agent rollup |
 | agent_id | VARCHAR | Task/Agent rollup |
 | chain_id | VARCHAR | md5(session_id, run_index): one chain per human turn (agentic run) |
@@ -437,6 +450,7 @@ resume/fork replays history.
 | entry_id | VARCHAR | PK (the file-and-line surrogate, as in `fact_messages`); no separate usage_id |
 | api_message_id | VARCHAR | API response identity: `message.id`, falling back to `requestId`, then `entry_id` (R23) |
 | session_key | VARCHAR | FK to dim_session |
+| session_id | VARCHAR | The session's id, carried so a query needs no `dim_session` join |
 | project_key | VARCHAR | FK to dim_project |
 | model_key | VARCHAR | FK to dim_model |
 | date_key | INTEGER | FK to dim_date |
@@ -479,6 +493,7 @@ One row per file touch. Derived from `fact_tool_calls`.
 |--------|------|-------------|
 | tool_use_id | VARCHAR | PK (FK to fact_tool_calls); no separate surrogate id |
 | session_key | VARCHAR | FK to dim_session |
+| session_id | VARCHAR | The session's id, carried so a query needs no `dim_session` join |
 | file_key | VARCHAR | FK to dim_file |
 | tool_key | VARCHAR | FK to dim_tool |
 | date_key | INTEGER | FK to dim_date |
@@ -489,7 +504,7 @@ One row per file touch. Derived from `fact_tool_calls`.
 | timestamp | TIMESTAMP | Operation timestamp |
 
 #### semantic_session_files (view)
-A view since 1.0.0 over `fact_file_operations`, one row per (session, file). Was `semantic_session_files`.
+A view since 1.0.0 over `fact_file_operations`, one row per (session, file). Was the table `bridge_session_file`.
 
 M:N aggregate per (session, file).
 
@@ -497,16 +512,15 @@ M:N aggregate per (session, file).
 |--------|------|-------------|
 | session_file_key | VARCHAR | PK |
 | session_key | VARCHAR | FK to dim_session |
+| session_id | VARCHAR | The session's id, carried so a query needs no `dim_session` join |
 | file_key | VARCHAR | FK to dim_file |
-| date_key | INTEGER | FK to dim_date (derived from first_operation_timestamp) |
-| time_key | INTEGER | FK to dim_time (derived from first_operation_timestamp) |
 | first_operation_timestamp | TIMESTAMP | Earliest operation on this file |
 | last_operation_timestamp | TIMESTAMP | Latest operation on this file |
-| operation_count | INTEGER | Total operations |
-| read_count | INTEGER | Read operations |
-| write_count | INTEGER | Write operations |
-| edit_count | INTEGER | Edit operations |
-| total_chars_written | INTEGER | Total characters written |
+| operation_count | BIGINT | Total operations |
+| read_count | HUGEINT | Read operations |
+| write_count | HUGEINT | Write operations |
+| edit_count | HUGEINT | Edit operations |
+| total_chars_written | HUGEINT | Total characters written |
 
 #### fact_diagnostics
 LSP diagnostics flattened from `fact_attachments` where `attachment_type='diagnostics'`. Columns: `diagnostic_id` (PK), `entry_id`, `session_key`, `file_key`, `date_key`, `time_key`, `file_path`, `severity` (Error/Warning/Info/Hint), `source` (Pyright, typescript, etc.), `code`, `message`, `range_start_line` / `range_start_col` / `range_end_line` / `range_end_col`, `timestamp`.
@@ -518,6 +532,7 @@ One row per `ExitPlanMode` tool invocation, linked into a per-session revision c
 |--------|------|-------------|
 | revision_key | VARCHAR | PK (md5 of session_key + tool_use_id) |
 | session_key | VARCHAR | FK to dim_session |
+| session_id | VARCHAR | The session's id, carried so a query needs no `dim_session` join |
 | project_key | VARCHAR | FK to dim_project |
 | date_key | INTEGER | FK to dim_date |
 | time_key | INTEGER | FK to dim_time |
@@ -549,7 +564,8 @@ A view since 1.0.0. It was the table `fact_agent_delegations`, written per sessi
 |--------|------|-------------|
 | delegation_key | VARCHAR | `md5(parent session_id \|\| '\|' \|\| tool_use_id)`; unique per row |
 | tool_use_id | VARCHAR | The spawn call in `fact_tool_calls` |
-| parent_session_key / parent_session_id | VARCHAR | The session that delegated. `parent_cwd` and `project_name` come from its `dim_session` row |
+| parent_session_key / parent_session_id | VARCHAR | The session that delegated |
+| parent_cwd / project_name | VARCHAR | From the parent's `dim_session` and `dim_project` rows |
 | agent_id | VARCHAR | Stated `toolUseResult.agentId`. NULL when the spawn was refused or the launch named none |
 | agent_session_key | VARCHAR | `md5('agent-' \|\| agent_id)`. May name a session that was never ingested |
 | agent_session_id / agent_depth_level | | From the agent's `dim_session` row; NULL when its transcript is not in the warehouse |
@@ -568,8 +584,8 @@ A view since 1.0.0. It was the table `fact_agent_delegations`, written per sessi
 | derived_completion_timestamp | TIMESTAMP | The agent's last assistant message |
 | derived_seconds_to_completion | DOUBLE | derived_completion_timestamp - delegation_timestamp |
 | derived_duration_ms | DOUBLE | The agent's first message to its last assistant message |
-| derived_io_tokens | BIGINT | Input+output summed from the agent's OWN usage. A *different measure* from `agent_total_tokens`, not a fallback for it |
-| derived_tool_use_count | INTEGER | The agent's own tool calls; 0, not NULL, for an agent that finished without calling one. `ccutils audit` scores it against `agent_total_tool_use_count` where both exist |
+| derived_io_tokens | HUGEINT | Input+output summed from the agent's OWN usage. A *different measure* from `agent_total_tokens`, not a fallback for it |
+| derived_tool_use_count | BIGINT | The agent's own tool calls; 0, not NULL, for an agent that finished without calling one. `ccutils audit` scores it against `agent_total_tool_use_count` where both exist |
 | derived_output_text | TEXT | The agent's final report: its terminal assistant message |
 
 Every `derived_` column is NULL unless `completion_state = 'completed'`.
@@ -610,47 +626,48 @@ One row per session. Aggregates over every fact above. Must populate last.
 | Column | Type | Description |
 |--------|------|-------------|
 | session_key | VARCHAR | PK, FK to dim_session |
+| session_id | VARCHAR | The session's id, carried so a query needs no `dim_session` join |
 | project_key | VARCHAR | FK to dim_project |
 | date_key | INTEGER | FK to dim_date |
 | time_key | INTEGER | FK to dim_time |
 | first_timestamp | TIMESTAMP | First message time |
 | last_timestamp | TIMESTAMP | Last message time |
 | session_duration_seconds | DOUBLE | last_timestamp - first_timestamp |
-| total_messages | INTEGER | Total message count |
-| user_messages | INTEGER | User message count |
-| assistant_messages | INTEGER | Assistant message count |
-| total_thinking_blocks | INTEGER | Thinking blocks across assistant messages |
-| total_input_tokens | BIGINT | Sum of API input tokens |
-| total_output_tokens | BIGINT | Sum of API output tokens |
-| total_cache_creation_5m_tokens | BIGINT | R11 split |
-| total_cache_creation_1h_tokens | BIGINT | R11 split |
-| total_cache_creation_total_tokens | BIGINT | 5m + 1h |
-| total_cache_read_tokens | BIGINT | Sum of cache-read tokens |
-| total_uncached_equivalent_tokens | BIGINT | Sum, R11-correct |
-| api_response_count | INTEGER | Count of contributing fact_token_usage rows |
-| total_tool_uses | INTEGER | Tool use count |
-| unique_tools_used | INTEGER | Distinct tools used |
-| total_tool_results | INTEGER | Tool result count |
-| total_tool_errors | INTEGER | Error count (fact_tool_calls.is_error=TRUE) |
-| total_api_errors | INTEGER | From fact_system_events |
-| total_compactions | INTEGER | From fact_system_events |
-| total_turn_durations_ms | BIGINT | Sum of turn durations, from fact_system_events |
-| turn_count | INTEGER | Count of turn_duration system events |
-| total_stop_events | INTEGER | From fact_system_events |
-| total_prevented_continuations | INTEGER | From fact_system_events |
-| total_progress_events | INTEGER | From fact_progress_events |
-| total_delegations | INTEGER | Agent/Task spawn calls made by this session |
-| total_spawn_failures | INTEGER | Spawns that were refused: a stated error, no agent id, no status |
+| total_messages | BIGINT | Total message count |
+| user_messages | HUGEINT | User message count |
+| assistant_messages | HUGEINT | Assistant message count |
+| total_thinking_blocks | HUGEINT | Thinking blocks across assistant messages |
+| total_input_tokens | HUGEINT | Sum of API input tokens |
+| total_output_tokens | HUGEINT | Sum of API output tokens |
+| total_cache_creation_5m_tokens | HUGEINT | R11 split |
+| total_cache_creation_1h_tokens | HUGEINT | R11 split |
+| total_cache_creation_total_tokens | HUGEINT | 5m + 1h |
+| total_cache_read_tokens | HUGEINT | Sum of cache-read tokens |
+| total_uncached_equivalent_tokens | HUGEINT | Sum, R11-correct |
+| api_response_count | BIGINT | Count of contributing fact_token_usage rows |
+| total_tool_uses | BIGINT | Tool use count |
+| unique_tools_used | BIGINT | Distinct tools used |
+| total_tool_results | BIGINT | Tool result count |
+| total_tool_errors | HUGEINT | Error count (fact_tool_calls.is_error=TRUE) |
+| total_api_errors | HUGEINT | From fact_system_events |
+| total_compactions | HUGEINT | From fact_system_events |
+| total_turn_durations_ms | HUGEINT | Sum of turn durations, from fact_system_events |
+| turn_count | HUGEINT | Count of turn_duration system events |
+| total_stop_events | HUGEINT | From fact_system_events |
+| total_prevented_continuations | HUGEINT | From fact_system_events |
+| total_progress_events | BIGINT | From fact_progress_events |
+| total_delegations | BIGINT | Agent/Task spawn calls made by this session |
+| total_spawn_failures | HUGEINT | Spawns that were refused: a stated error, no agent id, no status |
 | max_child_depth | INTEGER | Deepest `spawn_depth` stated by a directly spawned agent's sidecar; NULL when none is in the warehouse or states one |
-| delegated_output_tokens | BIGINT | Output tokens of the directly spawned agents, from their own usage rows |
-| total_hook_progress_events | INTEGER | From fact_progress_events |
-| total_bash_progress_events | INTEGER | From fact_progress_events |
-| total_attachments | INTEGER | From fact_attachments |
-| total_diagnostics | INTEGER | From fact_diagnostics |
-| total_hook_successes | INTEGER | From fact_attachments |
-| permission_mode_transition_count | INTEGER | From fact_meta_events |
+| delegated_output_tokens | HUGEINT | Output tokens of the directly spawned agents, from their own usage rows |
+| total_hook_progress_events | HUGEINT | From fact_progress_events |
+| total_bash_progress_events | HUGEINT | From fact_progress_events |
+| total_attachments | BIGINT | From fact_attachments |
+| total_diagnostics | HUGEINT | From fact_diagnostics |
+| total_hook_successes | HUGEINT | From fact_attachments |
+| permission_mode_transition_count | HUGEINT | From fact_meta_events |
 | current_permission_mode | VARCHAR | Latest permission mode, from fact_meta_events |
-| total_file_history_snapshots | INTEGER | From fact_file_history_snapshots |
+| total_file_history_snapshots | BIGINT | From fact_file_history_snapshots |
 
 Note: there is no `unique_files_touched` column on this table -- use `semantic_session_files` (grouped by `session_key`) or `semantic_project_files` for distinct-file counts.
 
