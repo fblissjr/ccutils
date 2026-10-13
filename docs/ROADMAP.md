@@ -837,6 +837,18 @@ Stated once so green is read correctly:
 Convention going forward: every new test carries one line naming what breaks
 if it is deleted.
 
+Not met by the tests added on 2026-10-13. `tests/test_tool_call_replay.py`,
+`tests/test_fork_cut.py`, `tests/test_fork_events.py`,
+`tests/test_delegation_attribution.py` and
+`tests/test_global_sources_isolation.py` hold 70 test functions, and 2 of
+them say in their own docstring what breaks if they are deleted (measured
+that day by parsing the files). Each place those tests guard was shown to
+turn a test red by a mutation control, but the controls were scratch
+scripts and are gone: what remains is the commit messages of `67ca724`,
+`525caa5`, `6c02b06`, `31abe4c` and `6c7e09c` saying they passed. To close:
+add the line to each test, and derive it by breaking the code again, not
+from the commit message.
+
 ## Decisions that should not be relitigated
 
 - **No migrations from the past unless the owner asks for one.** Rebuild
