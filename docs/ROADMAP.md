@@ -37,9 +37,19 @@ machine that has it; nothing here depends on it.
 - **What is left is the gate, and it now carries more.** The last
   full-corpus build and audit were on 2026-09-10, before the two table
   merges of 2026-10-09 and everything of 2026-10-13. Since then the work
-  has been checked on one-project builds only, and the last three view
-  changes of 2026-10-13 on tests alone. The full-corpus build in step 5 is
-  the first time any of it meets the whole corpus. Version is still 0.20.1;
+  has been checked on one-project builds, and at the end of 2026-10-13 on a
+  chosen cross-project sample: five projects, three root sessions each with
+  their agent transcripts, picked to hold a fork, a payload-less nested
+  launch, a root session that replays another, a Glob call in a parent
+  session, a bridge event, a user-stopped agent, a worktree, an API error,
+  a compaction and a plan. On it every call has exactly one row that is not
+  a replay, the two facts agree on every call, no delegation is its own
+  child, every fork's summary equals its facets and its usage after the
+  cut, and the audit reports only two columns that sample never fills.
+  Not exercised by it: a fork that inherited system events (none of the
+  sample's forks did), and anything that only shows at scale. The
+  full-corpus build in step 5 is still the first time any of this meets the
+  whole corpus. Version is still 0.20.1;
   the tag waits on the list under "Next session".
 - **A second harness, Tier 1 only (2026-09-22).** `ccutils lake
   antigravity` mirrors Google Antigravity's native store (SQLite files of
