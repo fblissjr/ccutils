@@ -1,10 +1,13 @@
 """A projection must emit the grain its populator declares.
 
-Claim: `fact_tool_calls` and `fact_tool_calls` declare
-`natural_key="tool_use_id"`, so their projections must produce ONE row per
-tool_use_id. They did not. A real Claude Code session records a single
-tool_use_id under two distinct entry uuids, so unnesting content blocks
-across entries yielded two rows for one key.
+Claim: `fact_tool_calls` declares one row per tool call per session
+(`natural_key="tool_call_key"`, the session and the `tool_use_id`), so its
+projection must produce ONE row per tool_use_id within a session. It did not.
+A real Claude Code session records a single tool_use_id under two distinct
+entry uuids, so unnesting content blocks across entries yielded two rows for
+one key. (The key was `tool_use_id` alone when this was written; the same
+call in ANOTHER transcript is a row of its own now, and
+tests/test_tool_call_replay.py holds that.)
 
 That was first patched in `lineage_upsert` -- a generic collapse in machinery
 shared by 13 facts, applying a tool-call-specific judgment to all of them and
@@ -107,8 +110,8 @@ class TestProjectionEmitsDeclaredGrain:
         its own collapse once the source projection is correct."""
         self._run(conn, tmp_path)
         for table, key in (
-            ("fact_file_operations", "tool_use_id"),
-            ("fact_tool_calls", "tool_use_id"),
+            ("fact_file_operations", "tool_call_key"),
+            ("fact_tool_calls", "tool_call_key"),
         ):
             dups = conn.execute(
                 f"SELECT COUNT(*) FROM (SELECT {key} FROM {table} "

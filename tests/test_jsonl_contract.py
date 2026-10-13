@@ -393,8 +393,9 @@ AGENT_PAYLOAD_ABSENT_MAJORITY = 0.5
 def tool_result_payload_counts(entries, since=None):
     """(tool results whose entry states no toolUseResult, all tool results).
 
-    Counted per `tool_result` block, since that is the grain of
-    fact_tool_calls. An explicit null counts as absent, because that is what
+    Counted per `tool_result` block. A transcript can repeat a result entry,
+    and each repeat is counted here, where fact_tool_calls keeps one row per
+    call. An explicit null counts as absent, because that is what
     the parser does with it. With `since`, only entries stamped with that
     Claude Code version or later are counted; a missing or unparseable version
     is left out rather than guessed at.
@@ -679,3 +680,206 @@ class TestToolResultPayloadPresence:
             ("t-stated", True, "FIRST BODY", True, 7),
         ]
         assert unstated == [("t-missing",)]
+
+
+# ---------------------------------------------------------------------------
+# Claim 12: a transcript can replay another session's tool calls under the
+# same ids. A fork's replay ends at its own spawn call; a copy names the file
+# it sits in, so nothing states where it came from.
+# ---------------------------------------------------------------------------
+
+# Reasoned, not measured. Unseen in the corpus; the line is where "a fork's
+# calls at or before its own spawn are its spawner's, and the rest are its
+# own" stops being a usable cut for semantic_tool_call_replay.
+FORK_PREFIX_MAX_MISMATCH_RATE = 0.01
+
+# Reasoned, not measured. Also unseen. If copies start keeping the id of the
+# session they came from, that is a stated origin and the tie-break in
+# semantic_tool_call_replay should be replaced by it.
+COPY_NAMES_ANOTHER_FILE_MIN_RATE = 0.01
+
+
+def fork_prefix_mismatches(fork_calls, own_spawn_id, spawner_call_ids):
+    """(calls the cut gets wrong, all calls) for one fork transcript.
+
+    `fork_calls` is the fork's own (tool_use id, timestamp) list. The cut is
+    the timestamp of the call that created the fork. A call at or before it
+    should also be in the spawner's transcript; a call after it should not.
+    Returns None when the fork's transcript does not hold its own spawn call,
+    since there is then no cut to test.
+    """
+    cut = next((ts for call_id, ts in fork_calls if call_id == own_spawn_id), None)
+    if cut is None:
+        return None
+    wrong = 0
+    for call_id, ts in fork_calls:
+        in_prefix = ts is not None and ts <= cut
+        if in_prefix != (call_id in spawner_call_ids):
+            wrong += 1
+    return wrong, len(fork_calls)
+
+
+def fork_cut_is_exact(wrong, total):
+    return wrong / total < FORK_PREFIX_MAX_MISMATCH_RATE
+
+
+def copies_state_no_origin(naming_another_file, total):
+    return naming_another_file / total < COPY_NAMES_ANOTHER_FILE_MIN_RATE
+
+
+def _stated_spawner_stem(path, sidecar):
+    """The transcript a sidecar says spawned this agent, or None if it does not say."""
+    if sidecar.get("parentAgentId"):
+        return "agent-" + sidecar["parentAgentId"]
+    if sidecar.get("spawnDepth") == 1 and "subagents" in path.parts:
+        return path.parts[path.parts.index("subagents") - 1]
+    return None
+
+
+@pytest.fixture(scope="module")
+def tool_call_replay_corpus():
+    """One pass: every transcript's tool calls, and what each copy says it is."""
+    files = _corpus_files()
+    if not files:
+        pytest.skip("no local Claude Code corpus to check the contract against")
+
+    calls_by_stem, holders, names_own_file = {}, {}, {}
+    for f in files:
+        is_agent = _is_agent_transcript(f)
+        own_name = f.stem[len("agent-"):] if is_agent else f.stem
+        calls = []
+        try:
+            with open(f, errors="replace") as fh:
+                for line in fh:
+                    if '"tool_use"' not in line:
+                        continue
+                    try:
+                        obj = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    if not isinstance(obj, dict):
+                        continue
+                    message = obj.get("message")
+                    content = message.get("content") if isinstance(message, dict) else None
+                    if not isinstance(content, list):
+                        continue
+                    stated = obj.get("agentId") if is_agent else obj.get("sessionId")
+                    for block in content:
+                        if (isinstance(block, dict) and block.get("type") == "tool_use"
+                                and block.get("id")):
+                            calls.append((block["id"], obj.get("timestamp")))
+                            holders.setdefault(block["id"], set()).add(f.stem)
+                            names_own_file[(f.stem, block["id"])] = stated == own_name
+        except OSError:
+            continue
+        calls_by_stem[f.stem] = (f, calls)
+
+    forks = wrong = total = 0
+    for stem, (path, calls) in calls_by_stem.items():
+        if not _is_agent_transcript(path):
+            continue
+        try:
+            sidecar = json.loads(path.with_suffix(".meta.json").read_text())
+        except (OSError, json.JSONDecodeError):
+            continue
+        if not isinstance(sidecar, dict) or not sidecar.get("isFork"):
+            continue
+        spawner = calls_by_stem.get(_stated_spawner_stem(path, sidecar))
+        if spawner is None:
+            continue
+        result = fork_prefix_mismatches(
+            calls, sidecar.get("toolUseId"), {call_id for call_id, _ in spawner[1]}
+        )
+        if result is None:
+            continue
+        forks += 1
+        wrong += result[0]
+        total += result[1]
+
+    shared = {call_id for call_id, stems in holders.items() if len(stems) > 1}
+    copies = [own for (stem, call_id), own in names_own_file.items() if call_id in shared]
+    return {
+        "forks": forks, "fork_wrong": wrong, "fork_total": total,
+        "calls": len(holders), "shared": len(shared),
+        "copies": len(copies), "copies_naming_another_file": copies.count(False),
+    }
+
+
+class TestAReplayedCallAndWhatStatesIt:
+    """One call can sit in several transcripts, and only a fork says where its copy ends.
+
+    `fact_tool_calls` is keyed on `(session_id, tool_use_id)` because of the
+    first half, and `semantic_tool_call_replay` rests on the second: a fork's
+    calls at or before its own spawn are its spawner's, by its sidecar, and
+    for any other copy the original is picked by a rule, because nothing in
+    the copy states its origin.
+
+    Two canaries, one for each thing that view assumes. The counts are
+    printed (run with `-s`).
+    """
+
+    def test_a_forks_replay_ends_at_its_own_spawn(self, tool_call_replay_corpus):
+        c = tool_call_replay_corpus
+        if not c["fork_total"]:
+            pytest.skip("no fork transcript beside its spawner's in this corpus")
+        print(
+            f"\nclaim 12, {c['forks']} fork transcripts beside their spawner's: "
+            f"the cut misplaces {c['fork_wrong']} of {c['fork_total']} tool calls"
+        )
+        assert fork_cut_is_exact(c["fork_wrong"], c["fork_total"]), (
+            f"the cut at a fork's own spawn call misplaces {c['fork_wrong']} of "
+            f"{c['fork_total']} tool calls, at or over "
+            f"{FORK_PREFIX_MAX_MISMATCH_RATE:.0%}. semantic_tool_call_replay "
+            "marks a fork's calls by that cut; see docs/JSONL_CONTRACT.md claim 12."
+        )
+
+    def test_a_copy_names_the_file_it_sits_in(self, tool_call_replay_corpus):
+        c = tool_call_replay_corpus
+        if not c["copies"]:
+            pytest.skip("no tool call sits in more than one transcript in this corpus")
+        print(
+            f"\nclaim 12: {c['shared']} of {c['calls']} tool call ids sit in more "
+            f"than one transcript; {c['copies_naming_another_file']} of "
+            f"{c['copies']} copies name a file other than their own"
+        )
+        assert copies_state_no_origin(c["copies_naming_another_file"], c["copies"]), (
+            f"{c['copies_naming_another_file']} of {c['copies']} copied tool "
+            "calls carry the id of a session other than the one whose file "
+            "they sit in. A copy may now state its origin: read that instead "
+            "of the tie-break in semantic_tool_call_replay "
+            "(docs/JSONL_CONTRACT.md claim 12)."
+        )
+
+    def test_the_fork_check_rejects_a_violation(self):
+        """The oracle can fail, in both directions."""
+        spawner = {"t1", "t2", "spawn"}
+        exact = [("t1", "10:00"), ("t2", "10:01"), ("spawn", "10:05"), ("own", "10:06")]
+        assert fork_prefix_mismatches(exact, "spawn", spawner) == (0, 4)
+        # A call before the cut that the spawner never made, and one after it
+        # that the spawner did make.
+        broken = [("stray", "10:00"), ("spawn", "10:05"), ("t2", "10:06")]
+        wrong, total = fork_prefix_mismatches(broken, "spawn", spawner)
+        assert (wrong, total) == (2, 3)
+        assert not fork_cut_is_exact(wrong, total)
+        assert fork_cut_is_exact(0, 4)
+
+    def test_a_call_made_with_the_spawn_is_in_the_prefix(self):
+        """Parallel calls share the spawn's timestamp and were replayed with it."""
+        calls = [("sibling", "10:05"), ("spawn", "10:05"), ("own", "10:06")]
+        assert fork_prefix_mismatches(calls, "spawn", {"sibling", "spawn"}) == (0, 3)
+
+    def test_a_fork_without_its_own_spawn_has_no_cut(self):
+        assert fork_prefix_mismatches([("t1", "10:00")], "spawn", {"t1"}) is None
+
+    def test_the_origin_check_rejects_a_violation(self):
+        """The oracle can fail."""
+        assert copies_state_no_origin(0, 100)
+        assert not copies_state_no_origin(40, 100)
+
+    def test_a_spawner_is_stated_only_two_ways(self, tmp_path):
+        """`parentAgentId`, or the root when `spawnDepth` is 1. Nothing else."""
+        path = tmp_path / "proj" / "root-1" / "subagents" / "agent-f1.jsonl"
+        assert _stated_spawner_stem(path, {"parentAgentId": "p1", "spawnDepth": 2}) == "agent-p1"
+        assert _stated_spawner_stem(path, {"spawnDepth": 1}) == "root-1"
+        assert _stated_spawner_stem(path, {"spawnDepth": 2}) is None
+        assert _stated_spawner_stem(path, {}) is None

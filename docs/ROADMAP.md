@@ -429,36 +429,23 @@ they land.
   finding is closed: the `SessionInputs` that `--llm-facets` sends to the API
   are now built without thinking whatever the flag says.
 
-- **A tool call copied into a second transcript is one row whose owner
-  follows load order.** Found 2026-10-13. `fact_tool_calls` is keyed on
-  `tool_use_id` alone (`NATURAL_KEYS`), and a resumed or forked session
-  replays history under new entry uuids with the same call ids. The upsert
-  matches on the key and, when the content hash differs, overwrites the row
-  including its `session_id`; when it is identical the first loader keeps
-  it. So the call belongs to whichever transcript the run order favoured,
-  its typed columns are that copy's, and per-session tool counts move
-  between a session and its fork. On the raw corpus 883 of 144,588 call ids
-  sit in more than one file (596 in two root sessions, 260 in two agents,
-  27 in a root and an agent). `ccutils audit` cannot see it: the key is
-  unique. The delegation views no longer depend on the owner (they read the
-  spawned agent's sidecar), but their stated `agent_*` columns still hold
-  whichever copy won, and every other reader of `fact_tool_calls` is
-  exposed. `fact_file_operations` has the same key and is derived from
-  these rows, and the two facts then DISAGREE about the same call: its
-  hashed columns are identical across copies, so it never updates and
-  keeps the first loader, while the tool call flips to the last. Measured
-  2026-10-13: on the raw corpus 242 of 49,681 file-tool call ids sit in
-  more than one transcript (190 in two root sessions, 52 in two agents, one
-  call in as many as 15 files of a resumed chain); on a one-project build
-  all 11 such calls carry one session in `fact_file_operations` and
-  another in `fact_tool_calls`. No row was lost or soft-deleted there. A
-  join of the two on `tool_use_id` still matches, but any query that also
-  filters or groups both by session drops or misplaces those rows, and
-  `semantic_session_files` and the per-session tool counts place the same
-  call in different sessions. `tests/test_delegation_attribution.py::TestAForkDoesNotOwnTheCallThatCreatedIt::test_the_fixture_reproduces_the_takeover`
-  reproduces it. The fix is the key, `(session_id, tool_use_id)`, with the
-  replay flag below; that is a schema decision and a rebuild, so it is the
-  owner's.
+- **Replay is handled for tool calls and file operations only.** Done
+  2026-10-13: both facts are keyed on `(session_id, tool_use_id)` so a
+  copied call is its own row, and `semantic_tool_call_replay` marks the
+  copies (`docs/JSONL_CONTRACT.md` claim 12, `docs/STAR_SCHEMA.md`). Every
+  view that counts tool calls, file operations or delegations reads only
+  the rows that are not replays. Left:
+  - The populated per-session facts are not replay-aware. A fork's or a
+    continuation's `fact_session_facets`, `dim_session` heuristics and
+    `fact_plan_revisions` are computed from its transcript as loaded,
+    replayed prefix included, so they disagree with the views for those
+    sessions. A populator cannot use the view's cross-session rule; it could
+    use the fork cut, which needs only the session's own sidecar.
+  - A copy between root sessions is marked by a rule (the session that ended
+    first is the original). Two sessions that share a prefix and both
+    continue do not say which came first; on the raw corpus that is two of
+    the five clusters of root sessions that share calls.
+  - Messages and token usage are the item below.
 - **Continued sessions replay their history.** 706 `api_message_id`
   values recur across sessions in the same chain (1,403 rows), and the
   same is true of every replayed message and tool call. Nothing marks a
@@ -636,18 +623,23 @@ here and stays local.
     (the share of results with a payload, by parent and agent), since the
     always-NULL check cannot see a column that parent rows fill.
   - Delegations: done 2026-10-13. `semantic_agent_delegations` and the
-    `delegation_rollup` of `semantic_session_summary` read who made a call
-    and which agent it spawned from the spawned agent's sidecar where the
-    transcript cannot say (`docs/STAR_SCHEMA.md`, "Who made a call").
-    `tests/test_delegation_attribution.py` holds it in both load orders.
-    The measurement behind it, on the raw corpus: of 354 `Agent` calls
-    inside agent transcripts that state no payload, 204 are background
+    `delegation_rollup` of `semantic_session_summary` read only calls a
+    session made itself (`semantic_tool_call_replay`), and find the child
+    from the spawned agent's sidecar when the payload names none
+    (`docs/STAR_SCHEMA.md`). A first version re-attributed a copied call to
+    its stated spawner; the key change made that unnecessary and it is
+    gone, with `parent_link_source`. `tests/test_delegation_attribution.py`
+    holds it in both load orders. The measurement behind it, on the raw
+    corpus, counted per distinct call in a transcript: of 330 `Agent` calls
+    inside agent transcripts that state no payload, 180 are background
     launches whose child a sidecar names with this agent as parent, 97 are
     a fork's copy of the call that created it, and 53 are calls an ancestor
     made; where a payload and a sidecar both name the child they agree on
-    all 1,150 calls that have both. Verified on a one-project build, which
-    holds one forked delegation and no payload-less nested launch, so the
-    nested case rests on its fixture and the raw scan.
+    all 1,147 that have both. (An earlier count here, 354 and 204, was of
+    result entries: a transcript can repeat one.) Verified on real rows in
+    two one-project builds: one holds a forked delegation, the other 11
+    payload-less nested launches, each resolved to the child whose sidecar
+    states that session as its parent.
   - Not established: what decides presence inside one Claude Code version.
     The claim records the association with how the agent was spawned.
   A candidate for the source profile below, which is the general form of

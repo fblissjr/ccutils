@@ -51,29 +51,36 @@ FROM dim_session_chain ORDER BY session_count DESC LIMIT 10;
 ## Tools and errors
 
 ```sql
+-- Every recipe on the raw fact joins semantic_tool_call_replay and keeps
+-- NOT is_replay: a resumed or forked session's transcript holds copies of
+-- calls another session made, and each copy is a row (gotchas.md).
+
 -- Bash invocations that failed or were interrupted
 SELECT ftu.session_id,
        json_extract_string(ftu.input_json, '$.command') AS command,
        ftu.derived_exit_code, ftu.derived_failure_kind, ftu.result_timestamp
 FROM fact_tool_calls ftu
+JOIN semantic_tool_call_replay rp USING (tool_call_key)
 WHERE ftu.tool_name = 'Bash'
   AND ftu.is_error
-  AND ftu.is_deleted = FALSE
+  AND ftu.is_deleted = FALSE AND NOT rp.is_replay
 ORDER BY ftu.result_timestamp DESC LIMIT 20;
 
 -- Failure taxonomy by tool
 SELECT dt.tool_name, fe.derived_failure_kind, COUNT(*) AS n
 FROM fact_tool_calls fe JOIN dim_tool dt USING (tool_key)
-WHERE fe.is_deleted = FALSE AND fe.is_error
+JOIN semantic_tool_call_replay rp USING (tool_call_key)
+WHERE fe.is_deleted = FALSE AND NOT rp.is_replay AND fe.is_error
 GROUP BY ALL ORDER BY n DESC LIMIT 20;
 
 -- Tool→tool transitions most likely to error
 SELECT t1.tool_name, t2.tool_name AS next_tool, COUNT(*) AS freq,
        SUM(CASE WHEN fcs.is_error THEN 1 ELSE 0 END) AS errors
 FROM fact_tool_calls fcs
+JOIN semantic_tool_call_replay rp USING (tool_call_key)
 JOIN dim_tool t1 ON fcs.tool_key = t1.tool_key
 JOIN dim_tool t2 ON fcs.next_tool_key = t2.tool_key
-WHERE fcs.is_deleted = FALSE
+WHERE fcs.is_deleted = FALSE AND NOT rp.is_replay
 GROUP BY ALL HAVING COUNT(*) >= 5 ORDER BY freq DESC LIMIT 20;
 ```
 
@@ -122,7 +129,8 @@ FROM fact_file_operations ffo
 JOIN dim_file df ON df.file_key = ffo.file_key
 JOIN dim_tool dtl ON dtl.tool_key = ffo.tool_key
 JOIN dim_session ds ON ds.session_key = ffo.session_key
-WHERE ffo.is_deleted = FALSE AND ds.session_id = '<id>'
+JOIN semantic_tool_call_replay rp ON rp.tool_call_key = ffo.tool_call_key
+WHERE ffo.is_deleted = FALSE AND NOT rp.is_replay AND ds.session_id = '<id>'
 ORDER BY ffo.timestamp LIMIT 20;
 
 -- Unified decision timeline for one session
@@ -145,9 +153,8 @@ FROM semantic_decisions WHERE session_id = '<id>' ORDER BY timestamp;
 -- no_completion_recorded / spawn_failed / NULL); every derived_ column is
 -- NULL unless it is 'completed'. NULL means no agent is linked
 -- (agent_link_source IS NULL) or its transcript is not in the warehouse.
--- parent_session_id is the session that MADE the call, which the view reads
--- from the spawned agent's sidecar where it can; do not swap in
--- fact_tool_calls.session_id.
+-- The view holds only calls a session made itself; a fork's copy of its
+-- spawner's calls is not a delegation and is not here.
 SELECT parent_session_id, subagent_type, task_description,
        agent_is_async,
        agent_status,              -- stated by the parent
@@ -158,15 +165,21 @@ SELECT parent_session_id, subagent_type, task_description,
        derived_io_tokens          -- NOT comparable with agent_total_tokens
 FROM semantic_agent_delegations ORDER BY delegation_timestamp DESC LIMIT 20;
 
--- How each delegation's parent and child were settled. 'child_sidecar' on
--- the parent means the spawned agent's sidecar stated who made the call,
--- which overrides the transcript holding it (a fork's file holds a copy of
--- its spawner's calls). On the agent it means the parent stated no agent_id
--- and the spawned agent's sidecar named the call.
-SELECT parent_link_source, agent_link_source, COUNT(*) AS delegations,
+-- How each delegation's child was found. 'parent_payload' is the agent id
+-- the parent stated; 'child_sidecar' means the parent stated none and the
+-- spawned agent's sidecar named this call; NULL means no side links one.
+SELECT agent_link_source, COUNT(*) AS delegations,
        COUNT(*) FILTER (WHERE completion_state = 'completed') AS completed
 FROM semantic_agent_delegations
 GROUP BY ALL ORDER BY delegations DESC;
+
+-- How much of each session's transcript is replayed history. A fork or a
+-- continuation holds copies of calls another session made; the semantic_
+-- views leave those out, and a query on the raw fact must (gotchas.md).
+SELECT rp.session_id, rp.replay_source, COUNT(*) AS replayed_calls
+FROM semantic_tool_call_replay rp
+WHERE rp.is_replay
+GROUP BY ALL ORDER BY replayed_calls DESC LIMIT 20;
 
 -- Cost-style aggregate: pick ONE measure and say which.
 SELECT subagent_type,

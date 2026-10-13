@@ -30,7 +30,9 @@ from ccutils.etl.lineage import EtlRun
 from ccutils.etl.upsert import lineage_upsert
 
 
-PAYLOAD = ["entry_id", "message_id", "tool_name", "timestamp", "is_error"]
+# `fact_tool_calls` is the target only because it is a real lineage table;
+# its key is `tool_call_key` (session + call), which `_inbound` derives.
+PAYLOAD = ["tool_use_id", "entry_id", "message_id", "tool_name", "timestamp", "is_error"]
 HASH = ["entry_id", "tool_name", "is_error"]
 TS = "2026-08-02 10:00:00"
 
@@ -55,6 +57,10 @@ def _inbound(conn, rows):
     conn.executemany(
         "INSERT INTO _inbound_x VALUES (?, ?, ?, ?, ?, ?, ?)", rows
     )
+    conn.execute("ALTER TABLE _inbound_x ADD COLUMN tool_call_key VARCHAR")
+    conn.execute(
+        "UPDATE _inbound_x SET tool_call_key = md5(session_id || '|' || tool_use_id)"
+    )
 
 
 def _upsert(conn):
@@ -64,7 +70,7 @@ def _upsert(conn):
         run=run,
         table="fact_tool_calls",
         inbound_table="_inbound_x",
-        natural_key="tool_use_id",
+        natural_key="tool_call_key",
         payload_cols=PAYLOAD,
         hash_cols=HASH,
     )
@@ -84,7 +90,7 @@ class TestNaturalKeyIsAsserted:
             _upsert(conn)
         msg = str(exc.value)
         # The message must be actionable: name the key and point at the fix.
-        assert "tool_use_id" in msg
+        assert "tool_call_key" in msg
         assert "fact_tool_calls" in msg
         assert "projection" in msg.lower()
 

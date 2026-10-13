@@ -254,10 +254,13 @@ JOIN dim_session ds USING (session_key)
 ORDER BY total_uncached_equivalent_tokens DESC
 LIMIT 20;
 
--- Tool usage by category
+-- Tool usage by category. A resumed or forked session's transcript holds
+-- copies of calls another session made; NOT is_replay counts each call once.
 SELECT dt.tool_category, COUNT(*) AS uses
 FROM fact_tool_calls ftu
+JOIN semantic_tool_call_replay rp USING (tool_call_key)
 JOIN dim_tool dt USING (tool_key)
+WHERE ftu.is_deleted = FALSE AND NOT rp.is_replay
 GROUP BY dt.tool_category
 ORDER BY uses DESC;
 
@@ -269,8 +272,10 @@ SELECT
   ftu.derived_failure_kind,
   ftu.timestamp
 FROM fact_tool_calls ftu
+JOIN semantic_tool_call_replay rp USING (tool_call_key)
 WHERE ftu.tool_name = 'Bash'
   AND ftu.is_error
+  AND ftu.is_deleted = FALSE AND NOT rp.is_replay
 ORDER BY ftu.timestamp DESC
 LIMIT 20;
 

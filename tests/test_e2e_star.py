@@ -710,6 +710,7 @@ def test_t3_html_export_with_js_ts_heuristics_metadata(conn, temp_dir):
     # semantic_session_files derives from fact_file_operations, so the mock
     # goes one level down.
     insert_mock_fact(conn, "fact_file_operations", "tool_use_id", "tu_mock_js",
+                     tool_call_key=md5("sess_js|tu_mock_js"),
                      session_id="sess_js", session_key=md5("sess_js"),
                      file_key=md5("app.js"), operation_type="read")
     
@@ -808,6 +809,7 @@ def test_t4_scenario_2_js_ts_web_subagent_classification(conn, temp_dir):
     
     conn.execute("INSERT INTO dim_file (file_key, file_extension) VALUES (md5('index.js'), '.js')")
     insert_mock_fact(conn, "fact_file_operations", "tool_use_id", "tu_mock_index",
+                     tool_call_key=md5("agent-js_sub|tu_mock_index"),
                      session_id="agent-js_sub", session_key=md5("agent-js_sub"),
                      file_key=md5("index.js"), operation_type="read")
     

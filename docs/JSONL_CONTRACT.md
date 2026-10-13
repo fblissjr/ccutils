@@ -288,6 +288,62 @@ block's text and nothing else.
   being written, and a query on them needs a stated coverage figure or a
   value derived from the result text.
 
+## 12. A transcript can replay another session's tool calls, and only a fork says where the copy ends
+
+A resumed, backgrounded or forked session replays earlier history into its
+own file. The replayed entries keep their `tool_use` ids and their
+timestamps, so one call sits in several transcripts.
+
+- A copy is rewritten to look native. On every copied tool call, the entry's
+  `sessionId` (in a root transcript) or `agentId` (in an agent one) names the
+  file it sits in, never the session it came from. `timestamp` and
+  `requestId` are kept; `sessionId`, `agentId`, `version`, `slug`, `cwd`,
+  `isSidechain` and `sessionKind` are rewritten, and a fork's own spawn call
+  gets a new `uuid`. `sessionKind` is not a replay marker: its only value is
+  `bg`, on a backgrounded session.
+- A fork states where its copy ends. Its sidecar names the call that created
+  it (`toolUseId`, with `isFork`). Its transcript holds its spawner's history
+  up to and including that call, with the result replaced by "Fork started"
+  and no payload, and is its own from there. So a fork's calls timestamped at
+  or before its own spawn are its spawner's, and the rest are its own, with
+  no exception in the corpus.
+- A copy between root sessions states nothing of the kind. Where one session
+  stopped and another carried on, the first is recognisable only because it
+  ended first. Where two sessions share a prefix and both go on, nothing in
+  either file says which is the original.
+- Measured corpus-wide by a raw scan on 2026-10-13. The counts and their
+  conditions are in `CHANGELOG.md` under "Claim 12 of the JSONL contract". To
+  re-derive them on the current corpus:
+  `uv run pytest tests/test_jsonl_contract.py::TestAReplayedCallAndWhatStatesIt -s`
+  prints the shared ids, the copies that name another file, and the fork
+  cut's misplacements.
+- Not established: what makes one root session a copy of another (a resume,
+  a background handoff, a branch), and whether newer Claude Code still
+  writes a new file for any of them.
+- Consequence: `tool_use_id` is not a key. `fact_tool_calls` and
+  `fact_file_operations` are keyed on `(session_id, tool_use_id)`, stored as
+  `tool_call_key`, and each transcript's copy is a row. When the id alone was
+  the key, a copy took the row over or left it depending on load order, and
+  the two facts named different sessions for the same call.
+- Consequence: which rows are copies is `semantic_tool_call_replay`, a view
+  over the whole table, because a copy can be loaded before its original. A
+  fork's prefix is marked from its sidecar (`fork_prefix`). Any other copy is
+  marked by a rule, the session that ended first being the original
+  (`later_copy`), and is wrong in the case the third bullet describes.
+- Consequence: messages and token usage are replayed the same way and carry
+  no such flag. `docs/ROADMAP.md`, "Continued sessions replay their
+  history".
+- Canary: `tests/test_jsonl_contract.py::TestAReplayedCallAndWhatStatesIt`.
+  One pass over the corpus feeds two checks: the cut at a fork's own spawn
+  misplaces under `FORK_PREFIX_MAX_MISMATCH_RATE` of its calls, judged
+  against its stated spawner's transcript, and under
+  `COPY_NAMES_ANOTHER_FILE_MIN_RATE` of copies name a file other than their
+  own.
+- If the first goes red: a fork's replay no longer ends at its spawn, and
+  `fork_prefix` marks the wrong rows. If the second goes red, that is good
+  news: a copy now states its origin, and the tie-break should be replaced
+  by reading it.
+
 ---
 
 ## Adding to this document

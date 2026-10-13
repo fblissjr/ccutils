@@ -1,4 +1,4 @@
-"""Populate fact_tool_calls from etl.log_entries: one row per tool_use_id.
+"""Populate fact_tool_calls from etl.log_entries: one row per tool call per session.
 
 The use (the assistant's tool_use block), its result (the tool_result block
 plus the entry-level `toolUseResult` payload, typed per tool), and its
@@ -41,7 +41,7 @@ _CHAIN_COLS = [
     "time_since_prev_seconds",
 ]
 _PAYLOAD_COLS = [
-    "entry_id", "message_id", "project_key", "tool_key",
+    "tool_use_id", "entry_id", "message_id", "project_key", "tool_key",
     "tool_name", "invoke_sequence_num", "input_json", "input_summary", "timestamp",
     "result_entry_id", "result_message_id", "result_timestamp",
     *_RESULT_TYPED_COLS, *_CHAIN_COLS,
@@ -443,7 +443,7 @@ FROM ordered
 
 
 def populate_fact_tool_calls(conn, *, run: EtlRun) -> None:
-    """Project staging into one row per tool_use_id: use + result + chain."""
+    """Project staging into one row per tool call of the staged sessions: use + result + chain."""
     conn.execute("DROP TABLE IF EXISTS _inbound_tool_uses")
     conn.execute(f"CREATE TEMP TABLE _inbound_tool_uses AS {_PROJECT_USES_SQL}")
     conn.execute("ALTER TABLE _inbound_tool_uses ADD COLUMN input_summary VARCHAR")
@@ -472,6 +472,7 @@ def populate_fact_tool_calls(conn, *, run: EtlRun) -> None:
         f"""
         CREATE TEMP TABLE _inbound_tool_calls AS
         SELECT
+            md5(u.session_id || '|' || u.tool_use_id) AS tool_call_key,
             u.tool_use_id, u.session_id, u.entry_id, u.message_id,
             u.project_key, u.tool_key, u.tool_name, u.invoke_sequence_num,
             u.input_json, u.input_summary, u.timestamp,
@@ -493,7 +494,9 @@ def populate_fact_tool_calls(conn, *, run: EtlRun) -> None:
         run=run,
         table="fact_tool_calls",
         inbound_table="_inbound_tool_calls",
-        natural_key="tool_use_id",
+        # (session_id, tool_use_id), not tool_use_id: a replayed call sits in
+        # more than one transcript, and each transcript's copy is a row.
+        natural_key="tool_call_key",
         payload_cols=_PAYLOAD_COLS,
         hash_cols=_HASH_COLS,
     )

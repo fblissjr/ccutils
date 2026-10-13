@@ -61,6 +61,42 @@ filter: `semantic_sessions`, `semantic_decisions`,
   directly instead of joining `dim_session` when you only need scoping.
 - Surrogate keys are `md5(natural key)` — `session_key = md5(session_id)`
   lets you skip a dim join.
+- **`tool_use_id` is not unique.** Join `fact_file_operations`,
+  `fact_plan_revisions` or anything else to `fact_tool_calls` on
+  `tool_call_key`, or on `tool_use_id` AND `session_id`. On the id alone a
+  replayed call matches every transcript that holds a copy.
+
+## Replayed tool calls
+
+A resumed, backgrounded or forked session replays earlier history into its
+own file under the same `tool_use` ids, so one call can be several rows of
+`fact_tool_calls` and `fact_file_operations`, one per transcript holding it.
+Only one of them is the session that made the call.
+
+- `semantic_tool_call_replay` has one row per live tool call with
+  `is_replay`. Every `semantic_` view that counts tool calls, file
+  operations or delegations already leaves replays out. **A query against
+  the raw facts must do it itself**, or it counts a call once per copy and
+  credits a fork with its spawner's work:
+
+```sql
+SELECT tc.session_id, COUNT(*) AS own_calls
+FROM fact_tool_calls tc
+JOIN semantic_tool_call_replay rp USING (tool_call_key)
+WHERE tc.is_deleted = FALSE AND NOT rp.is_replay
+GROUP BY ALL ORDER BY own_calls DESC LIMIT 20;
+```
+
+- `replay_source` says how sure the mark is. `fork_prefix` is stated by the
+  fork's sidecar. `later_copy` is a rule (among the holders of a call, the
+  session that ended first is taken as the original), and it can pick the
+  wrong one of two sessions that share a prefix and both continued.
+- Not replay-aware: `fact_session_facets`, the `dim_session` heuristics and
+  `fact_plan_revisions` are computed from a transcript as loaded, so for a
+  fork or a continuation they include the replayed prefix. Messages and
+  token usage carry no replay flag yet; cross-session token sums still
+  double-count continuations.
+- The measurements are `docs/JSONL_CONTRACT.md` claim 12.
 
 ## Typed result columns and missing payloads
 
@@ -114,17 +150,16 @@ Cache-creation pricing differs: 5m tokens bill at 1.25x, 1h at 2x.
   Agent/Task call in `fact_tool_calls`); there is no delegations table. Its
   `agent_*` columns are stated by the parent and its `derived_*` columns come
   from the agent's transcript; `docs/STAR_SCHEMA.md` has the column table.
-- **The view settles who made a call and which agent it spawned; do not
-  re-derive either from `fact_tool_calls.session_id` or `agent_id`.** A
-  fork's transcript replays its spawner's history, and `fact_tool_calls` has
-  one row per `tool_use_id`, so the session on an `Agent` row is whichever
-  transcript loaded last. And a background launch made inside an agent states
-  no `agent_id` (see "Typed result columns and missing payloads"). The view
-  reads the spawned agent's sidecar for both: `parent_link_source` and
-  `agent_link_source` say which side settled each. Use `parent_session_id`
-  and `agent_session_key` from the view, and count delegations per session
-  with `semantic_session_summary.total_delegations`, which follows the same
-  rule.
+- **Count delegations from the view, not from `Agent` rows of
+  `fact_tool_calls`.** A fork's transcript replays its spawner's history,
+  including the call that created the fork, and each copy is a row of the
+  fact (see "Replayed tool calls"). The view reads only calls a session made
+  itself, so a fork does not appear to have spawned itself.
+  `semantic_session_summary.total_delegations` follows the same rule.
+- A background launch made inside an agent states no `agent_id` (see "Typed
+  result columns and missing payloads"). The view then finds the child from
+  the spawned agent's sidecar, and `agent_link_source` says which side named
+  it. Use `agent_session_key` from the view.
 - `agent_id` stays what the parent STATED, so it is NULL on a delegation
   whose child was found through the sidecar (`agent_link_source =
   'child_sidecar'`). Test for a linked agent with `agent_session_key IS NOT
@@ -137,10 +172,6 @@ Cache-creation pricing differs: 5m tokens bill at 1.25x, 1h at 2x.
   states neither. Do not write `NOT agent_is_async` to mean synchronous: it
   drops the NULL rows silently. `agent_output_text` is NULL unless the row
   is stated synchronous or is a refused spawn.
-- The stated `agent_*` columns are not repaired. For a call that sits in two
-  transcripts they hold what the last-loaded copy stated, so a forked
-  delegation can read `agent_status` NULL where its spawner stated a launch.
-  Rely on the `derived_*` columns for those.
 - Pre-2026 short agent ids can collide across parents (accepted limitation).
 - An agent whose parent was pruned keeps `depth_level = 0`.
 - Exclude sidechains from "human conversation" metrics:

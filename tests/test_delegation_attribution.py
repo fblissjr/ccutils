@@ -11,13 +11,15 @@ Two things made those rows say the wrong thing about agents that delegate:
   state and no derived figures while the child's transcript sat in the
   warehouse.
 - A fork's transcript replays its spawner's history, including the call that
-  created the fork. `fact_tool_calls` holds one row per `tool_use_id`, so the
-  copy does not add a row: it takes the row over when it loads later, and the
-  delegation then belongs to the fork, which appears to have spawned itself.
+  created the fork. While `fact_tool_calls` held one row per `tool_use_id`
+  the copy took the row over when it loaded later, and the delegation then
+  belonged to the fork, which appeared to have spawned itself.
 
-The spawned agent's sidecar states both facts from the other side: the call
-that spawned it (`toolUseId`) and who made that call (`parentAgentId`, or the
-root session when `spawnDepth` is 1). These tests hold the views to that.
+The first is answered by the spawned agent's sidecar, which names the call
+that spawned it (`toolUseId`). The second is answered by the key: a copy is
+its own row now (tests/test_tool_call_replay.py), `semantic_tool_call_replay`
+marks it, and the delegation views read only rows that are not replays. The
+spawner's own row is then the delegation, with everything it stated.
 
 Fixtures model the shape measured on the real corpus on 2026-10-13: a copied
 call keeps its id and timestamp, gets new entry uuids, and its result is the
@@ -46,10 +48,17 @@ def conn(tmp_path):
     return create_star_schema(tmp_path / "test.duckdb")
 
 
-def _call(tool_id, at, *, text=ASYNC_ACK, payload=None, subagent_type="general-purpose"):
-    """One Agent call and its result. `at` is HH:MM:SS; a copy shares it."""
+def _call(tool_id, at, *, text=ASYNC_ACK, payload=None, subagent_type="general-purpose",
+          name="Agent", tool_input=None):
+    """One tool call and its result. `at` is HH:MM:SS; a copy shares it.
+
+    An Agent call by default; pass `name` and `tool_input` for any other tool.
+    """
+    if tool_input is None:
+        tool_input = {"description": f"task {tool_id}", "prompt": "do it",
+                      "subagent_type": subagent_type}
     return {"id": tool_id, "at": at, "text": text, "payload": payload,
-            "subagent_type": subagent_type}
+            "name": name, "input": tool_input}
 
 
 def _launch_payload(agent_id):
@@ -60,33 +69,35 @@ def _launch_payload(agent_id):
 
 def _transcript(tmp_path, stem, calls=(), *, sidecar=None, start="10:00:00",
                 end="10:30:00", out_tokens=100):
-    """Write a root session (stem == ROOT) or an agent file below it.
+    """Write a root session, or an agent file (`agent-...`) below ROOT.
 
-    Every line carries the ROOT's sessionId, as real agent files do; identity
-    is the file stem. Entry uuids are prefixed with the stem, so a call copied
-    into a second file has the same tool_use id under different entries.
+    Every line of an agent file carries the ROOT's sessionId, as real ones
+    do; a root's lines carry its own. Identity is the file stem. Entry uuids
+    are prefixed with the stem, so a call copied into a second file has the
+    same tool_use id under different entries.
     """
     project = tmp_path / "projects" / "-work-demo"
-    if stem == ROOT:
-        path = project / f"{ROOT}.jsonl"
-    else:
+    if stem.startswith("agent-"):
         path = project / ROOT / "subagents" / f"{stem}.jsonl"
+        session_id = ROOT
+    else:
+        path = project / f"{stem}.jsonl"
+        session_id = stem
     path.parent.mkdir(parents=True, exist_ok=True)
 
     def entry(kind, name, clock, content, **extra):
         message = {"role": kind, "content": content}
         if kind == "assistant":
             message["model"] = "claude-sonnet-5"
-        return {"type": kind, "uuid": f"{stem}-{name}", "sessionId": ROOT,
+        return {"type": kind, "uuid": f"{stem}-{name}", "sessionId": session_id,
                 "timestamp": f"2026-07-17T{clock}.000Z", "cwd": "/work",
                 "version": "2.1.212", "message": message, **extra}
 
     lines = [entry("user", "u0", start, "go")]
     for i, call in enumerate(calls):
         lines.append(entry("assistant", f"a{i}", call["at"], [
-            {"type": "tool_use", "id": call["id"], "name": "Agent",
-             "input": {"description": f"task {call['id']}", "prompt": "do it",
-                       "subagent_type": call["subagent_type"]}}],
+            {"type": "tool_use", "id": call["id"], "name": call["name"],
+             "input": call["input"]}],
             requestId=f"{stem}-req{i}"))
         result = entry("user", f"r{i}", call["at"][:-2] + "59", [
             {"type": "tool_result", "tool_use_id": call["id"], "content": call["text"]}])
@@ -228,28 +239,43 @@ class TestAForkDoesNotOwnTheCallThatCreatedIt:
             "WHERE parent_session_key = agent_session_key"
         ).fetchone()[0] == 0
 
-    def test_the_parent_is_marked_as_stated_by_the_sidecar(self, built):
+    def test_what_the_spawner_stated_survives_in_either_order(self, built):
+        """The delegation is the SPAWNER's row, so its stated columns are too.
+
+        While a copy could take the row over, these read NULL whenever the
+        fork loaded last: the fork's copy states nothing.
+        """
         assert built.execute(
-            "SELECT parent_link_source, completion_state, derived_io_tokens "
+            "SELECT agent_id, agent_status, agent_is_async, agent_link_source, "
+            "       completion_state, derived_io_tokens "
             "FROM semantic_agent_delegations WHERE tool_use_id = 'tu_fork'"
-        ).fetchone() == ("child_sidecar", "completed", 710)
+        ).fetchone() == ("f1", "async_launched", True, "parent_payload", "completed", 710)
+
+    def test_the_view_no_longer_reattributes(self, built):
+        """A parent is the session whose own row it is; nothing needs a source."""
+        columns = {r[0] for r in built.execute(
+            "DESCRIBE semantic_agent_delegations").fetchall()}
+        assert "parent_link_source" not in columns
+        assert "agent_link_source" in columns
 
     def test_the_summary_counts_it_once_on_the_spawner(self, built):
         assert _summary(built, "agent-p1") == (1, 0, 2, 700)
         assert _summary(built, "agent-f1") == (0, 0, None, 0)
 
-    def test_the_fixture_reproduces_the_takeover(self, conn, tmp_path):
-        """A control on the fixture: the copy really does take the row.
+    def test_the_fixture_holds_a_copy_that_is_excluded(self, conn, tmp_path):
+        """A control on the fixture: there IS a second row, and it is a replay.
 
-        If this stops holding, the tests above pass without exercising the
-        re-attribution, and say nothing.
+        If the fork's copy stopped being loaded, or stopped being marked,
+        the tests above would pass or fail for a reason other than the one
+        they name.
         """
         spawner, fork = _spawner_and_fork(tmp_path)
         _load(conn, tmp_path, spawner, fork)
         assert conn.execute(
-            "SELECT session_id, result_payload_json IS NULL FROM fact_tool_calls "
-            "WHERE tool_use_id = 'tu_fork' AND NOT is_deleted"
-        ).fetchall() == [("agent-f1", True)]
+            "SELECT f.session_id, f.result_payload_json IS NULL, r.is_replay "
+            "FROM fact_tool_calls f JOIN semantic_tool_call_replay r USING (tool_call_key) "
+            "WHERE f.tool_use_id = 'tu_fork' AND NOT f.is_deleted ORDER BY 1"
+        ).fetchall() == [("agent-f1", True, True), ("agent-p1", False, False)]
 
 
 class TestACallCopiedFromAnAncestorStaysWithTheAncestor:
@@ -312,16 +338,15 @@ class TestAnUnstatedSpawnerIsNotInvented:
             sidecar={"agentType": "general-purpose", "toolUseId": "tu_nested", "spawnDepth": 2})
         _load(conn, tmp_path, spawner, child)
         assert conn.execute(
-            "SELECT parent_session_id, parent_link_source, agent_session_id, agent_link_source "
+            "SELECT parent_session_id, agent_session_id, agent_link_source "
             "FROM semantic_agent_delegations WHERE tool_use_id = 'tu_nested'"
-        ).fetchone() == ("agent-p1", "transcript", "agent-c1", "child_sidecar")
+        ).fetchone() == ("agent-p1", "agent-c1", "child_sidecar")
 
     def test_a_session_holding_only_its_own_spawn_delegated_nothing(self, conn, tmp_path):
-        """The call created this session, and nothing says who made it.
+        """The call created this fork, so it sits in the fork's replayed prefix.
 
-        It is provably not this session's delegation and cannot be given to
-        anyone else, so it is no row at all. This is the one case that is
-        dropped; every other copied call is attributed.
+        Its spawner was never loaded, so no row of the warehouse is the
+        delegation, and the fork's copy is not counted as one.
         """
         fork = _transcript(
             tmp_path, "agent-f1", [_call("tu_self", "10:05:00", text=FORK_ACK)],

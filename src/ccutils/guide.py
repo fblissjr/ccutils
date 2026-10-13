@@ -166,6 +166,15 @@ def render_guide(conn) -> str:
       "`docs/JSONL_CONTRACT.md` in the ccutils repository has the measurement.")
     w("- Bash-driven file operations: `fact_file_operations` records the file tools "
       "only; writes through `python3 -` heredocs or `cat >` are not derived yet.")
+    w("- One row per tool call: a resumed, backgrounded or forked session replays "
+      "earlier history into its own transcript under the same `tool_use_id`, and "
+      "each copy is a row of `fact_tool_calls` and `fact_file_operations`. The "
+      "`semantic_` views leave copies out; a query on the raw facts must join "
+      "`semantic_tool_call_replay` and keep `NOT is_replay`. A fork's copy is "
+      "marked from its sidecar; any other copy by a rule (the session that ended "
+      "first is taken as the original). Messages and token usage are replayed the "
+      "same way and are NOT marked, so token sums across sessions count a "
+      "continuation's replayed history again.")
     w("- Large tool outputs: when Claude Code spills a result to `tool-results/`, the "
       "transcript keeps a preview and a path; the body is not ingested.")
     w("- Anything from projects not listed above: a warehouse is scoped, not scrubbed.")

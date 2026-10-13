@@ -67,6 +67,9 @@ _KEY_TARGETS = {
     "chain_key": ("dim_session_chain", "chain_key"),
     "facet_type_key": ("dim_facet_type", "facet_type_key"),
     "prompt_key": ("dim_prompt", "prompt_key"),
+    # A fact-to-fact key: `ccutils audit` checks it resolves. The JSON export
+    # lists relationships to dimensions only, so it does not appear there.
+    "tool_call_key": ("fact_tool_calls", "tool_call_key"),
 }
 
 

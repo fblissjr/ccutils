@@ -373,11 +373,14 @@ sessions replay their history").
 There is no `content_json` or `context_management_json` column on this table (raw content-block JSON lives on the unpopulated `fact_content_blocks` DDL stub, not here).
 
 #### fact_tool_calls
-One row per `tool_use_id`: the assistant's `tool_use` block, its result (the `tool_result` block plus the entry-level `toolUseResult` payload, typed per tool), and its position in the agentic run. Three tables keyed by the same id (`fact_tool_uses`, `fact_tool_results`, `fact_tool_chain_steps`) and a filter over them (`fact_errors`) were merged at 1.0.0: on the corpus every use had exactly one result and one chain step, and every consumer joined them. A failed call is `WHERE is_error = TRUE`; a use whose session ended before a result arrived keeps NULL result columns; a result with no use in the same session is dropped.
+One row per tool call per transcript, keyed `tool_call_key = md5(session_id || '|' || tool_use_id)`: the assistant's `tool_use` block, its result (the `tool_result` block plus the entry-level `toolUseResult` payload, typed per tool), and its position in the agentic run. Three tables keyed by the same id (`fact_tool_uses`, `fact_tool_results`, `fact_tool_chain_steps`) and a filter over them (`fact_errors`) were merged at 1.0.0: on the corpus every use had exactly one result and one chain step, and every consumer joined them. A failed call is `WHERE is_error = TRUE`; a use whose session ended before a result arrived keeps NULL result columns; a result with no use in the same session is dropped.
+
+**`tool_use_id` is not unique across the table.** A resumed, backgrounded or forked session replays earlier history into its own file under the same ids, so one call can sit in several transcripts, and each transcript's copy is a row here. Until 1.0.0 the id alone was the key, and a copy then took the row over or left it depending on load order. Join another fact to this one on `tool_call_key`, or on `tool_use_id` AND `session_id`, never on `tool_use_id` alone. Whether a row is the transcript's own or a copy is `semantic_tool_call_replay`, below; every view that counts tool calls reads only the rows that are not replays.
 
 | Column | Type | Description |
 |--------|------|-------------|
-| tool_use_id | VARCHAR | PK (Anthropic's `id`) |
+| tool_call_key | VARCHAR | PK: `md5(session_id \|\| '\|' \|\| tool_use_id)` |
+| tool_use_id | VARCHAR | Anthropic's `id` for the call. Repeats across transcripts that replay it |
 | entry_id | VARCHAR | Degenerate dim: the assistant entry carrying the tool_use block |
 | message_id | VARCHAR | FK to fact_messages (assistant turn) |
 | session_key | VARCHAR | FK to dim_session |
@@ -507,11 +510,12 @@ One row per progress event, covering all 6 variants (hook_progress, bash_progres
 One row per `system` entry, whatever its subtype: the populator does not filter on `subtype`, so one Claude Code adds later lands here without a code change. Subsumes the legacy `fact_turn_durations` and `fact_stop_events`. The typed columns are read by field name and are not gated on `subtype`, so each is NULL on an entry that does not state its field, and a subtype with no typed column of its own is read from `payload_json` (`scheduled_task_fire` and `model_refusal_fallback` were two such, in a build on 2026-10-13). Columns: `entry_id` (PK), `session_key`, `date_key`, `time_key`, `timestamp`, `subtype` (discriminator), `level`, `payload_json` (the whole entry as JSON, on every row), plus typed columns named here for the subtype that fills them -- `duration_ms` / `message_count` (turn_duration); `hook_count` / `prevented_continuation` / `has_output` (stop_hook_summary); `error_status` / `error_type` / `retry_in_ms` / `retry_attempt` / `max_retries` (api_error); `compact_trigger` / `compact_pre_tokens` / `logical_parent_uuid` (compact_boundary); `content` (local_command / away_summary / bridge_status text); `bridge_url` (bridge_status).
 
 #### fact_file_operations
-One row per file touch. Derived from `fact_tool_calls`.
+One row per file touch per transcript. Derived from `fact_tool_calls`, and keyed the same way, so a replayed read or edit is its own row here too; `semantic_session_files` leaves replays out.
 
 | Column | Type | Description |
 |--------|------|-------------|
-| tool_use_id | VARCHAR | PK (FK to fact_tool_calls); no separate surrogate id |
+| tool_call_key | VARCHAR | PK, and the `fact_tool_calls` row this operation is: `md5(session_id \|\| '\|' \|\| tool_use_id)` |
+| tool_use_id | VARCHAR | The call's id. Repeats across transcripts that replay it |
 | session_key | VARCHAR | FK to dim_session |
 | session_id | VARCHAR | The session's id, carried so a query needs no `dim_session` join |
 | file_key | VARCHAR | FK to dim_file |
@@ -582,10 +586,9 @@ A view since 1.0.0. It was the table `fact_agent_delegations`, written per sessi
 
 | Column | Type | Description |
 |--------|------|-------------|
-| delegation_key | VARCHAR | `md5(parent_session_id \|\| '\|' \|\| tool_use_id)`, on the session that made the call, so it does not move with load order; unique per row |
+| delegation_key | VARCHAR | The spawn call's `tool_call_key`: `md5(parent session_id \|\| '\|' \|\| tool_use_id)`; unique per row |
 | tool_use_id | VARCHAR | The spawn call in `fact_tool_calls` |
-| parent_session_key / parent_session_id | VARCHAR | The session that MADE the call: the spawner the spawned agent's sidecar states, else the transcript holding the call. See "Who made a call" below. `parent_session_id` is NULL when the stated spawner is a root session that was never loaded |
-| parent_link_source | VARCHAR | Which side settled the parent: `child_sidecar` (the spawned agent's sidecar states its spawner) or `transcript` (the session whose transcript holds the call) |
+| parent_session_key / parent_session_id | VARCHAR | The session that delegated: the one whose own call this is. A transcript that only replays the call has no row |
 | parent_cwd / project_name | VARCHAR | From the parent's `dim_session` and `dim_project` rows |
 | agent_id | VARCHAR | Stated `toolUseResult.agentId`. NULL when the spawn was refused or the launch named none |
 | agent_session_key | VARCHAR | `md5('agent-' \|\| agent_id)` where the parent stated an id, and may then name a session that was never ingested. Else the session of the agent whose sidecar names this call. NULL when neither side links one |
@@ -612,15 +615,44 @@ A view since 1.0.0. It was the table `fact_agent_delegations`, written per sessi
 
 Every `derived_` column is NULL unless `completion_state = 'completed'`.
 
-**Who made a call, and which agent it spawned, is read from the spawned agent's sidecar where the transcript cannot say.** Two things make the transcript holding a call an unreliable witness. `fact_tool_calls` has one row per `tool_use_id`, and a fork's transcript replays its spawner's history, including the call that created the fork: the copy adds no row, it takes the row over when it loads later, so the session on an `Agent` row is whichever transcript loaded last. And the child is named by `agent_id`, from the call's `toolUseResult`, which a background launch made inside an agent does not state (`docs/JSONL_CONTRACT.md` claim 11). The spawned agent's sidecar states both from the other side: the call (`toolUseId`) and who made it. So the parent is the stated spawner when there is one, and the child falls back to the agent whose sidecar names the call. "Stated" is strict: `parentAgentId` when present, the root session the file sits under when `spawnDepth` is 1; a sidecar that says nested and names no parent leaves the transcript as the parent. One kind of row is dropped: a call that created the very session holding it, where nothing states who made it. `semantic_session_summary` counts delegations by the same rule (`_DELEGATION_EDGE_CTES` in `schemas/star/schema.py` is the one definition both read).
-
-The `agent_*` columns are not repaired by this. They hold what the row's transcript stated, so for a call that sits in two transcripts they follow load order: the spawner's copy states the launch, the fork's copy states nothing. That is the row's content, and it waits on the replay work in `docs/ROADMAP.md`.
+**A delegation is a call the session made itself, and its child is found from either side.** A fork's transcript replays its spawner's history, including the call that created the fork and every earlier spawn its spawner made. Those copies are rows of `fact_tool_calls` and are not delegations: this view reads only rows `semantic_tool_call_replay` does not mark, so the row left is the spawner's own, with everything it stated. The child is named by `agent_id`, from the call's `toolUseResult`, which a background launch made inside an agent does not state (`docs/JSONL_CONTRACT.md` claim 11); the view then falls back to the agent whose sidecar names this call as its spawn (`dim_session.spawn_tool_use_id`), and `agent_link_source` says which side named it. `semantic_session_summary` counts delegations by the same rule (`_DELEGATION_EDGE_CTES` in `schemas/star/schema.py` is the one definition both read). If the spawner's transcript was never loaded, no row of the warehouse is the delegation and none is shown.
 
 **A synchronous delegation whose agent transcript is not in the warehouse derives nothing.** `completion_state` is NULL there even though `agent_status` says `completed`: what the parent saw is stated, and is not copied into a derived column. This is the accepted cost of the separation. Count the rows it affects with `SELECT COUNT(*) FROM semantic_agent_delegations WHERE agent_is_async IS NOT TRUE AND agent_status IS NOT NULL AND completion_state IS NULL`.
 
 **Why the two token columns are separate.** 188 synchronous delegations carry both an API-stated rollup and an ingested agent transcript, which makes the async derivation scoreable against a known answer. Duration matched 188/188 and tool count 188/188 -- but tokens matched only 12/188 within 10%, with the per-row ratio spanning p10 0.063 to p90 1.004. No formula reconciles them (in+out, out alone, +cache_creation, +cache_read, `total_uncached_equivalent`, the 5m/1h splits); it is not a capture gap (median 23 assistant records, 23 carrying usage) and not a nested-agent rollup (all 188 spawned none). Summing them in one column made async delegations read 3x cheaper than synchronous ones (median 19,444 vs 61,362) while measuring 2x longer. Aggregate over one or the other, never across both.
 
 **Derived rollups exist only for `completed`.** A partial sum from an unfinished agent is indistinguishable from a fast one, so `no_completion_recorded` and `spawn_failed` rows carry NULL in every `derived_` column. `no_completion_recorded` states exactly what is known -- the agent's transcript records no completion -- and deliberately makes no claim about liveness: of 101 rows under its former name `in_flight_at_ingest`, 98 had ended mid-tool-loop a median of 15.7 days before the ETL ran. It absorbs a measured ~10% false-negative rate (19 of 188 agents whose parent saw a synchronous result still fail the terminal-`stop_reason` test; two alternative predicates miss the same 19).
+
+#### semantic_tool_call_replay (view)
+One row per live `fact_tool_calls` row, saying whether the call is the transcript's own or a copy of another session's history. It is the one place that is decided: every view that counts tool calls, file operations or delegations reads it, and a query against the raw facts should too.
+
+It is a view over the whole table and not a stored flag, because a copy can be loaded before its original and a per-session populator cannot see rows that do not exist yet.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| tool_call_key | VARCHAR | The `fact_tool_calls` row (and, for a file tool, the `fact_file_operations` row) |
+| session_id | VARCHAR | The transcript holding this copy |
+| tool_use_id | VARCHAR | The call |
+| is_replay | BOOLEAN | TRUE when this row is a copy of history the session did not make. Never NULL |
+| replay_source | VARCHAR | Why: `fork_prefix` or `later_copy`; NULL on a row that is not a replay |
+
+Two ways a row is a replay, and they are not equally sure:
+
+- **`fork_prefix` is stated.** A fork's sidecar names the call that created it. The fork's transcript replays its spawner's history up to and including that call and is its own from there, so a fork's calls timestamped at or before its own spawn are replays. This holds on every fork transcript measured, and needs no other row: it is true when the spawner was never loaded.
+- **`later_copy` is a rule.** Nothing in a resumed or backgrounded root session states where its history came from; every copied entry is rewritten to name the file it sits in. Among the holders of a call that are not in a fork's prefix, the session that ended first is taken as the original and the others are copies. That is right when one session stopped and another continued it. Two sessions that share a prefix and both go on do not say which came first, and one is picked.
+
+The measurements and the canary are `docs/JSONL_CONTRACT.md` claim 12.
+
+```sql
+-- A session's own tool calls.
+SELECT tc.tool_name, COUNT(*) AS calls
+FROM fact_tool_calls tc
+JOIN semantic_tool_call_replay rp USING (tool_call_key)
+WHERE tc.is_deleted = FALSE AND NOT rp.is_replay AND tc.session_id = '<id>'
+GROUP BY ALL ORDER BY calls DESC;
+```
+
+What is not replay-aware: the populated per-session facts (`fact_session_facets`, the `dim_session` heuristics, `fact_plan_revisions`) are computed from a transcript as loaded, replayed prefix included, and messages and token usage carry no such flag yet. See `docs/ROADMAP.md`.
 
 #### fact_session_facets
 One row per (session_key, facet_type_key). Tier 1 facets (F01-F19) populated via SQL; Tier 2 facets (F20+) populated via the LLM extractor when injected.
@@ -671,7 +703,7 @@ One row per session. Aggregates over every fact above. Must populate last.
 | total_cache_read_tokens | BIGINT | Sum of cache-read tokens |
 | total_uncached_equivalent_tokens | BIGINT | Sum, R11-correct |
 | api_response_count | BIGINT | Count of contributing fact_token_usage rows |
-| total_tool_uses | BIGINT | Tool use count |
+| total_tool_uses | BIGINT | Tool calls the session made itself. Calls its transcript only replays are left out of all four tool columns (`semantic_tool_call_replay`), so summing over sessions counts a call once |
 | unique_tools_used | BIGINT | Distinct tools used |
 | total_tool_results | BIGINT | Tool result count |
 | total_tool_errors | BIGINT | Error count (fact_tool_calls.is_error=TRUE) |
@@ -682,7 +714,7 @@ One row per session. Aggregates over every fact above. Must populate last.
 | total_stop_events | BIGINT | From fact_system_events |
 | total_prevented_continuations | BIGINT | From fact_system_events |
 | total_progress_events | BIGINT | From fact_progress_events |
-| total_delegations | BIGINT | Agent/Task spawn calls made by this session, by the attribution rule of `semantic_agent_delegations` ("Who made a call"): a call a fork's transcript only replays is counted on the session that made it |
+| total_delegations | BIGINT | Agent/Task spawn calls this session made itself. A call its transcript only replays is not counted (`semantic_tool_call_replay`) |
 | total_spawn_failures | BIGINT | Spawns that were refused: a stated error, no agent id, no status |
 | max_child_depth | INTEGER | Deepest `spawn_depth` stated by a directly spawned agent's sidecar; NULL when none is in the warehouse or states one |
 | delegated_output_tokens | BIGINT | Output tokens of the directly spawned agents, from their own usage rows |
@@ -704,7 +736,8 @@ Note: there is no `unique_files_touched` column on this table -- use `semantic_s
 All views use the `semantic_` prefix. Each one encodes something a query would otherwise get wrong: a filter, a derivation, a rollup. A view that only joined a fact to its dimensions is not here; five of those (`semantic_messages`, `semantic_file_operations`, `semantic_session_chains`, `semantic_plan_revisions`, `semantic_project_context`) were deleted at 1.0.0, and the joins they saved are written out once in the `query-warehouse` skill's recipes.
 
 - `semantic_sessions` -- sessions + project info + summary metrics + heuristic classifications + date/time
-- `semantic_agent_delegations` -- one row per Agent/Task spawn, joined to the child session, with derived `completion_state` and rollups (a table until 1.0.0; documented above under facts)
+- `semantic_tool_call_replay` -- one row per live tool call: the transcript's own, or a replay of another session's history (documented above under facts)
+- `semantic_agent_delegations` -- one row per Agent/Task spawn a session made itself, joined to the child session, with derived `completion_state` and rollups (a table until 1.0.0; documented above under facts)
 - `semantic_decisions` -- unified decision timeline UNIONing plan revisions, permission-mode changes, stop events, API errors, and compact boundaries from their source facts (`source_key`/`source_table` link back to the underlying row). A permission-mode change is an entry whose mode differs from the one before it in file order, not every permission-mode entry. `timestamp` is stated and is NULL on those rows; `derived_timestamp` places them, so order a timeline by `COALESCE(timestamp, derived_timestamp)`
 - `semantic_file_evolution` -- cross-session file activity (files touched in 2+ sessions)
 - `semantic_tool_patterns` -- common tool sequences with frequency and error rates
@@ -718,7 +751,7 @@ All views use the `semantic_` prefix. Each one encodes something a query would o
 - `semantic_etl_runs` -- run-grain ETL observability: run status/duration, orchestration (batch) context, CDC data window, and step-count/row-count rollups from `etl.steps`. Carries `run_kind` -- **filter on it.** Three kinds share this view (`session`, `reconciliation`, `global_source`) and an unqualified count over it mixes them
 - `semantic_session_behavior` -- per-session behavioral feature vector: tool-category counts and shares (`read`/`search`/`mutate`/`execute`/`web`/`delegate`), agentic-run shape (`agentic_runs`, `tools_per_run`, `median_gap_seconds`), tokens in/out, thinking blocks, error rate, plus a `*_pctile` corpus-relative rank for each discriminating feature
 
-All 20 views bind against the current DDL (view creation validates column references on every `create_star_schema()` call).
+Every view binds against the current DDL (view creation validates column references on every `create_star_schema()` call).
 
 Sessions with no tool uses are kept (283 of 2,250 on a real corpus -- pure conversation is a real behavioral case). Their `*_ops` counts are `0` while their `*_share` values stay `NULL`, because "used no tools" and "0% of tools used" are different statements.
 
@@ -773,8 +806,10 @@ SELECT
   ftu.derived_failure_kind,
   ftu.timestamp
 FROM fact_tool_calls ftu
+JOIN semantic_tool_call_replay rp USING (tool_call_key)
 WHERE ftu.tool_name = 'Bash'
   AND ftu.is_error
+  AND ftu.is_deleted = FALSE AND NOT rp.is_replay
 ORDER BY ftu.timestamp DESC
 LIMIT 20;
 
@@ -831,8 +866,10 @@ SELECT t1.tool_name AS tool_name,
        COUNT(*) AS frequency,
        SUM(CASE WHEN fcs.is_error THEN 1 ELSE 0 END) AS error_count
 FROM fact_tool_calls fcs
+JOIN semantic_tool_call_replay rp USING (tool_call_key)
 JOIN dim_tool t1 ON fcs.tool_key = t1.tool_key
 JOIN dim_tool t2 ON fcs.next_tool_key = t2.tool_key
+WHERE fcs.is_deleted = FALSE AND NOT rp.is_replay
 GROUP BY t1.tool_name, t2.tool_name
 HAVING COUNT(*) >= 5
 ORDER BY frequency DESC LIMIT 20;

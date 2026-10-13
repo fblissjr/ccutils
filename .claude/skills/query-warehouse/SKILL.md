@@ -52,6 +52,13 @@ soft-deleted rows. Drop to raw facts only when the view lacks a column.
 - Before reading a zero-row result as "no data", ask the warehouse what was
   written: `SELECT * FROM etl.table_coverage` and
   `SELECT DISTINCT table_name FROM etl.steps` (`references/gotchas.md`).
+- **A tool call can be several rows.** A resumed or forked session replays
+  history into its own transcript under the same `tool_use_id`, and each
+  copy is a row of `fact_tool_calls` and `fact_file_operations`. The
+  `semantic_` views leave copies out. A query on the raw facts must join
+  `semantic_tool_call_replay` and keep `NOT is_replay`, and must never join
+  two facts on `tool_use_id` alone (`references/gotchas.md`, "Replayed tool
+  calls").
 - A typed result column on `fact_tool_calls` (`read_num_lines`,
   `glob_num_files`, the `agent_*` rollups, anything read from
   `result_payload_json`) is **NULL when the transcript stated no payload for

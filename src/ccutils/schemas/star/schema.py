@@ -119,45 +119,88 @@ def create_star_schema(db_path):
     return conn
 
 
-# Who made each Agent / Task call, and which agent it spawned. ONE definition,
-# spliced into semantic_agent_delegations and into the delegation_rollup of
-# semantic_session_summary. The summary cannot read the delegations view (that
-# view reads the summary for the child's rollup, so it would be a cycle), and
-# two hand-kept copies of an attribution rule drift.
+# Which tool-call rows are a transcript's own, and which are copies.
 #
-# The transcript holding a call does not settle either question:
+# A resumed, backgrounded or forked session replays earlier history into its
+# own file under the same tool_use ids. fact_tool_calls is keyed on
+# (session_id, tool_use_id), so each transcript's copy is a row; this says
+# which rows are copies. It is a VIEW over the whole table and never a stored
+# per-session flag: a copy can be loaded before its original, and a populator
+# cannot see rows that do not exist yet.
 #
-# - fact_tool_calls has one row per tool_use_id, and a fork's transcript
-#   replays its spawner's history, including the call that created the fork.
-#   The copy adds no row; when it loads later it TAKES THE ROW OVER, so
-#   `session_id` on an Agent row is whichever transcript loaded last.
-# - The child is named by `agent_id`, from the call's toolUseResult, which an
-#   agent transcript often does not state (docs/JSONL_CONTRACT.md claim 11).
+# Two tiers, and the difference is the point:
 #
-# The spawned agent's sidecar states both from the other side, so it is read
-# first for the parent and as the fallback for the child. "Stated" is strict:
-# `parentAgentId` when present, the root the file sits under when `spawnDepth`
-# is 1. A sidecar that says nested and names no parent settles nothing about
-# the parent, and the transcript holding the call is kept.
+# - STATED. A fork's sidecar names the call that created it (`toolUseId`,
+#   `isFork`). The fork's transcript replays its spawner's history up to and
+#   including that call and is its own from there, so a fork's calls at or
+#   before its own spawn are replays. Exact on every fork transcript measured
+#   (docs/JSONL_CONTRACT.md claim 12), and it needs no other row.
+# - A RULE. Nothing in a resumed or backgrounded root session states where
+#   its history came from: every copied entry is rewritten to name the file it
+#   sits in. Among the holders of a call that are not in a fork's prefix, the
+#   session that ended first is taken as the original. That is right when one
+#   session stopped and another continued it. Two sessions that share a prefix
+#   and both go on do not say which came first, and one is picked.
+_TOOL_CALL_REPLAY_SQL = """
+        WITH fork_cut AS (
+            SELECT own.session_id, MIN(own.timestamp) AS cut_timestamp
+            FROM dim_session ds
+            JOIN fact_tool_calls own
+              ON own.session_id = ds.session_id
+             AND own.tool_use_id = ds.spawn_tool_use_id
+             AND own.is_deleted = FALSE
+            WHERE ds.is_fork
+            GROUP BY own.session_id
+        ),
+        held AS (
+            SELECT ftc.tool_call_key, ftc.session_id, ftc.tool_use_id,
+                   COALESCE(ftc.timestamp <= fc.cut_timestamp, FALSE) AS in_fork_prefix,
+                   -- A fork whose own spawn call is not in its transcript has
+                   -- no cut. Its shared calls are still far likelier copies
+                   -- than originals, so it loses the tie-break to a non-fork.
+                   COALESCE(ds.is_fork, FALSE) AS is_fork,
+                   ds.last_timestamp AS session_last_timestamp
+            FROM fact_tool_calls ftc
+            LEFT JOIN fork_cut fc ON fc.session_id = ftc.session_id
+            LEFT JOIN dim_session ds ON ds.session_id = ftc.session_id
+            WHERE ftc.is_deleted = FALSE
+        ),
+        ranked AS (
+            SELECT *,
+                   ROW_NUMBER() OVER (
+                       PARTITION BY tool_use_id
+                       ORDER BY in_fork_prefix, is_fork,
+                                session_last_timestamp NULLS LAST, session_id
+                   ) AS holder_rank
+            FROM held
+        )
+        SELECT tool_call_key, session_id, tool_use_id,
+               (in_fork_prefix OR holder_rank > 1) AS is_replay,
+               CASE WHEN in_fork_prefix THEN 'fork_prefix'
+                    WHEN holder_rank > 1 THEN 'later_copy' END AS replay_source
+        FROM ranked"""
+
+
+# Each Agent / Task call a session made itself, and the agent it spawned. ONE
+# definition, spliced into semantic_agent_delegations and into the
+# delegation_rollup of semantic_session_summary. The summary cannot read the
+# delegations view (that view reads the summary for the child's rollup, so it
+# would be a cycle), and two hand-kept copies of a rule drift.
+#
+# A replayed call is not the session's delegation, so replays are left out
+# (semantic_tool_call_replay): a fork's transcript holds a copy of the call
+# that created it, and of every earlier spawn its spawner made. What is left
+# is the row of the session that made the call, with everything it stated.
+#
+# The child is named by `agent_id`, from the call's toolUseResult, which a
+# background launch made inside an agent does not state
+# (docs/JSONL_CONTRACT.md claim 11). The spawned agent's sidecar names the
+# call that spawned it, so it is the fallback.
 _DELEGATION_EDGE_CTES = """
         spawn_link AS (
             SELECT cs.spawn_tool_use_id AS tool_use_id,
-                   cs.session_key AS agent_session_key,
-                   -- dim_session.parent_session_key is md5 of the stated
-                   -- parent agent, or of the root when none is stated. It is
-                   -- only a STATED spawner in the two cases below.
-                   CASE WHEN cs.parent_agent_id IS NOT NULL OR cs.spawn_depth = 1
-                        THEN cs.parent_session_key END AS spawner_session_key,
-                   -- NULL when the spawner is a root that was never loaded:
-                   -- its key is known, its id is not.
-                   CASE WHEN cs.parent_agent_id IS NOT NULL
-                            THEN 'agent-' || cs.parent_agent_id
-                        WHEN cs.spawn_depth = 1 THEN rs.session_id
-                   END AS spawner_session_id
+                   cs.session_key AS agent_session_key
             FROM dim_session cs
-            LEFT JOIN dim_session rs
-                   ON rs.session_key = cs.parent_session_key
-                  AND cs.parent_agent_id IS NULL
             WHERE cs.spawn_tool_use_id IS NOT NULL
             -- One sidecar per call in every corpus measured. A view must not
             -- fan out if that ever stops holding.
@@ -167,34 +210,24 @@ _DELEGATION_EDGE_CTES = """
         delegation_edge AS (
             SELECT
                 ftc.*,
-                COALESCE(sl.spawner_session_key, md5(ftc.session_id))
-                    AS parent_session_key,
-                CASE WHEN sl.spawner_session_key IS NULL
-                          OR sl.spawner_session_key = md5(ftc.session_id)
-                     THEN ftc.session_id
-                     ELSE sl.spawner_session_id END AS parent_session_id,
-                CASE WHEN sl.spawner_session_key IS NOT NULL THEN 'child_sidecar'
-                     ELSE 'transcript' END AS parent_link_source,
+                ftc.session_id AS parent_session_id,
+                md5(ftc.session_id) AS parent_session_key,
                 -- The parent's stated agentId first: an agent's session_id is
                 -- 'agent-<agent_id>', so the key is DERIVED, not looked up,
                 -- and may name a session that was never ingested. Else the
-                -- agent whose sidecar names this call. That agent cannot be
-                -- the parent: the one row where it would be is dropped below.
+                -- agent whose sidecar names this call.
                 COALESCE(md5('agent-' || ftc.agent_id), sl.agent_session_key)
                     AS agent_session_key,
                 CASE WHEN ftc.agent_id IS NOT NULL THEN 'parent_payload'
                      WHEN sl.agent_session_key IS NOT NULL THEN 'child_sidecar'
                 END AS agent_link_source
             FROM fact_tool_calls ftc
+            JOIN semantic_tool_call_replay rp
+              ON rp.tool_call_key = ftc.tool_call_key AND NOT rp.is_replay
             LEFT JOIN spawn_link sl ON sl.tool_use_id = ftc.tool_use_id
             WHERE ftc.is_deleted = FALSE
               -- Claude Code emits both names depending on version.
               AND ftc.tool_name IN ('Task', 'Agent')
-              -- The one row that is dropped: the call created the session
-              -- holding it and nothing states who made it. It is provably
-              -- not this session's delegation and cannot be given to anyone.
-              AND NOT COALESCE(sl.agent_session_key = md5(ftc.session_id)
-                               AND sl.spawner_session_key IS NULL, FALSE)
         )"""
 
 
@@ -606,7 +639,8 @@ def _create_objects(conn) -> None:
     """
     )
 
-    # Grain: one row per tool_use_id -- the assistant's tool_use block, its
+    # Grain: one row per tool call per transcript (tool_call_key) -- the
+    # assistant's tool_use block, its
     # result (tool_result block + entry-level toolUseResult, typed per tool),
     # and its position in the agentic run. One grain, one table; the three
     # tables it replaces (uses, results, chain steps) and the filter over
@@ -624,6 +658,14 @@ def _create_objects(conn) -> None:
             hash_diff VARCHAR NOT NULL,
             is_deleted BOOLEAN NOT NULL DEFAULT FALSE,
             deleted_at TIMESTAMP,
+
+            -- md5(session_id || '|' || tool_use_id): the natural key. A
+            -- resumed, backgrounded or forked session replays history under
+            -- the SAME tool_use ids, so the id alone is not unique, and when
+            -- it was the key a copy took the row over or left it depending
+            -- on load order. Each transcript's copy is a row;
+            -- semantic_tool_call_replay says which are copies.
+            tool_call_key VARCHAR NOT NULL,
 
             -- Degenerate dims
             tool_use_id VARCHAR NOT NULL,
@@ -857,6 +899,11 @@ def _create_objects(conn) -> None:
             hash_diff VARCHAR NOT NULL,
             is_deleted BOOLEAN NOT NULL DEFAULT FALSE,
             deleted_at TIMESTAMP,
+
+            -- md5(session_id || '|' || tool_use_id): the natural key, and
+            -- the fact_tool_calls row this operation is. Computed here, not
+            -- read from that row.
+            tool_call_key VARCHAR NOT NULL,
 
             -- Degenerate dims
             tool_use_id VARCHAR NOT NULL,
@@ -1414,6 +1461,10 @@ def _create_objects(conn) -> None:
     # tests/test_star_schema_ddl.py::TestNoColumnIsHugeint fails on a bare one.
     # =========================================================================
     conn.execute(
+        "CREATE OR REPLACE VIEW semantic_tool_call_replay AS" + _TOOL_CALL_REPLAY_SQL
+    )
+
+    conn.execute(
         """
         CREATE OR REPLACE VIEW semantic_session_summary AS
         WITH msg_rollup AS (
@@ -1442,7 +1493,13 @@ def _create_objects(conn) -> None:
                    COUNT(DISTINCT tool_name) AS unique_tools_used,
                    COUNT(result_entry_id) AS total_tool_results,
                    SUM(CASE WHEN is_error THEN 1 ELSE 0 END)::BIGINT AS total_tool_errors
-            FROM fact_tool_calls WHERE is_deleted = FALSE GROUP BY session_id
+            -- The session's OWN calls. A call its transcript only replays
+            -- belongs to the session that made it.
+            FROM fact_tool_calls ftc
+            WHERE ftc.is_deleted = FALSE
+              AND ftc.tool_call_key NOT IN (
+                  SELECT tool_call_key FROM semantic_tool_call_replay WHERE is_replay)
+            GROUP BY session_id
         ),
         system_rollup AS (
             SELECT session_id,
@@ -1502,10 +1559,7 @@ def _create_objects(conn) -> None:
         + _DELEGATION_EDGE_CTES
         + """,
         delegation_rollup AS (
-            -- Grouped by the session that MADE the call, which is not always
-            -- the transcript holding it; see _DELEGATION_EDGE_CTES. A call
-            -- made by a root that was never loaded has no session_id and so
-            -- lands on no summary row.
+            -- The session's own spawns; see _DELEGATION_EDGE_CTES.
             SELECT e.parent_session_id AS session_id,
                    COUNT(*) AS total_delegations,
                    SUM(CASE WHEN e.is_error IS TRUE AND e.agent_id IS NULL
@@ -1594,6 +1648,11 @@ def _create_objects(conn) -> None:
                      THEN COALESCE(ffo.file_size_chars, 0) ELSE 0 END)::BIGINT AS total_chars_written
         FROM fact_file_operations ffo
         WHERE ffo.is_deleted = FALSE AND ffo.session_id IS NOT NULL AND ffo.file_key IS NOT NULL
+          -- A replayed read or edit is not this session's operation on the
+          -- file. semantic_file_evolution and semantic_project_files read
+          -- this view, so they count a file once per session that touched it.
+          AND ffo.tool_call_key NOT IN (
+              SELECT tool_call_key FROM semantic_tool_call_replay WHERE is_replay)
         GROUP BY ffo.session_id, ffo.session_key, ffo.file_key
     """
     )
@@ -1669,14 +1728,11 @@ def _create_objects(conn) -> None:
         + """,
         spawn AS (
             SELECT
-                -- On the session that made the call, so the key does not move
-                -- with load order. tool_use_id alone is already unique.
-                md5(COALESCE(ftc.parent_session_id, '') || '|' || ftc.tool_use_id)
-                    AS delegation_key,
+                -- md5(session_id || '|' || tool_use_id): the call's own key.
+                ftc.tool_call_key AS delegation_key,
                 ftc.tool_use_id,
                 ftc.parent_session_id,
                 ftc.parent_session_key,
-                ftc.parent_link_source,
                 ftc.agent_id,
                 ftc.agent_session_key,
                 ftc.agent_link_source,
@@ -1837,7 +1893,6 @@ def _create_objects(conn) -> None:
 
             sc.parent_session_key,
             sc.parent_session_id,
-            sc.parent_link_source,
             ps.cwd AS parent_cwd,
             sc.agent_session_key,
             sc.agent_link_source,
@@ -1982,7 +2037,14 @@ def _create_objects(conn) -> None:
     conn.execute(
         """
         CREATE OR REPLACE VIEW semantic_session_behavior AS
-        WITH mix AS (
+        WITH own_calls AS (
+            -- What the session did itself; a replayed call is left out.
+            SELECT ftc.* FROM fact_tool_calls ftc
+            WHERE ftc.is_deleted = FALSE
+              AND ftc.tool_call_key NOT IN (
+                  SELECT tool_call_key FROM semantic_tool_call_replay WHERE is_replay)
+        ),
+        mix AS (
             SELECT
                 ftu.session_id,
                 COUNT(*) AS tool_uses,
@@ -1995,17 +2057,15 @@ def _create_objects(conn) -> None:
                 COUNT(*) FILTER (WHERE dt.tool_category = 'delegate') AS delegate_ops,
                 COUNT(*) FILTER (WHERE dt.tool_category = 'plan')     AS plan_ops,
                 COUNT(*) FILTER (WHERE dt.tool_category = 'mcp')      AS mcp_ops
-            FROM fact_tool_calls ftu
+            FROM own_calls ftu
             JOIN dim_tool dt USING (tool_key)
-            WHERE ftu.is_deleted = FALSE
             GROUP BY ftu.session_id
         ),
         runs AS (
             SELECT session_id,
                    COUNT(DISTINCT chain_id) AS agentic_runs,
                    MEDIAN(time_since_prev_seconds) AS median_gap_seconds
-            FROM fact_tool_calls
-            WHERE is_deleted = FALSE
+            FROM own_calls
             GROUP BY session_id
         ),
         base AS (
@@ -2085,6 +2145,11 @@ def _create_objects(conn) -> None:
         JOIN dim_tool dt1 ON ftcs.tool_key = dt1.tool_key
         LEFT JOIN dim_tool dt2 ON ftcs.next_tool_key = dt2.tool_key
         WHERE ftcs.next_tool_key IS NOT NULL
+          -- Live rows a session made itself: a transition a copy replays
+          -- happened once.
+          AND ftcs.is_deleted = FALSE
+          AND ftcs.tool_call_key NOT IN (
+              SELECT tool_call_key FROM semantic_tool_call_replay WHERE is_replay)
         GROUP BY dt1.tool_name, dt2.tool_name
         HAVING COUNT(*) >= 2
         ORDER BY frequency DESC
@@ -2458,7 +2523,7 @@ TABLE_COVERAGE = {
     "dim_memory": ("table", "populated", "global_source", "Type 2 history of Claude Code auto-memory files"),
     # --- facts
     "fact_messages": ("table", "populated", "session", "one row per user/assistant JSONL entry"),
-    "fact_tool_calls": ("table", "populated", "session", "one row per tool_use_id: the use, its typed result, its derived failure, and its position in the agentic run; failed calls are WHERE is_error"),
+    "fact_tool_calls": ("table", "populated", "session", "one row per tool call per transcript (a replayed call is a row in each transcript holding it): the use, its typed result, its derived failure, and its position in the agentic run; failed calls are WHERE is_error"),
     "fact_token_usage": ("table", "populated", "session", "one row per API response (api_message_id), token and cache breakdown"),
     "fact_system_events": ("table", "populated", "session", "one row per system entry, 20 typed columns across its subtypes"),
     "fact_progress_events": ("table", "populated", "session", "one row per progress entry (hooks, agent progress)"),
@@ -2472,7 +2537,8 @@ TABLE_COVERAGE = {
     "semantic_session_summary": ("view", "keep", None, "per-session rollup over every fact; was a table written last by every run"),
     "semantic_session_files": ("view", "keep", None, "session x file aggregate over fact_file_operations; was a bridge table"),
     "semantic_sessions": ("view", "keep", None, "session with project, chain, summary and classifier columns in one row"),
-    "semantic_agent_delegations": ("view", "keep", None, "the delegation edge: one row per Agent/Task spawn call, joined to the child session, with derived completion_state and rollups (a table until 1.0.0)"),
+    "semantic_agent_delegations": ("view", "keep", None, "the delegation edge: one row per Agent/Task spawn call a session made itself, joined to the child session, with derived completion_state and rollups (a table until 1.0.0)"),
+    "semantic_tool_call_replay": ("view", "keep", None, "one row per live tool call saying whether it is the transcript's own or a replay of another session's history; the one place that is decided"),
     "semantic_decisions": ("view", "keep", None, "plan outcomes classified per session"),
     "semantic_file_evolution": ("view", "keep", None, "per-file operation sequence across sessions"),
     "semantic_session_behavior": ("view", "keep", None, "behavioral feature vector with percentile ranks, no archetype label"),
@@ -2528,8 +2594,8 @@ NATURAL_KEYS = {
     "fact_progress_events": "entry_id",
     "fact_system_events": "entry_id",
     "fact_token_usage": "entry_id",
-    "fact_tool_calls": "tool_use_id",
-    "fact_file_operations": "tool_use_id",
+    "fact_tool_calls": "tool_call_key",
+    "fact_file_operations": "tool_call_key",
     "fact_diagnostics": "diagnostic_id",
     "fact_plan_revisions": "revision_key",
     "fact_session_facets": "facet_row_key",

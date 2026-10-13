@@ -150,7 +150,7 @@ def populate_dim_file(conn, *, run: EtlRun) -> None:
 
 
 _FILE_OP_PAYLOAD_COLS = [
-    "timestamp", "tool_key", "file_key", "operation_type",
+    "tool_use_id", "timestamp", "tool_key", "file_key", "operation_type",
     "file_path", "file_size_chars",
 ]
 _FILE_OP_HASH_COLS = [
@@ -173,6 +173,9 @@ def populate_fact_file_operations(conn, *, run: EtlRun) -> None:
         f"""
         CREATE TEMP TABLE _inbound_file_ops AS
         SELECT
+            -- Computed, not copied from the row it mirrors (a fact computes
+            -- its own keys).
+            md5(ftu.session_id || '|' || ftu.tool_use_id) AS tool_call_key,
             ftu.tool_use_id,
             ftu.session_id,
             ftu.timestamp,
@@ -208,7 +211,7 @@ def populate_fact_file_operations(conn, *, run: EtlRun) -> None:
         conn, run=run,
         table="fact_file_operations",
         inbound_table="_inbound_file_ops",
-        natural_key="tool_use_id",
+        natural_key="tool_call_key",
         payload_cols=_FILE_OP_PAYLOAD_COLS,
         hash_cols=_FILE_OP_HASH_COLS,
     )
