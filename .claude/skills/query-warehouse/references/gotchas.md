@@ -112,30 +112,30 @@ Cache-creation pricing differs: 5m tokens bill at 1.25x, 1h at 2x.
   identity from them.
 - Delegations are the view `semantic_agent_delegations` (one row per
   Agent/Task call in `fact_tool_calls`); there is no delegations table. Its
-  `agent_session_key` is derived from the stated agent id and may name a
-  session that was never ingested — LEFT JOIN `dim_session` accordingly. Its
   `agent_*` columns are stated by the parent and its `derived_*` columns come
   from the agent's transcript; `docs/STAR_SCHEMA.md` has the column table.
-- **A delegation made from inside an agent often has no `agent_id`.** The id
-  comes from the spawning call's payload, and most `Agent` calls made inside
-  an agent state none (see "Typed result columns and missing payloads").
-  Then `agent_session_key`, `completion_state` and every `derived_*` column
-  are NULL too, although the agent's transcript may well be in the warehouse.
-  So `completion_state IS NULL` does not establish that a transcript is
-  missing, and `semantic_session_summary.delegated_output_tokens` and
-  `max_child_depth` undercount for an agent that delegates. The link is
-  stated from the other side: the spawned agent's sidecar names the call
-  (`dim_session.spawn_tool_use_id`) and the agent that made it
-  (`parent_agent_id`). Join on both; the recipe is in `query-recipes.md`
-  under Subagents.
-- **Some delegation rows under an agent session are copied history.** A
-  fork's transcript replays its parent's history, including the call that
-  created the fork, so the view shows the fork "delegating" to itself and
-  repeating its parent's earlier spawns. Most of these rows have no
-  `agent_id` either, which is why the call id alone must not be the join.
-  `total_delegations` on the summary counts them. The recipe after the one
-  above lists them; this is one case of the replay item in
-  `docs/ROADMAP.md` ("Continued sessions replay their history").
+- **The view settles who made a call and which agent it spawned; do not
+  re-derive either from `fact_tool_calls.session_id` or `agent_id`.** A
+  fork's transcript replays its spawner's history, and `fact_tool_calls` has
+  one row per `tool_use_id`, so the session on an `Agent` row is whichever
+  transcript loaded last. And a background launch made inside an agent states
+  no `agent_id` (see "Typed result columns and missing payloads"). The view
+  reads the spawned agent's sidecar for both: `parent_link_source` and
+  `agent_link_source` say which side settled each. Use `parent_session_id`
+  and `agent_session_key` from the view, and count delegations per session
+  with `semantic_session_summary.total_delegations`, which follows the same
+  rule.
+- `agent_id` stays what the parent STATED, so it is NULL on a delegation
+  whose child was found through the sidecar (`agent_link_source =
+  'child_sidecar'`). Test for a linked agent with `agent_session_key IS NOT
+  NULL`, not `agent_id IS NOT NULL`.
+- `completion_state IS NULL` has two causes, and `agent_link_source` tells
+  them apart: NULL means no side links an agent; a value means the agent is
+  named and its transcript is not in the warehouse.
+- The stated `agent_*` columns are not repaired. For a call that sits in two
+  transcripts they hold what the last-loaded copy stated, so a forked
+  delegation can read `agent_status` NULL where its spawner stated a launch.
+  Rely on the `derived_*` columns for those.
 - Pre-2026 short agent ids can collide across parents (accepted limitation).
 - An agent whose parent was pruned keeps `depth_level = 0`.
 - Exclude sidechains from "human conversation" metrics:

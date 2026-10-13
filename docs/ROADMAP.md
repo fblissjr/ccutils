@@ -429,6 +429,36 @@ they land.
   finding is closed: the `SessionInputs` that `--llm-facets` sends to the API
   are now built without thinking whatever the flag says.
 
+- **A tool call copied into a second transcript is one row whose owner
+  follows load order.** Found 2026-10-13. `fact_tool_calls` is keyed on
+  `tool_use_id` alone (`NATURAL_KEYS`), and a resumed or forked session
+  replays history under new entry uuids with the same call ids. The upsert
+  matches on the key and, when the content hash differs, overwrites the row
+  including its `session_id`; when it is identical the first loader keeps
+  it. So the call belongs to whichever transcript the run order favoured,
+  its typed columns are that copy's, and per-session tool counts move
+  between a session and its fork. On the raw corpus 883 of 144,588 call ids
+  sit in more than one file (596 in two root sessions, 260 in two agents,
+  27 in a root and an agent). `ccutils audit` cannot see it: the key is
+  unique. The delegation views no longer depend on the owner (they read the
+  spawned agent's sidecar), but their stated `agent_*` columns still hold
+  whichever copy won, and every other reader of `fact_tool_calls` is
+  exposed. `tests/test_delegation_attribution.py::TestAForkDoesNotOwnTheCallThatCreatedIt::test_the_fixture_reproduces_the_takeover`
+  reproduces it. The fix is the key, `(session_id, tool_use_id)`, with the
+  replay flag below; that is a schema decision and a rebuild, so it is the
+  owner's.
+- **`agent_is_async` reads FALSE where nothing was stated, so a launch
+  acknowledgment is reported as an agent's output.** Found 2026-10-13. The
+  populator coalesces a missing `toolUseResult.isAsync` to FALSE, and
+  `semantic_agent_delegations` withholds `agent_output_text` only when it
+  is TRUE. A background launch made inside an agent states no payload
+  (`docs/JSONL_CONTRACT.md` claim 11), so its row carries "Async agent
+  launched successfully." or "Fork started" as the agent's output, which
+  the view's own tests say must never happen. All 354 payload-less `Agent`
+  results in agent transcripts on the raw corpus are acknowledgments.
+  Fix: leave `agent_is_async` NULL when no payload states it, and withhold
+  the text unless the parent stated a synchronous result. A populator
+  change, so rows re-hash; no DDL change.
 - **Continued sessions replay their history.** 706 `api_message_id`
   values recur across sessions in the same chain (1,403 rows), and the
   same is true of every replayed message and tool call. Nothing marks a
@@ -605,31 +635,19 @@ here and stays local.
   - Whether `ccutils audit` or the reader's guide should report coverage
     (the share of results with a payload, by parent and agent), since the
     always-NULL check cannot see a column that parent rows fill.
-  - Delegations made from inside an agent lose their child, not only the
-    stated rollups: `semantic_agent_delegations` finds the child through
-    `agent_id`, which comes from the payload. Measured 2026-10-13 on the raw
-    corpus, 354 `Agent` calls inside agent transcripts state no payload.
-    204 are real delegations, all background launches, and for every one a
-    child sidecar states both the call (`toolUseId`) and this agent as its
-    parent (`parentAgentId`). Proposed, not built: resolve the child in the
-    view from `dim_session.spawn_tool_use_id` and `parent_agent_id` when the
-    payload gives no `agent_id`, in a column that says which side stated
-    the link, and do the same in the `delegation_rollup` of
-    `semantic_session_summary`. A view-only change, so no rebuild. Where
-    the payload and a sidecar both name the child they agree on all 1,150
-    calls that have both, and no call id is claimed by two sidecars.
-  - The other 150 are copied history, not delegations: 97 are a fork's copy
-    of the call that created it, and 53 are calls an ancestor made. Joining
-    on the call id alone links a fork to itself, so the stated parent is
-    part of the join. They are counted in `total_delegations` today. This
-    is the replay item under "Fix at 1.0.0 or before" ("Continued sessions
-    replay their history") reaching the delegations view; an exact rule
-    exists here without waiting for `is_replay`, since a row whose call a
-    sidecar attributes to a different agent is not this session's.
-  - The query-warehouse skill carries both as gotchas and recipes
-    (2026-10-13). The nested-delegation recipe was run on a one-project
-    build that holds no such delegation, so its positive case rests on the
-    raw scan, not on rows it returned.
+  - Delegations: done 2026-10-13. `semantic_agent_delegations` and the
+    `delegation_rollup` of `semantic_session_summary` read who made a call
+    and which agent it spawned from the spawned agent's sidecar where the
+    transcript cannot say (`docs/STAR_SCHEMA.md`, "Who made a call").
+    `tests/test_delegation_attribution.py` holds it in both load orders.
+    The measurement behind it, on the raw corpus: of 354 `Agent` calls
+    inside agent transcripts that state no payload, 204 are background
+    launches whose child a sidecar names with this agent as parent, 97 are
+    a fork's copy of the call that created it, and 53 are calls an ancestor
+    made; where a payload and a sidecar both name the child they agree on
+    all 1,150 calls that have both. Verified on a one-project build, which
+    holds one forked delegation and no payload-less nested launch, so the
+    nested case rests on its fixture and the raw scan.
   - Not established: what decides presence inside one Claude Code version.
     The claim records the association with how the agent was spawned.
   A candidate for the source profile below, which is the general form of

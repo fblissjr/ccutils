@@ -119,6 +119,85 @@ def create_star_schema(db_path):
     return conn
 
 
+# Who made each Agent / Task call, and which agent it spawned. ONE definition,
+# spliced into semantic_agent_delegations and into the delegation_rollup of
+# semantic_session_summary. The summary cannot read the delegations view (that
+# view reads the summary for the child's rollup, so it would be a cycle), and
+# two hand-kept copies of an attribution rule drift.
+#
+# The transcript holding a call does not settle either question:
+#
+# - fact_tool_calls has one row per tool_use_id, and a fork's transcript
+#   replays its spawner's history, including the call that created the fork.
+#   The copy adds no row; when it loads later it TAKES THE ROW OVER, so
+#   `session_id` on an Agent row is whichever transcript loaded last.
+# - The child is named by `agent_id`, from the call's toolUseResult, which an
+#   agent transcript often does not state (docs/JSONL_CONTRACT.md claim 11).
+#
+# The spawned agent's sidecar states both from the other side, so it is read
+# first for the parent and as the fallback for the child. "Stated" is strict:
+# `parentAgentId` when present, the root the file sits under when `spawnDepth`
+# is 1. A sidecar that says nested and names no parent settles nothing about
+# the parent, and the transcript holding the call is kept.
+_DELEGATION_EDGE_CTES = """
+        spawn_link AS (
+            SELECT cs.spawn_tool_use_id AS tool_use_id,
+                   cs.session_key AS agent_session_key,
+                   -- dim_session.parent_session_key is md5 of the stated
+                   -- parent agent, or of the root when none is stated. It is
+                   -- only a STATED spawner in the two cases below.
+                   CASE WHEN cs.parent_agent_id IS NOT NULL OR cs.spawn_depth = 1
+                        THEN cs.parent_session_key END AS spawner_session_key,
+                   -- NULL when the spawner is a root that was never loaded:
+                   -- its key is known, its id is not.
+                   CASE WHEN cs.parent_agent_id IS NOT NULL
+                            THEN 'agent-' || cs.parent_agent_id
+                        WHEN cs.spawn_depth = 1 THEN rs.session_id
+                   END AS spawner_session_id
+            FROM dim_session cs
+            LEFT JOIN dim_session rs
+                   ON rs.session_key = cs.parent_session_key
+                  AND cs.parent_agent_id IS NULL
+            WHERE cs.spawn_tool_use_id IS NOT NULL
+            -- One sidecar per call in every corpus measured. A view must not
+            -- fan out if that ever stops holding.
+            QUALIFY ROW_NUMBER() OVER (
+                PARTITION BY cs.spawn_tool_use_id ORDER BY cs.session_id) = 1
+        ),
+        delegation_edge AS (
+            SELECT
+                ftc.*,
+                COALESCE(sl.spawner_session_key, md5(ftc.session_id))
+                    AS parent_session_key,
+                CASE WHEN sl.spawner_session_key IS NULL
+                          OR sl.spawner_session_key = md5(ftc.session_id)
+                     THEN ftc.session_id
+                     ELSE sl.spawner_session_id END AS parent_session_id,
+                CASE WHEN sl.spawner_session_key IS NOT NULL THEN 'child_sidecar'
+                     ELSE 'transcript' END AS parent_link_source,
+                -- The parent's stated agentId first: an agent's session_id is
+                -- 'agent-<agent_id>', so the key is DERIVED, not looked up,
+                -- and may name a session that was never ingested. Else the
+                -- agent whose sidecar names this call. That agent cannot be
+                -- the parent: the one row where it would be is dropped below.
+                COALESCE(md5('agent-' || ftc.agent_id), sl.agent_session_key)
+                    AS agent_session_key,
+                CASE WHEN ftc.agent_id IS NOT NULL THEN 'parent_payload'
+                     WHEN sl.agent_session_key IS NOT NULL THEN 'child_sidecar'
+                END AS agent_link_source
+            FROM fact_tool_calls ftc
+            LEFT JOIN spawn_link sl ON sl.tool_use_id = ftc.tool_use_id
+            WHERE ftc.is_deleted = FALSE
+              -- Claude Code emits both names depending on version.
+              AND ftc.tool_name IN ('Task', 'Agent')
+              -- The one row that is dropped: the call created the session
+              -- holding it and nothing states who made it. It is provably
+              -- not this session's delegation and cannot be given to anyone.
+              AND NOT COALESCE(sl.agent_session_key = md5(ftc.session_id)
+                               AND sl.spawner_session_key IS NULL, FALSE)
+        )"""
+
+
 def _create_objects(conn) -> None:
     """Every CREATE, in dependency order, plus seed rows. Idempotent."""
 
@@ -1419,22 +1498,27 @@ def _create_objects(conn) -> None:
         child_tokens AS (
             SELECT session_id, SUM(COALESCE(output_tokens, 0))::BIGINT AS output_tokens
             FROM fact_token_usage WHERE is_deleted = FALSE GROUP BY session_id
-        ),
+        ),"""
+        + _DELEGATION_EDGE_CTES
+        + """,
         delegation_rollup AS (
-            SELECT ftc.session_id,
+            -- Grouped by the session that MADE the call, which is not always
+            -- the transcript holding it; see _DELEGATION_EDGE_CTES. A call
+            -- made by a root that was never loaded has no session_id and so
+            -- lands on no summary row.
+            SELECT e.parent_session_id AS session_id,
                    COUNT(*) AS total_delegations,
-                   SUM(CASE WHEN ftc.is_error IS TRUE AND ftc.agent_id IS NULL
-                             AND ftc.agent_status IS NULL THEN 1 ELSE 0 END)::BIGINT
+                   SUM(CASE WHEN e.is_error IS TRUE AND e.agent_id IS NULL
+                             AND e.agent_status IS NULL THEN 1 ELSE 0 END)::BIGINT
                        AS total_spawn_failures,
                    -- Stated by the child's sidecar (spawnDepth); NULL when
                    -- no child is in the warehouse or none states a depth.
                    MAX(cs.spawn_depth) AS max_child_depth,
                    SUM(COALESCE(ct.output_tokens, 0))::BIGINT AS delegated_output_tokens
-            FROM fact_tool_calls ftc
-            LEFT JOIN dim_session cs ON cs.session_id = 'agent-' || ftc.agent_id
-            LEFT JOIN child_tokens ct ON ct.session_id = 'agent-' || ftc.agent_id
-            WHERE ftc.is_deleted = FALSE AND ftc.tool_name IN ('Task', 'Agent')
-            GROUP BY ftc.session_id
+            FROM delegation_edge e
+            LEFT JOIN dim_session cs ON cs.session_key = e.agent_session_key
+            LEFT JOIN child_tokens ct ON ct.session_id = cs.session_id
+            GROUP BY e.parent_session_id
         )
         SELECT
             ds.session_id,
@@ -1580,17 +1664,22 @@ def _create_objects(conn) -> None:
         -- column is a projection of fact_tool_calls or a rollup of the
         -- agent's facts, so there is nothing to order and nothing to repair.
         CREATE OR REPLACE VIEW semantic_agent_delegations AS
-        WITH spawn AS (
+        WITH"""
+        + _DELEGATION_EDGE_CTES
+        + """,
+        spawn AS (
             SELECT
-                md5(ftc.session_id || '|' || ftc.tool_use_id) AS delegation_key,
+                -- On the session that made the call, so the key does not move
+                -- with load order. tool_use_id alone is already unique.
+                md5(COALESCE(ftc.parent_session_id, '') || '|' || ftc.tool_use_id)
+                    AS delegation_key,
                 ftc.tool_use_id,
-                ftc.session_id AS parent_session_id,
-                md5(ftc.session_id) AS parent_session_key,
+                ftc.parent_session_id,
+                ftc.parent_session_key,
+                ftc.parent_link_source,
                 ftc.agent_id,
-                -- DERIVED from the stated agentId, not looked up: an agent's
-                -- session_id is 'agent-<agent_id>'. It may name a session
-                -- that was never ingested; consumers LEFT JOIN dim_session.
-                md5('agent-' || ftc.agent_id) AS agent_session_key,
+                ftc.agent_session_key,
+                ftc.agent_link_source,
                 ftc.date_key,
                 ftc.time_key,
                 ftc.timestamp AS delegation_timestamp,
@@ -1610,10 +1699,7 @@ def _create_objects(conn) -> None:
                 COALESCE(ftc.result_content_text,
                          CAST(json_extract(ftc.result_payload_json, '$.content') AS VARCHAR))
                     AS stated_output_text
-            FROM fact_tool_calls ftc
-            WHERE ftc.is_deleted = FALSE
-              -- Claude Code emits both names depending on version.
-              AND ftc.tool_name IN ('Task', 'Agent')
+            FROM delegation_edge ftc
         ),
         child AS (
             -- One row per AGENT session, from that agent's OWN messages.
@@ -1745,8 +1831,10 @@ def _create_objects(conn) -> None:
 
             sc.parent_session_key,
             sc.parent_session_id,
+            sc.parent_link_source,
             ps.cwd AS parent_cwd,
             sc.agent_session_key,
+            sc.agent_link_source,
             ags.session_id AS agent_session_id,
             ags.depth_level AS agent_depth_level,
             dp.project_name

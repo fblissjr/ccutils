@@ -582,12 +582,14 @@ A view since 1.0.0. It was the table `fact_agent_delegations`, written per sessi
 
 | Column | Type | Description |
 |--------|------|-------------|
-| delegation_key | VARCHAR | `md5(parent session_id \|\| '\|' \|\| tool_use_id)`; unique per row |
+| delegation_key | VARCHAR | `md5(parent_session_id \|\| '\|' \|\| tool_use_id)`, on the session that made the call, so it does not move with load order; unique per row |
 | tool_use_id | VARCHAR | The spawn call in `fact_tool_calls` |
-| parent_session_key / parent_session_id | VARCHAR | The session that delegated |
+| parent_session_key / parent_session_id | VARCHAR | The session that MADE the call: the spawner the spawned agent's sidecar states, else the transcript holding the call. See "Who made a call" below. `parent_session_id` is NULL when the stated spawner is a root session that was never loaded |
+| parent_link_source | VARCHAR | Which side settled the parent: `child_sidecar` (the spawned agent's sidecar states its spawner) or `transcript` (the session whose transcript holds the call) |
 | parent_cwd / project_name | VARCHAR | From the parent's `dim_session` and `dim_project` rows |
 | agent_id | VARCHAR | Stated `toolUseResult.agentId`. NULL when the spawn was refused or the launch named none |
-| agent_session_key | VARCHAR | `md5('agent-' \|\| agent_id)`. May name a session that was never ingested |
+| agent_session_key | VARCHAR | `md5('agent-' \|\| agent_id)` where the parent stated an id, and may then name a session that was never ingested. Else the session of the agent whose sidecar names this call. NULL when neither side links one |
+| agent_link_source | VARCHAR | Which side named the agent: `parent_payload` (`agent_id`), `child_sidecar` (the agent's sidecar states this call as its spawn), or NULL |
 | agent_session_id / agent_depth_level | | From the agent's `dim_session` row; NULL when its transcript is not in the warehouse |
 | task_description / task_prompt / subagent_type | TEXT | From the spawn call's input |
 | delegation_timestamp / delegation_date / time_of_day | | When the agent was invoked |
@@ -600,7 +602,7 @@ A view since 1.0.0. It was the table `fact_agent_delegations`, written per sessi
 | agent_total_tokens | INTEGER | Stated `totalTokens`. NULL on background launches. Do NOT compare with `derived_io_tokens` |
 | agent_total_tool_use_count | INTEGER | Stated `totalToolUseCount`. NULL on background launches |
 | agent_output_text | TEXT | The parent's tool result. The one stated value that is withheld: NULL on background launches, where it held "Async agent launched successfully." |
-| completion_state | VARCHAR | DERIVED from the agent's transcript: `completed` / `no_completion_recorded` / `spawn_failed` / NULL (the transcript is not in the warehouse). See below |
+| completion_state | VARCHAR | DERIVED from the agent's transcript: `completed` / `no_completion_recorded` / `spawn_failed` / NULL (no agent is linked, or its transcript is not in the warehouse; `agent_link_source` tells the two apart). See below |
 | derived_completion_timestamp | TIMESTAMP | The agent's last assistant message |
 | derived_seconds_to_completion | DOUBLE | derived_completion_timestamp - delegation_timestamp |
 | derived_duration_ms | DOUBLE | The agent's first message to its last assistant message |
@@ -609,6 +611,10 @@ A view since 1.0.0. It was the table `fact_agent_delegations`, written per sessi
 | derived_output_text | TEXT | The agent's final report: its terminal assistant message |
 
 Every `derived_` column is NULL unless `completion_state = 'completed'`.
+
+**Who made a call, and which agent it spawned, is read from the spawned agent's sidecar where the transcript cannot say.** Two things make the transcript holding a call an unreliable witness. `fact_tool_calls` has one row per `tool_use_id`, and a fork's transcript replays its spawner's history, including the call that created the fork: the copy adds no row, it takes the row over when it loads later, so the session on an `Agent` row is whichever transcript loaded last. And the child is named by `agent_id`, from the call's `toolUseResult`, which a background launch made inside an agent does not state (`docs/JSONL_CONTRACT.md` claim 11). The spawned agent's sidecar states both from the other side: the call (`toolUseId`) and who made it. So the parent is the stated spawner when there is one, and the child falls back to the agent whose sidecar names the call. "Stated" is strict: `parentAgentId` when present, the root session the file sits under when `spawnDepth` is 1; a sidecar that says nested and names no parent leaves the transcript as the parent. One kind of row is dropped: a call that created the very session holding it, where nothing states who made it. `semantic_session_summary` counts delegations by the same rule (`_DELEGATION_EDGE_CTES` in `schemas/star/schema.py` is the one definition both read).
+
+The `agent_*` columns are not repaired by this. They hold what the row's transcript stated, so for a call that sits in two transcripts they follow load order: the spawner's copy states the launch, the fork's copy states nothing. That is the row's content, and it waits on the replay work in `docs/ROADMAP.md`.
 
 **A synchronous delegation whose agent transcript is not in the warehouse derives nothing.** `completion_state` is NULL there even though `agent_status` says `completed`: what the parent saw is stated, and is not copied into a derived column. This is the accepted cost of the separation. Count the rows it affects with `SELECT COUNT(*) FROM semantic_agent_delegations WHERE agent_is_async IS NOT TRUE AND agent_status IS NOT NULL AND completion_state IS NULL`.
 
@@ -676,7 +682,7 @@ One row per session. Aggregates over every fact above. Must populate last.
 | total_stop_events | BIGINT | From fact_system_events |
 | total_prevented_continuations | BIGINT | From fact_system_events |
 | total_progress_events | BIGINT | From fact_progress_events |
-| total_delegations | BIGINT | Agent/Task spawn calls made by this session |
+| total_delegations | BIGINT | Agent/Task spawn calls made by this session, by the attribution rule of `semantic_agent_delegations` ("Who made a call"): a call a fork's transcript only replays is counted on the session that made it |
 | total_spawn_failures | BIGINT | Spawns that were refused: a stated error, no agent id, no status |
 | max_child_depth | INTEGER | Deepest `spawn_depth` stated by a directly spawned agent's sidecar; NULL when none is in the warehouse or states one |
 | delegated_output_tokens | BIGINT | Output tokens of the directly spawned agents, from their own usage rows |

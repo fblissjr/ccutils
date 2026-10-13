@@ -270,7 +270,9 @@ block's text and nothing else.
   from them.
 - Consequence: the stated columns of `semantic_agent_delegations` come from
   the payload of the `Agent` call, so they are NULL for many delegations made
-  from inside an agent.
+  from inside an agent. The child is not lost with them: the view falls back
+  to the spawned agent's sidecar, which names the call that spawned it
+  (`tests/test_delegation_attribution.py`).
 - Consequence: `ccutils audit` does not see this. A column filled on parent
   rows is neither always NULL nor single-valued. It surfaced because one
   project made every Glob call inside an agent, which left `glob_num_files`
