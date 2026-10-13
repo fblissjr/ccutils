@@ -19,20 +19,41 @@ SELECT model_name, SUM(input_tokens) AS total_in, SUM(output_tokens) AS total_ou
        SUM(cache_read_tokens) AS total_cache_read
 FROM semantic_token_usage GROUP BY model_name;
 
--- Cache efficiency per session (R11-corrected denominator)
-SELECT session_id, cache_hit_rate_pct, total_uncached_equivalent_tokens
-FROM semantic_cost_analysis ORDER BY total_uncached_equivalent_tokens DESC LIMIT 20;
+-- Cache reads as a share of everything the model was sent, per session.
+-- The denominator is total_uncached_equivalent_tokens (input + cache
+-- creation + cache read), NOT input + read. Expect it near 100% on any
+-- long session: input_tokens is what follows the last cache breakpoint, so
+-- this ratio separates sessions poorly. It is not a cost measure.
+SELECT session_id, total_uncached_equivalent_tokens,
+       ROUND(100.0 * total_cache_read_tokens
+             / NULLIF(total_uncached_equivalent_tokens, 0), 1) AS cache_read_pct
+FROM semantic_session_summary
+ORDER BY total_uncached_equivalent_tokens DESC LIMIT 20;
 ```
 
 ## Sessions and projects
 
 ```sql
--- What kinds of sessions do I have?
+-- What kinds of sessions do I have? The classifications live on dim_session.
 SELECT intent, complexity, outcome, COUNT(*) AS sessions
-FROM semantic_sessions GROUP BY ALL ORDER BY sessions DESC;
+FROM dim_session GROUP BY ALL ORDER BY sessions DESC;
+
+-- One row per session with its project, date and metrics. This is the join
+-- the deleted semantic_sessions view saved: the summary for the numbers,
+-- dim_session for what the session is, the dimensions for project and date.
+SELECT ds.session_id, dp.project_name, dd.full_date, dti.time_of_day,
+       ds.intent, ds.complexity, ds.outcome, ds.is_agent,
+       ss.total_messages, ss.total_tool_uses, ss.total_output_tokens,
+       ss.session_duration_seconds
+FROM semantic_session_summary ss
+JOIN dim_session ds ON ds.session_key = ss.session_key
+LEFT JOIN dim_project dp ON dp.project_key = ss.project_key
+LEFT JOIN dim_date dd ON dd.date_key = ss.date_key
+LEFT JOIN dim_time dti ON dti.time_key = ss.time_key
+ORDER BY ss.first_timestamp DESC LIMIT 20;
 
 -- Catch up on one project. first_user_message / last_assistant_message live
--- on dim_session, not on semantic_sessions.
+-- on dim_session.
 SELECT ds.session_id, ds.intent, ds.complexity, ds.outcome,
        ds.first_user_message, ds.last_assistant_message,
        ss.total_messages, ss.total_tool_uses, ss.total_tool_errors

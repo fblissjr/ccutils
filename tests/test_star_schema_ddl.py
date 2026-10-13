@@ -144,17 +144,6 @@ class TestCreateStarSchema:
         assert result is not None
         conn.close()
 
-    def test_creates_semantic_sessions_view(self, output_dir):
-        """Test that semantic_sessions view is created."""
-        db_path = output_dir / "test.duckdb"
-        conn = create_star_schema(db_path)
-
-        result = conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='view' AND name='semantic_sessions'"
-        ).fetchone()
-        assert result is not None
-        conn.close()
-
 class TestDimToolTable:
     """Tests for dim_tool dimension table."""
 
@@ -390,32 +379,6 @@ class TestFactSessionSummaryTimeKey:
 class TestViewDateTimeColumns:
     """Tests for date/time columns on semantic views."""
 
-    def test_semantic_sessions_has_session_datetime(self, output_dir):
-        """Test that semantic_sessions has session_datetime column."""
-        db_path = output_dir / "test.duckdb"
-        conn = create_star_schema(db_path)
-
-        columns = conn.execute(
-            "SELECT column_name FROM information_schema.columns "
-            "WHERE table_name = 'semantic_sessions'"
-        ).fetchall()
-        column_names = [c[0] for c in columns]
-        assert "session_datetime" in column_names
-        conn.close()
-
-    def test_semantic_sessions_has_time_of_day(self, output_dir):
-        """Test that semantic_sessions has time_of_day from dim_time."""
-        db_path = output_dir / "test.duckdb"
-        conn = create_star_schema(db_path)
-
-        columns = conn.execute(
-            "SELECT column_name FROM information_schema.columns "
-            "WHERE table_name = 'semantic_sessions'"
-        ).fetchall()
-        column_names = [c[0] for c in columns]
-        assert "time_of_day" in column_names
-        conn.close()
-
     def test_semantic_agent_delegations_has_delegation_date(self, output_dir):
         """Test that semantic_agent_delegations has delegation_date."""
         db_path = output_dir / "test.duckdb"
@@ -621,16 +584,6 @@ class TestNewSemanticViews:
         assert result is not None
         conn.close()
 
-    def test_creates_semantic_cost_analysis_view(self, output_dir):
-        db_path = output_dir / "test.duckdb"
-        conn = create_star_schema(db_path)
-        result = conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='view' AND name='semantic_cost_analysis'"
-        ).fetchone()
-        assert result is not None
-        conn.close()
-
-
 class TestFactPlanRevisions:
     """Tests for fact_plan_revisions table (ExitPlanMode revision chain)."""
 
@@ -717,19 +670,27 @@ class TestNoColumnIsHugeint:
 class TestPlainJoinViewsAreGone:
     """A view exists because it encodes something a consumer would get wrong.
 
-    These five joined a fact to its dimensions and added nothing: no filter,
-    no derivation, no guard. `docs/ETL_ARCHITECTURE.md` rule 3 says an
-    object does not earn its place by saving a JOIN, and each one was a
+    The first five joined a fact to its dimensions and added nothing: no
+    filter, no derivation, no guard. `docs/ETL_ARCHITECTURE.md` rule 3 says
+    an object does not earn its place by saving a JOIN, and each one was a
     second name to keep in step with its fact, which is how
     `semantic_project_context` came to overlap `semantic_sessions` on most
     of its columns. They were marked `delete` in `TABLE_COVERAGE` and are
     deleted at 1.0.0. The joins they saved are written out once in the
     query-warehouse skill's recipes.
+
+    Two more followed on 2026-10-13, by the same rule. `semantic_sessions`
+    had been kept for its soft-delete filter; once the session summary
+    became a view there was nothing left to filter, and it was forty
+    pass-through columns and `WHERE TRUE`. `semantic_cost_analysis`
+    re-projected the summary and added one column, `cache_hit_rate_pct`,
+    which the coverage registry itself said discriminates nothing.
     """
 
     GONE = ("semantic_messages", "semantic_file_operations",
             "semantic_session_chains", "semantic_plan_revisions",
-            "semantic_project_context")
+            "semantic_project_context",
+            "semantic_sessions", "semantic_cost_analysis")
 
     def test_they_do_not_exist(self, tmp_path):
         from ccutils.schemas.star.schema import TABLE_COVERAGE
@@ -749,3 +710,47 @@ class TestPlainJoinViewsAreGone:
 
         assert sorted(n for n, v in TABLE_COVERAGE.items() if v[1] == "delete") == []
 
+
+
+class TestNoViewBakesInAnOrder:
+    """A view's row order is the caller's to choose.
+
+    An `ORDER BY` ending a view is not a contract: the moment a caller adds
+    a clause of their own, a join or a `LIMIT`, the engine is free to return
+    rows in any order, so the ordering reads as dependable and is not. It
+    also sorts the whole result for callers who wanted three rows of it.
+    Two views carried one until 2026-10-13.
+
+    Delete this and an ordering creeps back into a view, and the next query
+    that relies on it is right until it grows a `WHERE`.
+    """
+
+    def test_no_semantic_view_ends_with_an_order_by(self, tmp_path):
+        import re
+
+        conn = create_star_schema(tmp_path / "t.duckdb")
+        views = conn.execute(
+            "SELECT view_name, sql FROM duckdb_views() WHERE view_name LIKE 'semantic_%'"
+        ).fetchall()
+        conn.close()
+        assert views, "no semantic views found: the check ran against nothing"
+        # After the last closing parenthesis there is only the outer query's tail.
+        ordered = sorted(
+            name for name, sql in views
+            if re.search(r"\bORDER\s+BY\b", sql.rstrip().rstrip(";").rsplit(")", 1)[-1], re.I)
+        )
+        assert ordered == []
+
+    def test_the_check_sees_an_ordered_view(self, tmp_path):
+        """The oracle can fail: a view that does end with ORDER BY is caught."""
+        import re
+
+        conn = create_star_schema(tmp_path / "t.duckdb")
+        conn.execute(
+            "CREATE VIEW semantic_zz_ordered AS "
+            "SELECT session_id, COUNT(*) AS n FROM dim_session GROUP BY session_id ORDER BY n DESC")
+        sql = conn.execute(
+            "SELECT sql FROM duckdb_views() WHERE view_name = 'semantic_zz_ordered'"
+        ).fetchone()[0]
+        conn.close()
+        assert re.search(r"\bORDER\s+BY\b", sql.rstrip().rstrip(";").rsplit(")", 1)[-1], re.I)

@@ -26,13 +26,16 @@ duckdb -readonly ./analytics/archive.duckdb -c "SELECT ..."
 
 ## 2. Route the question
 
-Prefer `semantic_*` views — they pre-join dimensions and (mostly) pre-filter
-soft-deleted rows. Drop to raw facts only when the view lacks a column.
+Prefer `semantic_*` views. A view exists because it encodes something a
+query would get wrong (a filter, a derivation, a rollup, which rows are
+replayed history), not to save a join: join the dimensions you need
+yourself. Every view filters soft-deleted rows. Drop to raw facts only when
+no view answers the question.
 
 | Question is about... | Start here |
 |---|---|
-| What sessions exist / catch up on a project | `semantic_sessions`; `dim_session` for `first_user_message` / `last_assistant_message` |
-| Tokens, cost, cache hit rate | `semantic_cost_analysis`, `semantic_token_usage`, `semantic_session_summary` |
+| What sessions exist / catch up on a project | `semantic_session_summary` joined to `dim_session` (classifications, `first_user_message` / `last_assistant_message`) and `dim_project`; the join is written out in `references/query-recipes.md` |
+| Tokens, cost, cache reads | `semantic_session_summary` (per session), `semantic_token_usage` (per API response) |
 | Tool usage, failures, tool sequences | `fact_tool_calls` (failures: `WHERE is_error`; sequences: `chain_id`, `prev_tool_key`, `next_tool_key`), `semantic_tool_patterns` |
 | Files read/edited, hot files across sessions | `fact_file_operations` (+ `dim_file`), `semantic_project_files`, `semantic_file_evolution`, `semantic_session_files` |
 | Plans (ExitPlanMode), decisions timeline | `fact_plan_revisions`, `semantic_decisions` |

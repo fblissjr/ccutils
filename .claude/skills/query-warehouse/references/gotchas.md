@@ -11,11 +11,9 @@ Turn durations and stop events live in `fact_system_events` by `subtype`.
 
 ## Soft deletes
 
-Facts are never hard-deleted (`is_deleted`/`deleted_at`). Views that already
-filter: `semantic_sessions`, `semantic_decisions`,
-`semantic_token_usage`, `semantic_cost_analysis`. **Every raw-fact query needs
-`WHERE is_deleted = FALSE`**; for other views, check the view SQL in
-`src/ccutils/schemas/star/schema.py` before trusting counts.
+Facts are never hard-deleted (`is_deleted`/`deleted_at`). Every `semantic_`
+view filters soft-deleted rows on each fact it reads. **Every raw-fact query
+needs `WHERE is_deleted = FALSE`.**
 
 ## Join traps
 
@@ -99,7 +97,6 @@ GROUP BY ALL ORDER BY own_calls DESC LIMIT 20;
   `derived_*` figures a delegation takes from a fork child.
 - **A fork's message and token totals are its own too.** The message and
   token columns of `semantic_session_summary` (and so of
-  `semantic_cost_analysis`, `semantic_sessions` and
   `semantic_session_behavior`) count what came after the cut, and agree
   with the fork's `F15` / `F30`. The per-response views,
   `semantic_token_usage` and `semantic_context_growth`, keep a fork's

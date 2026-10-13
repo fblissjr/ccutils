@@ -342,12 +342,6 @@ class TestAForksTotalsAreItsOwn:
         assert _facet(loaded, "agent-f1", "F15") == tokens_in
         assert _facet(loaded, "agent-f1", "F30") == tokens_out
 
-    def test_cost_analysis_follows_the_summary(self, loaded):
-        assert loaded.execute(
-            "SELECT total_input_tokens, total_output_tokens, total_messages, api_response_count "
-            "FROM semantic_cost_analysis WHERE session_id = 'agent-f1'"
-        ).fetchone() == (50, 760, 4, 2)
-
     def test_summed_over_sessions_a_response_is_counted_once(self, conn, tmp_path):
         """The spawner's 7,710 input tokens and the fork's own 50, not 7,710 twice."""
         _load(conn, tmp_path, _spawner(tmp_path), _fork(tmp_path))

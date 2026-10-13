@@ -493,9 +493,6 @@ they land.
   (nine branches). Its results carry no agent payload; it is the task-list
   tool. Harmless but misleading, and nothing asserts the extraction list and
   `_AGENT_TOOL_NAMES` agree.
-- **`semantic_cost_analysis.cache_hit_rate_pct` discriminates nothing.** It
-  reads near 100% for every project because `input_tokens` is
-  post-breakpoint by construction. Redefine or drop.
 
 ### 1.1.0
 

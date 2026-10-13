@@ -1733,60 +1733,6 @@ def _create_objects(conn) -> None:
     """
     )
 
-    # Updated for the 1.0.0 semantic_session_summary view.
-    conn.execute(
-        """
-        CREATE OR REPLACE VIEW semantic_sessions AS
-        SELECT
-            fss.session_id,
-            ds.cwd,
-            ds.git_branch,
-            ds.version,
-            fss.first_timestamp AS session_datetime,
-            fss.last_timestamp,
-            ds.intent,
-            ds.complexity,
-            ds.outcome,
-            ds.domain,
-            dp.project_name,
-            dp.project_path,
-            fss.total_messages,
-            fss.user_messages,
-            fss.assistant_messages,
-            fss.total_tool_uses,
-            fss.total_tool_results,
-            fss.total_thinking_blocks,
-            fss.total_tool_errors,
-            fss.unique_tools_used,
-            fss.total_input_tokens,
-            fss.total_output_tokens,
-            fss.total_cache_creation_total_tokens,
-            fss.total_cache_read_tokens,
-            fss.total_uncached_equivalent_tokens,
-            fss.api_response_count,
-            fss.total_api_errors,
-            fss.total_compactions,
-            fss.total_turn_durations_ms,
-            fss.turn_count,
-            fss.permission_mode_transition_count,
-            fss.current_permission_mode,
-            fss.session_duration_seconds,
-            dd.full_date,
-            dd.day_name,
-            dd.month_name,
-            dd.year,
-            dd.is_weekend,
-            dti.hour,
-            dti.time_of_day
-        FROM semantic_session_summary fss
-        LEFT JOIN dim_session ds ON fss.session_key = ds.session_key
-        LEFT JOIN dim_project dp ON fss.project_key = dp.project_key
-        LEFT JOIN dim_date dd ON fss.date_key = dd.date_key
-        LEFT JOIN dim_time dti ON fss.time_key = dti.time_key
-        WHERE TRUE
-    """
-    )
-
     conn.execute(
         """
         -- The delegation edge: one row per Agent / Task tool call (the
@@ -2256,7 +2202,6 @@ def _create_objects(conn) -> None:
               SELECT tool_call_key FROM semantic_tool_call_replay WHERE is_replay)
         GROUP BY dt1.tool_name, dt2.tool_name
         HAVING COUNT(*) >= 2
-        ORDER BY frequency DESC
     """
     )
 
@@ -2279,7 +2224,6 @@ def _create_objects(conn) -> None:
         JOIN dim_session ds ON bsf.session_key = ds.session_key
         JOIN dim_project dp ON ds.project_key = dp.project_key
         GROUP BY dp.project_name, df.file_path, df.file_extension, df.language
-        ORDER BY sessions_touching_file DESC
     """
     )
 
@@ -2412,46 +2356,6 @@ def _create_objects(conn) -> None:
         LEFT JOIN dim_project dp ON ds.project_key = dp.project_key
         LEFT JOIN dim_date dd ON o.date_key = dd.date_key
         LEFT JOIN dim_time dti ON o.time_key = dti.time_key
-    """
-    )
-
-    # R11: cache_hit_rate_pct denominator now includes cache_creation_total
-    # (legacy view used input + read only, over-stating the hit rate).
-    conn.execute(
-        """
-        CREATE OR REPLACE VIEW semantic_cost_analysis AS
-        SELECT
-            fss.session_id,
-            dp.project_name,
-            ds.entrypoint,
-            ds.custom_title,
-            ds.intent,
-            ds.complexity,
-            dd.full_date,
-            fss.session_duration_seconds,
-            fss.total_input_tokens,
-            fss.total_output_tokens,
-            fss.total_cache_creation_5m_tokens,
-            fss.total_cache_creation_1h_tokens,
-            fss.total_cache_creation_total_tokens,
-            fss.total_cache_read_tokens,
-            fss.total_uncached_equivalent_tokens,
-            fss.total_turn_durations_ms,
-            fss.turn_count,
-            CASE WHEN fss.total_uncached_equivalent_tokens > 0
-                 THEN ROUND(100.0 * fss.total_cache_read_tokens
-                      / fss.total_uncached_equivalent_tokens, 1)
-                 ELSE 0 END AS cache_hit_rate_pct,
-            fss.total_messages,
-            fss.total_tool_uses,
-            fss.api_response_count,
-            fss.total_api_errors,
-            fss.total_compactions
-        FROM semantic_session_summary fss
-        LEFT JOIN dim_session ds ON fss.session_key = ds.session_key
-        LEFT JOIN dim_project dp ON fss.project_key = dp.project_key
-        LEFT JOIN dim_date dd ON fss.date_key = dd.date_key
-        WHERE TRUE
     """
     )
 
@@ -2649,7 +2553,6 @@ TABLE_COVERAGE = {
     # --- views
     "semantic_session_summary": ("view", "keep", None, "per-session rollup over every fact; was a table written last by every run"),
     "semantic_session_files": ("view", "keep", None, "session x file aggregate over fact_file_operations; was a bridge table"),
-    "semantic_sessions": ("view", "keep", None, "session with project, chain, summary and classifier columns in one row"),
     "semantic_agent_delegations": ("view", "keep", None, "the delegation edge: one row per Agent/Task spawn call a session made itself, joined to the child session, with derived completion_state and rollups (a table until 1.0.0)"),
     "semantic_tool_call_replay": ("view", "keep", None, "one row per live tool call saying whether it is the transcript's own or a replay of another session's history; the one place that is decided"),
     "semantic_decisions": ("view", "keep", None, "plan outcomes classified per session"),
@@ -2659,7 +2562,6 @@ TABLE_COVERAGE = {
     "semantic_project_files": ("view", "keep", None, "files per project with operation rollups"),
     "semantic_token_usage": ("view", "keep", None, "token usage by session with cache tiers"),
     "semantic_context_growth": ("view", "keep", None, "context size over a session's turns"),
-    "semantic_cost_analysis": ("view", "keep", None, "cost rollup per project; cache_hit_rate_pct is known to discriminate nothing"),
     "semantic_prompt_history": ("view", "keep", None, "prompts joined to the sessions they started"),
     "semantic_memory": ("view", "keep", None, "current memory versions only"),
     "semantic_memory_links": ("view", "keep", None, "links with both ends resolved to names"),

@@ -7,7 +7,7 @@ that UPDATEs dim_session in place. Inputs are pulled from the v0.15 facts
 (fact_messages, fact_tool_calls, fact_tool_calls, semantic_session_files +
 dim_file) rather than from the legacy fact_tool_calls / fact_errors path.
 
-This unblocks the NULL columns in semantic_sessions for v0.15 databases.
+This unblocks the classification columns on dim_session for v0.15 databases.
 """
 
 from __future__ import annotations
@@ -204,15 +204,21 @@ class TestDimSessionEnrichmentIntegration:
         assert row[0] is not None
         assert "Done" in row[0]
 
-    def test_semantic_sessions_returns_classified_session(
+    def test_a_classified_session_reads_through_the_summary_join(
         self, conn, bug_fix_session, tmp_path
     ):
+        """The join the query-warehouse skill gives for "what sessions exist":
+        the summary for the numbers, dim_session for the classifications.
+        (This read `semantic_sessions` until that plain-join view was deleted.)
+        """
         run_v15_etl(conn, bug_fix_session, project_name="test",
                     parquet_lake_root=tmp_path / "lake")
         row = conn.execute(
             """
-            SELECT intent, complexity, outcome, domain
-            FROM semantic_sessions WHERE session_id = 'bug-s'
+            SELECT ds.intent, ds.complexity, ds.outcome, ds.domain
+            FROM semantic_session_summary ss
+            JOIN dim_session ds ON ds.session_key = ss.session_key
+            WHERE ss.session_id = 'bug-s'
             """
         ).fetchone()
         assert row is not None

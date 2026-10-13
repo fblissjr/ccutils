@@ -653,7 +653,7 @@ WHERE tc.is_deleted = FALSE AND NOT rp.is_replay AND tc.session_id = '<id>'
 GROUP BY ALL ORDER BY calls DESC;
 ```
 
-**A fork's replayed prefix is left out of what describes the fork.** The populated per-session facts cannot use this view's cross-session rule, and for a fork they do not need it: `dim_session.fork_cut_timestamp` needs only the fork's own sidecar and transcript. `fact_session_facets` (both tiers), the `dim_session` heuristics (`first_user_message`, `intent`, `complexity`, `outcome`) and `fact_plan_revisions` read only what came after it, so a fork is described by its own prompt, tools, files, plans, tokens and duration. The message and token columns of `semantic_session_summary` apply the same cut, so `semantic_cost_analysis`, `semantic_sessions` and `semantic_session_behavior` bill a fork for its own work, and a fork's summary agrees with its facets. The event counts follow the same cut (turns, compactions, API errors, stop events, progress, attachments), as do `permission_mode_transition_count` and `session_duration_seconds`, and `semantic_decisions` lists a fork's own decisions. A mode change is judged against the mode the fork inherited and counted only if the fork made it. Entries that state no time are placed by `fact_entry_events.derived_timestamp`. What is still not replay-aware: any of this for a copy between ROOT sessions, where nothing states a cut.
+**A fork's replayed prefix is left out of what describes the fork.** The populated per-session facts cannot use this view's cross-session rule, and for a fork they do not need it: `dim_session.fork_cut_timestamp` needs only the fork's own sidecar and transcript. `fact_session_facets` (both tiers), the `dim_session` heuristics (`first_user_message`, `intent`, `complexity`, `outcome`) and `fact_plan_revisions` read only what came after it, so a fork is described by its own prompt, tools, files, plans, tokens and duration. The message and token columns of `semantic_session_summary` apply the same cut, so `semantic_session_behavior` and anything else that reads the summary bill a fork for its own work, and a fork's summary agrees with its facets. The event counts follow the same cut (turns, compactions, API errors, stop events, progress, attachments), as do `permission_mode_transition_count` and `session_duration_seconds`, and `semantic_decisions` lists a fork's own decisions. A mode change is judged against the mode the fork inherited and counted only if the fork made it. Entries that state no time are placed by `fact_entry_events.derived_timestamp`. What is still not replay-aware: any of this for a copy between ROOT sessions, where nothing states a cut.
 
 #### fact_session_facets
 One row per (session_key, facet_type_key). Tier 1 facets (F01-F19) populated via SQL; Tier 2 facets (F20+) populated via the LLM extractor when injected.
@@ -734,18 +734,16 @@ Note: there is no `unique_files_touched` column on this table -- use `semantic_s
 
 ## Semantic Views
 
-All views use the `semantic_` prefix. Each one encodes something a query would otherwise get wrong: a filter, a derivation, a rollup. A view that only joined a fact to its dimensions is not here; five of those (`semantic_messages`, `semantic_file_operations`, `semantic_session_chains`, `semantic_plan_revisions`, `semantic_project_context`) were deleted at 1.0.0, and the joins they saved are written out once in the `query-warehouse` skill's recipes.
+All views use the `semantic_` prefix. Each one encodes something a query would otherwise get wrong: a filter, a derivation, a rollup. A view that only joined a fact or the summary to its dimensions is not here (`semantic_sessions` and `semantic_cost_analysis` went on 2026-10-13: join `semantic_session_summary` to `dim_session` and `dim_project` yourself); five of those (`semantic_messages`, `semantic_file_operations`, `semantic_session_chains`, `semantic_plan_revisions`, `semantic_project_context`) were deleted at 1.0.0, and the joins they saved are written out once in the `query-warehouse` skill's recipes.
 
-- `semantic_sessions` -- sessions + project info + summary metrics + heuristic classifications + date/time
 - `semantic_tool_call_replay` -- one row per live tool call: the transcript's own, or a replay of another session's history (documented above under facts)
 - `semantic_agent_delegations` -- one row per Agent/Task spawn a session made itself, joined to the child session, with derived `completion_state` and rollups (a table until 1.0.0; documented above under facts)
 - `semantic_decisions` -- unified decision timeline UNIONing plan revisions, permission-mode changes, stop events, API errors, and compact boundaries from their source facts (`source_key`/`source_table` link back to the underlying row). A permission-mode change is an entry whose mode differs from the one before it in file order, not every permission-mode entry. `timestamp` is stated and is NULL on those rows; `derived_timestamp` places them, so order a timeline by `COALESCE(timestamp, derived_timestamp)`
 - `semantic_file_evolution` -- cross-session file activity (files touched in 2+ sessions)
-- `semantic_tool_patterns` -- common tool sequences with frequency and error rates
-- `semantic_project_files` -- file activity aggregated by project
+- `semantic_tool_patterns` -- common tool sequences with frequency and error rates (no row order of its own; add an `ORDER BY`)
+- `semantic_project_files` -- file activity aggregated by project (no row order of its own; add an `ORDER BY`)
 - `semantic_token_usage` -- one row per API response; a response a fork's transcript replays from its spawner is kept and marked `in_fork_prefix` (FALSE, never NULL, for everything else), so `NOT in_fork_prefix` totals a session's own usage. Per-API-response token data with model/session/project context
 - `semantic_context_growth` -- per-request context-size deltas within a session (R23), with the same `in_fork_prefix` mark; the sequence is left whole, since a fork's first own request did follow the last inherited one. `context_tokens` is `total_uncached_equivalent_tokens` (the exact prompt size the API saw); `inbound_tokens` nets out the previous response's own output, isolating what the user side added (prompt text + tool results, which carry no `usage` of their own). Compaction shows as `is_context_reset` with `inbound_tokens` suppressed. Slightly negative `inbound_tokens` without a reset is real (thinking bills as output but is not retained in later context; 9 of 3,443 rows on a validation corpus) and left visible. Only meaningful on the R23 response grain -- per-entry rows made 51% of deltas negative
-- `semantic_cost_analysis` -- session-level cost aggregation. R11-corrected: `cache_hit_rate_pct` denominator includes cache_creation
 - `semantic_prompt_history` -- prompts from history JSONL linked to session metadata
 - `semantic_memory` -- the auto-memory corpus AS IT STANDS NOW (`is_current` only), with project, origin-session and date context. Query `dim_memory` directly for the version history behind it
 - `semantic_memory_links` -- the current memory graph with both ends named. Unresolved edges are kept, so "what does Claude reference that it never wrote down" is a `WHERE NOT is_resolved`
@@ -762,11 +760,12 @@ Sessions with no tool uses are kept (283 of 2,250 on a real corpus -- pure conve
 
 ```sql
 -- Complex bug fixes with the most errors
-SELECT session_id, intent, complexity, total_tool_uses, total_tool_errors,
-       session_duration_seconds
-FROM semantic_sessions
-WHERE intent = 'bug_fix' AND complexity = 'complex'
-ORDER BY total_tool_errors DESC;
+SELECT ds.session_id, ds.intent, ds.complexity, ss.total_tool_uses,
+       ss.total_tool_errors, ss.session_duration_seconds
+FROM semantic_session_summary ss
+JOIN dim_session ds ON ds.session_key = ss.session_key
+WHERE ds.intent = 'bug_fix' AND ds.complexity = 'complex'
+ORDER BY ss.total_tool_errors DESC;
 
 -- Token usage by model
 SELECT model_name, SUM(input_tokens) as total_in, SUM(output_tokens) as total_out,

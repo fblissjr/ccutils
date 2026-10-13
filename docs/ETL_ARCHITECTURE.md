@@ -149,6 +149,17 @@ Done at 1.0.0, except `semantic_agent_delegations`, which stopped being a
 pure join and is kept: it became the derived view over `fact_tool_calls`
 when the delegations table was removed.
 
+Two entries in the "keep" table above went the same way on 2026-10-13,
+because the reason given for them stopped being true.
+`semantic_sessions` was kept for its soft-delete filter; once
+`semantic_session_summary` became a view there was nothing left for it to
+filter, and it was a join of the summary to its dimensions. And
+`semantic_cost_analysis` re-projected the summary with one derived column,
+the cache-hit rate, whose denominator was corrected but which reads near
+100% on every long session by construction. Both are deleted. A reason
+recorded for keeping an object is a claim about the code, and goes stale
+like any other.
+
 **Check consumers before deleting.** Absence of guards is measurable, but a
 consumer may depend on a view's exact column set, and the `query-warehouse`
 skill references several by name.

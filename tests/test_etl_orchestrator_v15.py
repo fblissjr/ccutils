@@ -155,8 +155,8 @@ class TestDimSessionEnrichment:
     """dim_session must carry enough context for the semantic_* views to join.
 
     Phase D will widen this with heuristic columns; this just covers the
-    minimum so semantic_sessions / semantic_cost_analysis
-    return rows immediately.
+    minimum so a join from the session summary to dim_session and
+    dim_project returns rows immediately.
     """
 
     def test_dim_session_project_key_wired_to_dim_project(
@@ -198,7 +198,10 @@ class TestDimSessionEnrichment:
             parquet_lake_root=tmp_path / "lake",
         )
         rows = conn.execute(
-            "SELECT session_id, project_name FROM semantic_sessions"
+            "SELECT ss.session_id, dp.project_name "
+            "FROM semantic_session_summary ss "
+            "JOIN dim_session ds ON ds.session_key = ss.session_key "
+            "LEFT JOIN dim_project dp ON dp.project_key = ds.project_key"
         ).fetchall()
         assert len(rows) == 1
         assert rows[0][0] == "basic-s"

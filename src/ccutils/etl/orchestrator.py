@@ -81,8 +81,8 @@ def _upsert_minimal_dimensions(conn, *, run) -> int:
         # dim_session: surrogate from staging.session_id.
         #
         # We derive project_key from source_path's parent dir here so the FK
-        # is set on insert -- semantic_sessions joins dim_session ->
-        # dim_project, and it goes empty without it.
+        # is set on insert -- anything joining dim_session -> dim_project
+        # goes empty without it.
         # first_timestamp / last_timestamp come straight from the staging
         # min/max so date-range filtering on dim_session works immediately
         # (without waiting on Phase D enrichment).
