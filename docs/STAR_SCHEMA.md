@@ -396,7 +396,7 @@ One row per `tool_use_id`: the assistant's `tool_use` block, its result (the `to
 | result_timestamp | TIMESTAMP | Result timestamp |
 | is_error | BOOLEAN | Tri-state: TRUE / FALSE / NULL (R16) |
 | result_content_text | VARCHAR | Tool result text |
-| result_payload_json | VARCHAR | Raw entry-level `toolUseResult` payload (JSON-encoded string) |
+| result_payload_json | VARCHAR | Raw entry-level `toolUseResult` payload (JSON-encoded string). NULL when the entry states none, which is common in agent transcripts; every column typed from it is then NULL too (`docs/JSONL_CONTRACT.md` claim 11) |
 | derived_exit_code | INTEGER | DERIVED from an `Exit code N` prefix on a failed result; the payload never states one |
 | derived_failure_kind | VARCHAR | DERIVED from `is_error` + result text: nonzero_exit, blocked_by_hook, permission_denied, user_rejected, sibling_errored, timeout, interrupted, model_unavailable, other |
 | sandbox_disabled | BOOLEAN | Stated: `toolUseResult.dangerouslyDisableSandbox` |

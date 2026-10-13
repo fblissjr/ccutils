@@ -592,27 +592,28 @@ here and stays local.
 
 ### Open design questions
 
-- **Agent transcripts often carry no `toolUseResult`, so the typed result
-  columns on `fact_tool_calls` are NULL for much agent work.** Found
-  2026-10-13 from a raw scan of one project (the ccutils project's own
-  transcripts), not the corpus. In parent transcripts every tool result's
-  entry states `toolUseResult`. In agent transcripts 2,210 of 4,148 did
-  not, across every tool that was called there (Bash, Read, Edit, Grep,
-  Glob, Write, WebFetch), so `read_num_lines`, `glob_num_files` and the
-  other columns typed from that payload are NULL on those rows. What comes
-  from the `tool_result` block is still there: `is_error`,
-  `result_content_text`, and `derived_exit_code`, which is read from the
-  result text. It tracks the Claude Code
-  version without a clean cut: mostly absent through 2.1.153, mostly
-  present from 2.1.207, with exceptions on both sides and files that mix
-  the two. `ccutils audit` cannot see it, because a column that is filled
-  for parent rows is neither always-NULL nor single-valued. Not yet done: a
-  corpus-wide rate, the rule that decides presence inside one version, and
-  a contract claim with a canary in `docs/JSONL_CONTRACT.md`. Until then a
-  query that sums or filters on a typed result column silently leaves out
-  those agent calls; `result_entry_id IS NOT NULL AND result_payload_json
-  IS NULL` marks them. A candidate
-  for the source profile below, which is the general form of this.
+- **What to do about typed result columns that are NULL for much agent
+  work.** `docs/JSONL_CONTRACT.md` claim 11 (2026-10-13) holds the fact, its
+  corpus-wide measurement and its canary: a parent tool result always states
+  `toolUseResult`, an agent one often does not, and
+  `fact_tool_calls.result_payload_json` and the columns typed from it are
+  NULL where it is missing. Nothing was changed in the schema or the
+  populators. Open with the owner:
+  - Whether to derive a value from `result_content_text` where the payload
+    is missing, as `derived_exit_code` already does, in separate columns so
+    stated and derived stay apart.
+  - Whether `ccutils audit` or the reader's guide should report coverage
+    (the share of results with a payload, by parent and agent), since the
+    always-NULL check cannot see a column that parent rows fill.
+  - The query-warehouse skill does not yet warn about this. Its delegation
+    recipe says the stated `agent_*` columns are NULL on a background
+    launch; they are also NULL, with `agent_is_async` itself, when the
+    spawning entry states no payload, which is most `Agent` calls made from
+    inside an agent.
+  - Not established: what decides presence inside one Claude Code version.
+    The claim records the association with how the agent was spawned.
+  A candidate for the source profile below, which is the general form of
+  this.
 - **A source profile: what each harness was asked for against what it gave.**
   Proposed 2026-10-09, not agreed. The claim 5 correction was a statement
   about the source frozen into prose and checked only by a test on one

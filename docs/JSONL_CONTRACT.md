@@ -1,6 +1,6 @@
 # The Claude Code JSONL contract
 
-Last updated: 2026-10-09
+Last updated: 2026-10-13
 
 What this pipeline assumes about the transcript format it reads. Claude Code
 ships continuously and this format is not versioned or documented upstream, so
@@ -223,6 +223,68 @@ anywhere in `src/`. That is a known gap, not a decision.
 
 `NATURAL_KEYS` in `schemas/star/schema.py` is the single source of truth for
 table-to-key, guarded by a drift test.
+
+## 11. `toolUseResult` is stated beside every parent tool result, and often missing in an agent transcript
+
+A tool result is a user entry holding one `tool_result` block. The structured
+payload (`toolUseResult`: line counts, file counts, the Agent rollups) sits on
+the entry beside the block, not in it. In a parent transcript the entry always
+states it. In an agent transcript it often does not, and the result is then the
+block's text and nothing else.
+
+- Three stretches in the agent transcripts of this corpus, by the `version`
+  stamped on the entry. Through 2.1.12 every result states the payload. From
+  2.1.15 to 2.1.153 almost none does, and much of what is stated there is the
+  bare error string of a failed call. From 2.1.195, the next version this
+  corpus holds, most results state it again, unevenly: some versions state it
+  on nearly every result and some on almost none.
+- Inside the current stretch the share follows how the agent was spawned, as
+  its sidecar states it (claim 7). An agent whose sidecar states a
+  `toolUseId` nearly always carries the payload, less reliably when it also
+  states a `parentAgentId`. An agent whose sidecar states no `toolUseId`
+  almost never carries it, and neither do the agents under
+  `subagents/workflows/` (claim 6). This is an association measured once, not
+  a rule ccutils relies on.
+- A failed call never lacks it, in either kind of transcript: where the block
+  says `is_error`, the payload is a string.
+- No entry in the corpus holds more than one `tool_result` block, which is
+  what lets a payload stated on the entry be read as that block's.
+- Measured corpus-wide, not sampled, on 2026-10-13. The counts and their
+  conditions are in `CHANGELOG.md` under "Claim 11 of the JSONL contract". To
+  re-derive them on the current corpus:
+  `uv run pytest tests/test_jsonl_contract.py::TestToolResultPayloadPresence -s`
+  prints the parent count, the agent count over every version and from
+  2.1.195, and the agent count by tool.
+- Not established: what decides it inside one version. Tool-spawned agents
+  still lose the payload on some results, at the highest rate on the result
+  of an `Agent` call of their own, and one transcript can hold both kinds.
+- Consequence: `fact_tool_calls.result_payload_json` and every column typed
+  from it (`read_num_lines`, `glob_num_files`, the `agent_*` rollups) are NULL
+  on such a row, and nothing falls back. NULL there means not stated, never
+  zero or false. A query that sums or filters on a typed column leaves those
+  calls out without saying so; `result_entry_id IS NOT NULL AND
+  result_payload_json IS NULL` finds them.
+- Consequence: what is read from the `tool_result` block is unaffected.
+  `is_error` (claim 4) and `result_content_text` are there on every result,
+  and so are `derived_exit_code` and `derived_failure_kind`, which are parsed
+  from them.
+- Consequence: the stated columns of `semantic_agent_delegations` come from
+  the payload of the `Agent` call, so they are NULL for many delegations made
+  from inside an agent.
+- Consequence: `ccutils audit` does not see this. A column filled on parent
+  rows is neither always NULL nor single-valued. It surfaced because one
+  project made every Glob call inside an agent, which left `glob_num_files`
+  NULL on every row of a one-project build.
+- Canary: `tests/test_jsonl_contract.py::TestToolResultPayloadPresence`. One
+  pass over the whole corpus feeds two checks: the share of parent results
+  without the payload stays under `PARENT_PAYLOAD_MAX_ABSENT_RATE`, and the
+  share of agent results without it, from `TOOL_RESULT_PAYLOAD_SINCE`, stays
+  under `AGENT_PAYLOAD_ABSENT_MAJORITY`. A test in the same class runs the
+  ETL on one result of each kind and holds the first two consequences.
+- If the parent check goes red: the typed columns are emptying for ordinary
+  sessions. If the agent check goes red: they no longer cover most agent work
+  being written, and a query on them needs a stated coverage figure or a
+  value derived from the result text.
 
 ---
 
