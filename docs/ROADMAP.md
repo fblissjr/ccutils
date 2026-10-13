@@ -1,6 +1,6 @@
 # Roadmap and open items
 
-Last updated: 2026-10-09
+Last updated: 2026-10-13
 
 This is the one git-tracked status board. It consolidates what used to live
 only in gitignored `internal/` notes: the release sequence, the next
@@ -20,8 +20,8 @@ machine that has it; nothing here depends on it.
   `fact_tool_calls` (uses + results + chain steps + errors in one table),
   the summary and session-file bridge as views, delegations as a view with
   `--embed` retired, and (the fourth) the five thin entry facts as
-  `fact_entry_events`. What is left is deleting the plain-join views, then
-  the gate.
+  `fact_entry_events`. The five plain-join views are deleted too. What is
+  left is the gate.
   `ccutils audit` exits clean on the full corpus and on a one-project
   subset build apart from columns that project never fills. Version is
   still 0.20.1; the tag waits on the list under "Next session".
@@ -44,10 +44,20 @@ machine that has it; nothing here depends on it.
 Resume in this order. Each item was designed and its reads done on
 2026-09-10; nothing below is open-ended.
 
-1. **Start from a green suite.** Rerun
-   `uv run pytest tests/ --confcutdir=tests` once to confirm the tree is
-   as left (the last result is in the commit that landed step 3), then
-   begin step 4.
+1. **Step 4 committed on a green suite. DONE 2026-10-13.**
+   `uv run pytest tests/ --confcutdir=tests` passed on the view deletion
+   with the live-API test the only skip, and the deletion is committed. A
+   one-project build was audited the same day: `ccutils audit` exits 1 on
+   five column findings and nothing else. Never filled:
+   `dim_session.stopped_by_user`, `fact_tool_calls.glob_num_files` and
+   `glob_truncated`, `fact_system_events.bridge_url`. Single-valued:
+   `fact_diagnostics.source`. Each was checked against that project's raw
+   transcripts and sidecars, and the source states none of them there (its
+   Glob calls are all inside agent transcripts, whose results carry no
+   structured payload). So no build of this schema has exercised those four
+   columns yet, and the last full-corpus audit on record (`CHANGELOG.md`,
+   2026-09-10) predates steps 2 and 3. The gate build in step 5 is the
+   first check of both. Next is the gate.
 2. **Delegations become a view; `--embed` is retired. DONE 2026-10-09.**
    `fact_agent_delegations`, its populator, the completion pass,
    `run_post_session_reconciliation` and the `reconciliation` run kind are
@@ -99,11 +109,13 @@ Resume in this order. Each item was designed and its reads done on
    five tables took are ingested. Other top-level types exist in the corpus
    (`cost-state`, `ai-title`, `mode` and more), and taking one in is a
    decision for the source profile work, not a side effect of this.
-4. **Delete the five plain-join views** marked `delete` in
-   `TABLE_COVERAGE` and update the query-warehouse skill's routing table
-   and recipes, which still name them (`tests/test_query_recipes.py` lists
-   the recipes; the routing table in its `SKILL.md` is prose and needs a
-   read).
+4. **Delete the five plain-join views. DONE 2026-10-09.**
+   `semantic_messages`, `semantic_file_operations`, `semantic_session_chains`,
+   `semantic_plan_revisions` and `semantic_project_context` are gone, with
+   their `TABLE_COVERAGE` entries; nothing is left marked `delete`, and a
+   test fails if something is. The query-warehouse skill's routing table and
+   recipes name the facts instead, with the joins the views saved written
+   out once.
 5. **Gate and tag.** One full-corpus build (about 15 minutes), `ccutils
    audit` clean, then `docs/STAR_SCHEMA.md` table list, `README.md`,
    `CHANGELOG.md` promoted from Unreleased, `pyproject.toml` and
@@ -407,6 +419,14 @@ they land.
 
 ### Fix at 1.0.0 or before
 
+- **`docs/STAR_SCHEMA.md` states a closed list of system subtypes.** Found
+  2026-10-13 on a one-project build. The doc says `fact_system_events`
+  covers "all 7 subtypes", in two places, but the populator takes every
+  `system` entry and the build holds two the list does not name,
+  `scheduled_task_fire` and `model_refusal_fallback`. The rows are right;
+  the sentence is an absolute about an unversioned source. Reword it to say
+  which subtypes get typed columns and that any other lands with
+  `payload_json`, when the table list is revised at the gate.
 - **Thinking text reaches `dim_session.last_assistant_message` by default.**
   Found 2026-10-09 while correcting `docs/JSONL_CONTRACT.md` claim 5.
   `extract_text_from_content_json` defaults to including thinking, so a

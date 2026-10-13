@@ -155,7 +155,7 @@ class TestDimSessionEnrichment:
     """dim_session must carry enough context for the semantic_* views to join.
 
     Phase D will widen this with heuristic columns; this just covers the
-    minimum so semantic_sessions / semantic_project_context / semantic_cost_analysis
+    minimum so semantic_sessions / semantic_cost_analysis
     return rows immediately.
     """
 
@@ -198,7 +198,7 @@ class TestDimSessionEnrichment:
             parquet_lake_root=tmp_path / "lake",
         )
         rows = conn.execute(
-            "SELECT session_id, project_name FROM semantic_project_context"
+            "SELECT session_id, project_name FROM semantic_sessions"
         ).fetchall()
         assert len(rows) == 1
         assert rows[0][0] == "basic-s"

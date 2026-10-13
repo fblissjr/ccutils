@@ -78,13 +78,18 @@ class TestDimDatePopulation:
         ).fetchone()[0] == 1
 
 
-class TestSemanticViewsGetDates:
-    def test_semantic_messages_full_date_and_time_of_day(self, conn, tmp_path):
-        """The view-level acceptance: dates come back non-NULL."""
+class TestFactKeysResolveToDates:
+    def test_a_message_joins_to_its_date_and_time(self, conn, tmp_path):
+        """The acceptance at the consumer's end: a fact's date_key and
+        time_key resolve in the dimensions, so dates come back non-NULL.
+        (This read `semantic_messages` until that plain-join view was
+        deleted; the join it saved is the thing under test.)"""
         run_v15_etl(conn, _session_file(tmp_path), project_name="test",
                     parquet_lake_root=tmp_path / "lake")
         row = conn.execute(
-            "SELECT full_date, time_of_day FROM semantic_messages LIMIT 1"
+            "SELECT dd.full_date, dt.time_of_day FROM fact_messages fm "
+            "JOIN dim_date dd ON dd.date_key = fm.date_key "
+            "JOIN dim_time dt ON dt.time_key = fm.time_key LIMIT 1"
         ).fetchone()
         assert row is not None
         assert str(row[0]) == "2026-04-18"

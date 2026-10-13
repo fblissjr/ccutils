@@ -155,29 +155,6 @@ class TestCreateStarSchema:
         assert result is not None
         conn.close()
 
-    def test_creates_semantic_messages_view(self, output_dir):
-        """Test that semantic_messages view is created."""
-        db_path = output_dir / "test.duckdb"
-        conn = create_star_schema(db_path)
-
-        result = conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='view' AND name='semantic_messages'"
-        ).fetchone()
-        assert result is not None
-        conn.close()
-
-    def test_creates_semantic_file_operations_view(self, output_dir):
-        """Test that semantic_file_operations view is created."""
-        db_path = output_dir / "test.duckdb"
-        conn = create_star_schema(db_path)
-
-        result = conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='view' AND name='semantic_file_operations'"
-        ).fetchone()
-        assert result is not None
-        conn.close()
-
-
 class TestDimToolTable:
     """Tests for dim_tool dimension table."""
 
@@ -439,45 +416,6 @@ class TestViewDateTimeColumns:
         assert "time_of_day" in column_names
         conn.close()
 
-    def test_semantic_file_operations_has_full_date(self, output_dir):
-        """Test that semantic_file_operations has full_date from dim_date."""
-        db_path = output_dir / "test.duckdb"
-        conn = create_star_schema(db_path)
-
-        columns = conn.execute(
-            "SELECT column_name FROM information_schema.columns "
-            "WHERE table_name = 'semantic_file_operations'"
-        ).fetchall()
-        column_names = [c[0] for c in columns]
-        assert "full_date" in column_names
-        conn.close()
-
-    def test_semantic_file_operations_has_time_of_day(self, output_dir):
-        """Test that semantic_file_operations has time_of_day from dim_time."""
-        db_path = output_dir / "test.duckdb"
-        conn = create_star_schema(db_path)
-
-        columns = conn.execute(
-            "SELECT column_name FROM information_schema.columns "
-            "WHERE table_name = 'semantic_file_operations'"
-        ).fetchall()
-        column_names = [c[0] for c in columns]
-        assert "time_of_day" in column_names
-        conn.close()
-
-    def test_semantic_session_chains_has_chain_start_date(self, output_dir):
-        """Test that semantic_session_chains has chain_start_date."""
-        db_path = output_dir / "test.duckdb"
-        conn = create_star_schema(db_path)
-
-        columns = conn.execute(
-            "SELECT column_name FROM information_schema.columns "
-            "WHERE table_name = 'semantic_session_chains'"
-        ).fetchall()
-        column_names = [c[0] for c in columns]
-        assert "chain_start_date" in column_names
-        conn.close()
-
     def test_semantic_agent_delegations_has_delegation_date(self, output_dir):
         """Test that semantic_agent_delegations has delegation_date."""
         db_path = output_dir / "test.duckdb"
@@ -518,32 +456,6 @@ class TestViewDateTimeColumns:
         assert "last_seen_date" in column_names
         conn.close()
 
-    def test_semantic_project_context_has_session_date(self, output_dir):
-        """Test that semantic_project_context has session_date."""
-        db_path = output_dir / "test.duckdb"
-        conn = create_star_schema(db_path)
-
-        columns = conn.execute(
-            "SELECT column_name FROM information_schema.columns "
-            "WHERE table_name = 'semantic_project_context'"
-        ).fetchall()
-        column_names = [c[0] for c in columns]
-        assert "session_date" in column_names
-        conn.close()
-
-    def test_semantic_project_context_has_time_of_day(self, output_dir):
-        """Test that semantic_project_context has time_of_day."""
-        db_path = output_dir / "test.duckdb"
-        conn = create_star_schema(db_path)
-
-        columns = conn.execute(
-            "SELECT column_name FROM information_schema.columns "
-            "WHERE table_name = 'semantic_project_context'"
-        ).fetchall()
-        column_names = [c[0] for c in columns]
-        assert "time_of_day" in column_names
-        conn.close()
-
     def test_semantic_project_files_has_last_touched_date(self, output_dir):
         """Test that semantic_project_files has last_touched_date."""
         db_path = output_dir / "test.duckdb"
@@ -559,18 +471,7 @@ class TestViewDateTimeColumns:
 
 
 class TestProjectContextViews:
-    """Tests for semantic_project_context and semantic_project_files views."""
-
-    def test_creates_semantic_project_context_view(self, output_dir):
-        """Test that semantic_project_context view is created."""
-        db_path = output_dir / "test.duckdb"
-        conn = create_star_schema(db_path)
-
-        result = conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='view' AND name='semantic_project_context'"
-        ).fetchone()
-        assert result is not None
-        conn.close()
+    """Tests for the semantic_project_files view."""
 
     def test_creates_semantic_project_files_view(self, output_dir):
         """Test that semantic_project_files view is created."""
@@ -774,16 +675,6 @@ class TestFactPlanRevisions:
             assert col in columns, f"Missing column: {col}"
         conn.close()
 
-    def test_creates_semantic_plan_revisions_view(self, output_dir):
-        db_path = output_dir / "test.duckdb"
-        conn = create_star_schema(db_path)
-        result = conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='view' AND name='semantic_plan_revisions'"
-        ).fetchone()
-        assert result is not None
-        conn.close()
-
-
 class TestNoColumnIsHugeint:
     """No column a consumer reads is HUGEINT.
 
@@ -821,3 +712,40 @@ class TestNoColumnIsHugeint:
         ).to_arrow_table().schema
         conn.close()
         assert [str(f.type) for f in schema] == ["int64", "int64", "int64"]
+
+
+class TestPlainJoinViewsAreGone:
+    """A view exists because it encodes something a consumer would get wrong.
+
+    These five joined a fact to its dimensions and added nothing: no filter,
+    no derivation, no guard. `docs/ETL_ARCHITECTURE.md` rule 3 says an
+    object does not earn its place by saving a JOIN, and each one was a
+    second name to keep in step with its fact, which is how
+    `semantic_project_context` came to overlap `semantic_sessions` on most
+    of its columns. They were marked `delete` in `TABLE_COVERAGE` and are
+    deleted at 1.0.0. The joins they saved are written out once in the
+    query-warehouse skill's recipes.
+    """
+
+    GONE = ("semantic_messages", "semantic_file_operations",
+            "semantic_session_chains", "semantic_plan_revisions",
+            "semantic_project_context")
+
+    def test_they_do_not_exist(self, tmp_path):
+        from ccutils.schemas.star.schema import TABLE_COVERAGE
+
+        conn = create_star_schema(tmp_path / "t.duckdb")
+        objects = {r[0] for r in conn.execute(
+            "SELECT table_name FROM information_schema.tables").fetchall()}
+        conn.close()
+        for name in self.GONE:
+            assert name not in objects, name
+            assert name not in TABLE_COVERAGE, name
+
+    def test_nothing_is_left_marked_for_deletion(self):
+        """`delete` was a status for a view on its way out. Once the last one
+        is gone, an entry carrying it is a deletion somebody forgot."""
+        from ccutils.schemas.star.schema import TABLE_COVERAGE
+
+        assert sorted(n for n, v in TABLE_COVERAGE.items() if v[1] == "delete") == []
+

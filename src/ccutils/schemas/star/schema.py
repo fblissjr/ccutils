@@ -250,7 +250,7 @@ def _create_objects(conn) -> None:
         CREATE TABLE IF NOT EXISTS etl.table_coverage (
             object_name VARCHAR NOT NULL,   -- table or view in main
             object_type VARCHAR NOT NULL,   -- 'table' | 'view'
-            status VARCHAR NOT NULL,        -- table: 'populated' | 'conditional'; view: 'keep' | 'delete'
+            status VARCHAR NOT NULL,        -- table: 'populated' | 'conditional'; view: 'keep' ('delete' marks one on its way out)
             populated_by VARCHAR,           -- 'session' | 'global_source' | 'ddl_seed' | 'flag:<flag>' | NULL for views
             reason VARCHAR NOT NULL         -- why it exists, or why it is conditional / to be deleted
         )
@@ -1570,90 +1570,6 @@ def _create_objects(conn) -> None:
 
     conn.execute(
         """
-        CREATE OR REPLACE VIEW semantic_messages AS
-        SELECT
-            fm.message_id,
-            fm.timestamp,
-            fm.content_text,
-            fm.content_length,
-            fm.has_tool_use,
-            fm.has_thinking,
-            fm.message_type,
-            dm.model_name,
-            dm.model_family,
-            ds.session_id,
-            ds.cwd,
-            dp.project_name,
-            dd.full_date,
-            dd.day_name,
-            dt.hour,
-            dt.time_of_day
-        FROM fact_messages fm
-        LEFT JOIN dim_model dm ON fm.model_key = dm.model_key
-        JOIN dim_session ds ON fm.session_key = ds.session_key
-        LEFT JOIN dim_project dp ON fm.project_key = dp.project_key
-        LEFT JOIN dim_date dd ON fm.date_key = dd.date_key
-        LEFT JOIN dim_time dt ON fm.time_key = dt.time_key
-    """
-    )
-
-
-    conn.execute(
-        """
-        CREATE OR REPLACE VIEW semantic_file_operations AS
-        SELECT
-            ffo.operation_type,
-            ffo.file_size_chars,
-            ffo.timestamp,
-            df.file_path,
-            df.file_name,
-            df.file_extension,
-            df.directory_path,
-            df.language,
-            dt.tool_name,
-            dt.tool_category,
-            ds.session_id,
-            dp.project_name,
-            dd.full_date,
-            dti.time_of_day
-        FROM fact_file_operations ffo
-        JOIN dim_file df ON ffo.file_key = df.file_key
-        JOIN dim_tool dt ON ffo.tool_key = dt.tool_key
-        JOIN dim_session ds ON ffo.session_key = ds.session_key
-        LEFT JOIN dim_project dp ON ds.project_key = dp.project_key
-        LEFT JOIN dim_date dd ON ffo.date_key = dd.date_key
-        LEFT JOIN dim_time dti ON ffo.time_key = dti.time_key
-    """
-    )
-
-    conn.execute(
-        """
-        CREATE OR REPLACE VIEW semantic_session_chains AS
-        SELECT
-            dsc.chain_key,
-            dsc.slug,
-            dsc.session_count,
-            CAST(dsc.first_timestamp AS DATE) AS chain_start_date,
-            dsc.first_timestamp AS chain_first_timestamp,
-            dsc.last_timestamp AS chain_last_timestamp,
-            dsc.total_duration_seconds,
-            ds.session_id,
-            ds.session_key,
-            ds.is_agent,
-            ds.depth_level,
-            dp.project_name,
-            fss.total_messages,
-            fss.total_tool_uses,
-            fss.session_duration_seconds
-        FROM dim_session_chain dsc
-        JOIN dim_session ds ON ds.chain_key = dsc.chain_key
-        LEFT JOIN dim_project dp ON ds.project_key = dp.project_key
-        LEFT JOIN semantic_session_summary fss ON ds.session_key = fss.session_key
-    """
-    )
-
-    conn.execute(
-        """
         -- The delegation edge: one row per Agent / Task tool call (the
         -- parent-side spawn), with the outcome derived from the agent's own
         -- session where its transcript is in the warehouse.
@@ -1840,37 +1756,6 @@ def _create_objects(conn) -> None:
         LEFT JOIN dim_project dp ON dp.project_key = ps.project_key
         LEFT JOIN dim_date dd ON dd.date_key = sc.date_key
         LEFT JOIN dim_time dti ON dti.time_key = sc.time_key
-    """
-    )
-
-    conn.execute(
-        """
-        CREATE OR REPLACE VIEW semantic_plan_revisions AS
-        SELECT
-            fpr.revision_key,
-            fpr.revision_number,
-            fpr.parent_revision_key,
-            fpr.plan_text,
-            fpr.plan_file_path,
-            fpr.plan_char_count,
-            fpr.outcome,
-            fpr.outcome_signal,
-            fpr.user_feedback_text,
-            fpr.plan_timestamp,
-            fpr.resolved_timestamp,
-            fpr.seconds_to_resolution,
-            dd.full_date AS plan_date,
-            dti.time_of_day,
-            ds.session_id,
-            ds.cwd,
-            ds.depth_level,
-            ds.agent_type,
-            dp.project_name
-        FROM fact_plan_revisions fpr
-        JOIN dim_session ds ON fpr.session_key = ds.session_key
-        LEFT JOIN dim_project dp ON fpr.project_key = dp.project_key
-        LEFT JOIN dim_date dd ON fpr.date_key = dd.date_key
-        LEFT JOIN dim_time dti ON fpr.time_key = dti.time_key
     """
     )
 
@@ -2109,41 +1994,6 @@ def _create_objects(conn) -> None:
         GROUP BY dt1.tool_name, dt2.tool_name
         HAVING COUNT(*) >= 2
         ORDER BY frequency DESC
-    """
-    )
-
-    conn.execute(
-        """
-        CREATE OR REPLACE VIEW semantic_project_context AS
-        SELECT
-            ds.session_id,
-            dp.project_name,
-            ds.slug,
-            CAST(ds.first_timestamp AS DATE) AS session_date,
-            ds.first_timestamp AS created_at,
-            dti.time_of_day,
-            ds.git_branch,
-            ds.intent,
-            ds.complexity,
-            ds.outcome,
-            ds.domain,
-            ds.first_user_message,
-            ds.last_assistant_message,
-            fss.total_messages,
-            fss.user_messages,
-            fss.assistant_messages,
-            fss.total_tool_uses,
-            fss.unique_tools_used,
-            fss.total_tool_errors,
-            fss.total_input_tokens,
-            fss.total_output_tokens,
-            fss.total_cache_read_tokens,
-            fss.total_uncached_equivalent_tokens
-        FROM dim_session ds
-        JOIN dim_project dp ON ds.project_key = dp.project_key
-        LEFT JOIN semantic_session_summary fss ON ds.session_key = fss.session_key
-        LEFT JOIN dim_time dti ON fss.time_key = dti.time_key
-        ORDER BY ds.first_timestamp DESC
     """
     )
 
@@ -2528,16 +2378,11 @@ TABLE_COVERAGE = {
     "semantic_session_summary": ("view", "keep", None, "per-session rollup over every fact; was a table written last by every run"),
     "semantic_session_files": ("view", "keep", None, "session x file aggregate over fact_file_operations; was a bridge table"),
     "semantic_sessions": ("view", "keep", None, "session with project, chain, summary and classifier columns in one row"),
-    "semantic_messages": ("view", "delete", None, "plain join, no logic"),
-    "semantic_file_operations": ("view", "delete", None, "plain join, no logic"),
-    "semantic_session_chains": ("view", "delete", None, "plain join, no logic"),
     "semantic_agent_delegations": ("view", "keep", None, "the delegation edge: one row per Agent/Task spawn call, joined to the child session, with derived completion_state and rollups (a table until 1.0.0)"),
-    "semantic_plan_revisions": ("view", "delete", None, "plain join, no logic"),
     "semantic_decisions": ("view", "keep", None, "plan outcomes classified per session"),
     "semantic_file_evolution": ("view", "keep", None, "per-file operation sequence across sessions"),
     "semantic_session_behavior": ("view", "keep", None, "behavioral feature vector with percentile ranks, no archetype label"),
     "semantic_tool_patterns": ("view", "keep", None, "tool-to-tool transition counts over chain steps"),
-    "semantic_project_context": ("view", "delete", None, "plain join, no logic"),
     "semantic_project_files": ("view", "keep", None, "files per project with operation rollups"),
     "semantic_token_usage": ("view", "keep", None, "token usage by session with cache tiers"),
     "semantic_context_growth": ("view", "keep", None, "context size over a session's turns"),

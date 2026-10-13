@@ -31,13 +31,13 @@ soft-deleted rows. Drop to raw facts only when the view lacks a column.
 
 | Question is about... | Start here |
 |---|---|
-| What sessions exist / catch up on a project | `semantic_sessions`, `semantic_project_context` |
+| What sessions exist / catch up on a project | `semantic_sessions`; `dim_session` for `first_user_message` / `last_assistant_message` |
 | Tokens, cost, cache hit rate | `semantic_cost_analysis`, `semantic_token_usage`, `semantic_session_summary` |
 | Tool usage, failures, tool sequences | `fact_tool_calls` (failures: `WHERE is_error`; sequences: `chain_id`, `prev_tool_key`, `next_tool_key`), `semantic_tool_patterns` |
-| Files read/edited, hot files across sessions | `semantic_file_operations`, `semantic_project_files`, `semantic_file_evolution`, `semantic_session_files` |
-| Plans (ExitPlanMode), decisions timeline | `semantic_plan_revisions`, `semantic_decisions` |
+| Files read/edited, hot files across sessions | `fact_file_operations` (+ `dim_file`), `semantic_project_files`, `semantic_file_evolution`, `semantic_session_files` |
+| Plans (ExitPlanMode), decisions timeline | `fact_plan_revisions`, `semantic_decisions` |
 | Subagents / Task delegations | `semantic_agent_delegations`, `dim_session` (`is_agent`, `parent_session_key`) |
-| Resumed-session chains | `semantic_session_chains` |
+| Resumed-session chains | `dim_session_chain` (join `dim_session` on `chain_key` for members) |
 | Prompt history | `semantic_prompt_history` |
 | What Claude has learned about a project (auto memory) | `semantic_memory` (current state), `dim_memory` (version history) |
 | How memories reference each other / what the index catalogues | `semantic_memory_links` (filter `link_syntax`) |

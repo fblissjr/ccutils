@@ -145,6 +145,10 @@ deleting them relocates the bug into every query that would have used them.
 These add a name and nothing else. (`semantic_project_context` fails
 independently too: 78% column overlap with `semantic_sessions`.)
 
+Done at 1.0.0, except `semantic_agent_delegations`, which stopped being a
+pure join and is kept: it became the derived view over `fact_tool_calls`
+when the delegations table was removed.
+
 **Check consumers before deleting.** Absence of guards is measurable, but a
 consumer may depend on a view's exact column set, and the `query-warehouse`
 skill references several by name.

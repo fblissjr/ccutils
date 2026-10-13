@@ -128,7 +128,8 @@ declared empty (`fact_content_blocks`, `fact_code_blocks`,
 `fact_entity_mentions`, `fact_tool_input_params`, `fact_facet_embeddings`,
 `fact_turn_durations`, `fact_stop_events`) were deleted at 1.0.0; a table
 with no writer is not created. View statuses are `keep` (encodes logic a
-consumer would get wrong) or `delete` (a plain join scheduled for removal).
+consumer would get wrong) or `delete` (a plain join scheduled for removal;
+none is left since the five were removed at 1.0.0, and a test fails on one).
 
 The measured half is `etl.steps.table_name`: every step that writes a table
 names it, and the dimension stubs are one step per table. "What did this
@@ -694,18 +695,13 @@ Note: there is no `unique_files_touched` column on this table -- use `semantic_s
 
 ## Semantic Views
 
-All views use the `semantic_` prefix and join facts with dimensions for easy querying.
+All views use the `semantic_` prefix. Each one encodes something a query would otherwise get wrong: a filter, a derivation, a rollup. A view that only joined a fact to its dimensions is not here; five of those (`semantic_messages`, `semantic_file_operations`, `semantic_session_chains`, `semantic_plan_revisions`, `semantic_project_context`) were deleted at 1.0.0, and the joins they saved are written out once in the `query-warehouse` skill's recipes.
 
 - `semantic_sessions` -- sessions + project info + summary metrics + heuristic classifications + date/time
-- `semantic_messages` -- messages with session, model, and time context
-- `semantic_file_operations` -- file operations with file info, tool, and session context
-- `semantic_session_chains` -- chain aggregates across all member sessions
 - `semantic_agent_delegations` -- one row per Agent/Task spawn, joined to the child session, with derived `completion_state` and rollups (a table until 1.0.0; documented above under facts)
-- `semantic_plan_revisions` -- plan revision chain with outcomes, feedback, resolution timing
 - `semantic_decisions` -- unified decision timeline UNIONing plan revisions, permission-mode changes, stop events, API errors, and compact boundaries from their source facts (`source_key`/`source_table` link back to the underlying row). A permission-mode change is an entry whose mode differs from the one before it in file order, not every permission-mode entry. `timestamp` is stated and is NULL on those rows; `derived_timestamp` places them, so order a timeline by `COALESCE(timestamp, derived_timestamp)`
 - `semantic_file_evolution` -- cross-session file activity (files touched in 2+ sessions)
 - `semantic_tool_patterns` -- common tool sequences with frequency and error rates
-- `semantic_project_context` -- sessions enriched with first/last messages for catching up on a project
 - `semantic_project_files` -- file activity aggregated by project
 - `semantic_token_usage` -- per-API-response token data with model/session/project context
 - `semantic_context_growth` -- per-request context-size deltas within a session (R23). `context_tokens` is `total_uncached_equivalent_tokens` (the exact prompt size the API saw); `inbound_tokens` nets out the previous response's own output, isolating what the user side added (prompt text + tool results, which carry no `usage` of their own). Compaction shows as `is_context_reset` with `inbound_tokens` suppressed. Slightly negative `inbound_tokens` without a reset is real (thinking bills as output but is not retained in later context; 9 of 3,443 rows on a validation corpus) and left visible. Only meaningful on the R23 response grain -- per-entry rows made 51% of deltas negative
@@ -739,19 +735,22 @@ FROM semantic_token_usage
 GROUP BY model_name;
 
 -- Sessions where the user rejected the first plan and iterated
-SELECT session_id, project_name, revision_number, outcome,
-       seconds_to_resolution, SUBSTR(plan_text, 1, 80) AS plan_preview
-FROM semantic_plan_revisions
-WHERE revision_number > 1
-ORDER BY plan_date DESC, revision_number;
+SELECT fpr.session_id, dp.project_name, fpr.revision_number, fpr.outcome,
+       fpr.seconds_to_resolution, SUBSTR(fpr.plan_text, 1, 80) AS plan_preview
+FROM fact_plan_revisions fpr
+LEFT JOIN dim_project dp ON dp.project_key = fpr.project_key
+WHERE fpr.is_deleted = FALSE AND fpr.revision_number > 1
+ORDER BY fpr.plan_timestamp DESC, fpr.revision_number;
 
 -- Catch up on a project
-SELECT session_id, project_name, intent, complexity, outcome,
-       first_user_message, last_assistant_message,
-       total_messages, total_tool_uses, total_tool_errors
-FROM semantic_project_context
-WHERE project_name = 'my-project'
-ORDER BY created_at DESC
+SELECT ds.session_id, dp.project_name, ds.intent, ds.complexity, ds.outcome,
+       ds.first_user_message, ds.last_assistant_message,
+       ss.total_messages, ss.total_tool_uses, ss.total_tool_errors
+FROM dim_session ds
+JOIN dim_project dp ON dp.project_key = ds.project_key
+LEFT JOIN semantic_session_summary ss ON ss.session_key = ds.session_key
+WHERE dp.project_name = 'my-project'
+ORDER BY ds.first_timestamp DESC
 LIMIT 10;
 ```
 

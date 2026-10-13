@@ -31,17 +31,21 @@ FROM semantic_cost_analysis ORDER BY total_uncached_equivalent_tokens DESC LIMIT
 SELECT intent, complexity, outcome, COUNT(*) AS sessions
 FROM semantic_sessions GROUP BY ALL ORDER BY sessions DESC;
 
--- Catch up on one project
-SELECT session_id, intent, complexity, outcome,
-       first_user_message, last_assistant_message,
-       total_messages, total_tool_uses, total_tool_errors
-FROM semantic_project_context
-WHERE project_name = 'my-project'
-ORDER BY created_at DESC LIMIT 10;
+-- Catch up on one project. first_user_message / last_assistant_message live
+-- on dim_session, not on semantic_sessions.
+SELECT ds.session_id, ds.intent, ds.complexity, ds.outcome,
+       ds.first_user_message, ds.last_assistant_message,
+       ss.total_messages, ss.total_tool_uses, ss.total_tool_errors
+FROM dim_session ds
+JOIN dim_project dp ON dp.project_key = ds.project_key
+LEFT JOIN semantic_session_summary ss ON ss.session_key = ds.session_key
+WHERE dp.project_name = 'my-project'
+ORDER BY ds.first_timestamp DESC LIMIT 10;
 
--- Resumed chains: longest multi-session arcs
+-- Resumed chains: longest multi-session arcs. One row per chain; join
+-- dim_session ON chain_key for its member sessions.
 SELECT slug, session_count, total_duration_seconds
-FROM semantic_session_chains ORDER BY session_count DESC LIMIT 10;
+FROM dim_session_chain ORDER BY session_count DESC LIMIT 10;
 ```
 
 ## Tools and errors
@@ -90,10 +94,36 @@ FROM semantic_file_evolution ORDER BY session_count DESC LIMIT 20;
 
 ```sql
 -- Sessions where the first plan was rejected and iterated
-SELECT session_id, project_name, revision_number, outcome,
-       seconds_to_resolution, SUBSTR(plan_text, 1, 80) AS plan_preview
-FROM semantic_plan_revisions
-WHERE revision_number > 1 ORDER BY plan_date DESC, revision_number;
+SELECT fpr.session_id, dp.project_name, fpr.revision_number, fpr.outcome,
+       fpr.seconds_to_resolution, SUBSTR(fpr.plan_text, 1, 80) AS plan_preview
+FROM fact_plan_revisions fpr
+LEFT JOIN dim_project dp ON dp.project_key = fpr.project_key
+WHERE fpr.is_deleted = FALSE AND fpr.revision_number > 1
+ORDER BY fpr.plan_timestamp DESC, fpr.revision_number;
+
+-- The joins the deleted plain-join views used to save. A fact joins its
+-- dimensions on the *_key columns; add only the ones a question needs, and
+-- filter is_deleted on the fact (those views did not).
+SELECT fm.timestamp, fm.message_type, dm.model_name, ds.session_id,
+       dp.project_name, dd.full_date, dt.time_of_day,
+       SUBSTR(fm.content_text, 1, 80) AS preview
+FROM fact_messages fm
+JOIN dim_session ds ON ds.session_key = fm.session_key
+LEFT JOIN dim_model dm ON dm.model_key = fm.model_key
+LEFT JOIN dim_project dp ON dp.project_key = fm.project_key
+LEFT JOIN dim_date dd ON dd.date_key = fm.date_key
+LEFT JOIN dim_time dt ON dt.time_key = fm.time_key
+WHERE fm.is_deleted = FALSE AND ds.session_id = '<id>'
+ORDER BY fm.sequence_num LIMIT 20;
+
+SELECT ffo.timestamp, ffo.operation_type, df.file_path, df.language,
+       dtl.tool_name, ds.session_id
+FROM fact_file_operations ffo
+JOIN dim_file df ON df.file_key = ffo.file_key
+JOIN dim_tool dtl ON dtl.tool_key = ffo.tool_key
+JOIN dim_session ds ON ds.session_key = ffo.session_key
+WHERE ffo.is_deleted = FALSE AND ds.session_id = '<id>'
+ORDER BY ffo.timestamp LIMIT 20;
 
 -- Unified decision timeline for one session
 SELECT timestamp, decision_type, decision_value, decision_detail
