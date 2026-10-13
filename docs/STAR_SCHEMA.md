@@ -640,7 +640,7 @@ It is a view over the whole table and not a stored flag, because a copy can be l
 Two ways a row is a replay, and they are not equally sure:
 
 - **`fork_prefix` is stated.** A fork's sidecar names the call that created it. The fork's transcript replays its spawner's history up to and including that call and is its own from there, so a fork's calls timestamped at or before its own spawn are replays. This holds on every fork transcript measured, and needs no other row: it is true when the spawner was never loaded.
-- **`later_copy` is a rule.** Nothing in a resumed or backgrounded root session states where its history came from; every copied entry is rewritten to name the file it sits in. Among the holders of a call that are not in a fork's prefix, the session that ended first is taken as the original and the others are copies. That is right when one session stopped and another continued it. Two sessions that share a prefix and both go on do not say which came first, and one is picked.
+- **`later_copy` is a rule.** Nothing in a resumed or backgrounded root session states where its history came from; every copied entry is rewritten to name the file it sits in. Among the holders of a call that are not in a fork's prefix, the session that ended first is taken as the original and the others are copies. That is right when one session stopped and another continued it. Two sessions that share a prefix and both go on do not say which came first, and one is picked. This is accepted, not pending: treat `later_copy` as "probably a copy" and `fork_prefix` as "a copy", and do not build anything that needs the first to be exact.
 
 The measurements and the canary are `docs/JSONL_CONTRACT.md` claim 12.
 

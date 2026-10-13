@@ -456,7 +456,9 @@ they land.
   - A copy between root sessions is marked by a rule (the session that ended
     first is the original). Two sessions that share a prefix and both
     continue do not say which came first; on the raw corpus that is two of
-    the five clusters of root sessions that share calls.
+    the five clusters of root sessions that share calls. Accepted by the
+    owner on 2026-10-13 as it stands, documented and not to be solved; see
+    "Decisions that should not be relitigated".
   - Messages and token usage are the item below.
 - **Continued sessions replay their history.** 706 `api_message_id`
   values recur across sessions in the same chain (1,403 rows), and the
@@ -806,6 +808,20 @@ if it is deleted.
   steps) supersedes. It lives apart from warehouse output dirs so that
   rebuilding a warehouse cannot delete it, and anything derived from it lives
   in a separate tree. Decided 2026-09-22.
+- **Which of two root sessions holds the original of a shared call is
+  picked by a rule, and that is accepted.** A resumed or backgrounded
+  session's copy of earlier history is rewritten to name the file it sits
+  in, so nothing states where it came from. `semantic_tool_call_replay`
+  takes the session that ended first as the original (`later_copy`). That
+  is right where one session stopped and another carried on, and a pick
+  where two sessions share a prefix and both continue. The owner accepted
+  this on 2026-10-13: it is documented wherever the flag is read
+  (`docs/STAR_SCHEMA.md`, `docs/JSONL_CONTRACT.md` claim 12, the
+  query-warehouse skill, the generated guide) and is not a defect to fix.
+  Reopen it only if
+  `tests/test_jsonl_contract.py::TestAReplayedCallAndWhatStatesIt::test_a_copy_names_the_file_it_sits_in`
+  goes red, which would mean a copy has started stating its origin. A
+  fork's copy is not part of this: its sidecar states the cut.
 - **`TaskCreate` is not an agent spawn.** `Agent` is the only tool name in
   the corpus carrying an agent rollup; `Task` is kept for older transcripts.
 - **TypeSafe Jev for Tier 2 enum facets is closed.** The owner ended the
