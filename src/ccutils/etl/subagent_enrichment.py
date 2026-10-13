@@ -31,6 +31,55 @@ from ccutils.etl.utils import SUBAGENT_PATH_RE, fetch_scalar
 _SUBAGENT_PATH_RE = SUBAGENT_PATH_RE
 
 
+def _set_fork_cut(conn) -> None:
+    """Store where each staged fork's own history starts.
+
+    A fork's transcript replays its spawner's conversation up to and
+    including the call that created the fork, and is the fork's own from
+    there (docs/JSONL_CONTRACT.md claim 12). The cut is the timestamp of the
+    assistant entry holding that call: the sidecar names the call
+    (`toolUseId`, with `isFork`) and the fork's own transcript holds it, so
+    this needs nothing from any other session and is the same whatever was
+    loaded first.
+
+    Worked out here, once, and stored as `dim_session.fork_cut_timestamp`.
+    `semantic_tool_call_replay`, the delegation views and the per-session
+    populators all read that column instead of deriving the cut again.
+    """
+    staged = (
+        "SELECT DISTINCT session_id FROM etl.log_entries WHERE session_id IS NOT NULL"
+    )
+    # A re-run must be able to clear a cut the source no longer supports.
+    conn.execute(
+        f"UPDATE dim_session SET fork_cut_timestamp = NULL "
+        f"WHERE fork_cut_timestamp IS NOT NULL AND session_id IN ({staged})"
+    )
+    conn.execute(
+        """
+        UPDATE dim_session ds
+        SET fork_cut_timestamp = cut.cut_timestamp
+        FROM (
+            SELECT sle.session_id,
+                   MIN(TRY_CAST(sle.timestamp AS TIMESTAMP)) AS cut_timestamp
+            FROM etl.log_entries sle
+            JOIN dim_session f ON f.session_id = sle.session_id
+            WHERE f.is_fork
+              AND f.spawn_tool_use_id IS NOT NULL
+              AND sle.type = 'assistant'
+              -- Cheap prefilter, then the structural test: a tool_use block
+              -- of this entry carries the id.
+              AND contains(sle.message_json, f.spawn_tool_use_id)
+              AND json_type(json_extract(sle.message_json, '$.content')) = 'ARRAY'
+              AND list_contains(
+                      json_extract_string(sle.message_json, '$.content[*].id'),
+                      f.spawn_tool_use_id)
+            GROUP BY sle.session_id
+        ) cut
+        WHERE ds.session_id = cut.session_id
+        """
+    )
+
+
 def populate_subagent_dim_session(conn, *, run: EtlRun) -> None:
     """Mark subagent sessions in dim_session by source-path inspection."""
     source_paths = [
@@ -152,6 +201,7 @@ def populate_subagent_dim_session(conn, *, run: EtlRun) -> None:
             """
         )
         conn.execute("DROP TABLE IF EXISTS _inbound_subagents")
+        _set_fork_cut(conn)
 
     # Depth propagation must run even when the current session is NOT a
     # subagent: a parent landing after its children re-roots the children

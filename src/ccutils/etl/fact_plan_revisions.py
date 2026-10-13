@@ -83,12 +83,17 @@ def populate_fact_plan_revisions(conn, *, run: EtlRun) -> None:
                 ) AS revisions_in_session
             FROM fact_tool_calls ftu
             JOIN dim_tool dt USING (tool_key)
+            LEFT JOIN dim_session fds ON fds.session_id = ftu.session_id
             WHERE ftu.is_deleted = FALSE
               AND dt.tool_name = 'ExitPlanMode'
               AND ftu.session_id IN (
                   SELECT DISTINCT session_id FROM etl.log_entries
                   WHERE session_id IS NOT NULL
               )
+              -- A plan in a fork's replayed prefix is its spawner's plan
+              -- (etl/utils.py::own_work_sql).
+              AND (fds.fork_cut_timestamp IS NULL
+                   OR ftu.timestamp > fds.fork_cut_timestamp)
         ),
         with_results AS (
             -- Pair each plan_call to its tool_result (may be missing if

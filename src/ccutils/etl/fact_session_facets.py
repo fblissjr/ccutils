@@ -41,10 +41,12 @@ so the summary populator stays last as the aggregate roll-up.
 
 from __future__ import annotations
 
+import re
+
 from ccutils.etl.facets.catalog import facet_tier_scope_sql
 from ccutils.etl.lineage import EtlRun
 from ccutils.etl.upsert import lineage_upsert
-from ccutils.etl.utils import fetch_scalar
+from ccutils.etl.utils import fetch_scalar, own_work_sql
 
 
 _INBOUND = "_inbound_tier1_facets"
@@ -109,7 +111,18 @@ def _create_scope(conn) -> None:
         CREATE TEMP TABLE {_SCOPE} AS
         SELECT ds.session_id, ds.first_timestamp, ds.last_timestamp,
                ds.depth_level, ds.intent, ds.complexity, ds.outcome,
-               ds.domain, ds.project_key
+               ds.domain, ds.project_key,
+               -- NULL unless the session is a fork: where its own history
+               -- starts. _own_work_only applies it to every fact a facet reads.
+               ds.fork_cut_timestamp,
+               -- When the session's own work began: a fork's first message
+               -- after its cut, anyone else's first entry.
+               COALESCE(
+                   (SELECT MIN(fm.timestamp) FROM fact_messages fm
+                    WHERE fm.is_deleted = FALSE
+                      AND fm.session_id = ds.session_id
+                      AND fm.timestamp > ds.fork_cut_timestamp),
+                   ds.first_timestamp) AS own_first_timestamp
         FROM dim_session ds
         WHERE ds.session_id IN (
             SELECT DISTINCT session_id FROM etl.log_entries
@@ -119,12 +132,45 @@ def _create_scope(conn) -> None:
     )
 
 
+_SCOPED_READ = re.compile(r"\b(\w+)\.session_id = scope\.session_id\b")
+_FACT_READ = re.compile(r"\bFROM fact_\w+")
+
+
+def _own_work_only(facet_id: str, value_expr: str) -> str:
+    """Restrict every fact a facet reads to the session's own work.
+
+    A fork's transcript opens with its spawner's conversation, so a facet
+    computed over the whole transcript describes what the fork inherited
+    (etl/utils.py::own_work_sql). The restriction is added HERE, to every
+    facet at once, and not written into each one: a filter each facet has to
+    remember is a filter the next facet forgets.
+
+    It keys on the one form every facet already uses to scope a fact,
+    `<alias>.session_id = scope.session_id`. A facet that reads a fact
+    without that form is refused, so it cannot slip past unfiltered.
+    """
+    reads = len(_FACT_READ.findall(value_expr))
+    if len(_SCOPED_READ.findall(value_expr)) != reads:
+        raise ValueError(
+            f"facet {facet_id} reads {reads} fact table(s) but does not scope "
+            "each with `<alias>.session_id = scope.session_id`; the fork cut "
+            "cannot be applied to it. Scope it that way."
+        )
+    return _SCOPED_READ.sub(
+        lambda m: m.group(0) + " AND "
+        + own_work_sql(f"{m.group(1)}.timestamp", "scope.fork_cut_timestamp"),
+        value_expr,
+    )
+
+
 def _insert_facet(conn, facet_id: str, value_col: str, value_expr: str) -> None:
     """Emit one row per scope session into the inbound table. `value_col` is
     one of value_text / value_json / value_numeric / value_bool; `value_expr`
     is the SQL expression that produces it (may use `scope.*` to access
     per-session attrs). JSON facets pass an expression that already evaluates
-    to JSON — no implicit CAST."""
+    to JSON — no implicit CAST. Every fact the expression reads is limited to
+    the session's own work (`_own_work_only`)."""
+    value_expr = _own_work_only(facet_id, value_expr)
     conn.execute(
         f"""
         INSERT INTO {_INBOUND}
@@ -270,7 +316,7 @@ def populate_tier1_facets(conn, *, run: EtlRun) -> None:
     _insert_facet(
         conn, "F12", "value_numeric",
         """COALESCE(
-            EXTRACT(EPOCH FROM (scope.last_timestamp - scope.first_timestamp)),
+            EXTRACT(EPOCH FROM (scope.last_timestamp - scope.own_first_timestamp)),
             0.0
         )""",
     )
@@ -305,7 +351,7 @@ def populate_tier1_facets(conn, *, run: EtlRun) -> None:
     )
 
     _insert_facet(conn, "F16", "value_numeric",
-                  "EXTRACT(hour FROM scope.first_timestamp)::DOUBLE")
+                  "EXTRACT(hour FROM scope.own_first_timestamp)::DOUBLE")
 
     # F17 -- a delegation is an Agent / Task tool call; the same predicate
     # semantic_agent_delegations uses for its grain.

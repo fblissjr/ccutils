@@ -91,11 +91,22 @@ GROUP BY ALL ORDER BY own_calls DESC LIMIT 20;
   fork's sidecar. `later_copy` is a rule (among the holders of a call, the
   session that ended first is taken as the original), and it can pick the
   wrong one of two sessions that share a prefix and both continued.
-- Not replay-aware: `fact_session_facets`, the `dim_session` heuristics and
-  `fact_plan_revisions` are computed from a transcript as loaded, so for a
-  fork or a continuation they include the replayed prefix. Messages and
-  token usage carry no replay flag yet; cross-session token sums still
-  double-count continuations.
+- **A fork's facets, heuristics and plan revisions describe its own work.**
+  `dim_session.fork_cut_timestamp` is where a fork's own history starts
+  (NULL for anything that is not a fork), and `fact_session_facets`, the
+  `dim_session` heuristics (`first_user_message`, `intent`, ...) and
+  `fact_plan_revisions` are computed from what came after it. So are the
+  `derived_*` figures a delegation takes from a fork child.
+- **A fork's message and token totals are NOT its own yet.**
+  `semantic_session_summary`'s message and token columns, and the cost and
+  token views, still include the conversation a fork inherited, so a fork's
+  token facet (`F15`, `F30`) and its summary token total disagree and its
+  per-session cost reads high. For a fork's own tokens, sum
+  `fact_token_usage` with `timestamp > fork_cut_timestamp`, or read `F15` /
+  `F30`.
+- A copy between root sessions has no cut: its facets, heuristics and plan
+  revisions still include the replayed part, and cross-session token sums
+  still double-count continuations.
 - The measurements are `docs/JSONL_CONTRACT.md` claim 12.
 
 ## Typed result columns and missing payloads

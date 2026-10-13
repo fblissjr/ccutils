@@ -25,7 +25,7 @@ from ccutils.etl.heuristics import (
     classify_outcome,
 )
 from ccutils.etl.lineage import EtlRun
-from ccutils.etl.utils import extract_text_from_content_json
+from ccutils.etl.utils import extract_text_from_content_json, own_work_sql
 
 
 _MAX_MESSAGE_CHARS = 500
@@ -40,11 +40,21 @@ def populate_dim_session_heuristics(
     # 1. Pull per-session inputs into Python. Limit to sessions in staging
     # so prior sessions' classifications stay intact (and aren't recomputed
     # against potentially different data).
+    # A fork is classified by its OWN work: its transcript opens with its
+    # spawner's conversation, so its first prompt, its tool and error counts
+    # and its message count are taken from after its fork_cut_timestamp
+    # (etl/utils.py::own_work_sql). NULL for every other session.
+    own_entry = own_work_sql(
+        "TRY_CAST(sle.timestamp AS TIMESTAMP)", "ss.fork_cut_timestamp")
+    own_call = own_work_sql("ftu.timestamp", "ss.fork_cut_timestamp")
+    own_message = own_work_sql("fm.timestamp", "ss.fork_cut_timestamp")
     rows = conn.execute(
-        """
+        f"""
         WITH staging_sessions AS (
-            SELECT DISTINCT session_id FROM etl.log_entries
-            WHERE session_id IS NOT NULL
+            SELECT st.session_id, ds.fork_cut_timestamp
+            FROM (SELECT DISTINCT session_id FROM etl.log_entries
+                  WHERE session_id IS NOT NULL) st
+            LEFT JOIN dim_session ds USING (session_id)
         ),
         first_user AS (
             -- json_extract (not json_extract_string) so list content
@@ -56,6 +66,7 @@ def populate_dim_session_heuristics(
             JOIN staging_sessions ss USING (session_id)
             WHERE sle.type = 'user'
               AND COALESCE(sle.is_meta, FALSE) = FALSE
+              AND {own_entry}
             QUALIFY ROW_NUMBER() OVER (
                 PARTITION BY sle.session_id ORDER BY sle.timestamp, sle.sequence_num
             ) = 1
@@ -78,16 +89,18 @@ def populate_dim_session_heuristics(
                    SUM(CASE WHEN ftu.is_error = TRUE THEN 1 ELSE 0 END)
                        AS error_count
             FROM fact_tool_calls ftu
+            JOIN staging_sessions ss USING (session_id)
             WHERE ftu.is_deleted = FALSE
-              AND ftu.session_id IN (SELECT session_id FROM staging_sessions)
+              AND {own_call}
             GROUP BY ftu.session_id
         ),
         msg_metrics AS (
-            SELECT session_id, COUNT(*) AS msg_count
-            FROM fact_messages
-            WHERE is_deleted = FALSE
-              AND session_id IN (SELECT session_id FROM staging_sessions)
-            GROUP BY session_id
+            SELECT fm.session_id, COUNT(*) AS msg_count
+            FROM fact_messages fm
+            JOIN staging_sessions ss USING (session_id)
+            WHERE fm.is_deleted = FALSE
+              AND {own_message}
+            GROUP BY fm.session_id
         ),
         file_exts AS (
             SELECT bsf.session_id,

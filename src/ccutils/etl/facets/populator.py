@@ -163,8 +163,15 @@ def _build_session_inputs(conn) -> list[tuple[SessionInputs, str | None]]:
     rows = conn.execute(
         """
         WITH scope AS (
-            SELECT DISTINCT session_id FROM etl.log_entries
-            WHERE session_id IS NOT NULL
+            -- fork_cut_timestamp: NULL unless the session is a fork. A
+            -- fork's transcript opens with its spawner's conversation, which
+            -- is not the fork's work and must not be sent as if it were
+            -- (etl/utils.py::own_work_sql states the rule; it is written out
+            -- below because this query is not an f-string).
+            SELECT st.session_id, ds.fork_cut_timestamp
+            FROM (SELECT DISTINCT session_id FROM etl.log_entries
+                  WHERE session_id IS NOT NULL) st
+            LEFT JOIN dim_session ds USING (session_id)
         ),
         first_user AS (
             SELECT sle.session_id,
@@ -174,6 +181,8 @@ def _build_session_inputs(conn) -> list[tuple[SessionInputs, str | None]]:
             JOIN scope ss USING (session_id)
             WHERE sle.type = 'user'
               AND COALESCE(sle.is_meta, FALSE) = FALSE
+              AND (ss.fork_cut_timestamp IS NULL
+                   OR TRY_CAST(sle.timestamp AS TIMESTAMP) > ss.fork_cut_timestamp)
             QUALIFY ROW_NUMBER() OVER (
                 PARTITION BY sle.session_id
                 ORDER BY sle.timestamp, sle.sequence_num
@@ -195,8 +204,10 @@ def _build_session_inputs(conn) -> list[tuple[SessionInputs, str | None]]:
             SELECT ftu.session_id, dt.tool_name, COUNT(*) AS ct
             FROM fact_tool_calls ftu
             JOIN dim_tool dt USING (tool_key)
+            JOIN scope ss ON ss.session_id = ftu.session_id
             WHERE ftu.is_deleted = FALSE
-              AND ftu.session_id IN (SELECT session_id FROM scope)
+              AND (ss.fork_cut_timestamp IS NULL
+                   OR ftu.timestamp > ss.fork_cut_timestamp)
             GROUP BY ftu.session_id, dt.tool_name
         ),
         top5_tools AS (
@@ -219,8 +230,10 @@ def _build_session_inputs(conn) -> list[tuple[SessionInputs, str | None]]:
             SELECT ftok.session_id, dm.model_name, COUNT(*) AS ct
             FROM fact_token_usage ftok
             JOIN dim_model dm USING (model_key)
+            JOIN scope ss ON ss.session_id = ftok.session_id
             WHERE ftok.is_deleted = FALSE
-              AND ftok.session_id IN (SELECT session_id FROM scope)
+              AND (ss.fork_cut_timestamp IS NULL
+                   OR ftok.timestamp > ss.fork_cut_timestamp)
             GROUP BY ftok.session_id, dm.model_name
         ),
         model_used AS (
@@ -236,7 +249,11 @@ def _build_session_inputs(conn) -> list[tuple[SessionInputs, str | None]]:
             la.content_json AS last_assistant_content_json,
             COALESCE(tm.tool_mix_summary, '') AS tool_mix_summary,
             mu.model_name AS model_used,
-            CAST(EXTRACT(EPOCH FROM (ds.last_timestamp - ds.first_timestamp))
+            -- A fork's own work starts at its cut, not at the first entry of
+            -- the conversation it inherited.
+            CAST(EXTRACT(EPOCH FROM (
+                     ds.last_timestamp
+                     - COALESCE(ss.fork_cut_timestamp, ds.first_timestamp)))
                  AS INTEGER) AS duration_seconds,
             ds.first_timestamp
         FROM scope ss

@@ -229,6 +229,7 @@ One row per Claude Code session. Stub fields populated during ETL; heuristic col
 | spawn_tool_use_id | VARCHAR | Stated `toolUseId`: the spawn call in the parent's transcript |
 | agent_model | VARCHAR | Stated `model` |
 | is_fork | BOOLEAN | Stated `isFork` |
+| fork_cut_timestamp | TIMESTAMP | Where a fork's own history starts: the timestamp of the call that created it, as its own transcript holds it. A fork's transcript replays its spawner's conversation up to and including that call, so everything at or before this is inherited. Found from the sidecar's `toolUseId` and that entry's timestamp, once, at load. NULL for a session that is not a fork, and for a fork whose transcript does not hold its spawn. Read by `semantic_tool_call_replay`, the delegation views, and the per-session populators (`etl/utils.py::own_work_sql`) |
 | agent_name | VARCHAR | Stated `name` |
 | worktree_path | VARCHAR | Stated `worktreePath`, when the agent ran in its own git worktree |
 | worktree_branch | VARCHAR | Stated `worktreeBranch` |
@@ -608,8 +609,8 @@ A view since 1.0.0. It was the table `fact_agent_delegations`, written per sessi
 | completion_state | VARCHAR | DERIVED from the agent's transcript: `completed` / `no_completion_recorded` / `spawn_failed` / NULL (no agent is linked, or its transcript is not in the warehouse; `agent_link_source` tells the two apart). See below |
 | derived_completion_timestamp | TIMESTAMP | The agent's last assistant message |
 | derived_seconds_to_completion | DOUBLE | derived_completion_timestamp - delegation_timestamp |
-| derived_duration_ms | DOUBLE | The agent's first message to its last assistant message |
-| derived_io_tokens | BIGINT | Input+output summed from the agent's OWN usage. A *different measure* from `agent_total_tokens`, not a fallback for it |
+| derived_duration_ms | DOUBLE | The agent's first message to its last assistant message. For a fork, its first message after `fork_cut_timestamp`: its transcript opens with its spawner's conversation |
+| derived_io_tokens | BIGINT | Input+output summed from the agent's OWN usage, which for a fork is the usage after `fork_cut_timestamp` (the replayed responses carry their usage too). A *different measure* from `agent_total_tokens`, not a fallback for it |
 | derived_tool_use_count | BIGINT | The agent's own tool calls; 0, not NULL, for an agent that finished without calling one. `ccutils audit` scores it against `agent_total_tool_use_count` where both exist |
 | derived_output_text | TEXT | The agent's final report: its terminal assistant message |
 
@@ -652,7 +653,7 @@ WHERE tc.is_deleted = FALSE AND NOT rp.is_replay AND tc.session_id = '<id>'
 GROUP BY ALL ORDER BY calls DESC;
 ```
 
-What is not replay-aware: the populated per-session facts (`fact_session_facets`, the `dim_session` heuristics, `fact_plan_revisions`) are computed from a transcript as loaded, replayed prefix included, and messages and token usage carry no such flag yet. See `docs/ROADMAP.md`.
+**A fork's replayed prefix is left out of what describes the fork.** The populated per-session facts cannot use this view's cross-session rule, and for a fork they do not need it: `dim_session.fork_cut_timestamp` needs only the fork's own sidecar and transcript. `fact_session_facets` (both tiers), the `dim_session` heuristics (`first_user_message`, `intent`, `complexity`, `outcome`) and `fact_plan_revisions` read only what came after it, so a fork is described by its own prompt, tools, files, plans, tokens and duration. What is still not replay-aware: those same facts for a copy between ROOT sessions, where nothing states a cut; and the message and token columns of `semantic_session_summary` and of the cost and token views, which count a fork's inherited messages and usage. See `docs/ROADMAP.md`.
 
 #### fact_session_facets
 One row per (session_key, facet_type_key). Tier 1 facets (F01-F19) populated via SQL; Tier 2 facets (F20+) populated via the LLM extractor when injected.
@@ -717,7 +718,7 @@ One row per session. Aggregates over every fact above. Must populate last.
 | total_delegations | BIGINT | Agent/Task spawn calls this session made itself. A call its transcript only replays is not counted (`semantic_tool_call_replay`) |
 | total_spawn_failures | BIGINT | Spawns that were refused: a stated error, no agent id, no status |
 | max_child_depth | INTEGER | Deepest `spawn_depth` stated by a directly spawned agent's sidecar; NULL when none is in the warehouse or states one |
-| delegated_output_tokens | BIGINT | Output tokens of the directly spawned agents, from their own usage rows |
+| delegated_output_tokens | BIGINT | Output tokens of the directly spawned agents, from their own usage rows. A fork's are counted from after its `fork_cut_timestamp` |
 | total_hook_progress_events | BIGINT | From fact_progress_events |
 | total_bash_progress_events | BIGINT | From fact_progress_events |
 | total_attachments | BIGINT | `fact_entry_events` rows of type `attachment` |

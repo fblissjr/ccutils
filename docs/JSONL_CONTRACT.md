@@ -330,9 +330,17 @@ timestamps, so one call sits in several transcripts.
   fork's prefix is marked from its sidecar (`fork_prefix`). Any other copy is
   marked by a rule, the session that ended first being the original
   (`later_copy`), and is wrong in the case the third bullet describes.
+- Consequence: the fork cut is stored once, as
+  `dim_session.fork_cut_timestamp`, and whatever describes a fork reads only
+  what came after it: the per-session facets, the heuristics, the plan
+  revisions, and what a delegation derives from its child. In every fork
+  transcript measured, the first entry after the spawn call is one user
+  entry holding both the "Fork started" result and the fork's own prompt,
+  so a fork's first prompt is its own.
 - Consequence: messages and token usage are replayed the same way and carry
-  no such flag. `docs/ROADMAP.md`, "Continued sessions replay their
-  history".
+  no such flag. The session summary and the cost views still count a fork's
+  inherited messages and usage, and nothing marks a copy between root
+  sessions. `docs/ROADMAP.md`, "Continued sessions replay their history".
 - Canary: `tests/test_jsonl_contract.py::TestAReplayedCallAndWhatStatesIt`.
   One pass over the corpus feeds two checks: the cut at a fork's own spawn
   misplaces under `FORK_PREFIX_MAX_MISMATCH_RATE` of its calls, judged

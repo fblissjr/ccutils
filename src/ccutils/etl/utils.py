@@ -145,6 +145,22 @@ def insert_missing_dim_dates(conn, table: str, *timestamp_cols: str) -> None:
     )
 
 
+def own_work_sql(timestamp_expr: str, cut_expr: str) -> str:
+    """SQL predicate: this row is the session's own work, not a fork's inherited history.
+
+    A fork's transcript opens with a replay of its spawner's conversation, up
+    to and including the call that created the fork
+    (docs/JSONL_CONTRACT.md claim 12). `dim_session.fork_cut_timestamp` is
+    that call's timestamp, NULL for every session that is not a fork. A row
+    at or before it was inherited; a row after it is the fork's.
+
+    Every per-session populator that describes what a session DID applies
+    this, so a fork is described by its own work. The views apply the same
+    comparison to the same column.
+    """
+    return f"({cut_expr} IS NULL OR {timestamp_expr} > {cut_expr})"
+
+
 def extract_text_from_content_json(
     content_json_raw: str | None,
     *,

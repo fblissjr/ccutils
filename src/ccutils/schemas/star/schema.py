@@ -142,26 +142,17 @@ def create_star_schema(db_path):
 #   session stopped and another continued it. Two sessions that share a prefix
 #   and both go on do not say which came first, and one is picked.
 _TOOL_CALL_REPLAY_SQL = """
-        WITH fork_cut AS (
-            SELECT own.session_id, MIN(own.timestamp) AS cut_timestamp
-            FROM dim_session ds
-            JOIN fact_tool_calls own
-              ON own.session_id = ds.session_id
-             AND own.tool_use_id = ds.spawn_tool_use_id
-             AND own.is_deleted = FALSE
-            WHERE ds.is_fork
-            GROUP BY own.session_id
-        ),
-        held AS (
+        WITH held AS (
             SELECT ftc.tool_call_key, ftc.session_id, ftc.tool_use_id,
-                   COALESCE(ftc.timestamp <= fc.cut_timestamp, FALSE) AS in_fork_prefix,
+                   -- dim_session.fork_cut_timestamp is the one place the cut
+                   -- is worked out; the per-session populators read it too.
+                   COALESCE(ftc.timestamp <= ds.fork_cut_timestamp, FALSE) AS in_fork_prefix,
                    -- A fork whose own spawn call is not in its transcript has
                    -- no cut. Its shared calls are still far likelier copies
                    -- than originals, so it loses the tie-break to a non-fork.
                    COALESCE(ds.is_fork, FALSE) AS is_fork,
                    ds.last_timestamp AS session_last_timestamp
             FROM fact_tool_calls ftc
-            LEFT JOIN fork_cut fc ON fc.session_id = ftc.session_id
             LEFT JOIN dim_session ds ON ds.session_id = ftc.session_id
             WHERE ftc.is_deleted = FALSE
         ),
@@ -503,6 +494,15 @@ def _create_objects(conn) -> None:
             spawn_tool_use_id VARCHAR,
             agent_model VARCHAR,
             is_fork BOOLEAN,
+            -- Where a fork's OWN history starts: the timestamp of the call
+            -- that created it, as its own transcript holds it. A fork's
+            -- transcript replays its spawner's conversation up to and
+            -- including that call (docs/JSONL_CONTRACT.md claim 12), so
+            -- everything at or before this is inherited, not the fork's work.
+            -- Found from two stated things, the sidecar's toolUseId and the
+            -- entry's timestamp; NULL for every session that is not a fork,
+            -- and for a fork whose transcript does not hold its spawn.
+            fork_cut_timestamp TIMESTAMP,
             agent_name VARCHAR,
             worktree_path VARCHAR,
             worktree_branch VARCHAR,
@@ -1553,8 +1553,16 @@ def _create_objects(conn) -> None:
         -- reference would be a cycle. The spawn-failure predicate is the
         -- same three stated facts that view's completion_state uses.
         child_tokens AS (
-            SELECT session_id, SUM(COALESCE(output_tokens, 0))::BIGINT AS output_tokens
-            FROM fact_token_usage WHERE is_deleted = FALSE GROUP BY session_id
+            -- A fork's transcript replays its spawner's responses, usage and
+            -- all. What it cost is what came after its fork_cut_timestamp.
+            SELECT tu.session_id,
+                   SUM(COALESCE(tu.output_tokens, 0))::BIGINT AS output_tokens
+            FROM fact_token_usage tu
+            LEFT JOIN dim_session cd ON cd.session_id = tu.session_id
+            WHERE tu.is_deleted = FALSE
+              AND (cd.fork_cut_timestamp IS NULL
+                   OR tu.timestamp > cd.fork_cut_timestamp)
+            GROUP BY tu.session_id
         ),"""
         + _DELEGATION_EDGE_CTES
         + """,
@@ -1758,9 +1766,12 @@ def _create_objects(conn) -> None:
             FROM delegation_edge ftc
         ),
         child AS (
-            -- One row per AGENT session, from that agent's OWN messages.
+            -- One row per delegation, from the spawned agent's OWN messages.
+            -- For a fork that is what follows its fork_cut_timestamp: its
+            -- transcript opens with its spawner's conversation, and counting
+            -- that made a fork cost what it inherited.
             SELECT
-                fm.session_key AS agent_session_key,
+                s.delegation_key,
                 MIN(fm.timestamp) AS first_ts,
                 -- Terminality is decided by comparing these two maxima, never
                 -- with arg_max(stop_reason, timestamp): arg_max skips NULLs,
@@ -1778,9 +1789,25 @@ def _create_objects(conn) -> None:
                     WHERE fm.message_type = 'assistant'
                       AND fm.stop_reason IS NOT NULL
                       AND fm.content_text IS NOT NULL) AS terminal_text
-            FROM fact_messages fm
+            FROM spawn s
+            JOIN dim_session cds ON cds.session_key = s.agent_session_key
+            JOIN fact_messages fm ON fm.session_key = s.agent_session_key
             WHERE fm.is_deleted = FALSE
-            GROUP BY fm.session_key
+              AND (cds.fork_cut_timestamp IS NULL
+                   OR fm.timestamp > cds.fork_cut_timestamp)
+            GROUP BY s.delegation_key
+        ),
+        child_usage AS (
+            SELECT s.delegation_key,
+                   SUM(COALESCE(tu.input_tokens, 0)
+                       + COALESCE(tu.output_tokens, 0))::BIGINT AS io_tokens
+            FROM spawn s
+            JOIN dim_session cds ON cds.session_key = s.agent_session_key
+            JOIN fact_token_usage tu ON tu.session_id = cds.session_id
+            WHERE tu.is_deleted = FALSE
+              AND (cds.fork_cut_timestamp IS NULL
+                   OR tu.timestamp > cds.fork_cut_timestamp)
+            GROUP BY s.delegation_key
         ),
         scored AS (
             SELECT
@@ -1788,7 +1815,7 @@ def _create_objects(conn) -> None:
                 c.first_ts AS child_first_ts,
                 c.last_assistant_ts AS child_last_ts,
                 c.terminal_text AS child_terminal_text,
-                ss.total_input_tokens + ss.total_output_tokens AS child_io_tokens,
+                COALESCE(cu.io_tokens, 0) AS child_io_tokens,
                 ss.total_tool_uses AS child_tool_uses,
                 CASE
                     -- No agent id, no status, and a STATED error: the spawn
@@ -1804,7 +1831,7 @@ def _create_objects(conn) -> None:
                     -- holds for a synchronous delegation too: what its
                     -- parent saw is in agent_status, stated, and is not
                     -- copied into a derived column.
-                    WHEN c.agent_session_key IS NULL THEN NULL
+                    WHEN c.delegation_key IS NULL THEN NULL
                     WHEN c.last_terminal_ts IS NOT NULL
                          AND c.last_terminal_ts = c.last_assistant_ts THEN 'completed'
                     -- The transcript records no completion, and that is ALL
@@ -1819,7 +1846,8 @@ def _create_objects(conn) -> None:
                     ELSE 'no_completion_recorded'
                 END AS completion_state
             FROM spawn s
-            LEFT JOIN child c ON c.agent_session_key = s.agent_session_key
+            LEFT JOIN child c ON c.delegation_key = s.delegation_key
+            LEFT JOIN child_usage cu ON cu.delegation_key = s.delegation_key
             LEFT JOIN semantic_session_summary ss ON ss.session_key = s.agent_session_key
         )
         SELECT

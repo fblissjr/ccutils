@@ -435,12 +435,24 @@ they land.
   copies (`docs/JSONL_CONTRACT.md` claim 12, `docs/STAR_SCHEMA.md`). Every
   view that counts tool calls, file operations or delegations reads only
   the rows that are not replays. Left:
-  - The populated per-session facts are not replay-aware. A fork's or a
-    continuation's `fact_session_facets`, `dim_session` heuristics and
-    `fact_plan_revisions` are computed from its transcript as loaded,
-    replayed prefix included, so they disagree with the views for those
-    sessions. A populator cannot use the view's cross-session rule; it could
-    use the fork cut, which needs only the session's own sidecar.
+  - A fork's replayed prefix: done 2026-10-13 for the populated
+    per-session facts and for the delegation views. The cut is stored once
+    as `dim_session.fork_cut_timestamp` (the fork's own spawn call, from its
+    sidecar and its own transcript) and `fact_session_facets` (both tiers),
+    the `dim_session` heuristics, `fact_plan_revisions`, and the derived
+    figures of `semantic_agent_delegations` read only what came after it.
+    Measured on two one-project builds before the change: about three
+    quarters of forks' `derived_io_tokens` was their spawner's replayed
+    usage, and every other child's figure was already its own.
+  - Not done, and now one predicate per rollup: the message and token
+    columns of `semantic_session_summary`, `semantic_cost_analysis`,
+    `semantic_token_usage` and `semantic_context_growth` still count a
+    fork's inherited messages and usage. So a fork's `F15` and its summary
+    token total disagree, and per-session cost reads too high for a fork.
+    Left out on purpose: the owner asked for the three populated facts.
+  - The populated facts are still not replay-aware for a copy between ROOT
+    sessions: nothing states a cut there, and a populator cannot use the
+    view's cross-session rule.
   - A copy between root sessions is marked by a rule (the session that ended
     first is the original). Two sessions that share a prefix and both
     continue do not say which came first; on the raw corpus that is two of

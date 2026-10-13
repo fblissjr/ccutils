@@ -49,16 +49,19 @@ def conn(tmp_path):
 
 
 def _call(tool_id, at, *, text=ASYNC_ACK, payload=None, subagent_type="general-purpose",
-          name="Agent", tool_input=None):
+          name="Agent", tool_input=None, usage=None, prompt=None):
     """One tool call and its result. `at` is HH:MM:SS; a copy shares it.
 
     An Agent call by default; pass `name` and `tool_input` for any other tool.
+    `usage` is what the API response making the call cost; a replayed copy
+    of the entry carries it too. `prompt` is text delivered in the SAME user
+    entry as the result, which is how a fork receives its own directive.
     """
     if tool_input is None:
         tool_input = {"description": f"task {tool_id}", "prompt": "do it",
                       "subagent_type": subagent_type}
     return {"id": tool_id, "at": at, "text": text, "payload": payload,
-            "name": name, "input": tool_input}
+            "name": name, "input": tool_input, "usage": usage, "prompt": prompt}
 
 
 def _launch_payload(agent_id):
@@ -68,7 +71,7 @@ def _launch_payload(agent_id):
 
 
 def _transcript(tmp_path, stem, calls=(), *, sidecar=None, start="10:00:00",
-                end="10:30:00", out_tokens=100):
+                end="10:30:00", out_tokens=100, first_prompt="go"):
     """Write a root session, or an agent file (`agent-...`) below ROOT.
 
     Every line of an agent file carries the ROOT's sessionId, as real ones
@@ -93,14 +96,19 @@ def _transcript(tmp_path, stem, calls=(), *, sidecar=None, start="10:00:00",
                 "timestamp": f"2026-07-17T{clock}.000Z", "cwd": "/work",
                 "version": "2.1.212", "message": message, **extra}
 
-    lines = [entry("user", "u0", start, "go")]
+    lines = [entry("user", "u0", start, first_prompt)]
     for i, call in enumerate(calls):
-        lines.append(entry("assistant", f"a{i}", call["at"], [
+        made = entry("assistant", f"a{i}", call["at"], [
             {"type": "tool_use", "id": call["id"], "name": call["name"],
              "input": call["input"]}],
-            requestId=f"{stem}-req{i}"))
-        result = entry("user", f"r{i}", call["at"][:-2] + "59", [
-            {"type": "tool_result", "tool_use_id": call["id"], "content": call["text"]}])
+            requestId=f"{stem}-req{i}")
+        if call["usage"] is not None:
+            made["message"]["usage"] = call["usage"]
+        lines.append(made)
+        blocks = [{"type": "tool_result", "tool_use_id": call["id"], "content": call["text"]}]
+        if call["prompt"] is not None:
+            blocks.append({"type": "text", "text": call["prompt"]})
+        result = entry("user", f"r{i}", call["at"][:-2] + "59", blocks)
         if call["payload"] is not None:
             result["toolUseResult"] = call["payload"]
         lines.append(result)
@@ -205,15 +213,22 @@ class TestANestedDelegationFindsItsChildThroughTheSidecar:
         ).fetchone() == (None, None, None)
 
 
+# What the spawner's response cost when it made the spawn call. The fork's
+# transcript replays that entry, usage and all.
+SPAWN_USAGE = {"input_tokens": 5000, "output_tokens": 3000}
+
+
 def _spawner_and_fork(tmp_path):
     """An agent forks. The fork's file replays the call that created it."""
     spawner = _transcript(
         tmp_path, "agent-p1",
-        [_call("tu_fork", "10:05:00", payload=_launch_payload("f1"), subagent_type="fork")],
+        [_call("tu_fork", "10:05:00", payload=_launch_payload("f1"), subagent_type="fork",
+               usage=SPAWN_USAGE)],
         sidecar={"agentType": "general-purpose", "toolUseId": "tu_root_p", "spawnDepth": 1})
     fork = _transcript(
         tmp_path, "agent-f1",
-        [_call("tu_fork", "10:05:00", text=FORK_ACK, subagent_type="fork")],
+        [_call("tu_fork", "10:05:00", text=FORK_ACK, subagent_type="fork",
+               usage=SPAWN_USAGE)],
         end="10:20:00", out_tokens=700,
         sidecar={"agentType": "fork", "isFork": True, "toolUseId": "tu_fork",
                  "parentAgentId": "p1", "spawnDepth": 2})
@@ -250,6 +265,28 @@ class TestAForkDoesNotOwnTheCallThatCreatedIt:
             "       completion_state, derived_io_tokens "
             "FROM semantic_agent_delegations WHERE tool_use_id = 'tu_fork'"
         ).fetchone() == ("f1", "async_launched", True, "parent_payload", "completed", 710)
+
+    def test_a_forks_derived_figures_start_at_its_spawn(self, built):
+        """A fork's transcript begins with its spawner's history, which is not its work.
+
+        The fork's file replays the spawn call's response (8,000 tokens) and
+        starts at 10:00:00, the spawner's first entry. Its own work is what
+        follows the spawn at 10:05:00: one response of 710 tokens, ending at
+        10:20:00. Measured on two real builds (2026-10-13), about three
+        quarters of forks' `derived_io_tokens` was replayed history, while
+        every non-fork child's figure was already its own.
+
+        Delete this and a fork is charged for the conversation it inherited.
+        """
+        tokens, duration_ms, seconds = built.execute(
+            "SELECT derived_io_tokens, derived_duration_ms, derived_seconds_to_completion "
+            "FROM semantic_agent_delegations WHERE tool_use_id = 'tu_fork'"
+        ).fetchone()
+        assert tokens == 710
+        # First entry after the spawn (its result, 10:05:59) to the last, 10:20:00.
+        assert duration_ms == 841000.0
+        # Spawn to completion was never affected; the two now agree in scale.
+        assert seconds == pytest.approx(900.0)
 
     def test_the_view_no_longer_reattributes(self, built):
         """A parent is the session whose own row it is; nothing needs a source."""
