@@ -45,6 +45,9 @@ soft-deleted rows. Drop to raw facts only when the view lacks a column.
 | ETL observability / did my export work | `semantic_etl_runs`, `etl.batch_runs` |
 | Permission modes, titles, attachments, queue operations, PR links | `fact_entry_events` (filter on `entry_type`) |
 | Compactions, API errors, turn durations | `fact_system_events` |
+| How a session worked: tool mix, shares by category, agentic runs, with percentile ranks | `semantic_session_behavior` (one row per session; descriptive, no archetype label) |
+| How context grew request by request, where it was reset | `semantic_context_growth` (one row per API request; `is_context_reset`, `inbound_tokens`) |
+| Which tool calls are a session's own and which are replayed history | `semantic_tool_call_replay` |
 
 ## 3. Rules that prevent wrong answers
 

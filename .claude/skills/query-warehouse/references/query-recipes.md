@@ -202,6 +202,29 @@ WHERE parent_session_key = md5('<parent-session-uuid>')
 ORDER BY first_timestamp;
 ```
 
+## How a session worked, and how its context grew
+
+```sql
+-- Sessions ranked by how edit-heavy they were. The view gives shares and
+-- percentile ranks and deliberately NO label: pick the cutoff from the
+-- distribution, do not hardcode one. A session with no tool calls has 0
+-- counts and NULL shares.
+SELECT session_id, project_name, tool_uses, mutate_share, read_share,
+       mutate_share_pctile, agentic_runs, tools_per_run, error_rate
+FROM semantic_session_behavior
+WHERE tool_uses > 0
+ORDER BY mutate_share_pctile DESC LIMIT 20;
+
+-- Where a session's context jumped, and where it was reset (a compaction
+-- or a clear). inbound_tokens is the growth net of the model's own previous
+-- output. NOT in_fork_prefix keeps a fork's own requests only.
+SELECT session_id, request_seq, context_tokens, context_delta_tokens,
+       inbound_tokens, is_context_reset
+FROM semantic_context_growth
+WHERE session_id = '<id>' AND NOT in_fork_prefix
+ORDER BY request_seq;
+```
+
 ## Facets (EAV shape)
 
 One row per (session, facet, prompt_version); exactly ONE `value_*` column is
