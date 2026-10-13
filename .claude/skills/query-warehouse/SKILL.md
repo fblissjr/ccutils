@@ -49,8 +49,16 @@ soft-deleted rows. Drop to raw facts only when the view lacks a column.
 ## 3. Rules that prevent wrong answers
 
 - Raw fact tables use **soft delete**: always add `WHERE is_deleted = FALSE`.
-- Several tables exist as **empty DDL stubs** — a zero-row result there is not
-  "no data". Check the stub list in `references/gotchas.md` before concluding.
+- Before reading a zero-row result as "no data", ask the warehouse what was
+  written: `SELECT * FROM etl.table_coverage` and
+  `SELECT DISTINCT table_name FROM etl.steps` (`references/gotchas.md`).
+- A typed result column on `fact_tool_calls` (`read_num_lines`,
+  `glob_num_files`, the `agent_*` rollups, anything read from
+  `result_payload_json`) is **NULL when the transcript stated no payload for
+  that result**. A parent session always states one; an agent session often
+  does not. NULL there means "not stated", never zero or false. Before
+  summing or filtering on one, scope to parent sessions or report coverage;
+  `references/gotchas.md` has the predicate and the coverage query.
 - `input_tokens` is API-reported post-cache-breakpoint, **not** total context;
   for cost ranking use `total_uncached_equivalent_tokens`.
 - Agent session identity is the `session_id` column (`agent-<id>`), never

@@ -62,6 +62,42 @@ filter: `semantic_sessions`, `semantic_decisions`,
 - Surrogate keys are `md5(natural key)` — `session_key = md5(session_id)`
   lets you skip a dim join.
 
+## Typed result columns and missing payloads
+
+`fact_tool_calls.result_payload_json` is the structured payload Claude Code
+writes beside a tool result (`toolUseResult`), and the typed columns are read
+from it: `read_num_lines`, `read_total_lines`, `glob_num_files`,
+`grep_num_files`, `bash_stdout_bytes`, the `edit_*` columns, `write_type`,
+and the `agent_*` rollups. **Where the transcript stated no payload, all of
+them are NULL and nothing falls back.** A parent session always states one.
+An agent session often does not, depending on the Claude Code version and on
+how the agent was spawned. The measurement, the version stretches and the
+canary are `docs/JSONL_CONTRACT.md` claim 11.
+
+- NULL in a typed column means "not stated", never zero or false. A `SUM` or
+  a `WHERE` on one silently leaves those calls out, and `ccutils audit` does
+  not flag it, because parent rows fill the column.
+- The rows are `result_entry_id IS NOT NULL AND result_payload_json IS NULL`:
+  a result came back and its entry stated no payload.
+- What comes from the result block itself is on every result: `is_error`,
+  `result_content_text`, and `derived_exit_code` / `derived_failure_kind`,
+  which are parsed from them. Prefer those for agent work.
+- A failed call always has a payload (the error string), so error counts are
+  not affected.
+
+Report coverage beside any figure built on a typed column:
+
+```sql
+-- Share of tool results that carry a payload, parent against agent sessions.
+SELECT ds.is_agent, ftc.tool_name,
+       COUNT(*) AS results,
+       COUNT(ftc.result_payload_json) AS with_payload
+FROM fact_tool_calls ftc
+JOIN dim_session ds ON ds.session_id = ftc.session_id
+WHERE ftc.is_deleted = FALSE AND ftc.result_entry_id IS NOT NULL
+GROUP BY ALL ORDER BY results DESC;
+```
+
 ## Token semantics
 
 `input_tokens` (messages, token_usage) is the API-reported figure **after the
@@ -80,6 +116,26 @@ Cache-creation pricing differs: 5m tokens bill at 1.25x, 1h at 2x.
   session that was never ingested — LEFT JOIN `dim_session` accordingly. Its
   `agent_*` columns are stated by the parent and its `derived_*` columns come
   from the agent's transcript; `docs/STAR_SCHEMA.md` has the column table.
+- **A delegation made from inside an agent often has no `agent_id`.** The id
+  comes from the spawning call's payload, and most `Agent` calls made inside
+  an agent state none (see "Typed result columns and missing payloads").
+  Then `agent_session_key`, `completion_state` and every `derived_*` column
+  are NULL too, although the agent's transcript may well be in the warehouse.
+  So `completion_state IS NULL` does not establish that a transcript is
+  missing, and `semantic_session_summary.delegated_output_tokens` and
+  `max_child_depth` undercount for an agent that delegates. The link is
+  stated from the other side: the spawned agent's sidecar names the call
+  (`dim_session.spawn_tool_use_id`) and the agent that made it
+  (`parent_agent_id`). Join on both; the recipe is in `query-recipes.md`
+  under Subagents.
+- **Some delegation rows under an agent session are copied history.** A
+  fork's transcript replays its parent's history, including the call that
+  created the fork, so the view shows the fork "delegating" to itself and
+  repeating its parent's earlier spawns. Most of these rows have no
+  `agent_id` either, which is why the call id alone must not be the join.
+  `total_delegations` on the summary counts them. The recipe after the one
+  above lists them; this is one case of the replay item in
+  `docs/ROADMAP.md` ("Continued sessions replay their history").
 - Pre-2026 short agent ids can collide across parents (accepted limitation).
 - An agent whose parent was pruned keeps `depth_level = 0`.
 - Exclude sidechains from "human conversation" metrics:

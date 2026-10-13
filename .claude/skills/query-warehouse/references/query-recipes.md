@@ -142,17 +142,55 @@ FROM semantic_decisions WHERE session_id = '<id>' ORDER BY timestamp;
 -- together or compared: agent_total_tokens is the API's stated number;
 -- derived_io_tokens is input+output summed from the agent's own usage.
 -- completion_state is derived from the agent's transcript (completed /
--- no_completion_recorded / spawn_failed / NULL = transcript not in the
--- warehouse); every derived_ column is NULL unless it is 'completed'.
+-- no_completion_recorded / spawn_failed / NULL); every derived_ column is
+-- NULL unless it is 'completed'. NULL has two causes: the agent's transcript
+-- is not in the warehouse, or the spawning call stated no payload and so no
+-- agent_id to find it by. The second is common for a delegation made from
+-- inside an agent; the next recipe resolves those.
 SELECT parent_session_id, subagent_type, task_description,
        agent_is_async,
        agent_status,              -- stated by the parent
-       agent_total_duration_ms,   -- stated; NULL when agent_is_async
-       agent_total_tokens,        -- stated; NULL when agent_is_async
+       agent_total_duration_ms,   -- stated; NULL when agent_is_async or no payload
+       agent_total_tokens,        -- stated; NULL when agent_is_async or no payload
        completion_state,          -- derived
        derived_duration_ms,
        derived_io_tokens          -- NOT comparable with agent_total_tokens
 FROM semantic_agent_delegations ORDER BY delegation_timestamp DESC LIMIT 20;
+
+-- Delegations made from inside an agent whose spawning call stated no agent
+-- id, resolved from the other side. The spawned agent's sidecar states the
+-- call that spawned it (spawn_tool_use_id) AND which agent made that call
+-- (parent_agent_id). Both conditions are needed: the call id alone also
+-- matches copied history (next recipe). The view derives nothing for these
+-- rows, so read the agent's own session summary. They are background
+-- launches, for which a parent states no duration, tokens or tool count
+-- even when it does state a payload.
+SELECT d.parent_session_id, d.subagent_type, d.task_description,
+       cs.session_id AS agent_session_id,   -- stated by the agent's sidecar
+       cs.spawn_depth,
+       ss.total_output_tokens, ss.total_tool_uses
+FROM semantic_agent_delegations d
+JOIN dim_session cs ON cs.spawn_tool_use_id = d.tool_use_id
+                   AND 'agent-' || cs.parent_agent_id = d.parent_session_id
+LEFT JOIN semantic_session_summary ss ON ss.session_key = cs.session_key
+WHERE d.agent_id IS NULL AND d.spawn_is_error IS NOT TRUE
+ORDER BY d.delegation_timestamp DESC LIMIT 20;
+
+-- Rows of the view that are copied history, not delegations the session
+-- made. A fork's transcript replays its parent's history, including the
+-- call that created the fork itself, so these appear under the fork's
+-- session. Exclude them before counting delegations per agent.
+SELECT d.delegation_key, d.parent_session_id, d.subagent_type,
+       cs.session_id AS spawned_agent,
+       CASE WHEN cs.session_id = d.parent_session_id
+            THEN 'the fork''s own spawn'
+            ELSE 'made by an ancestor' END AS copied_from
+FROM semantic_agent_delegations d
+JOIN dim_session cs ON cs.spawn_tool_use_id = d.tool_use_id
+WHERE d.parent_session_id LIKE 'agent-%'
+  AND (cs.parent_agent_id IS NULL
+       OR 'agent-' || cs.parent_agent_id <> d.parent_session_id)
+ORDER BY d.delegation_timestamp DESC LIMIT 20;
 
 -- Cost-style aggregate: pick ONE measure and say which.
 SELECT subagent_type,

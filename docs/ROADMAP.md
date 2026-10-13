@@ -605,11 +605,31 @@ here and stays local.
   - Whether `ccutils audit` or the reader's guide should report coverage
     (the share of results with a payload, by parent and agent), since the
     always-NULL check cannot see a column that parent rows fill.
-  - The query-warehouse skill does not yet warn about this. Its delegation
-    recipe says the stated `agent_*` columns are NULL on a background
-    launch; they are also NULL, with `agent_is_async` itself, when the
-    spawning entry states no payload, which is most `Agent` calls made from
-    inside an agent.
+  - Delegations made from inside an agent lose their child, not only the
+    stated rollups: `semantic_agent_delegations` finds the child through
+    `agent_id`, which comes from the payload. Measured 2026-10-13 on the raw
+    corpus, 354 `Agent` calls inside agent transcripts state no payload.
+    204 are real delegations, all background launches, and for every one a
+    child sidecar states both the call (`toolUseId`) and this agent as its
+    parent (`parentAgentId`). Proposed, not built: resolve the child in the
+    view from `dim_session.spawn_tool_use_id` and `parent_agent_id` when the
+    payload gives no `agent_id`, in a column that says which side stated
+    the link, and do the same in the `delegation_rollup` of
+    `semantic_session_summary`. A view-only change, so no rebuild. Where
+    the payload and a sidecar both name the child they agree on all 1,150
+    calls that have both, and no call id is claimed by two sidecars.
+  - The other 150 are copied history, not delegations: 97 are a fork's copy
+    of the call that created it, and 53 are calls an ancestor made. Joining
+    on the call id alone links a fork to itself, so the stated parent is
+    part of the join. They are counted in `total_delegations` today. This
+    is the replay item under "Fix at 1.0.0 or before" ("Continued sessions
+    replay their history") reaching the delegations view; an exact rule
+    exists here without waiting for `is_replay`, since a row whose call a
+    sidecar attributes to a different agent is not this session's.
+  - The query-warehouse skill carries both as gotchas and recipes
+    (2026-10-13). The nested-delegation recipe was run on a one-project
+    build that holds no such delegation, so its positive case rests on the
+    raw scan, not on rows it returned.
   - Not established: what decides presence inside one Claude Code version.
     The claim records the association with how the agent was spawned.
   A candidate for the source profile below, which is the general form of
