@@ -806,6 +806,30 @@ Stated once so green is read correctly:
   memory, so their content and their run time depended on the machine.
   `tests/conftest.py` isolates that now (`default_claude_home`). What still
   reads real data, on purpose and read-only, is the corpus canaries.
+- **No test holds every view to the fork cut or the replay view.** A
+  Tier 1 facet that reads a fact without the session scope is refused
+  (`_own_work_only`). A view is held only by the fixture tests that name it
+  (`tests/test_fork_cut.py`, `tests/test_fork_events.py`,
+  `tests/test_tool_call_replay.py`), so a new or edited view that describes
+  a session can read a fork's inherited prefix, or count a replayed call,
+  and stay green. To write: a test that walks every `semantic_` view reading
+  a session-grain fact and requires `fork_cut_timestamp` or
+  `semantic_tool_call_replay` in its definition, or a named exemption with
+  its reason. If it finds a view today that does neither, the statement
+  under "Known defects and open items" that nothing a view reports about a fork is
+  whole-transcript is wrong.
+- **Tests that cost time and check little.** From a timing run of the
+  suite on 2026-10-13:
+  - `tests/test_typed_parser.py::TestArchiveCoveragePostA2::test_no_unknown_content_blocks_or_subtypes_in_archive`
+    and `::TestToolUseResultArchiveCoverage::test_every_archive_tool_result_dispatches_cleanly`
+    contain no `assert` (confirmed by reading them): each scans the corpus
+    and can fail only by raising. Give each an assertion, or state in its
+    docstring that raising is the check.
+  - The run reported 388 tests that create a warehouse and never run the
+    ETL, 51 of them in `tests/test_star_schema_ddl.py`. Not re-derived;
+    measure before acting on it.
+  - Its other suggestions, none done: a marker for the corpus canaries, one
+    shared corpus pass, wider fixture scopes, parallel workers.
 - **Concurrency.** Nothing tests two writers against one warehouse, and
   `ccutils --source -j N` writes in parallel.
 - **One backend, one platform.** DuckDB, macOS, one Python.
@@ -865,6 +889,10 @@ if it is deleted.
   rule in `CLAUDE.md`: anything that sends transcript text off the machine
   is an allowlist that fails closed, checked by probes its author has not
   seen.
+- **`semantic_sessions` and `semantic_cost_analysis` stay deleted.**
+  Confirmed by the owner on 2026-10-13. Neither encoded anything a query
+  would get wrong; the join and the cache-read share are written out in the
+  query-warehouse skill's recipes.
 
 ## Local-only references
 

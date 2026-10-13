@@ -122,12 +122,12 @@ pattern for `agent_session_key`; consumers `LEFT JOIN`.
 Not by saving someone a `JOIN`.
 
 This is the test for whether a table or view should exist at all. Applied to
-the 20 semantic views, it sorts them cleanly:
+the semantic views, it sorts them cleanly:
 
 | Encodes logic — keep | What it encodes |
 |---|---|
-| `semantic_sessions`, `semantic_decisions`, `semantic_session_behavior`, `semantic_token_usage`, `semantic_context_growth`, `semantic_cost_analysis`, `semantic_etl_runs` | soft-delete filters |
-| `semantic_cost_analysis`, `semantic_tool_patterns` | tri-state `is_error`, corrected denominators |
+| `semantic_decisions`, `semantic_session_behavior`, `semantic_token_usage`, `semantic_context_growth`, `semantic_etl_runs` | soft-delete filters |
+| `semantic_tool_patterns` | tri-state `is_error` |
 | `semantic_memory`, `semantic_memory_links`, `semantic_prompt_history` | `is_current` on a Type 2 SCD |
 | `semantic_context_growth` | window functions / dedupe |
 | `semantic_file_evolution`, `semantic_project_files` | aggregation |
@@ -149,8 +149,9 @@ Done at 1.0.0, except `semantic_agent_delegations`, which stopped being a
 pure join and is kept: it became the derived view over `fact_tool_calls`
 when the delegations table was removed.
 
-Two entries in the "keep" table above went the same way on 2026-10-13,
-because the reason given for them stopped being true.
+Two views this table first listed under "keep" went the same way on
+2026-10-13, confirmed by the owner, because the reason given for them
+stopped being true, and the table no longer names them.
 `semantic_sessions` was kept for its soft-delete filter; once
 `semantic_session_summary` became a view there was nothing left for it to
 filter, and it was a join of the summary to its dimensions. And
