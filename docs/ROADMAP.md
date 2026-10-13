@@ -20,11 +20,27 @@ machine that has it; nothing here depends on it.
   `fact_tool_calls` (uses + results + chain steps + errors in one table),
   the summary and session-file bridge as views, delegations as a view with
   `--embed` retired, and (the fourth) the five thin entry facts as
-  `fact_entry_events`. The five plain-join views are deleted too. What is
-  left is the gate.
-  `ccutils audit` exits clean on the full corpus and on a one-project
-  subset build apart from columns that project never fills. Version is
-  still 0.20.1; the tag waits on the list under "Next session".
+  `fact_entry_events`. The five plain-join views are deleted too.
+- **More landed on 2026-10-13 than the gate list expected.** Found while
+  checking a one-project audit, each traced to the raw transcripts first:
+  `fact_tool_calls` and `fact_file_operations` are keyed on the session and
+  the call, so a replayed call is its own row; `semantic_tool_call_replay`
+  marks the copies; `dim_session.fork_cut_timestamp` stores where a fork's
+  own history starts, and every per-session fact and view that describes a
+  fork reads only what came after it; a delegation finds its child through
+  the spawned agent's sidecar; `semantic_sessions` and
+  `semantic_cost_analysis` are deleted. `docs/JSONL_CONTRACT.md` gained
+  claims 11 and 12, each with a canary. Two of these are schema changes, so
+  every existing warehouse is refused and rebuilt. The test suite is about
+  three times faster and no longer reads the developer's real prompt
+  history.
+- **What is left is the gate, and it now carries more.** The last
+  full-corpus build and audit were on 2026-09-10, before the two table
+  merges of 2026-10-09 and everything of 2026-10-13. Since then the work
+  has been checked on one-project builds only, and the last three view
+  changes of 2026-10-13 on tests alone. The full-corpus build in step 5 is
+  the first time any of it meets the whole corpus. Version is still 0.20.1;
+  the tag waits on the list under "Next session".
 - **A second harness, Tier 1 only (2026-09-22).** `ccutils lake
   antigravity` mirrors Google Antigravity's native store (SQLite files of
   protobuf blobs, brain files, encrypted legacy files) byte-for-byte into a
