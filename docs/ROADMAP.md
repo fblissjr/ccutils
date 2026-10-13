@@ -778,6 +778,11 @@ Stated once so green is read correctly:
   <scratch-dir>`), and delete the build afterwards.
 - **Machine dependence.** Several tests skip when the local Claude data
   directory is absent, so a fresh machine reports green with fewer tests.
+  The reverse was also true until 2026-10-13: tests that built a warehouse
+  through a batch driver read the developer's real `history.jsonl` and auto
+  memory, so their content and their run time depended on the machine.
+  `tests/conftest.py` isolates that now (`default_claude_home`). What still
+  reads real data, on purpose and read-only, is the corpus canaries.
 - **Concurrency.** Nothing tests two writers against one warehouse, and
   `ccutils --source -j N` writes in parallel.
 - **One backend, one platform.** DuckDB, macOS, one Python.

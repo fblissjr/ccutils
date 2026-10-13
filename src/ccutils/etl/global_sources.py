@@ -21,6 +21,24 @@ from __future__ import annotations
 
 from pathlib import Path
 
+
+def default_claude_home() -> Path:
+    """The Claude home a global source reads when its caller names none.
+
+    The one place in this module that reaches for the real home directory.
+    The batch drivers call `run_global_sources` without a `claude_home`, so
+    this is what every `ccutils ... --format duckdb` reads: the user's own
+    `history.jsonl` and auto memory, which is the point.
+
+    It is a function, and not an expression at each call site, so the test
+    suite can replace it (`tests/conftest.py`). While it was inline, every
+    warehouse-building test imported the developer's real prompt history
+    into a throwaway warehouse under pytest's temp directory, and the copies
+    outlived the run.
+    """
+    return Path.home() / ".claude"
+
+
 def _import_auto_memory(conn, *, batch_run_id: str | None = None,
                         claude_home: Path | None = None) -> int:
     """Ingest Claude Code auto memory for the projects this archive covers.
@@ -41,7 +59,7 @@ def _import_auto_memory(conn, *, batch_run_id: str | None = None,
 
     def _scope() -> dict:
         """Resolve the import's arguments. Runs INSIDE the recorded run."""
-        home = Path(claude_home) if claude_home else Path.home() / ".claude"
+        home = Path(claude_home) if claude_home else default_claude_home()
         projects = {
             row[0]
             for row in conn.execute(
@@ -82,6 +100,8 @@ def run_global_sources(conn, *, batch_run_id: str | None = None,
     a test can point the whole thing at a temp directory. Reading the real
     home inside made every warehouse-building test depend on the developer's
     machine state -- and slow, since it parsed a multi-megabyte history file.
+    A caller that passes none gets `default_claude_home()`, which the test
+    suite replaces, because the batch drivers pass none.
 
     ``scope_to_covered_projects`` keeps history to the projects the warehouse
     already covers. The caller decides, because the answer follows INTENT:
@@ -99,7 +119,7 @@ def run_global_sources(conn, *, batch_run_id: str | None = None,
     where the user asked for a subset, whereas dropping rows is a data-loss
     problem everywhere.
     """
-    home = Path(claude_home) if claude_home else Path.home() / ".claude"
+    home = Path(claude_home) if claude_home else default_claude_home()
 
     _run_history_import(
         conn, home / "history.jsonl",

@@ -222,6 +222,47 @@ _DELEGATION_EDGE_CTES = """
         )"""
 
 
+def _seed_dim_time(conn) -> None:
+    """Seed the 1,440 minutes of `dim_time` that are not already there.
+
+    Fixed-cardinality dimension, filled per minute and NOT behind a
+    whole-table emptiness guard: a warehouse with a partly populated
+    `dim_time` would otherwise never be completed. Rows already present are
+    left as they are.
+
+    ONE set-based INSERT. This runs on every `create_star_schema`, which is
+    every CLI invocation and nearly every test. It used to send the rows
+    through `executemany`, which DuckDB executes one row at a time: that was
+    most of the cost of opening a warehouse and about two thirds of the test
+    suite's wall-clock time, for rows one statement inserts in milliseconds.
+    `tests/test_dim_date_time_v15.py::TestDimTimeIsSeededInOneStatement`
+    fails if the row-by-row form comes back.
+
+    `time_of_day` still comes from `get_time_of_day`, the one definition: its
+    24 labels are passed in as values and crossed with the minutes, so no
+    second copy of its thresholds lives in SQL.
+
+    The count is the fast path that keeps the fully seeded case, the common
+    one, to a single query.
+    """
+    from ccutils.etl.utils import fetch_scalar
+
+    if fetch_scalar(conn, "SELECT COUNT(DISTINCT time_key) FROM dim_time") >= 1440:
+        return
+    labels = [(hour, get_time_of_day(hour)) for hour in range(24)]
+    conn.execute(
+        f"""
+        INSERT INTO dim_time
+        SELECT h.hour * 100 + m.minute, h.hour, m.minute, h.time_of_day
+        FROM (VALUES {", ".join("(?, ?)" for _ in labels)}) AS h(hour, time_of_day)
+        CROSS JOIN range(60) AS m(minute)
+        WHERE NOT EXISTS (
+            SELECT 1 FROM dim_time dt WHERE dt.time_key = h.hour * 100 + m.minute)
+        """,
+        [value for pair in labels for value in pair],
+    )
+
+
 def _create_objects(conn) -> None:
     """Every CREATE, in dependency order, plus seed rows. Idempotent."""
 
@@ -540,31 +581,7 @@ def _create_objects(conn) -> None:
     """
     )
 
-    # Fixed-cardinality dimension: seed the 1440 minutes not already
-    # present (per-minute anti-join, NOT a whole-table emptiness guard --
-    # a legacy warehouse with a PARTIALLY populated dim_time would else
-    # never be completed). time_of_day comes from get_time_of_day, the
-    # single source of truth, so SQL and Python labels can't drift. The
-    # COUNT fast-path keeps the common fully-seeded case a single query
-    # (this runs on every create_star_schema, i.e. every CLI invocation).
-    from ccutils.etl.utils import fetch_scalar
-
-    if fetch_scalar(conn, "SELECT COUNT(*) FROM dim_time") < 1440:
-        existing_time_keys = {
-            r[0] for r in conn.execute(
-                "SELECT time_key FROM dim_time"
-            ).fetchall()
-        }
-        missing_time_rows = [
-            (h * 100 + m, h, m, get_time_of_day(h))
-            for h in range(24)
-            for m in range(60)
-            if h * 100 + m not in existing_time_keys
-        ]
-        if missing_time_rows:
-            conn.executemany(
-                "INSERT INTO dim_time VALUES (?, ?, ?, ?)", missing_time_rows
-            )
+    _seed_dim_time(conn)
 
     # =========================================================================
     # Core Fact Tables (6)

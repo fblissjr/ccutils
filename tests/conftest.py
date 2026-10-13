@@ -8,6 +8,33 @@ import pytest
 import webbrowser
 
 
+@pytest.fixture(scope="session")
+def isolated_claude_home(tmp_path_factory):
+    """An empty stand-in for the developer's Claude home, shared by the run."""
+    return tmp_path_factory.mktemp("claude-home")
+
+
+@pytest.fixture(autouse=True)
+def no_real_claude_home_in_global_sources(monkeypatch, isolated_claude_home):
+    """No test reads the real `~/.claude` through a global source.
+
+    The batch drivers call `run_global_sources` with no home, which falls
+    back to `default_claude_home()`. Unpatched, every test that builds a
+    warehouse through one imported the developer's real prompt history and
+    auto memory into a temp warehouse: private data copied on every run, and
+    most of the time those tests took. A test that needs a home passes
+    `claude_home=`, or writes into `isolated_claude_home`.
+
+    The corpus canaries are untouched: they read transcripts directly and
+    never through this function.
+    """
+    from ccutils.etl import global_sources
+
+    monkeypatch.setattr(
+        global_sources, "default_claude_home", lambda: isolated_claude_home
+    )
+
+
 @pytest.fixture(autouse=True)
 def mock_webbrowser_open(monkeypatch):
     """Automatically mock webbrowser.open to prevent browsers opening during tests."""
