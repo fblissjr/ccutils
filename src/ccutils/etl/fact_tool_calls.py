@@ -305,7 +305,14 @@ SELECT
     -- returned at spawn time is a launch acknowledgment, not an outcome.
     -- Downstream uses this to refuse to present that acknowledgment as a
     -- completion.
+    --
+    -- "Absence means synchronous" holds INSIDE a payload only. A result
+    -- with no payload, or with a bare error string for one, states nothing
+    -- about how the agent ran, so this is NULL there, never FALSE: a
+    -- background launch made inside an agent comes back that way
+    -- (docs/JSONL_CONTRACT.md claim 11), and FALSE called it synchronous.
     CASE WHEN tool_name IN ('Agent', 'Task', 'TaskCreate')
+              AND json_type(tool_use_result_json) = 'OBJECT'
          THEN COALESCE(
              json_extract(tool_use_result_json, '$.isAsync')::BOOLEAN, FALSE)
          END

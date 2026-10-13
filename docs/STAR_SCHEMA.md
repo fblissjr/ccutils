@@ -419,7 +419,7 @@ One row per `tool_use_id`: the assistant's `tool_use` block, its result (the `to
 | agent_total_tokens | INTEGER | Task/Agent rollup |
 | agent_total_tool_use_count | INTEGER | Task/Agent rollup |
 | agent_resolved_model | VARCHAR | Task/Agent rollup: `resolvedModel`, the model the subagent actually ran on |
-| agent_is_async | BOOLEAN | Task/Agent rollup: `isAsync`. TRUE = this result is a launch acknowledgment, not an outcome |
+| agent_is_async | BOOLEAN | Task/Agent rollup: `isAsync`. TRUE = this result is a launch acknowledgment, not an outcome. FALSE = a payload came back without it, which states a synchronous result. NULL = no payload came back (or only an error string), so nothing states how the agent ran |
 | agent_subagent_type | VARCHAR | Task/Agent rollup |
 | agent_id | VARCHAR | Task/Agent rollup |
 | chain_id | VARCHAR | md5(session_id, run_index): one chain per human turn (agentic run) |
@@ -593,7 +593,7 @@ A view since 1.0.0. It was the table `fact_agent_delegations`, written per sessi
 | agent_session_id / agent_depth_level | | From the agent's `dim_session` row; NULL when its transcript is not in the warehouse |
 | task_description / task_prompt / subagent_type | TEXT | From the spawn call's input |
 | delegation_timestamp / delegation_date / time_of_day | | When the agent was invoked |
-| agent_is_async | BOOLEAN | Stated `toolUseResult.isAsync`. TRUE = the parent's result is a launch acknowledgment, not an outcome |
+| agent_is_async | BOOLEAN | Stated `toolUseResult.isAsync`. TRUE = the parent's result is a launch acknowledgment, not an outcome. FALSE = the payload omits it, which states a synchronous result. NULL = the result carried no payload, as a background launch made inside an agent does, so nothing is stated |
 | agent_resolved_model | VARCHAR | Stated. The model the subagent actually ran on. May carry a context-window suffix (`claude-opus-4-8[1m]`) |
 | agent_status | VARCHAR | Stated by the parent's tool result (`completed`, `interrupted`, `async_launched`, ...) |
 | spawn_is_error | BOOLEAN | Stated `is_error` on the spawn's result; absent means not an error |
@@ -601,7 +601,7 @@ A view since 1.0.0. It was the table `fact_agent_delegations`, written per sessi
 | agent_total_duration_ms | FLOAT | Stated `totalDurationMs`. NULL on background launches |
 | agent_total_tokens | INTEGER | Stated `totalTokens`. NULL on background launches. Do NOT compare with `derived_io_tokens` |
 | agent_total_tool_use_count | INTEGER | Stated `totalToolUseCount`. NULL on background launches |
-| agent_output_text | TEXT | The parent's tool result. The one stated value that is withheld: NULL on background launches, where it held "Async agent launched successfully." |
+| agent_output_text | TEXT | The parent's tool result, shown only where something states what the text is: `agent_is_async` is FALSE (a synchronous result, so the text is the agent's report) or `spawn_is_error` is TRUE (the reason a spawn was refused). NULL on background launches, where it held "Async agent launched successfully.", and NULL where no payload came back, where every result measured was such an acknowledgment |
 | completion_state | VARCHAR | DERIVED from the agent's transcript: `completed` / `no_completion_recorded` / `spawn_failed` / NULL (no agent is linked, or its transcript is not in the warehouse; `agent_link_source` tells the two apart). See below |
 | derived_completion_timestamp | TIMESTAMP | The agent's last assistant message |
 | derived_seconds_to_completion | DOUBLE | derived_completion_timestamp - delegation_timestamp |

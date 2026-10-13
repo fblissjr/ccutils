@@ -443,22 +443,22 @@ they land.
   unique. The delegation views no longer depend on the owner (they read the
   spawned agent's sidecar), but their stated `agent_*` columns still hold
   whichever copy won, and every other reader of `fact_tool_calls` is
-  exposed. `tests/test_delegation_attribution.py::TestAForkDoesNotOwnTheCallThatCreatedIt::test_the_fixture_reproduces_the_takeover`
+  exposed. `fact_file_operations` has the same key and is derived from
+  these rows, and the two facts then DISAGREE about the same call: its
+  hashed columns are identical across copies, so it never updates and
+  keeps the first loader, while the tool call flips to the last. Measured
+  2026-10-13: on the raw corpus 242 of 49,681 file-tool call ids sit in
+  more than one transcript (190 in two root sessions, 52 in two agents, one
+  call in as many as 15 files of a resumed chain); on a one-project build
+  all 11 such calls carry one session in `fact_file_operations` and
+  another in `fact_tool_calls`. No row was lost or soft-deleted there. A
+  join of the two on `tool_use_id` still matches, but any query that also
+  filters or groups both by session drops or misplaces those rows, and
+  `semantic_session_files` and the per-session tool counts place the same
+  call in different sessions. `tests/test_delegation_attribution.py::TestAForkDoesNotOwnTheCallThatCreatedIt::test_the_fixture_reproduces_the_takeover`
   reproduces it. The fix is the key, `(session_id, tool_use_id)`, with the
   replay flag below; that is a schema decision and a rebuild, so it is the
   owner's.
-- **`agent_is_async` reads FALSE where nothing was stated, so a launch
-  acknowledgment is reported as an agent's output.** Found 2026-10-13. The
-  populator coalesces a missing `toolUseResult.isAsync` to FALSE, and
-  `semantic_agent_delegations` withholds `agent_output_text` only when it
-  is TRUE. A background launch made inside an agent states no payload
-  (`docs/JSONL_CONTRACT.md` claim 11), so its row carries "Async agent
-  launched successfully." or "Fork started" as the agent's output, which
-  the view's own tests say must never happen. All 354 payload-less `Agent`
-  results in agent transcripts on the raw corpus are acknowledgments.
-  Fix: leave `agent_is_async` NULL when no payload states it, and withhold
-  the text unless the parent stated a synchronous result. A populator
-  change, so rows re-hash; no DDL change.
 - **Continued sessions replay their history.** 706 `api_message_id`
   values recur across sessions in the same chain (1,403 rows), and the
   same is true of every replayed message and tool call. Nothing marks a

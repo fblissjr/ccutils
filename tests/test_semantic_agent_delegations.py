@@ -401,6 +401,86 @@ class TestAsyncLaunchIsNotACompletion:
             "an unqualified completion column would hold the ack on async rows"
         )
 
+    def _one_spawn(self, tmp_path, name, *, text, payload=None, is_error=None):
+        """One Agent call whose result carries `payload`, or none at all."""
+        jsonl = tmp_path / f"{name}.jsonl"
+        block = {"type": "tool_result", "tool_use_id": f"tu_{name}", "content": text}
+        if is_error is not None:
+            block["is_error"] = is_error
+        result = {"type": "user", "uuid": "u2", "parentUuid": "a1",
+                  "sessionId": name, "timestamp": "2026-07-17T10:00:03Z",
+                  "message": {"role": "user", "content": [block]}}
+        if payload is not None:
+            result["toolUseResult"] = payload
+        jsonl.write_text("\n".join(json.dumps(d) for d in [
+            {"type": "user", "uuid": "u1", "sessionId": name,
+             "timestamp": "2026-07-17T10:00:00Z", "cwd": "/p", "version": "2.1.212",
+             "message": {"role": "user", "content": "delegate"}},
+            {"type": "assistant", "uuid": "a1", "parentUuid": "u1",
+             "sessionId": name, "timestamp": "2026-07-17T10:00:01Z", "requestId": "r1",
+             "message": {"role": "assistant", "model": "claude-opus-5",
+                         "content": [{"type": "tool_use", "id": f"tu_{name}",
+                                      "name": "Agent",
+                                      "input": {"description": "go", "prompt": "x"}}]}},
+            result,
+        ]))
+        return jsonl
+
+    def _async_and_output(self, conn, name):
+        return conn.execute(
+            "SELECT f.agent_is_async, d.agent_is_async, d.agent_output_text "
+            "FROM fact_tool_calls f JOIN semantic_agent_delegations d USING (tool_use_id) "
+            "WHERE f.tool_use_id = ?", [f"tu_{name}"]
+        ).fetchone()
+
+    @pytest.mark.parametrize("ack", [
+        "Async agent launched successfully.",
+        "Fork started — processing in background",
+    ])
+    def test_a_launch_that_stated_no_payload_is_not_called_synchronous(
+        self, conn, tmp_path, ack
+    ):
+        """No payload states nothing, and FALSE is a statement.
+
+        A background launch made inside an agent, and a fork's copy of its
+        own spawn, come back with the acknowledgment text and no
+        `toolUseResult` (docs/JSONL_CONTRACT.md claim 11). `agent_is_async`
+        was coalesced to FALSE there, which read as "the parent stated a
+        synchronous result", and the acknowledgment then passed the gate
+        this class exists for and landed in `agent_output_text`. All 354
+        such results on the raw corpus were acknowledgments (2026-10-13).
+
+        Delete this and a launch nobody described is reported as an agent
+        that ran synchronously and said "Fork started".
+        """
+        _populate(conn, self._one_spawn(tmp_path, "nopayload", text=ack), tmp_path)
+        assert self._async_and_output(conn, "nopayload") == (None, None, None)
+
+    def test_a_payload_that_omits_isAsync_is_still_synchronous(self, conn, tmp_path):
+        """The other half: absence INSIDE a payload does mean synchronous.
+
+        `isAsync` is only ever written as true, so a payload without it is a
+        stated synchronous result and its text is the agent's output.
+        """
+        _populate(conn, self._one_spawn(
+            tmp_path, "sync", text="the report",
+            payload={"agentId": "s1", "status": "completed", "totalTokens": 5}), tmp_path)
+        assert self._async_and_output(conn, "sync") == (False, False, "the report")
+
+    @pytest.mark.parametrize("payload", [None, "Error: nesting limit reached"],
+                             ids=["no_payload", "error_string"])
+    def test_a_refused_spawn_keeps_its_error_text(self, conn, tmp_path, payload):
+        """A stated error is not an acknowledgment, and its text is the reason.
+
+        A refusal states no object payload either (the real shape is a bare
+        error string), so it is not called synchronous. Its text is kept
+        because `is_error` says what it is.
+        """
+        refusal = "Subagent nesting limit reached (depth 3 of 3)."
+        _populate(conn, self._one_spawn(
+            tmp_path, "refused", text=refusal, payload=payload, is_error=True), tmp_path)
+        assert self._async_and_output(conn, "refused") == (None, None, refusal)
+
     def test_synchronous_delegation_keeps_what_its_parent_stated(
         self, conn, agent_session, tmp_path
     ):

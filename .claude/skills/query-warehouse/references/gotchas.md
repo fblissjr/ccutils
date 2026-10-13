@@ -132,6 +132,11 @@ Cache-creation pricing differs: 5m tokens bill at 1.25x, 1h at 2x.
 - `completion_state IS NULL` has two causes, and `agent_link_source` tells
   them apart: NULL means no side links an agent; a value means the agent is
   named and its transcript is not in the warehouse.
+- `agent_is_async` is three-valued: TRUE is a background launch, FALSE a
+  stated synchronous result, NULL a result that carried no payload and so
+  states neither. Do not write `NOT agent_is_async` to mean synchronous: it
+  drops the NULL rows silently. `agent_output_text` is NULL unless the row
+  is stated synchronous or is a refused spawn.
 - The stated `agent_*` columns are not repaired. For a call that sits in two
   transcripts they hold what the last-loaded copy stated, so a forked
   delegation can read `agent_status` NULL where its spawner stated a launch.

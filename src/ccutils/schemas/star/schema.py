@@ -1795,8 +1795,14 @@ def _create_objects(conn) -> None:
             -- the result text is "Async agent launched successfully", which
             -- under this column's name would read as the agent's work. The
             -- report is derived_output_text there.
-            CASE WHEN sc.agent_is_async IS TRUE THEN NULL
-                 ELSE sc.stated_output_text END AS agent_output_text,
+            --
+            -- It is shown only where something states what the text is: a
+            -- payload that says the result was synchronous, or is_error,
+            -- which makes it the reason a spawn was refused. Where no payload
+            -- came back agent_is_async is NULL and the text is withheld too:
+            -- every such result measured was an acknowledgment.
+            CASE WHEN sc.agent_is_async IS FALSE OR sc.is_error IS TRUE
+                 THEN sc.stated_output_text END AS agent_output_text,
 
             -- DERIVED from the agent's own transcript, and named so. A stated
             -- value and a derived one never share a column (decided
