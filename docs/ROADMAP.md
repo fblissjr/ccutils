@@ -419,14 +419,6 @@ they land.
 
 ### Fix at 1.0.0 or before
 
-- **`docs/STAR_SCHEMA.md` states a closed list of system subtypes.** Found
-  2026-10-13 on a one-project build. The doc says `fact_system_events`
-  covers "all 7 subtypes", in two places, but the populator takes every
-  `system` entry and the build holds two the list does not name,
-  `scheduled_task_fire` and `model_refusal_fallback`. The rows are right;
-  the sentence is an absolute about an unversioned source. Reword it to say
-  which subtypes get typed columns and that any other lands with
-  `payload_json`, when the table list is revised at the gate.
 - **Thinking text reaches `dim_session.last_assistant_message` by default.**
   Found 2026-10-09 while correcting `docs/JSONL_CONTRACT.md` claim 5.
   `extract_text_from_content_json` defaults to including thinking, so a
