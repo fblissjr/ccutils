@@ -59,6 +59,8 @@ Facets are split into three tiers by *how* they're produced. The split matters b
 
 These are cheap, deterministic, and run inline with the existing `run_v15_etl()` orchestrator.
 
+Every Tier 1 facet describes a session by its own work. A fork's transcript opens with a copy of its spawner's conversation, so each fact a facet reads is limited to what came after `dim_session.fork_cut_timestamp` (NULL for a session that is not a fork). `etl/fact_session_facets.py::_own_work_only` applies that to every facet in one place and refuses a facet it cannot scope. The Tier 2 inputs apply the same cut, so the text sent for a fork is the fork's own.
+
 | ID | Facet | Type | Reads from | Notes / why we want it |
 |---|---|---|---|---|
 | F01 | `session_intent` | enum | `fact_messages` first user msg | Already exists; keep regex version as fallback |
@@ -359,7 +361,7 @@ For each use case, what facets it requires and what queries it implies. Use case
 ## 8. Open decisions
 
 1. **LLM provider for T02 / T05.** Anthropic API direct, or stay credential-free and read from a configured local model? Cost favors Haiku via API. Privacy favors local.
-2. **Embedding model.** ColBERT (already an optional dep, good for retrieval) vs. a general sentence-transformer (better for k-means clustering). Probably both, behind a config flag.
+2. **Embedding model.** ColBERT (good for retrieval; the `colbert` extra and the `--embed` path were removed at 1.0.0, so it would have to be added back) vs. a general sentence-transformer (better for k-means clustering). Probably both, behind a config flag.
 3. **Clustering algorithm.** k-means (need to pick k, simpler) vs. HDBSCAN (auto-k, handles outliers natively, more compute). Lean HDBSCAN given the typical corpus shape.
 4. ~~**Where to store embeddings.** DuckDB BLOB column (simple, one source of truth) vs. separate Parquet shard (faster k-NN).~~ **Resolved during build step 1** (see the schema-split note in §4): neither BLOB nor Parquet -- `fact_facet_embeddings.embedding FLOAT[384]` in DuckDB, so `array_cosine_similarity` / `array_inner_product` work natively in SQL. The table exists as a DDL stub; T03 (the populator) is still unbuilt.
 5. **Incremental re-clustering.** Full recompute nightly is simplest. Incremental (assign new sessions to existing clusters, rebuild quarterly) is cheaper. Start simple.

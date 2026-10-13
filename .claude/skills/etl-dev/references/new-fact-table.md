@@ -54,6 +54,27 @@ payload_cols=[...], hash_cols=[...])`.
 - The step row (`upsert:<table>`) is self-recorded with real affected-row
   counts — don't add manual step bookkeeping around it.
 
+Choosing the natural key and what the fact describes:
+
+- **An id from the transcript is not a key on its own.** A resumed,
+  backgrounded or forked session replays earlier history into its own file
+  under the same ids (`docs/JSONL_CONTRACT.md` claim 12), so the same
+  `tool_use_id` sits in several transcripts. Key on the session and the id
+  together, as `fact_tool_calls.tool_call_key` does, and compute the key in
+  the projection. A key that is too short does not fail: it makes one row
+  flip between sessions with load order.
+- **If the fact says what a session DID, it must leave out a fork's
+  inherited prefix.** Apply `etl/utils.py::own_work_sql` against
+  `dim_session.fork_cut_timestamp` (NULL for every session that is not a
+  fork). For entries that state no time, use `derived_timestamp`.
+- **Whether a row is a replay is not yours to store.** It depends on rows
+  other sessions hold, which may load later. That is
+  `semantic_tool_call_replay`, a view.
+- **Never load rows with `executemany`.** DuckDB runs it one row at a time.
+  Use one set-based `INSERT ... SELECT`, passing values as parameters where
+  Python owns them (`schemas/star/schema.py::_seed_dim_time` is the
+  pattern).
+
 ## 4. Wire into `etl/orchestrator.py::run_v15_etl`
 
 Insert at the right point in dependency order (see the populator-order list in
@@ -81,10 +102,17 @@ test that fails until the table is in it:
 
 `docs/ETL_ARCHITECTURE.md` rule 3: an object exists because it encodes
 something a consumer would get wrong, not because it saves a JOIN. The
-plain-join views are being deleted (`docs/ROADMAP.md`), so do not add
-another. A view that does earn its place filters `is_deleted = FALSE`, and
-is validated on every `create_star_schema()` call, so a bad column
-reference fails fast.
+plain-join views have been deleted
+(`tests/test_star_schema_ddl.py::TestPlainJoinViewsAreGone` lists them), so
+do not add another. A view that does earn its place filters
+`is_deleted = FALSE`, counts only a session's own tool calls
+(`semantic_tool_call_replay`) and own work (`fork_cut_timestamp`), carries
+no `ORDER BY` of its own, and is validated on every `create_star_schema()`
+call, so a bad column reference fails fast.
+
+A value that depends on rows another session holds belongs in a view and
+nowhere else: a copy can load before its original, and a parent before its
+agents.
 
 If the table is only a rollup of other facts, it should BE the view:
 `semantic_session_summary` and `semantic_agent_delegations` were both tables

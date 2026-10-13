@@ -80,7 +80,7 @@ The orchestrator at `src/ccutils/etl/orchestrator.py` (`run_v15_etl`) runs per s
 
 1. Write Tier 1 Parquet from the typed parser.
 2. Load Tier 2 staging from Parquet (`load_session_to_staging`, `etl/staging.py`). Returns a `StagingLoad` NamedTuple (`rows`, `data_start_ts`, `data_end_ts`) in one pass -- the row count feeds the `load_staging` step's counters and the CDC window feeds `EtlRun.complete()` without a second scan of staging.
-3. Upsert stub dimensions (`dim_session`, `dim_project`, `dim_tool`, `dim_model`). Subagent enrichment fills `is_agent` / `agent_id` / `parent_session_key` / `agent_type` / `agent_description` on `dim_session` immediately after (see "Subagent session identity" above).
+3. Upsert stub dimensions (`dim_session`, `dim_project`, `dim_tool`, `dim_model`). Subagent enrichment fills `is_agent` / `agent_id` / `parent_session_key` / `agent_type` / `agent_description` and, for a fork, `fork_cut_timestamp` on `dim_session` immediately after (see "Subagent session identity" above).
 4. Run fact populators in dependency order:
    - `fact_messages`, `fact_tool_calls` (use + result + chain position)
    - `fact_token_usage`
@@ -529,7 +529,7 @@ One row per file touch per transcript. Derived from `fact_tool_calls`, and keyed
 | timestamp | TIMESTAMP | Operation timestamp |
 
 #### semantic_session_files (view)
-A view since 1.0.0 over `fact_file_operations`, one row per (session, file). Was the table `bridge_session_file`.
+A view since 1.0.0 over `fact_file_operations`, one row per (session, file). Was the table `bridge_session_file`. It counts a session's own operations: a read or edit its transcript only replays is left out (`semantic_tool_call_replay`), so `semantic_file_evolution` and `semantic_project_files`, which read this view, count a file once per session that touched it.
 
 M:N aggregate per (session, file).
 
@@ -551,7 +551,7 @@ M:N aggregate per (session, file).
 LSP diagnostics flattened from the `fact_entry_events` attachments whose `subtype` is `diagnostics`. Columns: `diagnostic_id` (PK), `entry_id`, `session_key`, `file_key`, `date_key`, `time_key`, `file_path`, `severity` (Error/Warning/Info/Hint), `source` (Pyright, typescript, etc.), `code`, `message`, `range_start_line` / `range_start_col` / `range_end_line` / `range_end_col`, `timestamp`.
 
 #### fact_plan_revisions
-One row per `ExitPlanMode` tool invocation, linked into a per-session revision chain. Uses the structural `fact_tool_calls.is_error` signal (R16 tri-state) with full-content approval-signature fallback when `is_error` is NULL.
+One row per `ExitPlanMode` tool invocation, linked into a per-session revision chain. Uses the structural `fact_tool_calls.is_error` signal (R16 tri-state) with full-content approval-signature fallback when `is_error` is NULL. A plan in a fork's inherited prefix is its spawner's and is not a row for the fork (`dim_session.fork_cut_timestamp`).
 
 | Column | Type | Description |
 |--------|------|-------------|
@@ -656,7 +656,7 @@ GROUP BY ALL ORDER BY calls DESC;
 **A fork's replayed prefix is left out of what describes the fork.** The populated per-session facts cannot use this view's cross-session rule, and for a fork they do not need it: `dim_session.fork_cut_timestamp` needs only the fork's own sidecar and transcript. `fact_session_facets` (both tiers), the `dim_session` heuristics (`first_user_message`, `intent`, `complexity`, `outcome`) and `fact_plan_revisions` read only what came after it, so a fork is described by its own prompt, tools, files, plans, tokens and duration. The message and token columns of `semantic_session_summary` apply the same cut, so `semantic_session_behavior` and anything else that reads the summary bill a fork for its own work, and a fork's summary agrees with its facets. The event counts follow the same cut (turns, compactions, API errors, stop events, progress, attachments), as do `permission_mode_transition_count` and `session_duration_seconds`, and `semantic_decisions` lists a fork's own decisions. A mode change is judged against the mode the fork inherited and counted only if the fork made it. Entries that state no time are placed by `fact_entry_events.derived_timestamp`. What is still not replay-aware: any of this for a copy between ROOT sessions, where nothing states a cut.
 
 #### fact_session_facets
-One row per (session_key, facet_type_key). Tier 1 facets (F01-F19) populated via SQL; Tier 2 facets (F20+) populated via the LLM extractor when injected.
+One row per (session_key, facet_type_key). Tier 1 facets (F01-F19) populated via SQL; Tier 2 facets (F20+) populated via the LLM extractor when injected. Both describe a session by its own work: every fact a facet reads is limited to what came after `dim_session.fork_cut_timestamp`, which is NULL unless the session is a fork.
 
 | Column | Type | Description |
 |--------|------|-------------|
@@ -738,7 +738,7 @@ All views use the `semantic_` prefix. Each one encodes something a query would o
 
 - `semantic_tool_call_replay` -- one row per live tool call: the transcript's own, or a replay of another session's history (documented above under facts)
 - `semantic_agent_delegations` -- one row per Agent/Task spawn a session made itself, joined to the child session, with derived `completion_state` and rollups (a table until 1.0.0; documented above under facts)
-- `semantic_decisions` -- unified decision timeline UNIONing plan revisions, permission-mode changes, stop events, API errors, and compact boundaries from their source facts (`source_key`/`source_table` link back to the underlying row). A permission-mode change is an entry whose mode differs from the one before it in file order, not every permission-mode entry. `timestamp` is stated and is NULL on those rows; `derived_timestamp` places them, so order a timeline by `COALESCE(timestamp, derived_timestamp)`
+- `semantic_decisions` -- a session's own decisions (a fork's start at its cut): a unified timeline UNIONing plan revisions, permission-mode changes, stop events, API errors, and compact boundaries from their source facts (`source_key`/`source_table` link back to the underlying row). A permission-mode change is an entry whose mode differs from the one before it in file order, not every permission-mode entry. `timestamp` is stated and is NULL on those rows; `derived_timestamp` places them, so order a timeline by `COALESCE(timestamp, derived_timestamp)`
 - `semantic_file_evolution` -- cross-session file activity (files touched in 2+ sessions)
 - `semantic_tool_patterns` -- common tool sequences with frequency and error rates (no row order of its own; add an `ORDER BY`)
 - `semantic_project_files` -- file activity aggregated by project (no row order of its own; add an `ORDER BY`)

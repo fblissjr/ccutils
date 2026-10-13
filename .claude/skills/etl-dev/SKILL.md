@@ -18,6 +18,8 @@ docs together.
 | Add/rename column on a shipped table; version bump/release | `references/migrations-and-versioning.md` |
 | Add/change a facet (F01+), bump a prompt version | `references/facets.md` |
 | Ingest a source that is NOT per-session (a global file, a per-repo directory) | `etl/dim_memory.py::run_memory_import` is the worked example: an `EtlRun` with `run_kind="global_source"`, a step whose counts come from the work, `run.fail()` on error. Call it from `etl/global_sources.py::run_global_sources` so every entry point runs it |
+| Anything that counts or describes what a session did (a rollup, a facet, a heuristic, a view) | `references/new-fact-table.md`, "Choosing the natural key and what the fact describes": replayed calls and a fork's inherited prefix are not the session's own |
+| What the transcript format guarantees, and what it does not | `docs/JSONL_CONTRACT.md` (each claim with its measurement and its canary) before writing a parser, a classifier or a fixture |
 | Query-shape questions while developing | the `query-warehouse` skill's references |
 | Table/view column ground truth | `docs/STAR_SCHEMA.md` (grep the table name) |
 | Where a new table, view or populator belongs | `docs/ETL_ARCHITECTURE.md` (the three rules) |

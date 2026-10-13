@@ -221,23 +221,25 @@ Every fact carries the v0.15 lineage convention: `created_at`, `last_updated_at`
 
 Subagent transcripts are first-class sessions: agent files carry their parent's `sessionId` internally, so ccutils keys them by file identity (`agent-<id>`), links them to their parent session, and computes delegation depth -- your agents don't silently merge into their parents.
 
+**Replayed history is kept and marked, not double-counted.** A resumed, backgrounded or forked session starts its transcript with a copy of earlier history, under the same tool-call ids. Each transcript's copy is its own row in `fact_tool_calls` and `fact_file_operations` (keyed on the session and the call), and the `semantic_tool_call_replay` view says which rows are copies; every `semantic_` view that counts tool calls, file operations or delegations leaves them out. A fork is described by its own work: `dim_session.fork_cut_timestamp` records where its own history starts, and its facets, classifications, summary totals and delegation figures begin there. A query against the raw facts has to apply both itself. `docs/JSONL_CONTRACT.md` claims 11 and 12 say what the source does and does not state about this.
+
 **Tables populated by `run_v15_etl`:**
 
 - **Machinery, in the `etl` schema:** `etl.versions`, `etl.batch_runs`, `etl.runs`, `etl.steps`, `etl.schema_version` (plus transient `etl.log_entries` staging). `main` holds only dimensions, facts and views.
 - **Dimensions:** `dim_session` (with intent/complexity/outcome/domain enrichment + subagent linkage), `dim_project`, `dim_tool`, `dim_model`, `dim_file`, `dim_session_chain`, `dim_facet_type` (facet registry).
-- **Core facts:** `fact_messages`, `fact_tool_calls` (one row per tool use: the call, its typed `toolUseResult` payload, the derived failure kind, and its position in the agentic run), `fact_token_usage` (R11 cache split: `cache_creation_5m_tokens` + `cache_creation_1h_tokens`), `semantic_session_summary`.
+- **Core facts:** `fact_messages`, `fact_tool_calls` (one row per tool use per transcript: the call, its typed `toolUseResult` payload where the transcript states one, the derived failure kind, and its position in the agentic run), `fact_token_usage` (R11 cache split: `cache_creation_5m_tokens` + `cache_creation_1h_tokens`), `semantic_session_summary`.
 - **Entry-type facts:** `fact_entry_events` (attachments, every permission-mode / title / agent-name / last-prompt entry, file-history snapshots, queue operations and PR links, one row per entry in file order), `fact_progress_events`, `fact_system_events`.
-- **Derived:** `fact_file_operations` (+ the `semantic_session_files` view), `fact_diagnostics`, `fact_plan_revisions` (structural outcome from `fact_tool_calls.is_error`), and the `semantic_agent_delegations` view (each Agent/Task spawn joined to the agent's own session).
+- **Derived:** `fact_file_operations` (+ the `semantic_session_files` view), `fact_diagnostics`, `fact_plan_revisions` (structural outcome from `fact_tool_calls.is_error`), the `semantic_agent_delegations` view (each Agent/Task spawn a session made itself, joined to the agent's own session), and the `semantic_tool_call_replay` view (which tool-call rows are a transcript's own).
 - **Facets:** `fact_session_facets` Tier 1 (F01-F19, SQL-computed; always on). Tier 2 (F20+, LLM-extracted via Haiku) is opt-in via `--llm-facets`.
 
-**Populated after the per-session loop** (global sources, not per-session, so they are outside `run_v15_etl` and only the batch archive path reaches them):
+**Populated after the per-session loop** (global sources, not per-session, so they are outside `run_v15_etl`; every command that builds a warehouse runs them, and a build of a subset keeps prompt history to the projects it covers):
 
 - `dim_prompt` -- user prompts from the Claude Code prompt-history JSONL, linked to sessions by `sessionId`.
 - `dim_memory` + `bridge_memory_link` -- Claude Code **auto memory**: the markdown Claude writes to itself per project, plus subagent memory in all three scopes. A **Type 2 SCD**, because Claude Code overwrites memory files in place and keeps no history of its own -- one row per (memory file, content version), so re-ingesting does not destroy what the memory said before. Deleted memories are closed, not erased. `bridge_memory_link` carries the link graph in both forms Claude actually writes -- `[[wiki-links]]` between topic files and the `[Title](file.md)` entries by which `MEMORY.md` indexes them -- kept apart by `link_syntax`, dangling links included. Query `semantic_memory` / `semantic_memory_links` for the current state, `dim_memory` for the history.
 
 > The JSON export mirrors the warehouse, so it includes `dim_memory` — auto-memory bodies and all. That is the same treatment `fact_messages` already gives full transcript text, but worth knowing before you move an export somewhere else.
 
-**Coverage is declared in the warehouse itself.** `etl.table_coverage` lists every table and view in `main` with its status, what writes it, and why it exists. There are no empty-by-design tables: a table with no writer is not created. The one conditional table is `fact_session_embeddings`, populated only by `--embed` runs. `etl.steps.table_name` records what each run actually wrote, so `SELECT DISTINCT table_name FROM etl.steps` is the measured counterpart.
+**Coverage is declared in the warehouse itself.** `etl.table_coverage` lists every table and view in `main` with its status, what writes it, and why it exists. There are no empty-by-design tables: a table with no writer is not created. No table is conditional on a flag. `etl.steps.table_name` records what each run actually wrote, so `SELECT DISTINCT table_name FROM etl.steps` is the measured counterpart.
 
 ```sql
 -- Sessions ranked by uncached-equivalent token cost

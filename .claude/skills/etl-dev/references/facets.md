@@ -25,6 +25,17 @@ via `OUTPUT_TYPE_TO_COL` in `etl/facets/extractor.py`). Design doc:
 - Both Tier 1 and Tier 2 populators write `fact_session_facets` — each MUST
   pass `soft_delete_scope_sql` to `lineage_upsert` (scoped by facet tier) or
   one soft-deletes the other's rows.
+- **A Tier 1 facet scopes every fact it reads with
+  `<alias>.session_id = scope.session_id`, written exactly that way.**
+  `_insert_facet` uses that form to limit the read to the session's own
+  work (a fork's transcript opens with its spawner's conversation; see
+  `dim_session.fork_cut_timestamp` and `etl/utils.py::own_work_sql`), and
+  raises on a facet that reads a `fact_` table any other way. For a
+  session-level value use `scope.own_first_timestamp`, not
+  `scope.first_timestamp`, when you mean when the session's own work began.
+  The Tier 2 inputs apply the same cut by hand in
+  `etl/facets/populator.py::_build_session_inputs`: extend it there if you
+  add an input, because those inputs leave the machine.
 - Tier 2 credentials resolve ONLY via
   `cli/utils.py::build_facet_extractor_or_exit` (env `ANTHROPIC_API_KEY` or
   the `ccutils-anthropic` keychain entry) — no new credential paths.
