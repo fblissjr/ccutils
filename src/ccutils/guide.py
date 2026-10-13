@@ -173,7 +173,9 @@ def render_guide(conn) -> str:
       "`semantic_tool_call_replay` and keep `NOT is_replay`. A fork's copy is "
       "marked from its sidecar; any other copy by a rule (the session that ended "
       "first is taken as the original). Messages and token usage are replayed the "
-      "same way and are NOT marked, so token sums across sessions count a "
+      "same way. A fork's are left out of `semantic_session_summary` and the cost "
+      "views, and marked `in_fork_prefix` in the per-response views; a continued "
+      "root session's are NOT marked, so token sums across sessions count a "
       "continuation's replayed history again.")
     w("- Large tool outputs: when Claude Code spills a result to `tool-results/`, the "
       "transcript keeps a preview and a path; the body is not ingested.")

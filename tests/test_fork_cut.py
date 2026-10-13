@@ -314,3 +314,75 @@ class TestADelegationToAForkCountsTheForksOwnWork:
             "WHERE tool_use_id = 'tu_child'"
         ).fetchone() == (260, 270000.0)
 
+
+
+class TestAForksTotalsAreItsOwn:
+    """The session summary and the cost views: a fork's own messages and tokens.
+
+    The fork's transcript holds twelve messages and six API responses; four
+    messages and two responses came after its spawn. Its facets already said
+    so, and the summary did not, so a fork's `F15` and its summary token
+    total disagreed and its per-session cost read several times too high.
+
+    Delete these and a fork is billed for the conversation it inherited.
+    """
+
+    def test_message_and_token_totals_start_at_the_cut(self, loaded):
+        assert loaded.execute(
+            "SELECT total_messages, user_messages, assistant_messages, "
+            "       total_input_tokens, total_output_tokens, api_response_count "
+            "FROM semantic_session_summary WHERE session_id = 'agent-f1'"
+        ).fetchone() == (4, 2, 2, 50, 760, 2)
+
+    def test_the_facets_and_the_summary_agree(self, loaded):
+        tokens_in, tokens_out = loaded.execute(
+            "SELECT total_input_tokens, total_output_tokens FROM semantic_session_summary "
+            "WHERE session_id = 'agent-f1'"
+        ).fetchone()
+        assert _facet(loaded, "agent-f1", "F15") == tokens_in
+        assert _facet(loaded, "agent-f1", "F30") == tokens_out
+
+    def test_cost_analysis_follows_the_summary(self, loaded):
+        assert loaded.execute(
+            "SELECT total_input_tokens, total_output_tokens, total_messages, api_response_count "
+            "FROM semantic_cost_analysis WHERE session_id = 'agent-f1'"
+        ).fetchone() == (50, 760, 4, 2)
+
+    def test_summed_over_sessions_a_response_is_counted_once(self, conn, tmp_path):
+        """The spawner's 7,710 input tokens and the fork's own 50, not 7,710 twice."""
+        _load(conn, tmp_path, _spawner(tmp_path), _fork(tmp_path))
+        assert conn.execute(
+            "SELECT SUM(total_input_tokens), "
+            "       (SELECT SUM(input_tokens) FROM fact_token_usage WHERE NOT is_deleted) "
+            "FROM semantic_session_summary"
+        ).fetchone() == (7760, 15460)
+
+    def test_a_session_that_is_not_a_fork_is_counted_whole(self, conn, tmp_path):
+        """A control: no cut, nothing withheld. Ten messages, five responses."""
+        _load(conn, tmp_path, _spawner(tmp_path), _fork(tmp_path))
+        assert conn.execute(
+            "SELECT total_messages, total_input_tokens, total_output_tokens, api_response_count "
+            "FROM semantic_session_summary WHERE session_id = 'agent-p1'"
+        ).fetchone() == (10, 7710, 5200, 5)
+
+    @pytest.mark.parametrize("view", ["semantic_token_usage", "semantic_context_growth"])
+    def test_a_per_response_view_marks_the_inherited_rows(self, loaded, view):
+        """One row per response stays one row; a column says which were inherited.
+
+        Dropping them would hide where a fork's context came from, and a
+        consumer summing the view would then get the fork's own total without
+        knowing rows were missing.
+        """
+        rows = loaded.execute(
+            f"SELECT in_fork_prefix, COUNT(*) FROM {view} "
+            "WHERE session_id = 'agent-f1' GROUP BY 1 ORDER BY 1"
+        ).fetchall()
+        assert rows == [(False, 2), (True, 4)]
+
+    def test_no_other_session_has_inherited_rows(self, conn, tmp_path):
+        """FALSE, never NULL, so `NOT in_fork_prefix` keeps every ordinary row."""
+        _load(conn, tmp_path, _spawner(tmp_path), _fork(tmp_path))
+        assert conn.execute(
+            "SELECT DISTINCT in_fork_prefix FROM semantic_token_usage "
+            "WHERE session_id = 'agent-p1'"
+        ).fetchall() == [(False,)]

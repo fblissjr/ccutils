@@ -97,13 +97,19 @@ GROUP BY ALL ORDER BY own_calls DESC LIMIT 20;
   `dim_session` heuristics (`first_user_message`, `intent`, ...) and
   `fact_plan_revisions` are computed from what came after it. So are the
   `derived_*` figures a delegation takes from a fork child.
-- **A fork's message and token totals are NOT its own yet.**
-  `semantic_session_summary`'s message and token columns, and the cost and
-  token views, still include the conversation a fork inherited, so a fork's
-  token facet (`F15`, `F30`) and its summary token total disagree and its
-  per-session cost reads high. For a fork's own tokens, sum
-  `fact_token_usage` with `timestamp > fork_cut_timestamp`, or read `F15` /
-  `F30`.
+- **A fork's message and token totals are its own too.** The message and
+  token columns of `semantic_session_summary` (and so of
+  `semantic_cost_analysis`, `semantic_sessions` and
+  `semantic_session_behavior`) count what came after the cut, and agree
+  with the fork's `F15` / `F30`. The per-response views,
+  `semantic_token_usage` and `semantic_context_growth`, keep a fork's
+  inherited rows and mark them `in_fork_prefix`: add `NOT in_fork_prefix`
+  to total a session's own usage from them. A query on raw
+  `fact_token_usage` or `fact_messages` must apply the cut itself
+  (`timestamp > fork_cut_timestamp` where the session has one).
+- Still whole-transcript for a fork: the summary's event counts (turns,
+  compactions, API errors, permission-mode changes), its
+  `session_duration_seconds`, and `semantic_decisions`.
 - A copy between root sessions has no cut: its facets, heuristics and plan
   revisions still include the replayed part, and cross-session token sums
   still double-count continuations.

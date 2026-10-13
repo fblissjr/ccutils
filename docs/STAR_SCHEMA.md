@@ -653,7 +653,7 @@ WHERE tc.is_deleted = FALSE AND NOT rp.is_replay AND tc.session_id = '<id>'
 GROUP BY ALL ORDER BY calls DESC;
 ```
 
-**A fork's replayed prefix is left out of what describes the fork.** The populated per-session facts cannot use this view's cross-session rule, and for a fork they do not need it: `dim_session.fork_cut_timestamp` needs only the fork's own sidecar and transcript. `fact_session_facets` (both tiers), the `dim_session` heuristics (`first_user_message`, `intent`, `complexity`, `outcome`) and `fact_plan_revisions` read only what came after it, so a fork is described by its own prompt, tools, files, plans, tokens and duration. What is still not replay-aware: those same facts for a copy between ROOT sessions, where nothing states a cut; and the message and token columns of `semantic_session_summary` and of the cost and token views, which count a fork's inherited messages and usage. See `docs/ROADMAP.md`.
+**A fork's replayed prefix is left out of what describes the fork.** The populated per-session facts cannot use this view's cross-session rule, and for a fork they do not need it: `dim_session.fork_cut_timestamp` needs only the fork's own sidecar and transcript. `fact_session_facets` (both tiers), the `dim_session` heuristics (`first_user_message`, `intent`, `complexity`, `outcome`) and `fact_plan_revisions` read only what came after it, so a fork is described by its own prompt, tools, files, plans, tokens and duration. The message and token columns of `semantic_session_summary` apply the same cut, so `semantic_cost_analysis`, `semantic_sessions` and `semantic_session_behavior` bill a fork for its own work, and a fork's summary agrees with its facets. What is still not replay-aware: any of this for a copy between ROOT sessions, where nothing states a cut; and, for a fork, the summary's event counts and `session_duration_seconds` and the timeline in `semantic_decisions`. See `docs/ROADMAP.md`.
 
 #### fact_session_facets
 One row per (session_key, facet_type_key). Tier 1 facets (F01-F19) populated via SQL; Tier 2 facets (F20+) populated via the LLM extractor when injected.
@@ -691,12 +691,12 @@ One row per session. Aggregates over every fact above. Must populate last.
 | time_key | INTEGER | FK to dim_time |
 | first_timestamp | TIMESTAMP | First message time |
 | last_timestamp | TIMESTAMP | Last message time |
-| session_duration_seconds | DOUBLE | last_timestamp - first_timestamp |
-| total_messages | BIGINT | Total message count |
+| session_duration_seconds | DOUBLE | last_timestamp - first_timestamp. For a fork this still starts at the first entry of the conversation it inherited |
+| total_messages | BIGINT | The session's own messages. For a fork, those after `dim_session.fork_cut_timestamp`: its transcript opens with its spawner's conversation. The same holds for the user, assistant and thinking counts beside it |
 | user_messages | BIGINT | User message count |
 | assistant_messages | BIGINT | Assistant message count |
 | total_thinking_blocks | BIGINT | Thinking blocks across assistant messages |
-| total_input_tokens | BIGINT | Sum of API input tokens |
+| total_input_tokens | BIGINT | Sum of API input tokens over the session's own responses. For a fork, those after `fork_cut_timestamp`; its replayed responses carry their usage and are its spawner's. The same holds for every token column and `api_response_count` |
 | total_output_tokens | BIGINT | Sum of API output tokens |
 | total_cache_creation_5m_tokens | BIGINT | R11 split |
 | total_cache_creation_1h_tokens | BIGINT | R11 split |
@@ -743,8 +743,8 @@ All views use the `semantic_` prefix. Each one encodes something a query would o
 - `semantic_file_evolution` -- cross-session file activity (files touched in 2+ sessions)
 - `semantic_tool_patterns` -- common tool sequences with frequency and error rates
 - `semantic_project_files` -- file activity aggregated by project
-- `semantic_token_usage` -- per-API-response token data with model/session/project context
-- `semantic_context_growth` -- per-request context-size deltas within a session (R23). `context_tokens` is `total_uncached_equivalent_tokens` (the exact prompt size the API saw); `inbound_tokens` nets out the previous response's own output, isolating what the user side added (prompt text + tool results, which carry no `usage` of their own). Compaction shows as `is_context_reset` with `inbound_tokens` suppressed. Slightly negative `inbound_tokens` without a reset is real (thinking bills as output but is not retained in later context; 9 of 3,443 rows on a validation corpus) and left visible. Only meaningful on the R23 response grain -- per-entry rows made 51% of deltas negative
+- `semantic_token_usage` -- one row per API response; a response a fork's transcript replays from its spawner is kept and marked `in_fork_prefix` (FALSE, never NULL, for everything else), so `NOT in_fork_prefix` totals a session's own usage. Per-API-response token data with model/session/project context
+- `semantic_context_growth` -- per-request context-size deltas within a session (R23), with the same `in_fork_prefix` mark; the sequence is left whole, since a fork's first own request did follow the last inherited one. `context_tokens` is `total_uncached_equivalent_tokens` (the exact prompt size the API saw); `inbound_tokens` nets out the previous response's own output, isolating what the user side added (prompt text + tool results, which carry no `usage` of their own). Compaction shows as `is_context_reset` with `inbound_tokens` suppressed. Slightly negative `inbound_tokens` without a reset is real (thinking bills as output but is not retained in later context; 9 of 3,443 rows on a validation corpus) and left visible. Only meaningful on the R23 response grain -- per-entry rows made 51% of deltas negative
 - `semantic_cost_analysis` -- session-level cost aggregation. R11-corrected: `cache_hit_rate_pct` denominator includes cache_creation
 - `semantic_prompt_history` -- prompts from history JSONL linked to session metadata
 - `semantic_memory` -- the auto-memory corpus AS IT STANDS NOW (`is_current` only), with project, origin-session and date context. Query `dim_memory` directly for the version history behind it

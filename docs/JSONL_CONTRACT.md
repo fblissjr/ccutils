@@ -337,10 +337,13 @@ timestamps, so one call sits in several transcripts.
   transcript measured, the first entry after the spawn call is one user
   entry holding both the "Fork started" result and the fork's own prompt,
   so a fork's first prompt is its own.
-- Consequence: messages and token usage are replayed the same way and carry
-  no such flag. The session summary and the cost views still count a fork's
-  inherited messages and usage, and nothing marks a copy between root
-  sessions. `docs/ROADMAP.md`, "Continued sessions replay their history".
+- Consequence: messages and token usage are replayed the same way. For a
+  fork the cut covers them too: the session summary's message and token
+  totals start after it, and the per-response views mark the inherited rows
+  (`in_fork_prefix`). Nothing marks a message or a response copied between
+  root sessions, so token sums across a continuation still count its
+  replayed history twice. `docs/ROADMAP.md`, "Continued sessions replay
+  their history".
 - Canary: `tests/test_jsonl_contract.py::TestAReplayedCallAndWhatStatesIt`.
   One pass over the corpus feeds two checks: the cut at a fork's own spawn
   misplaces under `FORK_PREFIX_MAX_MISMATCH_RATE` of its calls, judged

@@ -444,12 +444,17 @@ they land.
     Measured on two one-project builds before the change: about three
     quarters of forks' `derived_io_tokens` was their spawner's replayed
     usage, and every other child's figure was already its own.
-  - Not done, and now one predicate per rollup: the message and token
-    columns of `semantic_session_summary`, `semantic_cost_analysis`,
-    `semantic_token_usage` and `semantic_context_growth` still count a
-    fork's inherited messages and usage. So a fork's `F15` and its summary
-    token total disagree, and per-session cost reads too high for a fork.
-    Left out on purpose: the owner asked for the three populated facts.
+  - A fork's message and token totals: done 2026-10-13. The message and
+    token rollups of `semantic_session_summary` apply the cut, so the cost,
+    sessions and behavior views that read it bill a fork for its own work
+    and agree with its `F15` / `F30`. `semantic_token_usage` and
+    `semantic_context_growth` keep a fork's inherited rows and mark them
+    `in_fork_prefix`. Still whole-transcript for a fork: the summary's
+    event counts (turns, compactions, API errors, permission-mode
+    transitions) and `session_duration_seconds`, and the timeline in
+    `semantic_decisions`. The event facts are the awkward part: some entry
+    events state no timestamp, so the cut cannot be applied to them as it
+    stands.
   - The populated facts are still not replay-aware for a copy between ROOT
     sessions: nothing states a cut there, and a populator cannot use the
     view's cross-session rule.

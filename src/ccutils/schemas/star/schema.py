@@ -1473,7 +1473,15 @@ def _create_objects(conn) -> None:
                    SUM(CASE WHEN message_type = 'user' THEN 1 ELSE 0 END)::BIGINT AS user_messages,
                    SUM(CASE WHEN message_type = 'assistant' THEN 1 ELSE 0 END)::BIGINT AS assistant_messages,
                    SUM(CASE WHEN has_thinking THEN 1 ELSE 0 END)::BIGINT AS total_thinking_blocks
-            FROM fact_messages WHERE is_deleted = FALSE GROUP BY session_id
+            -- The session's OWN messages. A fork's transcript opens with its
+            -- spawner's conversation; what it said and was told starts after
+            -- dim_session.fork_cut_timestamp, which is NULL for everyone else.
+            FROM fact_messages fm
+            LEFT JOIN dim_session fds USING (session_id)
+            WHERE fm.is_deleted = FALSE
+              AND (fds.fork_cut_timestamp IS NULL
+                   OR fm.timestamp > fds.fork_cut_timestamp)
+            GROUP BY session_id
         ),
         token_rollup AS (
             SELECT session_id,
@@ -1485,7 +1493,15 @@ def _create_objects(conn) -> None:
                    SUM(COALESCE(cache_read_tokens, 0))::BIGINT AS total_cache_read_tokens,
                    SUM(COALESCE(total_uncached_equivalent_tokens, 0))::BIGINT AS total_uncached_equivalent_tokens,
                    COUNT(*) AS api_response_count
-            FROM fact_token_usage WHERE is_deleted = FALSE GROUP BY session_id
+            -- The session's OWN responses, by the same cut: a fork's replayed
+            -- responses carry their usage, and counting it billed the fork
+            -- for the conversation it inherited.
+            FROM fact_token_usage tu
+            LEFT JOIN dim_session fds USING (session_id)
+            WHERE tu.is_deleted = FALSE
+              AND (fds.fork_cut_timestamp IS NULL
+                   OR tu.timestamp > fds.fork_cut_timestamp)
+            GROUP BY session_id
         ),
         tool_rollup AS (
             SELECT session_id,
@@ -2232,6 +2248,11 @@ def _create_objects(conn) -> None:
             ftu.server_tool_use_web_search_requests,
             ftu.server_tool_use_web_fetch_requests,
             ftu.timestamp,
+            -- TRUE for a response a fork's transcript replays from its
+            -- spawner: it is that session's usage, repeated here. Kept as a
+            -- row, because it is where the fork's context came from; filter
+            -- on it to total a session's own usage. FALSE, never NULL.
+            COALESCE(ftu.timestamp <= ds.fork_cut_timestamp, FALSE) AS in_fork_prefix,
             dm.model_name,
             dm.model_family,
             ftu.session_id,
@@ -2314,6 +2335,10 @@ def _create_objects(conn) -> None:
             END AS inbound_tokens,
             (o.prev_context_tokens IS NOT NULL
              AND o.context_tokens < o.prev_context_tokens) AS is_context_reset,
+            -- TRUE for a request a fork's transcript replays from its
+            -- spawner. The sequence is left whole: the fork's first own
+            -- request really did follow the last inherited one.
+            COALESCE(o.timestamp <= ds.fork_cut_timestamp, FALSE) AS in_fork_prefix,
             dm.model_name,
             dm.model_family,
             ds.cwd,
