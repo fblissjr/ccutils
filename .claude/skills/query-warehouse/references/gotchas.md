@@ -107,9 +107,14 @@ GROUP BY ALL ORDER BY own_calls DESC LIMIT 20;
   to total a session's own usage from them. A query on raw
   `fact_token_usage` or `fact_messages` must apply the cut itself
   (`timestamp > fork_cut_timestamp` where the session has one).
-- Still whole-transcript for a fork: the summary's event counts (turns,
-  compactions, API errors, permission-mode changes), its
-  `session_duration_seconds`, and `semantic_decisions`.
+- The same holds for a fork's events and timeline: the summary's turn,
+  compaction, API-error, progress and attachment counts, its
+  `permission_mode_transition_count` and `session_duration_seconds`, and
+  `semantic_decisions` all start at the cut. A mode change the fork made is
+  judged against the mode it inherited. A query on raw `fact_system_events`
+  or `fact_entry_events` must apply the cut itself; for entry events use
+  `COALESCE(timestamp, derived_timestamp)`, since several entry types state
+  no time.
 - A copy between root sessions has no cut: its facets, heuristics and plan
   revisions still include the replayed part, and cross-session token sums
   still double-count continuations.

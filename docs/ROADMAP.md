@@ -449,12 +449,12 @@ they land.
     sessions and behavior views that read it bill a fork for its own work
     and agree with its `F15` / `F30`. `semantic_token_usage` and
     `semantic_context_growth` keep a fork's inherited rows and mark them
-    `in_fork_prefix`. Still whole-transcript for a fork: the summary's
-    event counts (turns, compactions, API errors, permission-mode
-    transitions) and `session_duration_seconds`, and the timeline in
-    `semantic_decisions`. The event facts are the awkward part: some entry
-    events state no timestamp, so the cut cannot be applied to them as it
-    stands.
+    `in_fork_prefix`. The summary's event counts, its
+    `permission_mode_transition_count` and `session_duration_seconds`, and
+    `semantic_decisions` follow the cut too (done the same day): entries
+    that state no time are placed by `derived_timestamp`, and a mode change
+    is judged against the mode a fork inherited. Nothing a view reports
+    about a fork is whole-transcript any more.
   - The populated facts are still not replay-aware for a copy between ROOT
     sessions: nothing states a cut there, and a populator cannot use the
     view's cross-session rule.

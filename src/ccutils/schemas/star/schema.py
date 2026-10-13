@@ -1472,7 +1472,8 @@ def _create_objects(conn) -> None:
                    COUNT(*) AS total_messages,
                    SUM(CASE WHEN message_type = 'user' THEN 1 ELSE 0 END)::BIGINT AS user_messages,
                    SUM(CASE WHEN message_type = 'assistant' THEN 1 ELSE 0 END)::BIGINT AS assistant_messages,
-                   SUM(CASE WHEN has_thinking THEN 1 ELSE 0 END)::BIGINT AS total_thinking_blocks
+                   SUM(CASE WHEN has_thinking THEN 1 ELSE 0 END)::BIGINT AS total_thinking_blocks,
+                   MIN(fm.timestamp) AS first_own_message_timestamp
             -- The session's OWN messages. A fork's transcript opens with its
             -- spawner's conversation; what it said and was told starts after
             -- dim_session.fork_cut_timestamp, which is NULL for everyone else.
@@ -1525,14 +1526,27 @@ def _create_objects(conn) -> None:
                    SUM(CASE WHEN subtype = 'turn_duration' THEN 1 ELSE 0 END)::BIGINT AS turn_count,
                    SUM(CASE WHEN subtype = 'stop_hook_summary' THEN 1 ELSE 0 END)::BIGINT AS total_stop_events,
                    SUM(CASE WHEN subtype = 'stop_hook_summary' AND prevented_continuation THEN 1 ELSE 0 END)::BIGINT AS total_prevented_continuations
-            FROM fact_system_events WHERE is_deleted = FALSE GROUP BY session_id
+            -- Events, like messages and usage, start at a fork's cut: an
+            -- error or a compaction in the conversation it inherited is not
+            -- the fork's.
+            FROM fact_system_events se
+            LEFT JOIN dim_session fds USING (session_id)
+            WHERE se.is_deleted = FALSE
+              AND (fds.fork_cut_timestamp IS NULL
+                   OR se.timestamp > fds.fork_cut_timestamp)
+            GROUP BY session_id
         ),
         progress_rollup AS (
             SELECT session_id,
                    COUNT(*) AS total_progress_events,
                    SUM(CASE WHEN data_type = 'hook_progress' THEN 1 ELSE 0 END)::BIGINT AS total_hook_progress_events,
                    SUM(CASE WHEN data_type = 'bash_progress' THEN 1 ELSE 0 END)::BIGINT AS total_bash_progress_events
-            FROM fact_progress_events WHERE is_deleted = FALSE GROUP BY session_id
+            FROM fact_progress_events pe
+            LEFT JOIN dim_session fds USING (session_id)
+            WHERE pe.is_deleted = FALSE
+              AND (fds.fork_cut_timestamp IS NULL
+                   OR pe.timestamp > fds.fork_cut_timestamp)
+            GROUP BY session_id
         ),
         entry_rollup AS (
             SELECT session_id,
@@ -1543,7 +1557,15 @@ def _create_objects(conn) -> None:
                                       AND subtype = 'hook_success') AS total_hook_successes,
                    COUNT(*) FILTER (WHERE entry_type = 'file-history-snapshot')
                        AS total_file_history_snapshots
-            FROM fact_entry_events WHERE is_deleted = FALSE GROUP BY session_id
+            -- Several entry types state no time. derived_timestamp places
+            -- them by the entry before them in the file, which is what lets
+            -- the cut apply.
+            FROM fact_entry_events ee
+            LEFT JOIN dim_session fds USING (session_id)
+            WHERE ee.is_deleted = FALSE
+              AND (fds.fork_cut_timestamp IS NULL
+                   OR COALESCE(ee.timestamp, ee.derived_timestamp) > fds.fork_cut_timestamp)
+            GROUP BY session_id
         ),
         -- A transition is a CHANGE of mode. Counting permission-mode entries
         -- counts restatements: the source writes the current mode again far
@@ -1553,14 +1575,21 @@ def _create_objects(conn) -> None:
             SELECT session_id, COUNT(*) AS permission_mode_transition_count
             FROM (
                 SELECT session_id, value_text,
+                       COALESCE(timestamp, derived_timestamp) AS placed_at,
                        LAG(value_text) OVER (
                            PARTITION BY session_id ORDER BY sequence_num) AS previous_mode,
                        ROW_NUMBER() OVER (
                            PARTITION BY session_id ORDER BY sequence_num) AS nth
                 FROM fact_entry_events
                 WHERE is_deleted = FALSE AND entry_type = 'permission-mode'
-            )
+            ) m
+            LEFT JOIN dim_session fds USING (session_id)
             WHERE nth > 1 AND value_text IS DISTINCT FROM previous_mode
+              -- The window runs over the whole transcript on purpose: a fork
+              -- changes mode relative to the mode it INHERITED. Only a change
+              -- the fork made itself is counted for it.
+              AND (fds.fork_cut_timestamp IS NULL
+                   OR m.placed_at > fds.fork_cut_timestamp)
             GROUP BY session_id
         ),
         -- What this session delegated, read from the spawn calls and the
@@ -1604,7 +1633,13 @@ def _create_objects(conn) -> None:
             ds.project_key,
             ds.first_timestamp,
             ds.last_timestamp,
-            EXTRACT(EPOCH FROM (ds.last_timestamp - ds.first_timestamp))::DOUBLE AS session_duration_seconds,
+            -- A fork's own work starts at its first message after the cut,
+            -- not at the first entry of the conversation it inherited.
+            EXTRACT(EPOCH FROM (
+                ds.last_timestamp
+                - CASE WHEN ds.fork_cut_timestamp IS NOT NULL
+                       THEN COALESCE(mr.first_own_message_timestamp, ds.fork_cut_timestamp)
+                       ELSE ds.first_timestamp END))::DOUBLE AS session_duration_seconds,
             CAST(strftime(ds.first_timestamp, '%Y%m%d') AS INTEGER) AS date_key,
             CAST(strftime(ds.first_timestamp, '%H%M') AS INTEGER) AS time_key,
             COALESCE(mr.total_messages, 0) AS total_messages,
@@ -1995,21 +2030,26 @@ def _create_objects(conn) -> None:
             -- restates the current mode far more often than it changes it.
             -- The first entry of a session states the starting mode and is
             -- not a change. File position is the only order these have.
-            SELECT *,
-                   LAG(value_text) OVER (
-                       PARTITION BY session_id ORDER BY sequence_num) AS previous_mode,
+            SELECT ee.*, fds.fork_cut_timestamp,
+                   LAG(ee.value_text) OVER (
+                       PARTITION BY ee.session_id ORDER BY ee.sequence_num) AS previous_mode,
                    ROW_NUMBER() OVER (
-                       PARTITION BY session_id ORDER BY sequence_num) AS nth
-            FROM fact_entry_events
-            WHERE entry_type = 'permission-mode' AND is_deleted = FALSE
+                       PARTITION BY ee.session_id ORDER BY ee.sequence_num) AS nth
+            FROM fact_entry_events ee
+            LEFT JOIN dim_session fds ON fds.session_id = ee.session_id
+            WHERE ee.entry_type = 'permission-mode' AND ee.is_deleted = FALSE
         )
         WHERE nth > 1 AND value_text IS DISTINCT FROM previous_mode
+          -- A fork's timeline is its own: a change is judged against the
+          -- mode it inherited, and listed only if the fork made it.
+          AND (fork_cut_timestamp IS NULL
+               OR COALESCE(timestamp, derived_timestamp) > fork_cut_timestamp)
 
         UNION ALL
 
         SELECT
-            session_id,
-            session_key,
+            se.session_id,
+            se.session_key,
             CASE subtype
                 WHEN 'stop_hook_summary' THEN 'stop_event'
                 ELSE subtype
@@ -2035,9 +2075,12 @@ def _create_objects(conn) -> None:
             CAST(timestamp AS DATE) AS decision_date,
             entry_id AS source_key,
             'fact_system_events' AS source_table
-        FROM fact_system_events
-        WHERE subtype IN ('stop_hook_summary', 'api_error', 'compact_boundary')
-          AND is_deleted = FALSE
+        FROM fact_system_events se
+        LEFT JOIN dim_session fds ON fds.session_id = se.session_id
+        WHERE se.subtype IN ('stop_hook_summary', 'api_error', 'compact_boundary')
+          AND se.is_deleted = FALSE
+          AND (fds.fork_cut_timestamp IS NULL
+               OR se.timestamp > fds.fork_cut_timestamp)
     """
     )
 

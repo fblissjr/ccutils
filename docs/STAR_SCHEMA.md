@@ -653,7 +653,7 @@ WHERE tc.is_deleted = FALSE AND NOT rp.is_replay AND tc.session_id = '<id>'
 GROUP BY ALL ORDER BY calls DESC;
 ```
 
-**A fork's replayed prefix is left out of what describes the fork.** The populated per-session facts cannot use this view's cross-session rule, and for a fork they do not need it: `dim_session.fork_cut_timestamp` needs only the fork's own sidecar and transcript. `fact_session_facets` (both tiers), the `dim_session` heuristics (`first_user_message`, `intent`, `complexity`, `outcome`) and `fact_plan_revisions` read only what came after it, so a fork is described by its own prompt, tools, files, plans, tokens and duration. The message and token columns of `semantic_session_summary` apply the same cut, so `semantic_cost_analysis`, `semantic_sessions` and `semantic_session_behavior` bill a fork for its own work, and a fork's summary agrees with its facets. What is still not replay-aware: any of this for a copy between ROOT sessions, where nothing states a cut; and, for a fork, the summary's event counts and `session_duration_seconds` and the timeline in `semantic_decisions`. See `docs/ROADMAP.md`.
+**A fork's replayed prefix is left out of what describes the fork.** The populated per-session facts cannot use this view's cross-session rule, and for a fork they do not need it: `dim_session.fork_cut_timestamp` needs only the fork's own sidecar and transcript. `fact_session_facets` (both tiers), the `dim_session` heuristics (`first_user_message`, `intent`, `complexity`, `outcome`) and `fact_plan_revisions` read only what came after it, so a fork is described by its own prompt, tools, files, plans, tokens and duration. The message and token columns of `semantic_session_summary` apply the same cut, so `semantic_cost_analysis`, `semantic_sessions` and `semantic_session_behavior` bill a fork for its own work, and a fork's summary agrees with its facets. The event counts follow the same cut (turns, compactions, API errors, stop events, progress, attachments), as do `permission_mode_transition_count` and `session_duration_seconds`, and `semantic_decisions` lists a fork's own decisions. A mode change is judged against the mode the fork inherited and counted only if the fork made it. Entries that state no time are placed by `fact_entry_events.derived_timestamp`. What is still not replay-aware: any of this for a copy between ROOT sessions, where nothing states a cut.
 
 #### fact_session_facets
 One row per (session_key, facet_type_key). Tier 1 facets (F01-F19) populated via SQL; Tier 2 facets (F20+) populated via the LLM extractor when injected.
@@ -691,7 +691,7 @@ One row per session. Aggregates over every fact above. Must populate last.
 | time_key | INTEGER | FK to dim_time |
 | first_timestamp | TIMESTAMP | First message time |
 | last_timestamp | TIMESTAMP | Last message time |
-| session_duration_seconds | DOUBLE | last_timestamp - first_timestamp. For a fork this still starts at the first entry of the conversation it inherited |
+| session_duration_seconds | DOUBLE | last_timestamp - first_timestamp. For a fork, from its first message after `fork_cut_timestamp`: the first entry of its transcript belongs to the conversation it inherited |
 | total_messages | BIGINT | The session's own messages. For a fork, those after `dim_session.fork_cut_timestamp`: its transcript opens with its spawner's conversation. The same holds for the user, assistant and thinking counts beside it |
 | user_messages | BIGINT | User message count |
 | assistant_messages | BIGINT | Assistant message count |
