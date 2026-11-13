@@ -297,13 +297,23 @@ Observed step types, both stores: 15 `PLANNER_RESPONSE` 26,293 · 132 `GENERIC`
   the hub's whole summaries unit to it: an untyped column was assumed to be a
   blob, the first text value failed the type check, and the unit holds every
   conversation's only stated parent and nesting depth (claim 9).
-- Canary: none yet. The mechanism is tested on fixtures
-  (`tests/test_antigravity_lake.py::TestSchemaDrift`); nothing checks the
-  real store still looks like this.
-- If this changes: a new table or column is mirrored and noted as drift in
-  the manifest, and nothing fails. The tables are not yet declared in
-  `schema.SUMMARIES_TABLES`, because a declared table is required of every
-  store and the CLI's has none.
+- Re-measured 2026-11-13 on app 2.31.2: the same seven tables, with
+  `conversations_fts` at fifteen columns (`conversation_id`, `chunk_index`,
+  `chunk_first_step`, `chunk_last_step`, `last_modified_time`, `step_count`,
+  `last_step_created_at`, `archived`, the two offsets columns, then the five
+  indexed text columns). `conversations_fts_content` stores them as `c0` to
+  `c14`, so its mixed `c8` and `c9` are the two offsets columns.
+- Declared since 2026-11-13 in `schema.SUMMARIES_OPTIONAL_TABLES`: known
+  tables a summaries database may lack (the CLI store's has none), each with
+  its column names and its known-mixed columns. Before that every table and
+  both offsets columns were noted as drift on every summaries rewrite, which
+  would have buried a real change.
+- Canary: none on the real store. The fixtures
+  (`tests/test_antigravity_lake.py::TestSchemaDrift`) use the 2.31.2 shape:
+  it mirrors with no notes, and an added index column is still noted.
+- If this changes: a new table, a new column, a listed column gone, or a
+  column newly holding several storage classes is mirrored and noted as
+  drift in the manifest, and nothing fails.
 
 ---
 

@@ -300,6 +300,57 @@ class TestSchemaDrift:
         for shadow in ("content", "data", "docsize", "config", "idx"):
             assert self._summaries(lake_root, f"conversations_fts_{shadow}").is_file(), shadow
 
+    # The hub's full-text index as app 2.31.2 writes it (claim 15). Mirrored
+    # since lake format 3, but every table and both offsets columns were
+    # reported as drift on every summaries rewrite, so a real change would
+    # have been one more line in a list nobody reads.
+    _FTS_COLUMNS = ("conversation_id UNINDEXED, chunk_index UNINDEXED, chunk_first_step UNINDEXED, "
+                    "chunk_last_step UNINDEXED, last_modified_time UNINDEXED, step_count UNINDEXED, "
+                    "last_step_created_at UNINDEXED, archived UNINDEXED, user_step_byte_offsets UNINDEXED, "
+                    "agent_step_byte_offsets UNINDEXED, title, workspace, project, user_body, agent_body")
+
+    def _write_fts(self, home, extra_column=""):
+        conn = sqlite3.connect(home.store() / "conversation_summaries.db")
+        try:
+            conn.execute(f"CREATE VIRTUAL TABLE conversations_fts USING fts5({self._FTS_COLUMNS}{extra_column})")
+        except sqlite3.OperationalError:
+            conn.close()
+            pytest.skip("this SQLite build has no FTS5")
+        width = 15 + (1 if extra_column else 0)
+        marks = ", ".join("?" * width)
+        conn.execute(f"INSERT INTO conversations_fts VALUES ({marks})",
+                     [CONV_A, 0, 0, 3, "t", 4, "t", 0, b"\x0a\x0b", "[3]",
+                      "title", "ws", "proj", "user text", "agent text"][:width] + [None] * (width - 15))
+        conn.execute(f"INSERT INTO conversations_fts VALUES ({marks})",
+                     [CONV_B, 0, 0, 1, "t", 1, "t", 0, "[1]", b"\x01",
+                      "title", "ws", "proj", "user", "agent"][:width] + [None] * (width - 15))
+        conn.execute("CREATE TABLE search_schema_version (version INTEGER)")
+        conn.execute("INSERT INTO search_schema_version VALUES (1)")
+        conn.commit()
+        conn.close()
+
+    def _summaries_notes(self, lake_root):
+        return json.loads(manifest(lake_root)[("antigravity", "summaries", "conversation_summaries")]["notes"] or "[]")
+
+    def test_the_documented_index_is_mirrored_without_drift_notes(self, home, lake_root):
+        self._write_fts(home)
+        result = run(home, lake_root)
+        assert self._summaries_status(result)["antigravity"] == "written"
+        assert self._summaries_notes(lake_root) == []
+        # Quieter, not lossier: the mixed offsets still round-trip exactly.
+        fts = table(self._summaries(lake_root, "conversations_fts"))
+        assert [ag_schema.decode_mixed(r["user_step_byte_offsets"], r["user_step_byte_offsets__storage"])
+                for r in fts] == [b"\x0a\x0b", "[1]"]
+        content = table(self._summaries(lake_root, "conversations_fts_content"))
+        assert [ag_schema.decode_mixed(r["c9"], r["c9__storage"]) for r in content] == ["[3]", b"\x01"]
+
+    def test_a_column_added_to_the_index_is_still_noted(self, home, lake_root):
+        self._write_fts(home, extra_column=", future_col UNINDEXED")
+        run(home, lake_root)
+        notes = self._summaries_notes(lake_root)
+        assert any("conversations_fts.future_col" in n for n in notes), notes
+        assert any("conversations_fts_content.c15" in n for n in notes), notes
+
     def test_a_table_without_rowid_is_mirrored_in_key_order(self, home, lake_root):
         # Two of an FTS5 index's own tables are WITHOUT ROWID, so there is no
         # rowid to order by; the primary key is the only stable order.

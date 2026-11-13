@@ -185,7 +185,8 @@ class AntigravitySource:
             return self._write_conversation(unit, out_dir, envelope)
         if unit.unit_kind == "summaries":
             return self._write_sqlite(unit, out_dir, envelope, "conversation_summaries.db",
-                                      schema.SUMMARIES_TABLES, "antigravity_summaries_db", None)
+                                      schema.SUMMARIES_TABLES, "antigravity_summaries_db", None,
+                                      schema.SUMMARIES_OPTIONAL_TABLES)
         if unit.unit_kind == "brain_git":
             prefix = f"brain/{unit.unit_id}/{stores.GIT_DIR}/"
             specs = [FileSpec(rel, stores.git_file_kind(rel[len(prefix):]), stores.BYTES,
@@ -202,11 +203,13 @@ class AntigravitySource:
         rows = write_files(out_dir / f"{table}.parquet", unit.source_root, specs, envelope, None)
         return UnitWrite(tables={table: rows})
 
-    def _write_sqlite(self, unit, out_dir, envelope, rel, expected, record_source, conversation_id):
+    def _write_sqlite(self, unit, out_dir, envelope, rel, expected, record_source, conversation_id,
+                      optional=None):
         scratch = out_dir / ".snapshot"
         try:
             copy, method = snapshot_sqlite(unit.source_root / rel, scratch)
-            tables, notes = mirror_sqlite(copy, out_dir, expected, envelope, record_source, rel, conversation_id)
+            tables, notes = mirror_sqlite(copy, out_dir, expected, envelope, record_source, rel,
+                                          conversation_id, optional)
         finally:
             shutil.rmtree(scratch, ignore_errors=True)
         return UnitWrite(tables=tables, notes=notes, snapshot=method)

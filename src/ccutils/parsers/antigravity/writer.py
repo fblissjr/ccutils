@@ -121,8 +121,15 @@ def mirror_sqlite(
     record_source: str,
     source_relpath: str,
     conversation_id: str | None,
+    optional: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] | None = None,
 ) -> tuple[dict[str, int], list[str]]:
-    """Mirror every table of a SQLite copy to `<table>.parquet` in `out_dir`."""
+    """Mirror every table of a SQLite copy to `<table>.parquet` in `out_dir`.
+
+    `expected` tables must be present with their declared columns. `optional`
+    tables are known and may be absent (table -> column names, known-mixed
+    columns); their columns take their kind from the data, and only what the
+    declaration does not list is noted as drift."""
+    optional = optional or {}
     counts: dict[str, int] = {}
     notes: list[str] = []
     base_row = envelope.row(record_source, source_relpath)
@@ -139,8 +146,13 @@ def mirror_sqlite(
             info = conn.execute(f"PRAGMA table_info(`{table}`)").fetchall()
             actual = [(r[1], r[2]) for r in info]
             declared = dict(expected.get(table, ()))
-            if table not in expected:
+            known_names, known_mixed = optional.get(table, ((), ()))
+            if table not in expected and table not in optional:
                 notes.append(f"drift: unknown table {table} mirrored")
+            if table in optional:
+                gone = [c for c in known_names if c not in {name for name, _ in actual}]
+                if gone:
+                    notes.append(f"drift: {table} no longer has {', '.join(gone)}")
             missing = [c for c in declared if c not in {name for name, _ in actual}]
             if missing:
                 raise LakeWriteError(f"{table}: missing column(s) {', '.join(missing)}")
@@ -152,14 +164,15 @@ def mirror_sqlite(
                     continue
                 kind, seen = _observed_kind(conn, table, name, decl)
                 columns.append((name, kind))
-                if table in expected:
+                if table in expected or (table in optional and name not in known_names):
                     notes.append(f"drift: unknown column {table}.{name} ({decl or 'no type'}) mirrored")
                 if kind == ag_schema.MIXED:
                     storage = name + ag_schema.MIXED_STORAGE_SUFFIX
                     if storage in names:
                         raise LakeWriteError(f"{table}.{name}: mixed storage, and {storage} is already a column")
-                    notes.append(
-                        f"drift: {table}.{name} holds {'/'.join(seen)}; kept as bytes with {storage}")
+                    if name not in known_mixed:
+                        notes.append(
+                            f"drift: {table}.{name} holds {'/'.join(seen)}; kept as bytes with {storage}")
             schema = ag_schema.table_schema(columns, with_conversation_id=conversation_id is not None)
             writer = TableWriter(out_dir / f"{table}.parquet", schema)
             select = ", ".join(f"`{name}`" for name, _ in columns)

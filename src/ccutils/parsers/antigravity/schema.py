@@ -105,6 +105,32 @@ SUMMARIES_TABLES: dict[str, tuple[tuple[str, str], ...]] = {
     ),
 }
 
+# Tables a summaries database may hold, known but not required: the hub's
+# full-text index (claim 15) is in the `antigravity` store and absent from
+# the CLI's. table -> (column names, columns known to hold mixed storage
+# classes). Every column is untyped, so its kind still comes from the data;
+# this only decides what is drift. A table or column not listed here, or a
+# column newly holding several classes, is still noted. Measured on app
+# 2.31.2 (2026-11-13). Not in format_fingerprint: it changes the manifest
+# notes, not a byte of what the writer emits.
+_FTS_CONTENT_COLUMNS = ("id",) + tuple(f"c{i}" for i in range(15))
+SUMMARIES_OPTIONAL_TABLES: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {
+    "conversations_fts": (
+        ("conversation_id", "chunk_index", "chunk_first_step", "chunk_last_step",
+         "last_modified_time", "step_count", "last_step_created_at", "archived",
+         "user_step_byte_offsets", "agent_step_byte_offsets",
+         "title", "workspace", "project", "user_body", "agent_body"),
+        ("user_step_byte_offsets", "agent_step_byte_offsets"),
+    ),
+    # FTS5's own tables. c8 and c9 store the two offsets columns above.
+    "conversations_fts_content": (_FTS_CONTENT_COLUMNS, ("c8", "c9")),
+    "conversations_fts_config": (("k", "v"), ()),
+    "conversations_fts_data": (("id", "block"), ()),
+    "conversations_fts_docsize": (("id", "sz"), ()),
+    "conversations_fts_idx": (("segid", "term", "pgno"), ()),
+    "search_schema_version": (("version",), ()),
+}
+
 # Per unit kind, (table, key) pairs whose rows are carried forward when the
 # source drops them. Each key is unique within its table: a summaries row per
 # conversation, a files row per path.
