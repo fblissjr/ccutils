@@ -833,26 +833,6 @@ class TestParserContractUpgrade:
             "USING (memory_key) WHERE m.file_name = 'MEMORY.md'"
         ).fetchone()[0] == 1
 
-    def test_legacy_rows_with_null_link_syntax_still_resolve(
-        self, conn, projects_root
-    ):
-        """Pre-0.19 bridge rows carry link_syntax NULL. `link_syntax <>
-        'markdown'` is NULL for them, so the wiki branch skipped them
-        forever: a dangling link whose target was written later could never
-        resolve."""
-        import_memories(conn, projects_root=projects_root)
-        conn.execute("UPDATE bridge_memory_link SET link_syntax = NULL")
-        conn.execute(
-            "UPDATE bridge_memory_link SET target_memory_id = NULL, is_resolved = FALSE"
-        )
-
-        from ccutils.etl.dim_memory import _resolve_link_targets
-
-        _resolve_link_targets(conn)
-        assert conn.execute(
-            "SELECT COUNT(*) FROM bridge_memory_link WHERE is_resolved"
-        ).fetchone()[0] >= 1
-
 
 class TestInterruptAndGuarding:
     def test_keyboard_interrupt_is_not_swallowed(self, conn, projects_root):

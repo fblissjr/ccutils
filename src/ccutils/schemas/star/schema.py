@@ -1449,16 +1449,6 @@ def _create_objects(conn) -> None:
     )
 
 
-    # Reconcile dim_date from every session already in the warehouse.
-    # Per-session ETL only inserts dim_date for the sessions it re-stages;
-    # this repairs a pre-0.17 warehouse (and sessions whose JSONL Claude
-    # Code has since pruned, which can never be re-staged) so their
-    # semantic views stop returning NULL dates. No-op on a fresh DB.
-    from ccutils.etl.utils import insert_missing_dim_dates
-
-    insert_missing_dim_dates(
-        conn, "dim_session", "first_timestamp", "last_timestamp"
-    )
 
     # =========================================================================
     # Semantic Views (15)

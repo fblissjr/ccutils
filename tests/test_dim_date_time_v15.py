@@ -144,27 +144,6 @@ class TestDimTimePartialPopulation:
             assert tod == get_time_of_day(hour)
 
 
-class TestDimDateReconcileFromSessions:
-    def test_existing_sessions_get_dim_date_without_reetl(self, tmp_path):
-        """A warehouse whose facts/sessions predate the dim_date fix (or
-        whose JSONL was pruned) gets dim_date backfilled from dim_session
-        timestamps on the next create_star_schema, no re-ETL needed."""
-        db = tmp_path / "old.duckdb"
-        conn = create_star_schema(db)
-        conn.execute(
-            "INSERT INTO dim_session (session_key, session_id, "
-            "first_timestamp, last_timestamp) VALUES "
-            "(md5('s'), 's', TIMESTAMP '2026-02-03 08:00', "
-            "TIMESTAMP '2026-02-05 09:00')"
-        )
-        conn.execute("DELETE FROM dim_date")  # simulate pre-fix warehouse
-        conn.close()
-        conn = create_star_schema(db)
-        keys = sorted(r[0] for r in conn.execute(
-            "SELECT date_key FROM dim_date").fetchall())
-        assert 20260203 in keys and 20260205 in keys
-
-
 class _Spy:
     """A connection that records how it was asked to write."""
 

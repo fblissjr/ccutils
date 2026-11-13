@@ -660,10 +660,8 @@ def _resolve_link_targets(conn) -> None:
                   )
                 LIMIT 1
             )
-        -- IS DISTINCT FROM, not <>: pre-0.19 rows carry link_syntax
-        -- NULL, and `NULL <> 'markdown'` is NULL, so the wiki branch
-        -- skipped every legacy row forever -- a dangling link whose
-        -- target was written later could never resolve.
+        -- IS DISTINCT FROM, not <>: `NULL <> 'markdown'` is NULL, and a
+        -- NULL syntax must not hide a link from the wiki branch.
         WHERE target_memory_id IS NULL AND link_syntax IS DISTINCT FROM 'markdown'
         """
     )
