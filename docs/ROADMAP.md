@@ -67,6 +67,35 @@ machine that has it; nothing here depends on it.
 
 ## Next session
 
+**From the 2026-11-13 test audit, before anything below.** Fixes and
+deletions landed (CHANGELOG, Unreleased); what is left:
+
+- **Owner decisions, open.** (a) The `dim_model` and `dim_tool` backfills:
+  recompute every row each run (recommended; a newer ccutils re-derives an
+  existing warehouse's categories) or delete and rebuild after upgrades;
+  their two tests wait on it. (b) Tier 2 facets send the first user and
+  last assistant message to the API unsanitized while the docstrings say
+  "privacy-sanitized": build the allowlist CLAUDE.md requires, or narrow
+  the rule and say what is sent. (c) Tier 1 facets: F01-F04 equal
+  `dim_session`'s intent/complexity/outcome/domain and F15/F30 equal the
+  summary's token totals on 65 of 65 sessions, and nothing reads the
+  table; trim to the facets that compute something new, drop Tier 1, or
+  leave it. F30's `COALESCE(SUM, 0)` against "absent is not a value" goes
+  with (c).
+- **Rewrites.** The audit's REWRITE verdicts: chiefly the agent fixtures
+  that give an agent its own `sessionId` (depth recompute, sidecar
+  type/description), the Antigravity snapshot test (needs a fixture in WAL
+  mode at rest; bypassing the snapshot leaves the suite green), the CSP
+  directive set, `-j` / `--batch-size` / json outputs asserted by content,
+  absence-only tests without a load control, and `test_provenance`'s label
+  test (delete once each label is confirmed written by the lake).
+- **A `corpus` marker** for the real-corpus canaries (`test_jsonl_contract.py`,
+  `test_antigravity_contract.py`'s `test_corpus_holds`, the archive tests in
+  `test_typed_parser.py` and `test_dim_model_v15.py`), so they run on demand.
+- **`.claude/skills/render-exports/SKILL.md`** should name
+  `tests/test_html_pre_escaped_channels.py` among the tests that hold the
+  HTML security model (the sandbox could not write it).
+
 Resume in this order. Each item was designed and its reads done on
 2026-09-10; nothing below is open-ended.
 
