@@ -186,17 +186,37 @@ class TestWriteSessionToParquet:
         meta = json.loads(ct["meta_payload_json"])
         assert meta["customTitle"] == "test-title"
 
-    def test_unknown_entry_type_writes_without_error(self, sample_jsonl, tmp_path):
-        """Forward-compat: an unrecognized entry type should land in Parquet
-        with type='future-fancy-thing' preserved, no payload columns set."""
+    def test_an_unknown_entry_type_is_kept_whole(self, sample_jsonl, tmp_path):
+        """A type the parser does not know lands as a row with its type and
+        every field it carried. The first version hid its one assertion
+        behind `if extras_json:` and an `or` that was always true (2026-11-13
+        audit). What breaks without it: a new Claude Code entry type drops
+        its fields before staging, silently."""
         log_path, _ = write_session_to_parquet(sample_jsonl, tmp_path / "lake", project_slug="p")
-        table = pq.read_table(log_path).to_pylist()
-        future = next(r for r in table if r["type"] == "future-fancy-thing")
-        assert future["raw_json"] is not None
-        # extras_json should hold weirdField (it's not in the envelope)
-        if future["extras_json"]:
-            extras = json.loads(future["extras_json"])
-            assert "weirdField" in extras or "weirdField" in json.loads(future["raw_json"])
+        future = next(r for r in pq.read_table(log_path).to_pylist() if r["type"] == "future-fancy-thing")
+        assert json.loads(future["extras_json"]) == {"weirdField": "weird value"}
+        assert json.loads(future["raw_json"])["weirdField"] == "weird value"
+
+    def test_a_line_with_no_type_lands_as_unknown(self, tmp_path):
+        """Moved here from the parser's routing tests, which checked the
+        model class and not what reaches the lake."""
+        f = tmp_path / "s.jsonl"
+        f.write_text(json.dumps({"sessionId": "s", "noTypeAtAll": True}))
+        log_path, _ = write_session_to_parquet(f, tmp_path / "lake", project_slug="p")
+        [row] = pq.read_table(log_path).to_pylist()
+        assert row["type"] == "unknown"
+        assert json.loads(row["extras_json"]) == {"noTypeAtAll": True}
+
+    def test_raw_json_is_each_source_line(self, sample_jsonl, tmp_path):
+        """The lake keeps every line as written, in order: the one guarantee
+        the deleted typed_reader round-trip tests were really checking
+        (both of their sides went through the same parser). What breaks
+        without it: the archive copy of a transcript silently differs from
+        the transcript."""
+        source = [json.loads(line) for line in sample_jsonl.read_text().splitlines() if line.strip()]
+        log_path, _ = write_session_to_parquet(sample_jsonl, tmp_path / "lake", project_slug="p")
+        rows = pq.read_table(log_path).to_pylist()
+        assert [json.loads(r["raw_json"]) for r in rows] == source
 
     def test_sequence_num_is_strictly_monotonic(self, sample_jsonl, tmp_path):
         log_path, _ = write_session_to_parquet(sample_jsonl, tmp_path / "lake", project_slug="p")

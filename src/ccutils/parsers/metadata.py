@@ -129,62 +129,6 @@ def _is_skip_summary(text: str) -> bool:
     return False
 
 
-def get_meaningful_summary(filepath: Path, max_length: int = 120) -> str:
-    """Extract the first meaningful user message as a summary.
-
-    Skips:
-    - Empty messages
-    - XML-prefixed messages (system prompts)
-    - "[Request interrupted...]" messages
-    - Error/API messages
-    - isMeta messages
-    - warmup messages
-
-    Args:
-        filepath: Path to session JSONL file
-        max_length: Maximum summary length
-
-    Returns:
-        First meaningful user text, truncated to max_length.
-    """
-    try:
-        with open(filepath, "r", encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    obj = json.loads(line)
-
-                    # Check for summary type entries first
-                    if obj.get("type") == "summary" and obj.get("summary"):
-                        summary = obj["summary"]
-                        if not _is_skip_summary(summary):
-                            if len(summary) > max_length:
-                                return summary[: max_length - 3] + "..."
-                            return summary
-
-                    if obj.get("type") != "user":
-                        continue
-                    if obj.get("isMeta"):
-                        continue
-
-                    content = obj.get("message", {}).get("content", "")
-                    text = extract_text_from_content(content)
-                    if not text or _is_skip_summary(text):
-                        continue
-
-                    if len(text) > max_length:
-                        return text[: max_length - 3] + "..."
-                    return text
-                except json.JSONDecodeError:
-                    continue
-    except OSError:
-        pass
-
-    return "(no summary)"
-
-
 def extract_rich_metadata(filepath: Path, folder_name: str) -> SessionMetadata:
     """Extract rich metadata from a session file by scanning it.
 

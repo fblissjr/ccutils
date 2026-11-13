@@ -384,77 +384,6 @@ def make_msg_id(timestamp):
     return f"msg-{timestamp.replace(':', '-').replace('.', '-')}"
 
 
-def analyze_conversation(messages):
-    """Analyze messages in a conversation to extract stats and long texts."""
-    tool_counts = {}  # tool_name -> count
-    long_texts = []
-    commits = []  # list of (hash, message, timestamp)
-
-    for log_type, message_json, timestamp in messages:
-        if not message_json:
-            continue
-        try:
-            message_data = json.loads(message_json)
-        except json.JSONDecodeError:
-            continue
-
-        content = message_data.get("content", [])
-        if not isinstance(content, list):
-            continue
-
-        for block in content:
-            if not isinstance(block, dict):
-                continue
-            block_type = block.get("type", "")
-
-            if block_type == "tool_use":
-                tool_name = block.get("name", "Unknown")
-                tool_counts[tool_name] = tool_counts.get(tool_name, 0) + 1
-            elif block_type == "tool_result":
-                # Check for git commit output
-                result_content = block.get("content", "")
-                if isinstance(result_content, str):
-                    for match in COMMIT_PATTERN.finditer(result_content):
-                        commits.append((match.group(1), match.group(2), timestamp))
-            elif block_type == "text":
-                text = block.get("text", "")
-                if len(text) >= LONG_TEXT_THRESHOLD:
-                    long_texts.append(text)
-
-    return {
-        "tool_counts": tool_counts,
-        "long_texts": long_texts,
-        "commits": commits,
-    }
-
-
-def format_tool_stats(tool_counts):
-    """Format tool counts into a concise summary string."""
-    if not tool_counts:
-        return ""
-
-    # Abbreviate common tool names
-    abbrev = {
-        "Bash": "bash",
-        "Read": "read",
-        "Write": "write",
-        "Edit": "edit",
-        "Glob": "glob",
-        "Grep": "grep",
-        "Task": "task",
-        "TodoWrite": "todo",
-        "WebFetch": "fetch",
-        "WebSearch": "search",
-    }
-
-    parts = []
-    for name, count in sorted(tool_counts.items(), key=lambda x: -x[1]):
-        short_name = abbrev.get(name, name.lower())
-        parts.append(f"{count} {short_name}")
-
-    return " . ".join(parts)
-
-
 def is_tool_result_message(message_data):
     """Check if a message contains only tool_result blocks."""
     content = message_data.get("content", [])
@@ -729,7 +658,6 @@ def generate_batch_html(
     }
 
 
-
 def _resolve_private_cwd(source_path, loglines):
     """Resolve the working directory to sanitize --private paths against.
 
@@ -951,8 +879,6 @@ def generate_html(
         return _generate_html_body(loglines, output_dir, stem=stem, title=title)
     finally:
         set_github_repo(_saved_github_repo)
-
-
 
 
 def _render_archive_index(output_dir, cards, session_count, project_count, date_range=""):

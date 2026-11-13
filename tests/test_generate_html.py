@@ -18,8 +18,6 @@ from ccutils import (
     render_edit_tool,
     render_bash_tool,
     render_content_block,
-    analyze_conversation,
-    format_tool_stats,
     is_tool_result_message,
     parse_session_file,
     get_session_summary,
@@ -555,83 +553,6 @@ class TestRenderContentBlock:
 
         # Tool results with images should NOT be truncatable
         assert "truncatable" not in result
-class TestAnalyzeConversation:
-    """Tests for conversation analysis."""
-
-    def test_counts_tools(self):
-        """Test that tool usage is counted."""
-        messages = [
-            (
-                "assistant",
-                json.dumps(
-                    {
-                        "content": [
-                            {
-                                "type": "tool_use",
-                                "name": "Bash",
-                                "id": "1",
-                                "input": {},
-                            },
-                            {
-                                "type": "tool_use",
-                                "name": "Bash",
-                                "id": "2",
-                                "input": {},
-                            },
-                            {
-                                "type": "tool_use",
-                                "name": "Write",
-                                "id": "3",
-                                "input": {},
-                            },
-                        ]
-                    }
-                ),
-                "2025-01-01T00:00:00Z",
-            ),
-        ]
-        result = analyze_conversation(messages)
-        assert result["tool_counts"]["Bash"] == 2
-        assert result["tool_counts"]["Write"] == 1
-
-    def test_extracts_commits(self):
-        """Test that git commits are extracted."""
-        messages = [
-            (
-                "user",
-                json.dumps(
-                    {
-                        "content": [
-                            {
-                                "type": "tool_result",
-                                "content": "[main abc1234] Add new feature\n 1 file changed",
-                            }
-                        ]
-                    }
-                ),
-                "2025-01-01T00:00:00Z",
-            ),
-        ]
-        result = analyze_conversation(messages)
-        assert len(result["commits"]) == 1
-        assert result["commits"][0][0] == "abc1234"
-        assert "Add new feature" in result["commits"][0][1]
-
-
-class TestFormatToolStats:
-    """Tests for tool stats formatting."""
-
-    def test_formats_counts(self):
-        """Test tool count formatting."""
-        counts = {"Bash": 5, "Read": 3, "Write": 1}
-        result = format_tool_stats(counts)
-        assert "5 bash" in result
-        assert "3 read" in result
-        assert "1 write" in result
-
-    def test_empty_counts(self):
-        """Test empty tool counts."""
-        assert format_tool_stats({}) == ""
 
 
 class TestIsToolResultMessage:
@@ -656,107 +577,6 @@ class TestIsToolResultMessage:
         """Test rejection of empty content."""
         assert is_tool_result_message({"content": []}) is False
         assert is_tool_result_message({"content": "string"}) is False
-
-
-class TestContinuationLongTexts:
-    """Tests for long text extraction from continuation conversations."""
-
-    def test_long_text_in_continuation_appears_in_index(self, output_dir):
-        """Test that long texts from continuation conversations appear in index.
-
-        This is a regression test for a bug where conversations marked as
-        continuations (isCompactSummary=True) were completely skipped when
-        building the index, causing their long_texts to be lost.
-        """
-        # Create a session with:
-        # 1. An initial user prompt
-        # 2. Some messages
-        # 3. A continuation prompt (isCompactSummary=True)
-        # 4. An assistant message with a long text summary (>300 chars)
-        session_data = {
-            "loglines": [
-                # Initial user prompt
-                {
-                    "type": "user",
-                    "timestamp": "2025-01-01T10:00:00.000Z",
-                    "message": {
-                        "content": "Build a Redis JavaScript module",
-                        "role": "user",
-                    },
-                },
-                # Some assistant work
-                {
-                    "type": "assistant",
-                    "timestamp": "2025-01-01T10:00:05.000Z",
-                    "message": {
-                        "role": "assistant",
-                        "content": [
-                            {"type": "text", "text": "I'll start working on this."}
-                        ],
-                    },
-                },
-                # Continuation prompt (context was summarized)
-                {
-                    "type": "user",
-                    "timestamp": "2025-01-01T11:00:00.000Z",
-                    "isCompactSummary": True,
-                    "message": {
-                        "content": "This session is being continued from a previous conversation...",
-                        "role": "user",
-                    },
-                },
-                # More assistant work after continuation
-                {
-                    "type": "assistant",
-                    "timestamp": "2025-01-01T11:00:05.000Z",
-                    "message": {
-                        "role": "assistant",
-                        "content": [{"type": "text", "text": "Continuing the work..."}],
-                    },
-                },
-                # Final summary - this is a LONG text (>300 chars) that should appear in index
-                {
-                    "type": "assistant",
-                    "timestamp": "2025-01-01T12:00:00.000Z",
-                    "message": {
-                        "role": "assistant",
-                        "content": [
-                            {
-                                "type": "text",
-                                "text": (
-                                    "All tasks completed successfully. Here's a summary of what was built:\n\n"
-                                    "## Redis JavaScript Module\n\n"
-                                    "A loadable Redis module providing JavaScript scripting via the mquickjs engine.\n\n"
-                                    "### Commands Implemented\n"
-                                    "- JS.EVAL - Execute JavaScript with KEYS/ARGV arrays\n"
-                                    "- JS.LOAD / JS.CALL - Cache and call scripts by SHA1\n"
-                                    "- JS.EXISTS / JS.FLUSH - Manage script cache\n\n"
-                                    "All 41 tests pass. Changes pushed to branch."
-                                ),
-                            }
-                        ],
-                    },
-                },
-            ]
-        }
-
-        # Write the session to a temp file
-        session_file = output_dir / "test_session.json"
-        session_file.write_text(json.dumps(session_data), encoding="utf-8")
-
-        # Generate HTML
-        generate_html(session_file, output_dir)
-
-        # Read the index.html
-        index_html = read_transcript(output_dir)
-
-        # The long text summary should appear in the index
-        # This is the bug: currently it doesn't because the continuation
-        # conversation is skipped entirely
-        assert (
-            "All tasks completed successfully" in index_html
-        ), "Long text from continuation conversation should appear in index"
-        assert "Redis JavaScript Module" in index_html
 
 
 class TestVersionOption:
@@ -824,7 +644,6 @@ class TestOpenOption:
         assert len(opened_urls) == 1
         assert "index.html" in opened_urls[0]
         assert opened_urls[0].startswith("file://")
-
 
 
 class TestParseSessionFile:

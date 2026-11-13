@@ -25,7 +25,6 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import Any
 
-from ccutils.schemas.star.utils import generate_dimension_key
 
 
 from ccutils._version import PARSER_VERSION

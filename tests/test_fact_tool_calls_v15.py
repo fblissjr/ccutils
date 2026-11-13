@@ -120,35 +120,6 @@ def tools_session(tmp_path):
 
 
 @pytest.fixture
-def bash_interrupted_session(tmp_path):
-    """Bash invocation that the user interrupted -- toolUseResult has
-    interrupted=true."""
-    jsonl = tmp_path / "bash_int.jsonl"
-    lines = [
-        {"type": "user", "uuid": "u1", "sessionId": "bi-s",
-         "message": {"role": "user", "content": "run forever"}},
-        {"type": "assistant", "uuid": "a1", "parentUuid": "u1",
-         "sessionId": "bi-s",
-         "message": {"role": "assistant", "model": "claude-opus-4-7", "content": [
-             {"type": "tool_use", "id": "tu_x", "name": "Bash",
-              "input": {"command": "sleep 9999"}},
-         ]}},
-        {"type": "user", "uuid": "u2", "parentUuid": "a1",
-         "sessionId": "bi-s",
-         "message": {"role": "user", "content": [
-             {"type": "tool_result", "tool_use_id": "tu_x",
-              "content": "interrupted", "is_error": True},
-         ]},
-         "toolUseResult": {
-             "stdout": "", "stderr": "", "interrupted": True,
-             "isImage": False, "noOutputExpected": False,
-         }},
-    ]
-    jsonl.write_text("\n".join(json.dumps(d) for d in lines))
-    return jsonl
-
-
-@pytest.fixture
 def error_string_result_session(tmp_path):
     """A tool that errored out -- toolUseResult is a plain `Error: ...` string
     rather than a structured dict. We must still create a fact_tool_calls

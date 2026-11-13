@@ -38,7 +38,6 @@ from .parsers import (
     derive_project_name,
     extract_rich_metadata,
     format_duration,
-    get_meaningful_summary,
     shorten_model_name,
 )
 
@@ -55,11 +54,9 @@ from .export import (
     GITHUB_REPO_PATTERN,
     LONG_TEXT_THRESHOLD,
     _macros,  # Template macros for CLI functions
-    analyze_conversation,
     detect_github_repo,
     detect_github_repo_from_cwd,
     format_json,
-    format_tool_stats,
     generate_batch_html,
     generate_html,
     generate_multi_session_index,
