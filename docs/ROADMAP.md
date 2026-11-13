@@ -794,14 +794,6 @@ Found while building phase 0 (2026-09-22) or on the first default-root run
   suite stayed green; one supported DuckDB means the lock tests what a
   fresh install gets. No ceiling, deliberately: run the suite against a new
   DuckDB major before a release rather than pin it out.
-- **A failed session run leaves its dimensions behind.** `run_v15_etl`
-  writes the stub dimensions and `dim_session` before the facts, and
-  nothing rolls them back when a fact populator raises, so a warehouse whose
-  runs all failed still lists every session. `etl.runs` records the failure
-  and the build now exits 1 (and `ccutils audit` fails on `failed_runs`),
-  but `dim_session` alone overstates what loaded.
-  Open: one transaction per session run, or a reader rule keyed on run
-  status.
 - `tests/test_jsonl_contract.py::TestToolResultPayloadPresence::test_a_parent_result_states_the_payload`
   fails on the developer corpus as of 2026-11-13, on DuckDB 1.5 and 2.0
   alike: the share of parent tool results with no `toolUseResult` is over

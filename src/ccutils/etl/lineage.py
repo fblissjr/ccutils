@@ -147,6 +147,10 @@ class EtlRun:
     version_key: str
     batch_run_id: str | None = None
     _step_seq: int = field(default=0, repr=False)
+    # The first step that raised, kept so fail() can record it again after
+    # the orchestrator rolls the run's transaction back (which removes the
+    # step row along with everything the run wrote).
+    _failed_step: list | None = field(default=None, repr=False)
 
     @classmethod
     def start(
@@ -222,9 +226,13 @@ class EtlRun:
         except BaseException as e:
             # BaseException so a KeyboardInterrupt mid-step doesn't leave
             # the step row stuck 'running' (mirrors BatchRun.__exit__).
+            error = str(e) or type(e).__name__
+            if self._failed_step is None:
+                self._failed_step = [step_id, self.etl_run_id, self.batch_run_id,
+                                     step_name, kind, table, self._step_seq, error]
             _mark_failed(
                 self.conn, table="etl.steps", id_col="step_id",
-                id_val=step_id, error=str(e) or type(e).__name__,
+                id_val=step_id, error=error,
             )
             raise
         self.conn.execute(
@@ -297,6 +305,19 @@ class EtlRun:
             self.conn, table="etl.runs", id_col="etl_run_id",
             id_val=self.etl_run_id, error=error_message,
         )
+        # After a rollback the failed step's row is gone with the rest of the
+        # run's writes; record it again so etl.steps still names what raised.
+        if self._failed_step is not None:
+            self.conn.execute(
+                """
+                INSERT INTO etl.steps
+                    (step_id, etl_run_id, batch_run_id, step_name, step_kind,
+                     table_name, step_order, status, completed_at, error_message)
+                SELECT ?, ?, ?, ?, ?, ?, ?, 'failed', current_timestamp, ?
+                WHERE NOT EXISTS (SELECT 1 FROM etl.steps WHERE step_id = ?)
+                """,
+                [*self._failed_step, self._failed_step[0]],
+            )
 
 
 @dataclass

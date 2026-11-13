@@ -353,6 +353,13 @@ def run_v15_etl(
         conn, source_path=str(session_path), batch_run_id=batch_run_id
     )
     with staging_scope(conn):
+        # One transaction per session run, after the etl.runs row commits:
+        # the staging load, the dimensions and every fact land together or
+        # not at all. Autocommit let a run that failed at its first fact
+        # leave its dimensions (a warehouse listing sessions with no facts)
+        # and let a failed re-run half-replace a good session.
+        # tests/test_session_run_is_atomic.py.
+        conn.execute("BEGIN TRANSACTION")
         try:
             # Tier 1: parse + write Parquet
             with run.step("write_parquet"):
@@ -435,9 +442,11 @@ def run_v15_etl(
                 data_start_ts=staged.data_start_ts,
                 data_end_ts=staged.data_end_ts,
             )
+            conn.execute("COMMIT")
         except BaseException as e:
             # BaseException so a KeyboardInterrupt doesn't leave the run
             # row stuck 'running' (batch + step grains already do this).
+            conn.execute("ROLLBACK")
             run.fail(str(e) or type(e).__name__)
             raise
 
