@@ -25,6 +25,8 @@ double-counts instead of failing.
 
 import pytest
 
+from helpers_ccutils import write_minimal_session
+
 from ccutils import create_star_schema
 from ccutils.etl.lineage import EtlRun
 from ccutils.etl.upsert import lineage_upsert
@@ -237,24 +239,48 @@ class TestUpdateAddressesOneRowPerKey:
 
 
 class TestNaturalKeysMapCoversEveryUpsertTarget:
-    def test_natural_keys_map_covers_every_upsert_target(self):
-        """`NATURAL_KEYS` is the single source of truth the audit command
-        walks. If a populator declares a natural_key for a table absent from
-        it, or a different one, that table silently stops being checked.
+    def test_every_upsert_a_run_makes_declares_the_registered_key(self, tmp_path, monkeypatch):
+        """`NATURAL_KEYS` is what the audit walks; each populator also states
+        its key to `lineage_upsert`. They must agree, for every call a real
+        run makes.
+
+        This used to grep the source with a regex that matched 8 of the 11
+        call sites: a comment between arguments hid `fact_tool_calls`, and a
+        non-literal `inbound_table` hid both `fact_session_facets` sites, so
+        changing fact_tool_calls' key left it green (2026-11-13 audit). It
+        now records the calls themselves during `run_v15_etl`.
+
+        What breaks without it: a populator upserts on one key while the
+        audit checks another, and neither notices.
         """
-        import pathlib
-        import re
+        import sys
 
-        from ccutils.schemas.star.schema import NATURAL_KEYS
+        import ccutils.etl  # noqa: F401  (load the populator modules)
+        from ccutils.etl import orchestrator
+        from ccutils.etl.upsert import lineage_upsert as real
+        from ccutils.schemas.star.schema import NATURAL_KEYS, TABLE_COVERAGE
 
-        etl = pathlib.Path("src/ccutils/etl")
-        src = "\n".join(p.read_text() for p in etl.rglob("*.py"))
-        pairs = set(
-            re.findall(
-                r'table="(\w+)",\s*\n\s*inbound_table="[^"]+",\s*\n\s*natural_key="(\w+)"',
-                src,
-            )
-        )
-        assert pairs, "regex found no lineage_upsert call sites -- fix the test"
-        missing = {t: k for t, k in pairs if NATURAL_KEYS.get(t) != k}
-        assert not missing, f"NATURAL_KEYS disagrees with these populators: {missing}"
+        seen = set()
+
+        def spy(conn, *args, **kwargs):
+            seen.add((kwargs.get("table"), kwargs.get("natural_key")))
+            return real(conn, *args, **kwargs)
+
+        patched = 0
+        for name, module in list(sys.modules.items()):
+            if name.startswith("ccutils.etl") and getattr(module, "lineage_upsert", None) is real:
+                monkeypatch.setattr(module, "lineage_upsert", spy)
+                patched += 1
+        assert patched, "no module imports lineage_upsert -- fix the test"
+
+        session = tmp_path / "projects" / "-p" / "s1.jsonl"
+        session.parent.mkdir(parents=True)
+        write_minimal_session(session, "s1")
+        conn = create_star_schema(tmp_path / "w.duckdb")
+        orchestrator.run_v15_etl(conn, session, parquet_lake_root=tmp_path / "lake")
+
+        assert seen, "the run made no upsert call -- fix the test"
+        disagree = {t: k for t, k in seen if NATURAL_KEYS.get(t) != k}
+        assert not disagree, f"NATURAL_KEYS disagrees with these upserts: {disagree}"
+        per_session = {t for t in NATURAL_KEYS if TABLE_COVERAGE.get(t, (None, None, None))[2] == "session"}
+        assert per_session - {t for t, _ in seen} == set(), "registered tables the run never upserted"

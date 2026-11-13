@@ -182,10 +182,20 @@ class TestMemoryDatesResolve:
         root = tmp_path / "projects" / "-home-user-proj" / "memory"
         root.mkdir(parents=True)
         (root / "MEMORY.md").write_text("# index\n")
-        (root / "topic.md").write_text("---\nname: topic\n---\n\nbody\n")
+        topic = root / "topic.md"
+        topic.write_text("---\nname: topic\n---\n\nbody\n")
+        # A known mtime, so the fallback has one right answer. The first
+        # version only counted dangling keys: with the fallback removed the
+        # key is NULL, a NULL key is not dangling, and it stayed green
+        # (2026-11-13 audit).
+        import os
+        from datetime import datetime, timezone
+        stamp = datetime(2026, 3, 4, 12, 0, tzinfo=timezone.utc).timestamp()
+        os.utime(topic, (stamp, stamp))
         run_memory_import(conn, projects_root=tmp_path / "projects")
-        dangling = conn.execute(
-            "SELECT COUNT(*) FROM dim_memory m WHERE m.date_key IS NOT NULL "
-            "AND NOT EXISTS (SELECT 1 FROM dim_date d WHERE d.date_key = m.date_key)"
-        ).fetchone()[0]
-        assert dangling == 0
+        row = conn.execute(
+            "SELECT m.date_key, d.date_key FROM dim_memory m "
+            "LEFT JOIN dim_date d ON d.date_key = m.date_key "
+            "WHERE m.file_name = 'topic.md'"
+        ).fetchone()
+        assert row == (20260304, 20260304)

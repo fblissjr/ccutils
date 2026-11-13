@@ -119,13 +119,22 @@ class TestColumnProfileIsAWarning:
         assert "null_column" not in _checks(report.findings)
 
     def test_cli_exits_zero_on_warnings_and_one_under_strict(self, tmp_path):
+        """The warning tier alone: loose passes, strict fails.
+
+        The first version planted rows the lake does not hold, so
+        lake_reconciliation failed the loose run too and the test passed
+        whether --strict did anything or not (2026-11-13 audit). With the
+        lake moved away that error cannot fire, and only the column profile
+        decides the two exit codes.
+        """
         out = _build(tmp_path)
         _plant_null_column(out)
+        (out / "parquet_lake").rename(tmp_path / "lake-elsewhere")
         loose = CliRunner().invoke(cli, ["audit", "-o", str(out)])
         strict = CliRunner().invoke(cli, ["audit", "-o", str(out), "--strict"])
-        # The planted rows are not in the lake, so lake_reconciliation would
-        # fail them too; this test is about the column profile alone.
         assert "warn  null_column" in loose.output
+        assert "FAIL" not in loose.output, loose.output
+        assert loose.exit_code == 0, loose.output
         assert strict.exit_code == 1, strict.output
 
 
