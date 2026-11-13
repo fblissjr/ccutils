@@ -1,3 +1,4 @@
+# path-privacy: skip-file -- generic placeholder paths only
 """Tests for the markdown exporter (--format markdown)."""
 
 import json

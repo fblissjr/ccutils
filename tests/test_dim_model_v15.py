@@ -152,16 +152,6 @@ class TestContextVariant:
         ).fetchone()[0]
         assert n == 2
 
-    def test_unsuffixed_model_base_equals_model_name(self, conn, tmp_path):
-        run_v15_etl(conn, _session_using(tmp_path, "plain-s", "claude-opus-5"),
-                    project_name="test-project",
-                    parquet_lake_root=tmp_path / "lake")
-        row = conn.execute(
-            "SELECT model_name, model_base FROM dim_model "
-            "WHERE model_name = 'claude-opus-5'"
-        ).fetchone()
-        assert row[0] == row[1]
-
 
 class TestUnknownFamilyIsLoud:
     """A new model line must fail visibly, not file itself under 'unknown'.

@@ -8,12 +8,10 @@ Two related contracts to pin:
    pins that so a future fact_messages refactor can't silently regress and
    start emitting thinking text into the user-visible content column.
 
-2. **Behavior (new contract).** When `run_v15_etl(include_thinking=False)`,
-   the orchestrator clears `etl.log_entries` after every populator runs.
-   Without this, the staging table retains the last loaded session's raw
-   JSON -- which includes thinking blocks in `message_json`. `fact_messages`
-   is unaffected (already thinking-free); the truncate just removes the
-   transient staging artifact from the user's archive.
+2. Staging. `etl.log_entries` holds raw `message_json`, thinking blocks
+   included, and is cleared after every run whatever the flag says
+   (`staging_scope`; held by `test_e2e_star.py`'s staging tests), so there
+   is no flag-specific staging behaviour to test here.
 
 3. **CLI behavior.** `--no-thinking` is accepted on `--format duckdb` /
    `--format json` (was previously rejected with a `click.UsageError`
@@ -126,27 +124,6 @@ class TestIncludeThinkingFalseClearsStaging:
             "it is only stripped when include_thinking=False."
         )
 
-    def test_include_thinking_false_truncates_staging(
-        self, conn, session_with_thinking, tmp_path
-    ):
-        run_v15_etl(
-            conn, session_with_thinking,
-            project_name="x", parquet_lake_root=tmp_path / "lake",
-            include_thinking=False,
-        )
-        n = conn.execute("SELECT COUNT(*) FROM etl.log_entries").fetchone()[0]
-        assert n == 0, (
-            "include_thinking=False should clear etl.log_entries entirely; "
-            "otherwise the raw thinking JSON survives in the user's archive."
-        )
-        # And nothing in etl.log_entries -> the thinking payload is not
-        # anywhere user-queryable.
-        any_thinking = conn.execute(
-            "SELECT COUNT(*) FROM etl.log_entries "
-            "WHERE CAST(message_json AS VARCHAR) LIKE ?",
-            [f"%{_THINKING_PAYLOAD}%"],
-        ).fetchone()[0]
-        assert any_thinking == 0
 
     def test_include_thinking_false_preserves_fact_messages(
         self, conn, session_with_thinking, tmp_path

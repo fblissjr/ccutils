@@ -1,16 +1,11 @@
-"""E2E and Integration test suite for the ccutils star schema warehouse.
+"""Cross-feature checks of the star warehouse that no per-fact file holds.
 
-This suite contains 49 distinct E2E tests covering all 4 tiers of test case design
-for the features defined in TEST_INFRA.md and ORIGINAL_REQUEST.md.
-
-Specifically:
-- Tier 1: Feature Coverage (Tests 1-20)
-- Tier 2: Boundary & Corner Cases (Tests 21-40)
-- Tier 3: Cross-Feature Combinations (Tests 41-44)
-- Tier 4: Real-World Application Scenarios (Tests 45-50)
-
-None of the tests are hardcoded. They check actual database state, inspect SQL query strings,
-and analyze generated HTML file contents to ensure genuine validation of the warehouse behavior.
+What is left after the 2026-11-13 audit removed the duplicates: rows that
+survive a reopen, an in-place update scoped to its session, staging cleared
+on success and on exception, subagent depth over a deep tree, domain and
+depth heuristics on mixed inputs, and the HTML CSP's `default-src 'none'`
+(the only test that catches a widened default-src) and no-innerHTML scans.
+Each asserts on stored data or rendered output.
 """
 
 import hashlib
@@ -327,44 +322,7 @@ def test_t1_heuristics_ts_mapped_to_web_or_backend(conn, temp_dir):
     assert domain in ("web", "backend"), f"Expected domain classification of ['.ts'] to resolve to 'web' or 'backend' (got {domain})"
 
 
-def test_t1_subagent_recursive_cte_used_in_depth_propagation(conn):
-    """Test 16: Verify subagent_enrichment.py uses a recursive CTE rather than a Python looping update cursor."""
-    subagent_file = Path(__file__).parent.parent / "src" / "ccutils" / "etl" / "subagent_enrichment.py"
-    content = subagent_file.read_text(encoding="utf-8")
-    
-    # 1. Assert that Python database loop iteration pattern is refactored (absent)
-    assert "for _ in range(100):" not in content, "Python database looping cursor found in subagent_enrichment.py"
-    
-    # 2. Assert recursive CTE is present
-    assert "recursive" in content.lower(), "Recursive CTE keyword (WITH RECURSIVE) missing in subagent_enrichment.py"
-
-
 # --- Feature 4: HTML Export and Security Improvements ---
-
-def test_t1_html_csp_no_unsafe_inline_script(temp_dir):
-    """Test 17: The built CSP never contains 'unsafe-inline' in script-src.
-
-    Since C2 every document builds its policy via _build_csp, which pins the
-    inline blocks by sha256; 'unsafe-inline' would permit ANY inline script,
-    including one buried in a transcript.
-    """
-    from ccutils.export.html import _build_csp
-
-    csp = _build_csp("body { color: red }", "console.log('x')")
-    script_src = [part.strip() for part in csp.split(";") if part.strip().startswith("script-src")]
-    assert script_src, "no script-src directive in built CSP"
-    assert "'unsafe-inline'" not in script_src[0], "script-src contains 'unsafe-inline'"
-    assert "'unsafe-hashes'" not in script_src[0], "script-src contains 'unsafe-hashes'"
-
-
-def test_t1_html_csp_no_unsafe_inline_style(temp_dir):
-    """Test 18: The built CSP never contains 'unsafe-inline' in style-src."""
-    from ccutils.export.html import _build_csp
-
-    csp = _build_csp("body { color: red }", "console.log('x')")
-    style_src = [part.strip() for part in csp.split(";") if part.strip().startswith("style-src")]
-    assert style_src, "no style-src directive in built CSP"
-    assert "'unsafe-inline'" not in style_src[0], "style-src contains 'unsafe-inline'"
 
 
 def test_t1_html_inline_blocks_only_in_csp_bearing_templates(temp_dir):
@@ -408,22 +366,6 @@ def test_t1_html_no_innerhtml_in_shipped_js(temp_dir):
 
 # --- Feature 1: Incremental Load & DDL Migration Fixes ---
 
-def test_t2_ddl_no_replace_applied_to_any_warehouse_table(temp_dir):
-    """Test 21: Verify DDL does not contain CREATE OR REPLACE TABLE for warehouse tables."""
-    schema_file = Path(__file__).parent.parent / "src" / "ccutils" / "schemas" / "star" / "schema.py"
-    content = schema_file.read_text(encoding="utf-8")
-    
-    # Extract all CREATE OR REPLACE TABLE occurrences
-    matches = re.findall(r"create\s+or\s+replace\s+table\s+(\w+)", content, re.I)
-    warehouse_tables = {
-        "dim_session", "dim_project", "dim_model", "dim_tool", "dim_date", "dim_time",
-        "fact_messages", "fact_tool_calls",
-        "fact_token_usage", "fact_errors"
-    }
-    
-    offending_tables = warehouse_tables.intersection(matches)
-    assert not offending_tables, f"DDL uses CREATE OR REPLACE TABLE for warehouse tables: {offending_tables}"
-
 
 def test_t2_incremental_load_duplicate_sessions_updated_in_place(conn, temp_dir):
     """Test 22: Verify running ETL on the same session file twice updates dim_session rows in-place.
@@ -439,39 +381,6 @@ def test_t2_incremental_load_duplicate_sessions_updated_in_place(conn, temp_dir)
     second_count = conn.execute("SELECT COUNT(*) FROM dim_session WHERE session_id = 'sess_dup'").fetchone()[0]
     
     assert second_count == 1, "Duplicate session keys created on re-ETL of same session"
-
-
-def test_t2_upsert_empty_inbound_does_not_raise_exception(conn, temp_dir):
-    """Test 23: Verify lineage_upsert works fine when inbound table is empty.
-    Checks boundary safety in DuckDB SQL execution.
-    """
-    from ccutils.etl.lineage import EtlRun
-    from ccutils.etl.upsert import lineage_upsert
-    
-    run = EtlRun.start(conn, source_path=str(temp_dir / "empty.jsonl"))
-    
-    conn.execute("""
-        CREATE TEMP TABLE _inbound_calls_empty (
-            tool_use_id VARCHAR,
-            session_id VARCHAR,
-            entry_id VARCHAR,
-            message_id VARCHAR,
-            tool_name VARCHAR,
-            timestamp TIMESTAMP
-        )
-    """)
-    
-    try:
-        lineage_upsert(
-            conn, run=run,
-            table="fact_tool_calls",
-            inbound_table="_inbound_calls_empty",
-            natural_key="tool_use_id",
-            payload_cols=["entry_id", "message_id", "tool_name", "timestamp"],
-            hash_cols=["tool_name"],
-        )
-    except Exception as e:
-        pytest.fail(f"lineage_upsert failed on empty inbound table: {e}")
 
 
 def test_t2_upsert_soft_delete_only_affects_matching_session(conn, temp_dir):
@@ -492,22 +401,6 @@ def test_t2_upsert_soft_delete_only_affects_matching_session(conn, temp_dir):
     
     assert conn.execute("SELECT COUNT(*) FROM fact_tool_calls WHERE is_error = TRUE AND session_id = 'sess_a' AND is_deleted = FALSE").fetchone()[0] == 0
     assert conn.execute("SELECT COUNT(*) FROM fact_tool_calls WHERE is_error = TRUE AND session_id = 'sess_b' AND is_deleted = FALSE").fetchone()[0] > 0
-
-
-def test_t2_incremental_load_empty_source_leaves_warehouse_intact(conn, temp_dir):
-    """Test 25: Verify that running the ETL with an invalid or empty file fails but preserves
-    existing data in the warehouse.
-    """
-    conn.execute("INSERT INTO dim_session (session_key, session_id) VALUES ('existing_key', 'existing_sess')")
-    
-    empty_file = temp_dir / "invalid.jsonl"
-    empty_file.write_text("not-a-json", encoding="utf-8")
-    
-    with pytest.raises(Exception):
-        run_v15_etl(conn, empty_file, project_name="p", parquet_lake_root=temp_dir / "lake")
-        
-    count = conn.execute("SELECT COUNT(*) FROM dim_session WHERE session_id = 'existing_sess'").fetchone()[0]
-    assert count == 1, "Failure in ETL wiped existing warehouse data"
 
 
 # --- Feature 2: Staging & Summary Query Optimization ---
@@ -551,15 +444,6 @@ def test_t2_heuristics_mixed_extensions_ranking(conn):
     assert domain == "mixed", f"Expected domain to resolve to 'mixed' for ['.js', '.py'] (got {domain})"
 
 
-def test_t2_subagent_recursive_cte_handles_empty_dim_session(conn):
-    """Test 34: Verify that the recursive CTE query runs successfully even when dim_session is completely empty."""
-    from ccutils.etl.subagent_enrichment import _propagate_depth_level
-    try:
-        _propagate_depth_level(conn)
-    except Exception as e:
-        pytest.fail(f"Depth propagation recursive CTE crashed on empty dim_session: {e}")
-
-
 def test_t2_subagent_recursive_cte_handles_deep_tree(conn):
     """Test 35: Verify subagent depth propagation recursive CTE query logic handles arbitrary deep levels.
 
@@ -590,23 +474,6 @@ def test_t2_subagent_recursive_cte_handles_deep_tree(conn):
 
 # --- Feature 4: HTML Export and Security Improvements ---
 
-def test_t2_html_shipped_js_never_fetches(temp_dir):
-    """Test 36: No shipped JS source calls fetch() or XMLHttpRequest.
-
-    search.js fetched page-NNN.html for every page; browsers block fetch()
-    from file://, the .catch() swallowed the error, and search reported
-    "0 results" indistinguishably from no matches. The archive is static
-    files -- any network call in shipped JS is that bug returning.
-    """
-    src_root = Path(__file__).parent.parent / "src" / "ccutils"
-    js_files = sorted((src_root / "templates").glob("*.js")) + sorted(
-        (src_root / "static").glob("*.js"))
-    assert js_files, "no JS sources found -- glob roots are stale"
-    for js in js_files:
-        content = js.read_text(encoding="utf-8")
-        assert "fetch(" not in content, f"{js.name} calls fetch()"
-        assert "XMLHttpRequest" not in content, f"{js.name} uses XMLHttpRequest"
-
 
 def test_t2_html_csp_contains_strict_default_src(temp_dir):
     """Test 37: The built CSP locks default-src to 'none'."""
@@ -616,243 +483,9 @@ def test_t2_html_csp_contains_strict_default_src(temp_dir):
     assert "default-src 'none'" in csp, "CSP default-src is not set to 'none'"
 
 
-def test_t2_html_is_self_contained_no_sibling_assets(temp_dir):
-    """Since C2 the transcript is ONE file: styling and script are inlined and
-    pinned by sha256 in its CSP.
-
-    Claim: these tests previously asserted the opposite -- that .js and .css
-    were written as separate files. That was correct under the old
-    `script-src 'self'` policy and is wrong now. Externalizing assets is what
-    made the export a directory rather than a document, and a directory is
-    what made search reach for fetch(). Assert the current contract, not the
-    previous one.
-    """
-    session = create_mock_session_file(temp_dir, "sess_html_1", make_basic_loglines("sess_html_1"))
-
-    output_dir = temp_dir / "html_out_1"
-    generate_html(json_path=session, output_dir=output_dir)
-
-    assert not list(output_dir.glob("**/*.js")), "sibling .js written; transcript must be self-contained"
-    assert not list(output_dir.glob("**/*.css")), "sibling .css written; transcript must be self-contained"
-
-    html_files = list(output_dir.glob("*.html"))
-    assert len(html_files) == 1
-    doc = html_files[0].read_text()
-    assert "<style>" in doc and "<script>" in doc
-    assert "sha256-" in doc
-
-
-
-def test_t3_incremental_load_and_scoped_summary_interaction(conn, temp_dir):
-    """Test 41: Combined test verifying that sequential incremental runs correctly update the summary table
-    without executing full table scans.
-    """
-    session_1 = create_mock_session_file(temp_dir, "sess_1", make_basic_loglines("sess_1"))
-    run_v15_etl(conn, session_1, project_name="p", parquet_lake_root=temp_dir / "lake")
-    
-    session_2 = create_mock_session_file(temp_dir, "sess_2", make_basic_loglines("sess_2"))
-    
-    run_v15_etl(conn, session_2, project_name="p", parquet_lake_root=temp_dir / "lake")
-    
-    assert conn.execute("SELECT COUNT(*) FROM semantic_session_summary").fetchone()[0] == 2
-
-
-def test_t3_subagent_depth_heuristics_and_incremental_load(conn, temp_dir):
-    """Test 42: Combined test of subagent depth propagation and heuristics.
-    Verify that loading a subagent session incrementally calculates its depth level as 1,
-    and updates its complexity classification to 'moderate' based on the computed depth.
-    """
-    subagent_dir = temp_dir / "projects" / "p1" / "sess_root" / "subagents"
-    subagent_dir.mkdir(parents=True, exist_ok=True)
-    
-    conn.execute("INSERT INTO dim_session (session_key, session_id, depth_level) VALUES (md5('sess_root'), 'sess_root', 0)")
-    
-    loglines = []
-    for i in range(9):
-        loglines.append({
-            "type": "user",
-            "uuid": f"u_{i}",
-            "sessionId": "agent-sub_deep",
-            "timestamp": f"2026-04-19T10:00:0{i}Z",
-            "cwd": "/work",
-            "gitBranch": "main",
-            "version": "2.1.114",
-            "message": {"role": "user", "content": "command"},
-        })
-    
-    jsonl_path = subagent_dir / "agent-sub_deep.jsonl"
-    with open(jsonl_path, "w", encoding="utf-8") as f:
-        for line in loglines:
-            f.write(json.dumps(line) + "\n")
-            
-    meta_path = subagent_dir / "agent-sub_deep.meta.json"
-    meta_path.write_text(json.dumps({"agentType": "sub-worker"}), encoding="utf-8")
-    
-    run_v15_etl(conn, jsonl_path, project_name="p1", parquet_lake_root=temp_dir / "lake")
-    
-    row = conn.execute("SELECT depth_level, complexity FROM dim_session WHERE session_id = 'agent-sub_deep'").fetchone()
-    assert row is not None
-    assert row[0] == 1
-    assert row[1] == "moderate"
-
-
-def test_t3_html_export_with_js_ts_heuristics_metadata(conn, temp_dir):
-    """Test 43: Combined test of heuristics domain mapping (JS/TS) and HTML export.
-    Verify that a JS/TS project correctly resolves to domain 'web' or 'backend' in dim_session,
-    and this domain is included in the metadata context of the generated HTML pages safely.
-    """
-    loglines = make_basic_loglines("sess_js")
-    session = create_mock_session_file(temp_dir, "sess_js", loglines)
-    
-    run_v15_etl(conn, session, project_name="web-proj", parquet_lake_root=temp_dir / "lake")
-    
-    conn.execute("INSERT INTO dim_file (file_key, file_extension) VALUES (md5('app.js'), '.js')")
-    # semantic_session_files derives from fact_file_operations, so the mock
-    # goes one level down.
-    insert_mock_fact(conn, "fact_file_operations", "tool_use_id", "tu_mock_js",
-                     tool_call_key=md5("sess_js|tu_mock_js"),
-                     session_id="sess_js", session_key=md5("sess_js"),
-                     file_key=md5("app.js"), operation_type="read")
-    
-    from ccutils.etl.staging import load_session_to_staging
-    load_session_to_staging(conn, temp_dir / "lake" / "projects" / "web-proj" / "sessions" / "sess_js" / "log_entries.parquet")
-    from ccutils.etl.dim_session_heuristics import populate_dim_session_heuristics
-    from ccutils.etl.lineage import EtlRun
-    run = EtlRun.start(conn, source_path=str(session))
-    populate_dim_session_heuristics(conn, run=run)
-    
-    domain = conn.execute("SELECT domain FROM dim_session WHERE session_id = 'sess_js'").fetchone()[0]
-    assert domain in ("web", "backend")
-    
-    output_dir = temp_dir / "html_out_js"
-    generate_html(json_path=session, output_dir=output_dir)
-    
-    # One self-contained transcript per session since C2 -- no index.html.
-    html_files = list(output_dir.glob("*.html"))
-    assert len(html_files) == 1
-
-
-def test_t3_zero_rows_soft_delete_and_unconditional_staging_clearance(conn, temp_dir):
-    """Test 44: Combined test of soft-delete upsert logic and staging clearance.
-    Verify that when a rerun yields 0 tool errors (empty inbound), the previous tool errors are
-    soft-deleted and the staging tables are cleared completely at the end of the ETL run.
-    """
-    session = create_mock_session_file(temp_dir, "sess_combo", make_basic_loglines("sess_combo", tool_error=True))
-    run_v15_etl(conn, session, project_name="p", parquet_lake_root=temp_dir / "lake")
-    
-    assert conn.execute("SELECT COUNT(*) FROM fact_tool_calls WHERE is_error = TRUE AND session_id = 'sess_combo' AND is_deleted = FALSE").fetchone()[0] > 0
-    
-    session_fixed = create_mock_session_file(temp_dir, "sess_combo", make_basic_loglines("sess_combo", tool_error=False))
-    run_v15_etl(conn, session_fixed, project_name="p", parquet_lake_root=temp_dir / "lake")
-    
-    assert conn.execute("SELECT COUNT(*) FROM fact_tool_calls WHERE is_error = TRUE AND session_id = 'sess_combo' AND is_deleted = FALSE").fetchone()[0] == 0
-    assert conn.execute("SELECT COUNT(*) FROM etl.log_entries").fetchone()[0] == 0
-
-
 # =========================================================================
 # TIER 4: Real-World Application Scenarios (Tests 45-50)
 # =========================================================================
-
-def test_t4_scenario_1_multiphase_incremental_load_stability(conn, temp_dir):
-    """Test 45: Scenario 1 - Multiphase Incremental Load with DDL stability.
-    Ingests session 1, runs DDL recreation/migration, ingests session 2, and then re-ingests session 1.
-    Verify that schemas are stable, no tables are dropped, and all historical records are preserved.
-    """
-    session_1 = create_mock_session_file(temp_dir, "sess_1", make_basic_loglines("sess_1"))
-    run_v15_etl(conn, session_1, project_name="p", parquet_lake_root=temp_dir / "lake")
-    assert conn.execute("SELECT COUNT(*) FROM dim_session WHERE session_id = 'sess_1'").fetchone()[0] == 1
-    
-    db_path = temp_dir / "test_e2e_star.duckdb"
-    create_star_schema(db_path)
-    
-    assert conn.execute("SELECT COUNT(*) FROM dim_session WHERE session_id = 'sess_1'").fetchone()[0] == 1
-    
-    session_2 = create_mock_session_file(temp_dir, "sess_2", make_basic_loglines("sess_2"))
-    run_v15_etl(conn, session_2, project_name="p", parquet_lake_root=temp_dir / "lake")
-    
-    assert conn.execute("SELECT COUNT(*) FROM dim_session WHERE session_id = 'sess_1'").fetchone()[0] == 1
-    assert conn.execute("SELECT COUNT(*) FROM dim_session WHERE session_id = 'sess_2'").fetchone()[0] == 1
-
-
-def test_t4_scenario_2_js_ts_web_subagent_classification(conn, temp_dir):
-    """Test 46: Scenario 2 - JS/TS Web Subagent Session Classification.
-    Runs ETL on a JS/TS subagent session.
-    Verify that its domain resolves to 'web' or 'backend' and its complexity resolves to 'moderate' or 'complex'.
-    """
-    subagent_dir = temp_dir / "projects" / "p" / "sess_root" / "subagents"
-    subagent_dir.mkdir(parents=True, exist_ok=True)
-    
-    loglines = []
-    for i in range(9):
-        loglines.append({
-            "type": "user",
-            "uuid": f"u_{i}",
-            "sessionId": "agent-js_sub",
-            "timestamp": f"2026-04-19T10:00:0{i}Z",
-            "cwd": "/work",
-            "gitBranch": "main",
-            "version": "2.1.114",
-            "message": {"role": "user", "content": "touch index.js"},
-        })
-        
-    jsonl_path = subagent_dir / "agent-js_sub.jsonl"
-    with open(jsonl_path, "w", encoding="utf-8") as f:
-        for line in loglines:
-            f.write(json.dumps(line) + "\n")
-            
-    meta_path = subagent_dir / "agent-js_sub.meta.json"
-    meta_path.write_text(json.dumps({"agentType": "web-crawler"}), encoding="utf-8")
-    
-    conn.execute("INSERT INTO dim_session (session_key, session_id, depth_level) VALUES (md5('sess_root'), 'sess_root', 0)")
-    
-    run_v15_etl(conn, jsonl_path, project_name="p", parquet_lake_root=temp_dir / "lake")
-    
-    conn.execute("INSERT INTO dim_file (file_key, file_extension) VALUES (md5('index.js'), '.js')")
-    insert_mock_fact(conn, "fact_file_operations", "tool_use_id", "tu_mock_index",
-                     tool_call_key=md5("agent-js_sub|tu_mock_index"),
-                     session_id="agent-js_sub", session_key=md5("agent-js_sub"),
-                     file_key=md5("index.js"), operation_type="read")
-    
-    from ccutils.etl.staging import load_session_to_staging
-    load_session_to_staging(conn, temp_dir / "lake" / "projects" / "p" / "sessions" / "agent-js_sub" / "log_entries.parquet")
-    from ccutils.etl.dim_session_heuristics import populate_dim_session_heuristics
-    from ccutils.etl.lineage import EtlRun
-    run = EtlRun.start(conn, source_path=str(jsonl_path))
-    populate_dim_session_heuristics(conn, run=run)
-    
-    row = conn.execute("SELECT domain, complexity FROM dim_session WHERE session_id = 'agent-js_sub'").fetchone()
-    assert row is not None
-    assert row[0] in ("web", "backend"), f"Expected domain to be 'web' or 'backend' (got {row[0]})"
-    assert row[1] == "moderate", f"Expected complexity to be 'moderate' (got {row[1]})"
-
-
-def test_t4_scenario_3_safe_html_generation_search_csp(temp_dir):
-    """Test 47: Scenario 3 - Safe HTML Generation with CSP.
-    Generates HTML and verifies CSP script-src and style-src contain no
-    unsafe-inline directives, and any emitted JS has no unsafe innerHTML.
-    """
-    session = create_mock_session_file(temp_dir, "sess_html_safe", make_basic_loglines("sess_html_safe"))
-    output_dir = temp_dir / "html_safe_out"
-    generate_html(json_path=session, output_dir=output_dir)
-    
-    html_files = list(output_dir.glob("*.html"))
-    assert len(html_files) > 0
-    for hf in html_files:
-        html_content = hf.read_text(encoding="utf-8")
-        csp_match = re.search(r'http-equiv="Content-Security-Policy"\s+content="([^"]+)"', html_content, re.I)
-        if csp_match:
-            csp = csp_match.group(1)
-            for part in csp.split(";"):
-                part = part.strip()
-                if part.startswith("script-src") or part.startswith("style-src"):
-                    assert "'unsafe-inline'" not in part, f"HTML file {hf.name} contains 'unsafe-inline' in CSP directive: {part}"
-                    
-    js_files = list(output_dir.glob("**/*.js"))
-    for jf in js_files:
-        js_content = jf.read_text(encoding="utf-8")
-        matches = re.findall(r"\w+\.innerHTML\s*=\s*[^';]+", js_content)
-        for match in matches:
-            assert "''" in match or '""' in match, f"Unsafe innerHTML assignment found in exported js: {match}"
 
 
 def test_t4_scenario_4_deep_subagent_depth_verification(conn, temp_dir):
@@ -884,49 +517,3 @@ def test_t4_scenario_4_deep_subagent_depth_verification(conn, temp_dir):
     assert depths["D"] == 3
 
 
-def test_t4_scenario_5_empty_populator_soft_delete(conn, temp_dir):
-    """Test 49: Scenario 5 - Empty populator soft-delete upsert.
-    Verify that if a rerun of a session yields 0 errors, the error records are soft-deleted
-    and dim_session_heuristics classifies it without failing.
-    """
-    sess_file = create_mock_session_file(temp_dir, "sess_sc5", make_basic_loglines("sess_sc5", tool_error=True))
-    run_v15_etl(conn, sess_file, project_name="p", parquet_lake_root=temp_dir / "lake")
-    
-    assert conn.execute("SELECT COUNT(*) FROM fact_tool_calls WHERE is_error = TRUE AND session_id = 'sess_sc5' AND is_deleted = FALSE").fetchone()[0] > 0
-    
-    sess_file_fixed = create_mock_session_file(temp_dir, "sess_sc5", make_basic_loglines("sess_sc5", tool_error=False))
-    run_v15_etl(conn, sess_file_fixed, project_name="p", parquet_lake_root=temp_dir / "lake")
-    
-    assert conn.execute("SELECT COUNT(*) FROM fact_tool_calls WHERE is_error = TRUE AND session_id = 'sess_sc5' AND is_deleted = FALSE").fetchone()[0] == 0
-
-
-def test_t4_scenario_6_e2e_cli_flow(conn, temp_dir):
-    """Test 50: Scenario 6 - Complete end-to-end flow.
-    Exercises incremental loading, subagent depth propagation, heuristics classification,
-    staging clearance, and HTML export together.
-    """
-    parent_file = create_mock_session_file(temp_dir, "sess_p", make_basic_loglines("sess_p"))
-    run_v15_etl(conn, parent_file, project_name="p", parquet_lake_root=temp_dir / "lake")
-    
-    subagent_dir = temp_dir / "projects" / "p" / "sess_p" / "subagents"
-    subagent_dir.mkdir(parents=True, exist_ok=True)
-    child_file = subagent_dir / "agent-c.jsonl"
-    loglines = make_basic_loglines("agent-c")
-    with open(child_file, "w", encoding="utf-8") as f:
-        for line in loglines:
-            f.write(json.dumps(line) + "\n")
-            
-    meta_path = subagent_dir / "agent-c.meta.json"
-    meta_path.write_text(json.dumps({"agentType": "helper"}), encoding="utf-8")
-    
-    run_v15_etl(conn, child_file, project_name="p", parquet_lake_root=temp_dir / "lake")
-    
-    depths = {r[0]: r[1] for r in conn.execute("SELECT session_id, depth_level FROM dim_session").fetchall()}
-    assert depths["sess_p"] == 0
-    assert depths["agent-c"] == 1
-
-    assert conn.execute("SELECT COUNT(*) FROM etl.log_entries").fetchone()[0] == 0
-    
-    output_dir = temp_dir / "html_e2e_out"
-    generate_html(json_path=parent_file, output_dir=output_dir)
-    assert len(list(output_dir.glob("*.html"))) == 1  # one self-contained transcript

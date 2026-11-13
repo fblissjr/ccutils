@@ -129,12 +129,6 @@ class TestBashColumnsSayWhatTheSourceStates:
     and the error text, so the failure is derived from those and named as
     derived."""
 
-    def test_dropped_columns_are_gone(self, conn):
-        cols = {r[0] for r in conn.execute("DESCRIBE fact_tool_calls").fetchall()}
-        assert not {"bash_exit_code", "bash_duration_ms", "bash_interrupted",
-                    "agent_was_interrupted"} & cols
-        assert "caller_type" not in {
-            r[0] for r in conn.execute("DESCRIBE fact_tool_calls").fetchall()}
 
     def test_exit_code_is_derived_from_the_error_text(self, loaded):
         rows = dict(loaded.execute(

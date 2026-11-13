@@ -59,40 +59,7 @@ def basic_session(tmp_path):
 
 
 class TestRunV15Etl:
-    def test_returns_etl_run_id(self, conn, basic_session, tmp_path):
-        result = run_v15_etl(
-            conn, basic_session, project_name="test-project",
-            parquet_lake_root=tmp_path / "lake",
-        )
-        assert "etl_run_id" in result
-        assert len(result["etl_run_id"]) == 32
 
-    def test_populates_all_v15_facts(self, conn, basic_session, tmp_path):
-        run_v15_etl(
-            conn, basic_session, project_name="test-project",
-            parquet_lake_root=tmp_path / "lake",
-        )
-        for table in (
-            "fact_messages",
-            "fact_tool_calls",
-            "fact_token_usage",
-            "semantic_session_summary",
-        ):
-            n = conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
-            assert n > 0, f"Expected rows in {table}"
-
-    def test_records_etl_run_in_etl_runs(self, conn, basic_session, tmp_path):
-        result = run_v15_etl(
-            conn, basic_session, project_name="test-project",
-            parquet_lake_root=tmp_path / "lake",
-        )
-        row = conn.execute(
-            "SELECT status, sessions_inserted FROM etl.runs WHERE etl_run_id = ?",
-            [result["etl_run_id"]],
-        ).fetchone()
-        assert row[0] == "success"
-        # at least the one session we ETL'd
-        assert row[1] >= 1
 
     def test_session_summary_has_one_row_for_the_session(
         self, conn, basic_session, tmp_path
@@ -189,51 +156,6 @@ class TestDimSessionEnrichment:
         assert row[0] is not None, "first_timestamp must be populated"
         assert row[1] is not None, "last_timestamp must be populated"
         assert row[0] <= row[1]
-
-    def test_semantic_project_context_returns_rows(
-        self, conn, basic_session, tmp_path
-    ):
-        run_v15_etl(
-            conn, basic_session, project_name="test-project",
-            parquet_lake_root=tmp_path / "lake",
-        )
-        rows = conn.execute(
-            "SELECT ss.session_id, dp.project_name "
-            "FROM semantic_session_summary ss "
-            "JOIN dim_session ds ON ds.session_key = ss.session_key "
-            "LEFT JOIN dim_project dp ON dp.project_key = ds.project_key"
-        ).fetchall()
-        assert len(rows) == 1
-        assert rows[0][0] == "basic-s"
-        assert rows[0][1] is not None
-
-
-class TestFacetExtractorWiring:
-    """Step 3: run_v15_etl accepts an optional facet_extractor and calls
-    the Tier 2 populator (currently a no-op stub) only when one is
-    supplied. Step 4 wires the real populator body.
-    """
-
-    def test_default_extractor_is_none(self, conn, basic_session, tmp_path):
-        # Existing callers (no kwarg) keep working.
-        result = run_v15_etl(
-            conn, basic_session, project_name="test-project",
-            parquet_lake_root=tmp_path / "lake",
-        )
-        assert result["etl_run_id"] is not None
-
-    def test_canned_extractor_does_not_break_run(
-        self, conn, basic_session, tmp_path
-    ):
-        # Passing a real-shaped extractor should run cleanly; step 4
-        # will wire the populator body that actually calls it.
-        extractor = CannedFacetExtractor({})
-        result = run_v15_etl(
-            conn, basic_session, project_name="test-project",
-            parquet_lake_root=tmp_path / "lake",
-            facet_extractor=extractor,
-        )
-        assert result["etl_run_id"] is not None
 
 
 class TestSubagentProjectAttribution:

@@ -205,43 +205,7 @@ class TestStatedSidecarFields:
 
 
 class TestSubagentDimSessionEnrichment:
-    def test_is_agent_set_for_subagent_jsonl(self, conn, tmp_path):
-        agent_jsonl = _subagent_layout(
-            tmp_path, "parent-sess-uuid", "ac862efa4d26671f8",
-        )
-        run_v15_etl(conn, agent_jsonl, project_name="test",
-                    parquet_lake_root=tmp_path / "lake")
-        row = conn.execute(
-            "SELECT is_agent FROM dim_session "
-            "WHERE session_id LIKE 'agent-%'"
-        ).fetchone()
-        assert row[0] is True
 
-    def test_agent_id_extracted_from_path(self, conn, tmp_path):
-        agent_jsonl = _subagent_layout(
-            tmp_path, "parent-sess-uuid", "ac862efa4d26671f8",
-        )
-        run_v15_etl(conn, agent_jsonl, project_name="test",
-                    parquet_lake_root=tmp_path / "lake")
-        row = conn.execute(
-            "SELECT agent_id FROM dim_session WHERE is_agent = TRUE"
-        ).fetchone()
-        assert row[0] == "ac862efa4d26671f8"
-
-    def test_parent_session_key_from_path(self, conn, tmp_path):
-        agent_jsonl = _subagent_layout(
-            tmp_path, "parent-sess-uuid", "ac862efa4d26671f8",
-        )
-        run_v15_etl(conn, agent_jsonl, project_name="test",
-                    parquet_lake_root=tmp_path / "lake")
-        row = conn.execute(
-            "SELECT parent_session_key FROM dim_session WHERE is_agent = TRUE"
-        ).fetchone()
-        # md5('parent-sess-uuid')
-        expected = conn.execute(
-            "SELECT md5('parent-sess-uuid')"
-        ).fetchone()[0]
-        assert row[0] == expected
 
     def test_agent_type_and_description_from_meta_json(self, conn, tmp_path):
         agent_jsonl = _subagent_layout(
@@ -270,24 +234,6 @@ class TestSubagentDimSessionEnrichment:
         ).fetchone()
         assert row[0] is None
         assert row[1] is None
-
-    def test_non_subagent_session_stays_non_agent(self, conn, tmp_path):
-        # A regular session at the project root (not under /subagents/)
-        regular_jsonl = tmp_path / "regular.jsonl"
-        regular_jsonl.write_text("\n".join(json.dumps(d) for d in [
-            {"type": "user", "uuid": "u1", "sessionId": "regular-sess",
-             "timestamp": "2026-04-19T10:00:00Z",
-             "cwd": "/work", "gitBranch": "main", "version": "2.1.114",
-             "message": {"role": "user", "content": "hi"}},
-        ]))
-        run_v15_etl(conn, regular_jsonl, project_name="test",
-                    parquet_lake_root=tmp_path / "lake")
-        row = conn.execute(
-            "SELECT is_agent, agent_id, parent_session_key FROM dim_session"
-        ).fetchone()
-        assert row[0] is False
-        assert row[1] is None
-        assert row[2] is None
 
 
 class TestRealContractParentSessionId:

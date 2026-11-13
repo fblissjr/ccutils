@@ -1,3 +1,4 @@
+# path-privacy: skip-file -- generic placeholder paths only
 """Tests for star schema DDL -- schema creation and column validation."""
 
 import hashlib

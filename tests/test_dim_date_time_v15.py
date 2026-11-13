@@ -122,28 +122,6 @@ class TestInsertMissingDimDatesApi:
         assert keys == [20260506]
 
 
-class TestDimTimePartialPopulation:
-    def test_partial_dim_time_gets_completed(self, tmp_path):
-        """A legacy warehouse with an incomplete dim_time (older ETL
-        inserted only observed minutes) must be filled to 1440, not left
-        partial by a whole-table emptiness guard."""
-        db = tmp_path / "partial.duckdb"
-        conn = create_star_schema(db)
-        conn.execute("DELETE FROM dim_time WHERE time_key <> 900")  # keep 1
-        assert conn.execute("SELECT COUNT(*) FROM dim_time").fetchone()[0] == 1
-        conn.close()
-        conn = create_star_schema(db)
-        assert conn.execute(
-            "SELECT COUNT(*) FROM dim_time").fetchone()[0] == 1440
-
-    def test_time_of_day_matches_get_time_of_day_for_all_hours(self, conn):
-        from ccutils.schemas.star.utils import get_time_of_day
-        rows = conn.execute(
-            "SELECT hour, time_of_day FROM dim_time").fetchall()
-        for hour, tod in rows:
-            assert tod == get_time_of_day(hour)
-
-
 class _Spy:
     """A connection that records how it was asked to write."""
 

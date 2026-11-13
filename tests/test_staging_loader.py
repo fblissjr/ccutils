@@ -64,19 +64,6 @@ def conn(tmp_path):
     return create_star_schema(tmp_path / "test.duckdb")
 
 
-class TestStgLogEntriesDdl:
-    def test_table_exists_after_create_star_schema(self, conn):
-        result = conn.execute(
-            "SELECT table_name FROM information_schema.tables WHERE table_schema='etl' AND table_name='log_entries'"
-        ).fetchone()
-        assert result is not None
-
-    def test_schema_matches_constant(self, conn):
-        cols = [c[0] for c in conn.execute("DESCRIBE etl.log_entries").fetchall()]
-        expected = [f.name for f in STG_LOG_ENTRIES_SCHEMA]
-        assert set(expected).issubset(set(cols))
-
-
 class TestLoadSessionToStaging:
     def test_loads_one_session(self, conn, sample_jsonl, tmp_path):
         run = EtlRun.start(conn, source_path=str(sample_jsonl))

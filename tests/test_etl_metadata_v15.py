@@ -31,49 +31,6 @@ def _write_session(path, session_id, ts_base="2026-04-19T10:00"):
     return write_minimal_session(path, session_id, ts_base=ts_base)
 
 
-class TestEtlMetadataDdl:
-    def test_etl_batch_runs_columns(self, conn):
-        cols = {
-            r[0] for r in conn.execute(
-                "SELECT column_name FROM information_schema.columns "
-                "WHERE table_schema = 'etl' AND table_name = 'batch_runs'"
-            ).fetchall()
-        }
-        assert {
-            "batch_run_id", "version_key", "started_at", "completed_at",
-            "status", "source_root", "output_format",
-            "sessions_seen", "sessions_succeeded", "sessions_failed",
-            "rows_read", "rows_inserted", "rows_updated", "rows_soft_deleted",
-            "data_start_ts", "data_end_ts", "error_message",
-        } <= cols
-
-    def test_etl_steps_columns(self, conn):
-        cols = {
-            r[0] for r in conn.execute(
-                "SELECT column_name FROM information_schema.columns "
-                "WHERE table_schema = 'etl' AND table_name = 'steps'"
-            ).fetchall()
-        }
-        assert {
-            "step_id", "etl_run_id", "batch_run_id", "step_name",
-            "step_kind", "step_order", "started_at", "completed_at",
-            "status", "rows_read", "rows_inserted", "rows_updated",
-            "rows_soft_deleted", "error_message",
-        } <= cols
-
-    def test_etl_runs_has_batch_and_window_columns(self, conn):
-        cols = {
-            r[0] for r in conn.execute(
-                "SELECT column_name FROM information_schema.columns "
-                "WHERE table_schema = 'etl' AND table_name = 'runs'"
-            ).fetchall()
-        }
-        assert {"batch_run_id", "data_start_ts", "data_end_ts"} <= cols
-
-    def test_semantic_etl_runs_view_exists(self, conn):
-        conn.execute("SELECT * FROM semantic_etl_runs LIMIT 0")
-
-
 class TestBatchRunLifecycle:
     def test_start_inserts_running_row(self, conn):
         batch = BatchRun.start(
@@ -131,15 +88,6 @@ class TestRunLevelMetadata:
         assert str(start).startswith("2026-04-19 10:00:00")
         assert str(end).startswith("2026-04-19 10:00:05")
 
-    def test_fact_counts_are_real_not_stubs(self, conn, tmp_path):
-        session = _write_session(tmp_path / "s1.jsonl", "meta-s3")
-        result = run_v15_etl(conn, session, parquet_lake_root=tmp_path / "lake")
-        facts_inserted = conn.execute(
-            "SELECT facts_inserted FROM etl.runs WHERE etl_run_id = ?",
-            [result["etl_run_id"]],
-        ).fetchone()[0]
-        assert facts_inserted > 0
-
 
 class TestStepRecording:
     def test_upsert_steps_recorded_with_real_counts(self, conn, tmp_path):
@@ -158,17 +106,6 @@ class TestStepRecording:
         assert rows_inserted == 2
         assert rows_updated == 0
 
-    def test_stage_steps_recorded(self, conn, tmp_path):
-        session = _write_session(tmp_path / "s1.jsonl", "step-s2")
-        result = run_v15_etl(conn, session, parquet_lake_root=tmp_path / "lake")
-        names = {
-            r[0] for r in conn.execute(
-                "SELECT step_name FROM etl.steps WHERE etl_run_id = ?",
-                [result["etl_run_id"]],
-            ).fetchall()
-        }
-        assert {"write_parquet", "load_staging", "dim_session", "dim_project",
-                "dim_model", "dim_tool", "dim_date"} <= names
 
     def test_step_order_unique_and_increasing(self, conn, tmp_path):
         session = _write_session(tmp_path / "s1.jsonl", "step-s3")

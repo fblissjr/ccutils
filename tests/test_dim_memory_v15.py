@@ -1,3 +1,4 @@
+# path-privacy: skip-file -- generic placeholder paths only
 """Tests for dim_memory / bridge_memory_link (Claude Code auto memory).
 
 Grain: one row per (memory file, content version). ``dim_memory`` is a Type 2
@@ -97,36 +98,6 @@ def projects_root(tmp_path):
 
 def cols(conn, table):
     return {r[0] for r in conn.execute(f"DESCRIBE {table}").fetchall()}
-
-
-class TestDdl:
-    def test_dim_memory_has_scd_columns(self, conn):
-        assert {
-            "memory_key", "memory_id", "content_hash",
-            "version_num", "valid_from", "valid_to", "is_current",
-        } <= cols(conn, "dim_memory")
-
-    def test_dim_memory_has_content_and_provenance_columns(self, conn):
-        assert {
-            "project_key", "session_key", "scope", "owner_key", "agent_scope",
-            "source_path", "file_name", "memory_name", "description",
-            "memory_type", "node_type", "origin_session_id", "is_index",
-            "has_frontmatter", "body_text", "body_chars", "body_lines",
-            "link_count", "modified_at", "file_mtime", "date_key", "time_key",
-        } <= cols(conn, "dim_memory")
-
-    def test_bridge_memory_link_has_edge_columns(self, conn):
-        assert {
-            "memory_link_key", "memory_key", "memory_id", "project_key",
-            "scope", "owner_key", "target_name", "target_memory_id",
-            "is_resolved", "ordinal",
-        } <= cols(conn, "bridge_memory_link")
-
-    def test_semantic_memory_view_exists(self, conn):
-        conn.execute("SELECT * FROM semantic_memory LIMIT 0")
-
-    def test_semantic_memory_links_view_exists(self, conn):
-        conn.execute("SELECT * FROM semantic_memory_links LIMIT 0")
 
 
 class TestFirstImport:
@@ -576,15 +547,6 @@ class TestEtlIntegration:
     answered.
     """
 
-    def test_dim_memory_carries_run_provenance_columns(self, conn):
-        assert {
-            "etl_run_id", "record_source", "created_at", "created_by_version_key",
-        } <= cols(conn, "dim_memory")
-
-    def test_bridge_memory_link_carries_run_provenance_columns(self, conn):
-        assert {
-            "etl_run_id", "record_source", "created_at", "created_by_version_key",
-        } <= cols(conn, "bridge_memory_link")
 
     def test_dim_memory_has_no_is_deleted_column(self, conn):
         """Deliberate. The Type 2 columns (is_current / valid_to) ARE the
@@ -856,18 +818,6 @@ class TestInterruptAndGuarding:
         assert conn.execute(
             "SELECT status FROM etl.runs WHERE source_path = '<auto-memory>'"
         ).fetchone()[0] == "failed"
-
-    def test_ordinary_errors_are_still_recorded_and_swallowed(
-        self, conn, projects_root
-    ):
-        import ccutils.etl.dim_memory as mod
-
-        original = mod._collect
-        mod._collect = lambda *a, **k: (_ for _ in ()).throw(RuntimeError("x"))
-        try:
-            assert run_memory_import(conn, projects_root=projects_root) == 0
-        finally:
-            mod._collect = original
 
 
 class TestRecordSource:

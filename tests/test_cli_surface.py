@@ -1,3 +1,4 @@
+# path-privacy: skip-file -- generic placeholder paths only
 """The 0.20.0 command surface.
 
 One command does the conversion work. `ccutils` with no positional and no

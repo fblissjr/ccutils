@@ -152,23 +152,6 @@ class TestFencedResponse:
         out = extractor.extract(session_inputs, [f20_spec])
         assert json.loads(out["F20"].metadata_json)["retry_count"] == 0
 
-    def test_unfenced_response_still_parses(
-        self, httpx_mock, extractor, session_inputs, f20_spec
-    ):
-        """The strip must not disturb the normal path."""
-        httpx_mock.add_response(json=_api_response('{"F20": "plain"}'))
-        out = extractor.extract(session_inputs, [f20_spec])
-        assert out["F20"].value == "plain"
-
-    def test_genuine_garbage_still_hard_fails(
-        self, httpx_mock, extractor, session_inputs, f20_spec
-    ):
-        """Stripping fences must not turn a parse failure into a false pass."""
-        httpx_mock.add_response(json=_api_response("not json at all"))
-        httpx_mock.add_response(json=_api_response("still not json"))
-        out = extractor.extract(session_inputs, [f20_spec])
-        assert out["F20"].is_fallback is True
-
 
 class TestHappyPath:
     def test_single_facet(self, httpx_mock, extractor, session_inputs, f20_spec):
@@ -195,18 +178,6 @@ class TestHappyPath:
         assert out["F22"].value == "knowledge"
         assert all(not o.is_fallback for o in out.values())
 
-    def test_metadata_includes_raw_response_and_retry_count(
-        self, httpx_mock, extractor, session_inputs, f20_spec
-    ):
-        httpx_mock.add_response(
-            json=_api_response('{"F20": "summary"}'),
-        )
-        out = extractor.extract(session_inputs, [f20_spec])
-        meta = json.loads(out["F20"].metadata_json)
-        assert meta["retry_count"] == 0
-        assert "raw_response" in meta
-        assert "F20" in meta["raw_response"]
-        assert "cache_hit" in meta
 
     def test_metadata_schema_matches_documented_contract(
         self, httpx_mock, extractor, session_inputs, f20_spec

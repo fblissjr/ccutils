@@ -1,3 +1,4 @@
+# path-privacy: skip-file -- generic placeholder paths only
 """Tests for HTML generation from Claude Code session JSON."""
 
 import json

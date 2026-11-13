@@ -1,3 +1,4 @@
+# path-privacy: skip-file -- generic placeholder paths only
 """Tests for agent discovery and multi-select functionality."""
 
 import json

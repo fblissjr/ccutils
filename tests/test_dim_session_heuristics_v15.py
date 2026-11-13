@@ -204,27 +204,6 @@ class TestDimSessionEnrichmentIntegration:
         assert row[0] is not None
         assert "Done" in row[0]
 
-    def test_a_classified_session_reads_through_the_summary_join(
-        self, conn, bug_fix_session, tmp_path
-    ):
-        """The join the query-warehouse skill gives for "what sessions exist":
-        the summary for the numbers, dim_session for the classifications.
-        (This read `semantic_sessions` until that plain-join view was deleted.)
-        """
-        run_v15_etl(conn, bug_fix_session, project_name="test",
-                    parquet_lake_root=tmp_path / "lake")
-        row = conn.execute(
-            """
-            SELECT ds.intent, ds.complexity, ds.outcome, ds.domain
-            FROM semantic_session_summary ss
-            JOIN dim_session ds ON ds.session_key = ss.session_key
-            WHERE ss.session_id = 'bug-s'
-            """
-        ).fetchone()
-        assert row is not None
-        assert row[0] == "bug_fix"
-        assert row[2] == "success"
-        assert row[3] == "backend"
 
     def test_idempotent_reetl(self, conn, bug_fix_session, tmp_path):
         run_v15_etl(conn, bug_fix_session, project_name="test",

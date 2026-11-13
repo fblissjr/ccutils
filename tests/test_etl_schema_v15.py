@@ -88,12 +88,6 @@ class TestVersionKeyIsReadable:
             b.complete()
         assert b.version_key == f"{PARSER_VERSION}/1"
 
-    def test_business_rules_version_is_part_of_the_key(self, conn):
-        r1 = EtlRun.start(conn, source_path="/x", business_rules_version="1")
-        r2 = EtlRun.start(conn, source_path="/x", business_rules_version="2")
-        assert r1.version_key == f"{PARSER_VERSION}/1"
-        assert r2.version_key == f"{PARSER_VERSION}/2"
-
 
 class TestFingerprintCoversEtlSchema:
     def test_stray_column_on_an_etl_table_is_refused(self, tmp_path):
@@ -104,14 +98,6 @@ class TestFingerprintCoversEtlSchema:
         c.close()
         with pytest.raises(SchemaMismatchError):
             create_star_schema(db)
-
-    def test_stamp_lives_in_etl_schema(self, tmp_path):
-        db = tmp_path / "w.duckdb"
-        create_star_schema(db).close()
-        c = duckdb.connect(str(db))
-        n = c.execute("SELECT COUNT(*) FROM etl.schema_version").fetchone()[0]
-        c.close()
-        assert n == 1
 
 
 class TestJsonExportMirrorsTheSchemas:

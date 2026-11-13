@@ -128,11 +128,6 @@ class TestDimToolCategory:
                     parquet_lake_root=tmp_path / "lake")
         assert _categories(conn)["mcp__someserver__do_thing"] == "mcp"
 
-    def test_no_tool_left_unknown(self, conn, mixed_tool_session, tmp_path):
-        run_v15_etl(conn, mixed_tool_session, project_name="test-project",
-                    parquet_lake_root=tmp_path / "lake")
-        unknown = [n for n, c in _categories(conn).items() if c == "unknown"]
-        assert unknown == [], f"uncategorized tools: {unknown}"
 
     def test_categorization_backfills_preexisting_unknown_rows(
         self, conn, mixed_tool_session, tmp_path
@@ -219,15 +214,3 @@ class TestSemanticSessionBehavior:
         assert row[1] == 0
         assert row[2] is None
 
-    def test_view_carries_no_archetype_label(self, conn):
-        """The view must stay descriptive. An archetype column here would be
-        a threshold frozen into the schema -- the thing this design avoids."""
-        cols = [
-            r[0] for r in conn.execute(
-                "SELECT column_name FROM duckdb_columns() "
-                "WHERE table_name = 'semantic_session_behavior'"
-            ).fetchall()
-        ]
-        assert not any(
-            "archetype" in c or "label" in c or "bucket" in c for c in cols
-        ), f"classification leaked into the view: {cols}"

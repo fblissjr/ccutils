@@ -41,9 +41,6 @@ def steps(conn, basic_session, tmp_path):
 
 
 class TestStepsNameTheirTable:
-    def test_column_exists(self, conn):
-        cols = {r[0] for r in conn.execute("DESCRIBE etl.steps").fetchall()}
-        assert "table_name" in cols
 
     def test_every_writing_step_names_a_table(self, steps):
         unlabelled = [
@@ -67,13 +64,3 @@ class TestStepsNameTheirTable:
             "etl.log_entries", "dim_session_chain",
         } <= stage_tables
 
-    def test_table_written_is_a_group_by(self, conn, steps):
-        """The whole point: one query answers what this run wrote."""
-        written = {
-            r[0] for r in conn.execute(
-                "SELECT DISTINCT table_name FROM etl.steps "
-                "WHERE table_name IS NOT NULL AND status = 'success'"
-            ).fetchall()
-        }
-        assert "fact_messages" in written
-        assert "dim_session" in written

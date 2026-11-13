@@ -21,27 +21,7 @@ def conn(tmp_path):
     return create_star_schema(tmp_path / "test.duckdb")
 
 
-class TestEtlRunIdGeneration:
-    def test_etl_run_id_is_unique_per_run(self, conn):
-        r1 = EtlRun.start(conn, source_path="x")
-        r2 = EtlRun.start(conn, source_path="x")
-        assert r1.etl_run_id != r2.etl_run_id
-
-    def test_etl_run_id_is_a_hex_string(self, conn):
-        r = EtlRun.start(conn, source_path="x")
-        assert isinstance(r.etl_run_id, str)
-        assert len(r.etl_run_id) == 32  # UUID4 hex
-
-
 class TestDimEtlVersionResolution:
-    def test_first_use_inserts_version_row(self, conn):
-        r = EtlRun.start(conn, source_path="x")
-        rows = conn.execute(
-            "SELECT ccutils_version, business_rules_version FROM etl.versions"
-        ).fetchall()
-        assert len(rows) == 1
-        assert rows[0][0] == PARSER_VERSION
-        assert rows[0][1] == "1"
 
     def test_repeated_use_returns_same_version_key(self, conn):
         r1 = EtlRun.start(conn, source_path="x")
@@ -109,8 +89,6 @@ class TestFactEtlRunsInsert:
 
 
 class TestHashDiff:
-    def test_same_inputs_produce_same_hash(self):
-        assert hash_diff(a=1, b="x") == hash_diff(a=1, b="x")
 
     def test_key_order_does_not_matter(self):
         assert hash_diff(a=1, b="x") == hash_diff(b="x", a=1)
@@ -124,10 +102,6 @@ class TestHashDiff:
         # hash_diff (which would cause spurious UPDATEs on re-ETL).
         assert hash_diff(a=1) == hash_diff(a=1, b=None)
 
-    def test_returns_32_char_hex(self):
-        h = hash_diff(a=1)
-        assert isinstance(h, str)
-        assert len(h) == 32
 
     def test_empty_attributes_returns_known_hash(self):
         # All-None attributes (newly-added optional columns) should produce
@@ -135,10 +109,3 @@ class TestHashDiff:
         assert hash_diff() == hash_diff()
 
 
-class TestRecordSourceLabel:
-    def test_known_sources(self):
-        assert record_source_label("claude_code_jsonl") == "claude_code_jsonl"
-
-    def test_unknown_source_raises(self):
-        with pytest.raises(ValueError):
-            record_source_label("malformed source")

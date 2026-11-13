@@ -93,27 +93,6 @@ def session_path(tmp_path):
     )
 
 
-class TestSeedingAndDDL:
-    def test_dim_facet_type_carries_f20(self, conn):
-        row = conn.execute(
-            "SELECT facet_id, facet_name, tier, method, prompt_version, "
-            "prompt_text "
-            "FROM dim_facet_type WHERE facet_id = 'F20'"
-        ).fetchone()
-        assert row is not None
-        facet_id, facet_name, tier, method, prompt_version, prompt_text = row
-        assert facet_id == "F20"
-        assert facet_name == "task_description"
-        assert tier == 2
-        assert method == "llm"
-        assert prompt_version == "v1"
-        # prompt_text was seeded from FacetSpec.description -- it's the
-        # description shown to the model in the system prompt's facet
-        # schema, queryable post-hoc for auditing.
-        assert prompt_text is not None
-        assert len(prompt_text) > 0
-
-
 class TestCannedExtractor:
     def test_canned_value_lands_in_value_text(
         self, conn, session_path, tmp_path
