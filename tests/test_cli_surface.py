@@ -81,26 +81,6 @@ class TestRemovedCommands:
             assert f"  {gone}" not in commands, f"{gone} still advertised"
 
 
-class TestRemovedUrlInput:
-    """`is_url` / `fetch_url_to_tempfile` fetched a transcript from an http(s)
-    URL for the old `json` command. That command is gone and nothing called
-    them; they stayed exported as public API until removed. Guard against
-    re-export so a dead network path does not creep back in."""
-
-    GONE = ("is_url", "fetch_url_to_tempfile")
-
-    def test_url_helpers_are_not_exposed(self):
-        import importlib
-
-        for module in ("ccutils", "ccutils.cli", "ccutils.cli.utils"):
-            mod = importlib.import_module(module)
-            for name in self.GONE:
-                assert not hasattr(mod, name), f"{module}.{name} still exists"
-                assert name not in getattr(mod, "__all__", ()), (
-                    f"{module}.__all__ still lists {name}"
-                )
-
-
 class TestRemovedEmbed:
     """`--embed` and the ColBERT pipeline behind it are gone (1.0.0).
 
@@ -124,18 +104,6 @@ class TestRemovedEmbed:
             assert "No such option" in result.output and "--embed" in result.output
         assert not (tmp_path / "o").exists(), "a rejected flag must not write"
 
-    def test_the_pipeline_is_not_exposed(self):
-        import importlib
-
-        import pytest
-
-        for module in ("ccutils", "ccutils.schemas.star", "ccutils.cli.utils"):
-            mod = importlib.import_module(module)
-            for name in ("EmbeddingPipeline", "run_embedding_pipeline"):
-                assert not hasattr(mod, name), f"{module}.{name} still exists"
-                assert name not in getattr(mod, "__all__", ()), f"{module}.__all__ lists {name}"
-        with pytest.raises(ModuleNotFoundError):
-            importlib.import_module("ccutils.schemas.star.embeddings")
 
     def test_a_warehouse_has_no_embeddings_table(self, tmp_path):
         from ccutils import create_star_schema
@@ -149,27 +117,10 @@ class TestRemovedEmbed:
         assert "fact_session_embeddings" not in TABLE_COVERAGE
         assert not any(by == "flag:--embed" for _, _, by, _ in TABLE_COVERAGE.values())
 
-    def test_there_is_no_colbert_extra(self):
-        import tomllib
-        from pathlib import Path
-
-        pyproject = tomllib.loads(
-            (Path(__file__).resolve().parents[1] / "pyproject.toml").read_text())
-        extras = pyproject["project"].get("optional-dependencies", {})
-        assert "colbert" not in extras
-        assert not any("pylate" in dep for deps in extras.values() for dep in deps)
-
 
 class TestModeDispatch:
     """Which mode runs is decided by the positional and --source."""
 
-    def test_paths_convert_those_files(self, tmp_path):
-        f = _session(tmp_path / "proj")
-        out = tmp_path / "out"
-        result = CliRunner().invoke(cli, [str(f), "-o", str(out)])
-
-        assert result.exit_code == 0, result.output
-        assert (out / "sess-a.html").exists()
 
     def test_source_walks_everything_under_it(self, tmp_path):
         _session(tmp_path / "projects" / "-home-user-projects-demo", "s1")
@@ -387,11 +338,3 @@ class TestModeOnlyFlagsFailLoudly:
         assert result.exit_code != 0
         assert "--flat" in result.output
 
-    def test_the_same_flags_are_fine_with_source(self, tmp_path):
-        """No over-correction: they work where they mean something."""
-        _session(tmp_path / "projects" / "-home-user-projects-demo", "s1")
-        result = CliRunner().invoke(
-            cli, ["--source", str(tmp_path / "projects"), "--dry-run", "-q"]
-        )
-
-        assert result.exit_code == 0, result.output

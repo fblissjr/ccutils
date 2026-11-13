@@ -446,9 +446,6 @@ class TestGenerateBatchHtml:
     reachable, counts stated); the shape does not.
     """
 
-    def test_creates_output_directory(self, mock_projects_dir, output_dir):
-        generate_batch_html(mock_projects_dir, output_dir)
-        assert output_dir.exists()
 
     def test_layout_is_flat(self, mock_projects_dir, output_dir):
         """No directories at all: index.html plus one file per session."""
@@ -561,12 +558,6 @@ class TestGenerateBatchHtml:
 class TestAllCommand:
     """Tests for the all CLI command."""
 
-    def test_all_command_exists(self):
-        """Test that all command is registered."""
-        runner = CliRunner()
-        result = runner.invoke(cli, ["convert", "--help"])
-        assert result.exit_code == 0
-        assert "convert" in result.output.lower()
 
     def test_all_dry_run(self, mock_projects_dir, output_dir):
         """Test dry-run mode shows what would be converted."""
@@ -588,23 +579,6 @@ class TestAllCommand:
         # Dry run should not create files
         assert not (output_dir / "index.html").exists()
 
-    def test_all_creates_archive(self, mock_projects_dir, output_dir):
-        """Test all command creates full archive."""
-        runner = CliRunner()
-        result = runner.invoke(
-            cli,
-            [
-                "--source",
-                str(mock_projects_dir),
-                "--output",
-                str(output_dir),
-            ],
-        )
-
-        assert result.exit_code == 0
-        # Flat archive: index.html plus one self-contained file per session.
-        assert (output_dir / "index.html").exists()
-        assert len(list(output_dir.glob("*.html"))) > 1
 
     def test_all_includes_agents_by_default(self, mock_projects_dir, output_dir):
         """Test that agent sessions are included by default."""

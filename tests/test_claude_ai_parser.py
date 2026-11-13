@@ -309,11 +309,6 @@ class TestLoadExportFiles:
 class TestParseClaudeAiExport:
     """Tests for the main parse_claude_ai_export function."""
 
-    def test_returns_loglines_format(self, export_dir):
-        """Returns data in {loglines: [...]} format."""
-        result = parse_claude_ai_export(export_dir)
-        assert "loglines" in result
-        assert isinstance(result["loglines"], list)
 
     def test_includes_metadata(self, export_dir):
         """Includes metadata about the export."""

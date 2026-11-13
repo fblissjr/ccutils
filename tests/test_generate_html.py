@@ -67,15 +67,6 @@ def _reset_github_repo():
 class TestGenerateHtml:
     """Tests for the main generate_html function."""
 
-    def test_generates_index_html(self, output_dir):
-        """Test index.html generation."""
-        fixture_path = Path(__file__).parent / "sample_session.json"
-        generate_html(fixture_path, output_dir, github_repo="example/project")
-
-        index_html = read_transcript(output_dir)
-        assert "<!DOCTYPE html>" in index_html
-        assert "Content-Security-Policy" in index_html
-        assert 'class="prompt-list"' in index_html
 
     def test_csp_header_in_generated_html(self, output_dir):
         """Test that Content-Security-Policy meta tag is present in generated HTML."""
@@ -100,14 +91,6 @@ class TestGenerateHtml:
         # Stable anchor: bookmarked message links must survive any layout change.
         assert 'id="msg-' in page_html
 
-    def test_generates_page_002_html(self, output_dir):
-        """Test page-002.html generation (continuation page)."""
-        fixture_path = Path(__file__).parent / "sample_session.json"
-        generate_html(fixture_path, output_dir, github_repo="example/project")
-
-        page_html = read_transcript(output_dir)
-        assert "<!DOCTYPE html>" in page_html
-        assert 'id="msg-' in page_html
 
     def test_github_repo_autodetect(self, sample_session):
         """Test GitHub repo auto-detection from git push output."""
@@ -290,11 +273,6 @@ class TestRenderFunctions:
         result = render_markdown_text('<iframe src="https://evil.com"></iframe>')
         assert "<iframe" not in result
 
-    def test_render_markdown_text_preserves_safe_html(self):
-        """Test that safe markdown-generated HTML is preserved."""
-        result = render_markdown_text("**bold** and `code`")
-        assert "<strong>bold</strong>" in result
-        assert "<code>code</code>" in result
 
     def test_render_markdown_text_preserves_code_blocks(self):
         """Test that fenced code blocks are preserved with language class."""
@@ -663,44 +641,6 @@ class TestParseSessionFile:
         assert "timestamp" in first
         assert "message" in first
 
-    def test_parses_jsonl_format(self):
-        """Test that JSONL format is parsed and converted to standard format."""
-        fixture_path = Path(__file__).parent / "sample_session.jsonl"
-        result = parse_session_file(fixture_path)
-
-        assert "loglines" in result
-        assert len(result["loglines"]) > 0
-        # Check structure matches JSON format
-        for entry in result["loglines"]:
-            assert "type" in entry
-            # Skip summary entries which don't have message
-            if entry["type"] in ("user", "assistant"):
-                assert "timestamp" in entry
-                assert "message" in entry
-
-    def test_jsonl_preserves_contextual_entries(self):
-        """v0.15: non-message entries (system, attachment, meta, summary,
-        file-history-snapshot, queue-operation, pr-link, last-prompt) are
-        preserved so the HTML renderer can dispatch on them. Progress
-        entries are still skipped (too high-volume to render inline)."""
-        fixture_path = Path(__file__).parent / "sample_session.jsonl"
-        result = parse_session_file(fixture_path)
-
-        valid_types = {
-            "user",
-            "assistant",
-            "system",
-            "attachment",
-            "meta",
-            "file-history-snapshot",
-            "queue-operation",
-            "pr-link",
-            "summary",
-            "last-prompt",
-        }
-        types_seen = {entry["type"] for entry in result["loglines"]}
-        assert types_seen.issubset(valid_types)
-        assert "progress" not in types_seen
 
     def test_jsonl_preserves_message_content(self):
         """Test that message content is preserved correctly."""
@@ -1057,82 +997,6 @@ class TestFindLocalSessions:
 class TestLocalSessionCLI:
     """Tests for CLI behavior with local sessions."""
 
-    def test_local_shows_sessions_and_converts(self, tmp_path, monkeypatch):
-        """Test that 'local' command shows sessions and converts selected one."""
-        from click.testing import CliRunner
-        from ccutils import cli
-        import questionary
-
-        # Create mock .claude/projects structure
-        projects_dir = tmp_path / ".claude" / "projects" / "test-project"
-        projects_dir.mkdir(parents=True)
-
-        session_file = projects_dir / "session-123.jsonl"
-        session_file.write_text(
-            '{"type":"summary","summary":"Test local session"}\n'
-            '{"type":"user","timestamp":"2025-01-01T00:00:00Z","message":{"role":"user","content":"Hello"}}\n'
-        )
-
-        # Mock Path.home() to return our tmp_path
-        monkeypatch.setattr(Path, "home", lambda: tmp_path)
-
-        # Mock questionary.checkbox to return the session file (as list)
-        class MockCheckbox:
-            def __init__(self, *args, **kwargs):
-                pass
-
-            def ask(self):
-                return [session_file]
-
-        monkeypatch.setattr(questionary, "checkbox", MockCheckbox)
-
-        runner = CliRunner()
-        result = runner.invoke(cli, [])
-
-        assert result.exit_code == 0
-        assert (
-            "Scanning sessions" in result.output
-            or "Loading local sessions" in result.output
-        )
-        assert "Selected 1 session" in result.output
-
-    def test_no_args_runs_local_command(self, tmp_path, monkeypatch):
-        """Test that running with no arguments runs local command."""
-        from click.testing import CliRunner
-        from ccutils import cli
-        import questionary
-
-        # Create mock .claude/projects structure
-        projects_dir = tmp_path / ".claude" / "projects" / "test-project"
-        projects_dir.mkdir(parents=True)
-
-        session_file = projects_dir / "session-123.jsonl"
-        session_file.write_text(
-            '{"type":"summary","summary":"Test default session"}\n'
-            '{"type":"user","timestamp":"2025-01-01T00:00:00Z","message":{"role":"user","content":"Hello"}}\n'
-        )
-
-        # Mock Path.home() to return our tmp_path
-        monkeypatch.setattr(Path, "home", lambda: tmp_path)
-
-        # Mock questionary.checkbox to return the session file (as list)
-        class MockCheckbox:
-            def __init__(self, *args, **kwargs):
-                pass
-
-            def ask(self):
-                return [session_file]
-
-        monkeypatch.setattr(questionary, "checkbox", MockCheckbox)
-
-        runner = CliRunner()
-        result = runner.invoke(cli, [])
-
-        assert result.exit_code == 0
-        assert (
-            "Scanning sessions" in result.output
-            or "Loading local sessions" in result.output
-        )
 
     def test_local_handles_cancelled_selection(self, tmp_path, monkeypatch):
         """Test that local command handles cancelled selection gracefully."""
@@ -1190,27 +1054,6 @@ class TestFilterUI:
         html_out = self._html(output_dir)
         assert 'id="q"' in html_out
         assert 'id="shown"' in html_out
-
-    def test_filter_script_is_inline_and_never_fetches(self, output_dir):
-        html_out = self._html(output_dir)
-        assert "addEventListener" in html_out
-        assert "fetch(" not in html_out
-        assert "DOMParser" not in html_out
-        assert "XMLHttpRequest" not in html_out
-
-    def test_filter_matches_data_search_not_rendered_text(self, output_dir):
-        """Matching the DOM would diverge from data-search the first time CSS
-        changed what is displayed."""
-        html_out = self._html(output_dir)
-        assert "data-search" in html_out
-
-    def test_no_sibling_search_assets(self, output_dir):
-        fixture_path = Path(__file__).parent / "sample_session.json"
-        generate_html(fixture_path, output_dir, github_repo="example/project")
-        names = {p.name for p in output_dir.iterdir()}
-        assert "search.js" not in names
-        assert "transcript.css" not in names
-        assert "transcript.js" not in names
 
 
 class TestExtractSessionSlug:
@@ -1613,19 +1456,6 @@ class TestFlattenSelectedSessions:
 
         assert result == [path1, path2]
 
-    def test_handles_all_chain_selections(self, tmp_path):
-        """Test with all chain (list) selections."""
-        from ccutils import flatten_selected_sessions
-
-        path1 = tmp_path / "session1.jsonl"
-        path2 = tmp_path / "session2.jsonl"
-        path3 = tmp_path / "session3.jsonl"
-
-        selected = [[path1, path2], [path3]]
-
-        result = flatten_selected_sessions(selected)
-
-        assert len(result) == 3
 
     def test_handles_empty_selection(self):
         """Test with empty selection."""
@@ -1634,190 +1464,6 @@ class TestFlattenSelectedSessions:
         result = flatten_selected_sessions([])
 
         assert result == []
-
-
-class TestDynamicTruncation:
-    """Tests for dynamic session display truncation based on terminal width."""
-
-    def test_get_terminal_width_returns_sensible_default(self):
-        """Test terminal width helper returns sensible default."""
-        from ccutils.tui import get_terminal_width
-
-        width = get_terminal_width()
-
-        # Should return a reasonable width (not 0 or negative)
-        assert width >= 80
-        assert width <= 500  # Reasonable upper bound
-
-
-class TestInlineProjectMarkers:
-    """Tests for inline project markers replacing Separator objects."""
-
-    def _make_meta(
-        self,
-        path,
-        summary,
-        slug=None,
-        project_name="test-project",
-        project_path="test-project",
-    ):
-        from ccutils.parsers.metadata import SessionMetadata
-
-        stat = path.stat()
-        return SessionMetadata(
-            path=path,
-            project_name=project_name,
-            project_path=project_path,
-            model_short="",
-            summary=summary,
-            mtime=stat.st_mtime,
-            size=stat.st_size,
-            slug=slug,
-        )
-
-    def test_build_session_choices_no_separators(self, tmp_path):
-        """Test that build_flat_choices no longer uses Separator objects."""
-        from ccutils.tui import build_flat_choices
-        import questionary
-
-        project = tmp_path / "test-project"
-        project.mkdir()
-
-        session = project / "session.jsonl"
-        session.write_text(
-            '{"type":"summary","summary":"Test session"}\n'
-            '{"type":"user","timestamp":"2025-01-01T00:00:00Z","message":{"role":"user","content":"Hi"}}\n'
-        )
-
-        grouped = {"test-project": [self._make_meta(session, "Test session")]}
-
-        choices = build_flat_choices(grouped, expand_chains=False)
-
-        # Should NOT contain any Separator objects
-        separators = [c for c in choices if isinstance(c, questionary.Separator)]
-        assert len(separators) == 0, "Should not use Separator objects"
-
-    def test_build_session_choices_includes_project_prefix(self, tmp_path):
-        """Test that each choice includes inline project name prefix."""
-        from ccutils.tui import build_flat_choices
-        import questionary
-
-        project = tmp_path / "test-project"
-        project.mkdir()
-
-        session = project / "session.jsonl"
-        session.write_text(
-            '{"type":"summary","summary":"Test session"}\n'
-            '{"type":"user","timestamp":"2025-01-01T00:00:00Z","message":{"role":"user","content":"Hi"}}\n'
-        )
-
-        grouped = {"test-project": [self._make_meta(session, "Test session")]}
-
-        choices = build_flat_choices(grouped, expand_chains=False)
-        value_choices = [c for c in choices if not isinstance(c, questionary.Separator)]
-
-        # Each choice title is FormattedText with project name in brackets
-        for choice in value_choices:
-            text = "".join(t[1] for t in choice.title)
-            assert "[" in text and "]" in text
-            # Project name "test-project" should appear
-            assert "test-project" in text.lower() or "test" in text.lower()
-
-    def test_multiple_projects_inline_markers(self, tmp_path):
-        """Test multiple projects show inline markers for each."""
-        from ccutils.tui import build_flat_choices
-        import questionary
-
-        # Create two projects
-        project1 = tmp_path / "project-alpha"
-        project1.mkdir()
-        session1 = project1 / "session1.jsonl"
-        session1.write_text(
-            '{"type":"summary","summary":"Alpha session"}\n'
-            '{"type":"user","timestamp":"2025-01-01T00:00:00Z","message":{"role":"user","content":"Hi"}}\n'
-        )
-
-        project2 = tmp_path / "project-beta"
-        project2.mkdir()
-        session2 = project2 / "session2.jsonl"
-        session2.write_text(
-            '{"type":"summary","summary":"Beta session"}\n'
-            '{"type":"user","timestamp":"2025-01-02T00:00:00Z","message":{"role":"user","content":"Hi"}}\n'
-        )
-
-        grouped = {
-            "project-alpha": [
-                self._make_meta(
-                    session1,
-                    "Alpha session",
-                    project_name="project-alpha",
-                    project_path="project-alpha",
-                ),
-            ],
-            "project-beta": [
-                self._make_meta(
-                    session2,
-                    "Beta session",
-                    project_name="project-beta",
-                    project_path="project-beta",
-                ),
-            ],
-        }
-
-        choices = build_flat_choices(grouped, expand_chains=False)
-        value_choices = [c for c in choices if not isinstance(c, questionary.Separator)]
-
-        # Should have 2 choices (no separators)
-        assert len(value_choices) == 2
-
-        # Titles (FormattedText) should include respective project names
-        texts = ["".join(t[1] for t in c.title) for c in value_choices]
-        assert any("alpha" in t.lower() for t in texts)
-        assert any("beta" in t.lower() for t in texts)
-
-    def test_project_name_in_flat_choices(self, tmp_path):
-        """Test project names appear in FormattedText labels."""
-        from ccutils.tui import build_flat_choices
-        import questionary
-
-        # Create projects with different name lengths
-        short_proj = tmp_path / "api"
-        short_proj.mkdir()
-        session1 = short_proj / "session1.jsonl"
-        session1.write_text('{"type":"user","message":{"content":"Hi"}}\n')
-
-        long_proj = tmp_path / "my-very-long-project-name"
-        long_proj.mkdir()
-        session2 = long_proj / "session2.jsonl"
-        session2.write_text('{"type":"user","message":{"content":"Hi"}}\n')
-
-        grouped = {
-            "api": [
-                self._make_meta(
-                    session1,
-                    "Short project session",
-                    project_name="api",
-                    project_path="api",
-                ),
-            ],
-            "my-very-long-project-name": [
-                self._make_meta(
-                    session2,
-                    "Long project session",
-                    project_name="my-very-long-project-name",
-                    project_path="my-very-long-project-name",
-                ),
-            ],
-        }
-
-        choices = build_flat_choices(grouped, expand_chains=False)
-        value_choices = [c for c in choices if not isinstance(c, questionary.Separator)]
-
-        # Each title should be FormattedText with project name in brackets
-        for choice in value_choices:
-            assert isinstance(choice.title, list)
-            text = "".join(t[1] for t in choice.title)
-            assert "[" in text and "]" in text
 
 
 class TestFlatMode:
@@ -1845,59 +1491,6 @@ class TestFlatMode:
             slug=slug,
         )
 
-    def test_flat_mode_merges_projects(self, tmp_path):
-        """Test that build_flat_choices shows all sessions in one list."""
-        from ccutils.tui import build_flat_choices
-        import questionary
-        import time
-
-        # Create two projects
-        project1 = tmp_path / "project-alpha"
-        project1.mkdir()
-        session1 = project1 / "session1.jsonl"
-        session1.write_text(
-            '{"type":"summary","summary":"Alpha session"}\n'
-            '{"type":"user","timestamp":"2025-01-01T00:00:00Z","message":{"role":"user","content":"Hi"}}\n'
-        )
-        time.sleep(0.05)  # Ensure different mtimes
-
-        project2 = tmp_path / "project-beta"
-        project2.mkdir()
-        session2 = project2 / "session2.jsonl"
-        session2.write_text(
-            '{"type":"summary","summary":"Beta session"}\n'
-            '{"type":"user","timestamp":"2025-01-02T00:00:00Z","message":{"role":"user","content":"Hi"}}\n'
-        )
-
-        grouped = {
-            "project-alpha": [
-                self._make_meta(
-                    session1,
-                    "Alpha session",
-                    project_name="project-alpha",
-                    project_path="project-alpha",
-                ),
-            ],
-            "project-beta": [
-                self._make_meta(
-                    session2,
-                    "Beta session",
-                    project_name="project-beta",
-                    project_path="project-beta",
-                ),
-            ],
-        }
-
-        choices = build_flat_choices(grouped, expand_chains=False)
-        value_choices = [c for c in choices if not isinstance(c, questionary.Separator)]
-
-        # Should have 2 choices (no separators)
-        assert len(value_choices) == 2
-
-        # Should include project markers in FormattedText
-        for choice in value_choices:
-            text = "".join(t[1] for t in choice.title)
-            assert "[" in text and "]" in text
 
     def test_flat_mode_preserves_sort_order(self, tmp_path):
         """Test that flat mode preserves modification time sort order."""

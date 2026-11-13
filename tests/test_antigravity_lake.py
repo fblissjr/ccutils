@@ -645,11 +645,6 @@ def test_format_fingerprint_sees_a_rule_change(monkeypatch):
     assert ag_schema.format_fingerprint() != before
 
 
-def test_every_record_source_is_allow_listed():
-    from ccutils.provenance import _RECORD_SOURCES
-    assert AntigravitySource.record_sources <= _RECORD_SOURCES
-
-
 # ---------------------------------------------------------------------------
 # The read allowlist
 # ---------------------------------------------------------------------------

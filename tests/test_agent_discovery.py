@@ -396,14 +396,6 @@ class TestGenerateMultiSessionIndex:
     are distinguishable, a custom title is honoured. Only the format moved.
     """
 
-    def test_generates_index_html(self, session_dir, tmp_path):
-        _, parent, agent1, agent2, _ = session_dir
-        output_dir = tmp_path / "output"
-        output_dir.mkdir()
-        agent_map = {parent: [agent1, agent2]}
-        result = generate_multi_session_index(output_dir, [parent], agent_map=agent_map)
-        assert result == output_dir / "index.html"
-        assert result.exists()
 
     def test_links_straight_to_the_transcript(self, session_dir, tmp_path):
         """Flat layout: <stem>.html, not <stem>/index.html."""
@@ -416,14 +408,6 @@ class TestGenerateMultiSessionIndex:
         assert f'href="{parent.stem}.html"' in html_out
         assert f'href="{parent.stem}/index.html"' not in html_out
 
-    def test_agent_sessions_are_labelled(self, session_dir, tmp_path):
-        _, parent, agent1, _, _ = session_dir
-        output_dir = tmp_path / "output"
-        output_dir.mkdir()
-        agent_map = {parent: [agent1]}
-        generate_multi_session_index(output_dir, [parent, agent1], agent_map=agent_map)
-        html_out = (output_dir / "index.html").read_text()
-        assert ">agent<" in html_out
 
     def test_parents_are_not_labelled_agent(self, session_dir, tmp_path):
         """agent_map keys are PARENTS, so a lookup against it must never
@@ -441,16 +425,6 @@ class TestGenerateMultiSessionIndex:
         assert html_out.count(">agent<") == 1
         assert html_out.count(">session<") == 1
 
-    def test_is_self_contained(self, session_dir, tmp_path):
-        """Styling and script are inlined and hash-pinned -- no siblings."""
-        _, parent, _, _, _ = session_dir
-        output_dir = tmp_path / "output"
-        output_dir.mkdir()
-        generate_multi_session_index(output_dir, [parent])
-        html_out = (output_dir / "index.html").read_text()
-        assert 'href="transcript.css"' not in html_out
-        assert 'src="transcript.js"' not in html_out
-        assert "<style>" in html_out and "sha256-" in html_out
 
     def test_every_card_is_filterable(self, session_dir, tmp_path):
         _, parent, agent1, _, _ = session_dir

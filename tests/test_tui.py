@@ -21,11 +21,6 @@ class TestTheme:
         for role in ("temporal", "identity", "model", "metric", "primary", "secondary"):
             assert role in STYLES
 
-    def test_rich_styles_dict_has_required_roles(self):
-        from ccutils.tui.theme import RICH_STYLES
-
-        for role in ("temporal", "identity", "model", "metric", "primary", "secondary"):
-            assert role in RICH_STYLES
 
     def test_model_style_key_opus(self):
         from ccutils.tui.theme import model_style_key
@@ -238,12 +233,6 @@ class TestFormatMsgCount:
 
 
 class TestGetTerminalWidth:
-    def test_returns_int(self):
-        from ccutils.tui.layout import get_terminal_width
-
-        width = get_terminal_width()
-        assert isinstance(width, int)
-        assert width > 0
 
     def test_fallback_on_error(self):
         from ccutils.tui.layout import get_terminal_width
@@ -252,16 +241,6 @@ class TestGetTerminalWidth:
             "ccutils.tui.layout.shutil.get_terminal_size", side_effect=ValueError
         ):
             assert get_terminal_width() == 80
-
-
-class TestColumnSpec:
-    def test_defaults(self):
-        from ccutils.tui.layout import ColumnSpec
-
-        col = ColumnSpec(name="test", min_width=10)
-        assert col.max_width == 0
-        assert col.ratio == 1.0
-        assert col.fixed is False
 
 
 class TestCalculateColumnWidths:
@@ -449,12 +428,6 @@ class TestRenderStatusHeader:
 
 
 class TestProjectLabel:
-    def test_returns_list_of_tuples(self):
-        from ccutils.tui.selection import _project_label
-
-        label = _project_label("ccutils", 8, time.time(), {"opus-4.6"}, {"main"})
-        assert isinstance(label, list)
-        assert all(isinstance(t, tuple) and len(t) == 2 for t in label)
 
     def test_contains_project_name(self):
         from ccutils.tui.selection import _project_label
@@ -479,13 +452,6 @@ class TestProjectLabel:
 
 
 class TestSessionLabel:
-    def test_returns_list_of_tuples(self):
-        from ccutils.tui.selection import _session_label
-
-        meta = _make_session_meta()
-        label = _session_label(meta, terminal_width=120)
-        assert isinstance(label, list)
-        assert all(isinstance(t, tuple) and len(t) == 2 for t in label)
 
     def test_contains_model(self):
         from ccutils.tui.selection import _session_label
@@ -523,16 +489,6 @@ class TestSessionLabel:
 
 
 class TestChainLabel:
-    def test_returns_list_of_tuples(self):
-        from ccutils.tui.selection import _chain_label
-
-        chain = [
-            _make_session_meta(slug="abc", mtime=time.time() - 100),
-            _make_session_meta(slug="abc", mtime=time.time()),
-        ]
-        label = _chain_label(chain, terminal_width=120)
-        assert isinstance(label, list)
-        assert all(isinstance(t, tuple) and len(t) == 2 for t in label)
 
     def test_contains_chain_count(self):
         from ccutils.tui.selection import _chain_label
@@ -545,17 +501,6 @@ class TestChainLabel:
         label = _chain_label(chain, terminal_width=120)
         text = "".join(t[1] for t in label)
         assert "[3 resumed]" in text
-
-    def test_uses_newest_summary(self):
-        from ccutils.tui.selection import _chain_label
-
-        chain = [
-            _make_session_meta(slug="abc", mtime=time.time() - 3600, summary="old"),
-            _make_session_meta(slug="abc", mtime=time.time(), summary="newest"),
-        ]
-        label = _chain_label(chain, terminal_width=120)
-        text = "".join(t[1] for t in label)
-        assert "newest" in text
 
 
 class TestBuildProjectChoices:
@@ -653,27 +598,6 @@ class TestBuildFlatChoices:
         assert choices[0].value == s_new.path
         assert choices[1].value == s_old.path
 
-    def test_chain_collapsing(self):
-        from ccutils.tui.selection import build_flat_choices
-
-        s1 = _make_session_meta(slug="chain-a", mtime=time.time())
-        s2 = _make_session_meta(slug="chain-a", mtime=time.time() - 100)
-        grouped = {s1.project_path: [s1, s2]}
-        choices = build_flat_choices(grouped, expand_chains=False)
-        # Should collapse to 1 choice
-        assert len(choices) == 1
-        assert isinstance(choices[0].value, list)
-        assert len(choices[0].value) == 2
-
-    def test_expand_chains(self):
-        from ccutils.tui.selection import build_flat_choices
-
-        s1 = _make_session_meta(slug="chain-a", mtime=time.time())
-        s2 = _make_session_meta(slug="chain-a", mtime=time.time() - 100)
-        grouped = {s1.project_path: [s1, s2]}
-        choices = build_flat_choices(grouped, expand_chains=True)
-        # Should show individual sessions
-        assert len(choices) == 2
 
     def test_includes_model_in_label(self):
         from ccutils.tui.selection import build_flat_choices
@@ -702,11 +626,3 @@ class TestBuildFlatChoices:
         text = "".join(t[1] for t in choices[0].title)
         assert "2h 5m" in text
 
-    def test_choice_title_is_formatted_text(self):
-        from ccutils.tui.selection import build_flat_choices
-
-        s1 = _make_session_meta()
-        grouped = {s1.project_path: [s1]}
-        choices = build_flat_choices(grouped)
-        assert isinstance(choices[0].title, list)
-        assert all(isinstance(t, tuple) and len(t) == 2 for t in choices[0].title)

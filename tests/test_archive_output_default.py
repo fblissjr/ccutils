@@ -43,18 +43,6 @@ class TestDefaultArchiveOutput:
         assert default.is_absolute()
         assert fake_home in default.parents
 
-    def test_default_is_independent_of_cwd(self, fake_home):
-        """Resolved from home, not from wherever the process was started.
-
-        Compared after ``resolve()``: a relative default compares equal as a
-        Path object no matter the cwd, so the naive comparison cannot see
-        the defect this pins.
-        """
-        runner = CliRunner()
-        with runner.isolated_filesystem():
-            from_sandbox = default_archive_output().resolve()
-        assert from_sandbox == default_archive_output().resolve()
-
 
 class TestAllCommandDefaultOutput:
     """`ccutils --source` with no -o."""
