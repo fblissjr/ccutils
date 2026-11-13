@@ -57,6 +57,7 @@ from ccutils.etl.utils import (
     MODEL_FAMILY_SQL,
     TOOL_CATEGORY_SQL,
     insert_missing_dim_dates,
+    json_array_sql,
     project_dir_sql,
     project_key_from_dir_sql,
     project_key_sql,
@@ -237,7 +238,9 @@ def _upsert_minimal_dimensions(conn, *, run) -> int:
                     json_extract_string(b.block, '$.name') AS tool_name
                 FROM etl.log_entries sle,
                 LATERAL (
-                    SELECT unnest(json_extract(sle.message_json, '$.content')::JSON[]) AS block
+                    SELECT unnest("""
+            + json_array_sql("sle.message_json", "$.content")
+            + """) AS block
                 ) b
                 WHERE sle.type = 'assistant'
                   AND json_type(sle.message_json, '$.content') = 'ARRAY'

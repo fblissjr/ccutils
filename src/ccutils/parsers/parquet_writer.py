@@ -43,6 +43,7 @@ from ccutils.parsers.models import (
     parse_log_entry,
 )
 from ccutils.etl.utils import SUBAGENT_PATH_RE
+from ccutils.parsers.discovery import project_folder_for
 from ccutils.schemas.star.utils import generate_dimension_key
 
 
@@ -230,7 +231,8 @@ def write_session_to_parquet(
         etl_run_id: Caller-supplied ETL run id (UUID hex). Generates one
                     if omitted.
         project_slug: Project slug for partitioning. Inferred from the
-                      jsonl_path's parent dir name if omitted.
+                      jsonl_path's project directory if omitted (past any
+                      ``subagents`` layers, as discovery does).
         record_source: Provenance label stamped on every row.
 
     Returns:
@@ -243,7 +245,7 @@ def write_session_to_parquet(
     parsed_at = datetime.now(tz=timezone.utc)
 
     if project_slug is None:
-        project_slug = jsonl_path.parent.name
+        project_slug = project_folder_for(jsonl_path.resolve()).name
 
     session_id = jsonl_path.stem
     session_dir = output_root / "projects" / project_slug / "sessions" / session_id

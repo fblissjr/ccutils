@@ -20,7 +20,7 @@ def _session_with_subagents(tmp_path, n_agents=2):
     def entry(**over):
         base = {
             "type": "user", "uuid": "u1", "sessionId": "sess-parent",
-            "timestamp": "2026-01-15T10:00:00.000Z", "cwd": "/home/user/demo",
+            "timestamp": "2026-01-15T10:00:00.000Z", "cwd": "/home/user/demo",  # path-privacy: ignore
             "message": {"role": "user", "content": "do the thing"},
         }
         base.update(over)
@@ -266,9 +266,14 @@ class TestFileConversionDuckDB:
             [str(empty), "--format", "duckdb", "-o", str(db_path)],
         )
 
-        # No unhandled exception should escape the command.
-        assert result.exception is None, result.exception
-        assert result.exit_code == 0, result.output
+        # No unhandled exception escapes the command: the ValueError is
+        # reported and the warehouse is still written. The build then exits
+        # 1 because a session was skipped
+        # (tests/test_failed_sessions_exit_code.py), which reaches the
+        # runner as SystemExit, not as the ValueError.
+        assert isinstance(result.exception, SystemExit), result.exception
+        assert result.exit_code == 1, result.output
+        assert "1 of 1 session(s) failed" in result.output
         assert db_path.exists()
 
 class TestFileConversionJSON:

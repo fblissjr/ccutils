@@ -13,6 +13,7 @@ from __future__ import annotations
 
 from ccutils.etl.lineage import EtlRun
 from ccutils.etl.upsert import lineage_upsert
+from ccutils.etl.utils import json_array_sql
 
 
 _PAYLOAD_COLS = [
@@ -32,7 +33,7 @@ def populate_fact_diagnostics(conn, *, run: EtlRun) -> None:
     """Flatten diagnostics attachments into one row per diagnostic."""
     conn.execute("DROP TABLE IF EXISTS _inbound_diagnostics")
     conn.execute(
-        """
+        f"""
         CREATE TEMP TABLE _inbound_diagnostics AS
         WITH per_file AS (
             -- One row per (attachment, file_entry). Each file_entry has a
@@ -45,7 +46,7 @@ def populate_fact_diagnostics(conn, *, run: EtlRun) -> None:
                 json_extract(file_entry, '$.diagnostics') AS diag_list_json
             FROM fact_entry_events fa,
             LATERAL (
-                SELECT unnest(json_extract(fa.payload_json, '$.files')::JSON[])
+                SELECT unnest({json_array_sql('fa.payload_json', '$.files')})
                     AS file_entry
             )
             WHERE fa.is_deleted = FALSE
@@ -70,8 +71,8 @@ def populate_fact_diagnostics(conn, *, run: EtlRun) -> None:
             FROM per_file,
             LATERAL (
                 SELECT
-                    unnest(per_file.diag_list_json::JSON[]) AS d,
-                    generate_subscripts(per_file.diag_list_json::JSON[], 1)
+                    unnest({json_array_sql('per_file.diag_list_json')}) AS d,
+                    generate_subscripts({json_array_sql('per_file.diag_list_json')}, 1)
                         AS idx
             )
         )

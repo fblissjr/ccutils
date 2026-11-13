@@ -1,6 +1,6 @@
 # Roadmap and open items
 
-Last updated: 2026-10-13
+Last updated: 2026-11-13
 
 This is the one git-tracked status board. It consolidates what used to live
 only in gitignored `internal/` notes: the release sequence, the next
@@ -789,6 +789,27 @@ Found while building phase 0 (2026-09-22) or on the first default-root run
   runs inside it.
 - Commits are signed through a 1Password agent whose socket is outside the
   sandbox, so `git commit` needs the sandbox off for that one command.
+- **The suite runs on whatever DuckDB the lockfile resolves; a user gets
+  whatever the floor allows.** `duckdb>=1.5.5` has no ceiling, and an install
+  without the lock (`uv tool install`, `pip`) takes the newest release. That
+  is how 2.0 emptied a Linux build on 2026-11-12 while the suite, locked at
+  1.5, stayed green (CHANGELOG, Unreleased). Open: keep the lock on the
+  newest DuckDB and run the suite on the floor too
+  (`uv run --with duckdb==<floor> pytest ...`), or cap the major version.
+  Either way, check a new DuckDB major against the suite before a release.
+- **A failed session run leaves its dimensions behind.** `run_v15_etl`
+  writes the stub dimensions and `dim_session` before the facts, and
+  nothing rolls them back when a fact populator raises, so a warehouse whose
+  runs all failed still lists every session. `etl.runs` records the failure
+  and the build now exits 1, but `dim_session` alone overstates what loaded.
+  Open: one transaction per session run, or a reader rule keyed on run
+  status.
+- `tests/test_jsonl_contract.py::TestToolResultPayloadPresence::test_a_parent_result_states_the_payload`
+  fails on the developer corpus as of 2026-11-13, on DuckDB 1.5 and 2.0
+  alike: the share of parent tool results with no `toolUseResult` is over
+  the 0.1% the canary allows (it prints the counts). Claim 11 of
+  `docs/JSONL_CONTRACT.md` needs re-measuring against the raw transcripts
+  before anything is changed.
 
 ## What the test suite cannot see
 

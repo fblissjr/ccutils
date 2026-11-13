@@ -28,20 +28,20 @@ def mock_projects_dir():
 
         session_a1 = project_a / "abc123.jsonl"
         session_a1.write_text(
-            '{"type": "user", "timestamp": "2025-01-01T10:00:00.000Z", "message": {"role": "user", "content": "Hello from project A"}}\n'
-            '{"type": "assistant", "timestamp": "2025-01-01T10:00:05.000Z", "message": {"role": "assistant", "content": [{"type": "text", "text": "Hi there!"}]}}\n'
+            '{"type": "user", "uuid": "fixture-u1", "timestamp": "2025-01-01T10:00:00.000Z", "message": {"role": "user", "content": "Hello from project A"}}\n'
+            '{"type": "assistant", "uuid": "fixture-u2", "timestamp": "2025-01-01T10:00:05.000Z", "message": {"role": "assistant", "content": [{"type": "text", "text": "Hi there!"}]}}\n'
         )
 
         session_a2 = project_a / "def456.jsonl"
         session_a2.write_text(
-            '{"type": "user", "timestamp": "2025-01-02T10:00:00.000Z", "message": {"role": "user", "content": "Second session in project A"}}\n'
-            '{"type": "assistant", "timestamp": "2025-01-02T10:00:05.000Z", "message": {"role": "assistant", "content": [{"type": "text", "text": "Got it!"}]}}\n'
+            '{"type": "user", "uuid": "fixture-u3", "timestamp": "2025-01-02T10:00:00.000Z", "message": {"role": "user", "content": "Second session in project A"}}\n'
+            '{"type": "assistant", "uuid": "fixture-u4", "timestamp": "2025-01-02T10:00:05.000Z", "message": {"role": "assistant", "content": [{"type": "text", "text": "Got it!"}]}}\n'
         )
 
         # Create an agent file (should be skipped by default)
         agent_a = project_a / "agent-xyz789.jsonl"
         agent_a.write_text(
-            '{"type": "user", "timestamp": "2025-01-03T10:00:00.000Z", "message": {"role": "user", "content": "Agent session"}}\n'
+            '{"type": "user", "uuid": "fixture-u5", "timestamp": "2025-01-03T10:00:00.000Z", "message": {"role": "user", "content": "Agent session"}}\n'
         )
 
         # Create project-b with 1 session
@@ -50,14 +50,14 @@ def mock_projects_dir():
 
         session_b1 = project_b / "ghi789.jsonl"
         session_b1.write_text(
-            '{"type": "user", "timestamp": "2025-01-04T10:00:00.000Z", "message": {"role": "user", "content": "Hello from project B"}}\n'
-            '{"type": "assistant", "timestamp": "2025-01-04T10:00:05.000Z", "message": {"role": "assistant", "content": [{"type": "text", "text": "Welcome!"}]}}\n'
+            '{"type": "user", "uuid": "fixture-u6", "timestamp": "2025-01-04T10:00:00.000Z", "message": {"role": "user", "content": "Hello from project B"}}\n'
+            '{"type": "assistant", "uuid": "fixture-u7", "timestamp": "2025-01-04T10:00:05.000Z", "message": {"role": "assistant", "content": [{"type": "text", "text": "Welcome!"}]}}\n'
         )
 
         # Create empty/warmup session (should be skipped)
         warmup = project_b / "warmup123.jsonl"
         warmup.write_text(
-            '{"type": "user", "timestamp": "2025-01-05T10:00:00.000Z", "message": {"role": "user", "content": "warmup"}}\n'
+            '{"type": "user", "uuid": "fixture-u8", "timestamp": "2025-01-05T10:00:00.000Z", "message": {"role": "user", "content": "warmup"}}\n'
         )
 
         yield projects_dir
@@ -728,6 +728,16 @@ class TestDuckDBStarSchema:
         assert "dim_session" in table_names
         # Legacy 4-table simple schema sentinels MUST be absent.
         assert "thinking" not in table_names
+        # The sessions were loaded, not just the tables created. This
+        # fixture once had no entry uuids, every session failed on
+        # fact_messages.message_id, and this test stayed green on an
+        # empty warehouse because it checked only table names.
+        loaded = {
+            r[0] for r in conn.execute(
+                "SELECT DISTINCT session_id FROM fact_messages"
+            ).fetchall()
+        }
+        assert {"abc123", "def456", "ghi789"} <= loaded
         conn.close()
 
     def test_all_json_creates_star_directory_structure(

@@ -1,5 +1,6 @@
 """Batch conversion command for all sessions."""
 
+import sys
 from datetime import datetime
 from pathlib import Path
 
@@ -347,9 +348,10 @@ def all_cmd(
             stats = duckdb_stats
 
     # Report any failures
-    if stats and stats.get("failed_sessions"):
-        click.echo(f"\nWarning: {len(stats['failed_sessions'])} session(s) failed:")
-        for failure in stats["failed_sessions"]:
+    failed_sessions = (stats or {}).get("failed_sessions") or []
+    if failed_sessions:
+        click.echo(f"\nWarning: {len(failed_sessions)} session(s) failed:")
+        for failure in failed_sessions:
             click.echo(
                 f"  {failure['project']}/{failure['session']}: {failure['error']}"
             )
@@ -370,3 +372,9 @@ def all_cmd(
 
     if open_browser and output_format in ("html", "both"):
         maybe_open_browser(output)
+
+    # Everything that could be written has been. A build that skipped a
+    # session is not a finished build: exit non-zero so a script or agent
+    # cannot mistake it for one (tests/test_failed_sessions_exit_code.py).
+    if failed_sessions:
+        sys.exit(1)

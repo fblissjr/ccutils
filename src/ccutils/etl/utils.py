@@ -83,6 +83,30 @@ def project_key_sql(col: str) -> str:
     return project_key_from_dir_sql(project_dir_sql(col))
 
 
+def json_array_sql(doc: str, path: str | None = None) -> str:
+    """SQL expression: the JSON array at ``path`` in ``doc`` as ``JSON[]``,
+    or NULL when the value there is not an array.
+
+    ``json_extract(doc, '$.content')::JSON[]`` RAISES on a string (a user
+    entry's ``content`` is a string or an array), and a ``json_type(...) =
+    'ARRAY'`` filter written beside the cast does not protect it: whether the
+    planner applies that filter before evaluating a LATERAL ``unnest`` is
+    its choice, and DuckDB 2.0 chose differently from 1.5, so every session
+    run failed at its first stub dimension. The guard has to be inside the
+    expression. ``unnest(NULL)`` yields no rows, which is what the filters
+    meant. Wildcard paths (``'$.content[*]'``) do not need this: they return
+    an empty list for a non-array.
+
+    With ``path`` omitted, ``doc`` is itself the JSON value to cast.
+    """
+    if path is None:
+        return f"(CASE WHEN json_type({doc}) = 'ARRAY' THEN ({doc})::JSON[] END)"
+    return (
+        f"(CASE WHEN json_type({doc}, '{path}') = 'ARRAY' "
+        f"THEN json_extract({doc}, '{path}')::JSON[] END)"
+    )
+
+
 def fetch_scalar(conn, sql: str, params=None):
     """Run a query expected to return at least one row; return row[0].
 

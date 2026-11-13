@@ -50,6 +50,10 @@ One command converts; two do the things that are not converting.
 | `ccutils audit` | Check a built warehouse for the defect classes that have shipped; exits nonzero on any finding |
 | `ccutils guide` | Regenerate the reader's guide (`README.md`) beside a warehouse; every duckdb build writes it |
 
+A conversion that skips a session (it is reported, and the others still
+load) writes everything it can and then exits 1, so a script can tell a
+partial build from a complete one.
+
 Removed in 0.20.0, with no aliases: `local` and `all` were one operation
 split by scope, and the split is what let their behaviour drift apart --
 global post-loop sources ran on one path and not the other. `convert` was a

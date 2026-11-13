@@ -17,7 +17,7 @@ from __future__ import annotations
 
 from ccutils.etl.lineage import EtlRun
 from ccutils.etl.upsert import lineage_upsert
-from ccutils.etl.utils import project_key_sql
+from ccutils.etl.utils import json_array_sql, project_key_sql
 
 
 # Columns copied into fact_tool_calls by the lineage upsert. EXCLUDES the
@@ -53,7 +53,7 @@ _HASH_COLS = [
 
 
 # fact_tool_uses: explode every assistant message's content[*] for tool_use blocks.
-_PROJECT_USES_SQL = """
+_PROJECT_USES_SQL = f"""
 WITH assistant_entries AS (
     SELECT
         sle.entry_id,
@@ -73,9 +73,9 @@ exploded AS (
         b.block_idx
     FROM assistant_entries ae,
     LATERAL (
-        SELECT unnest(json_extract(ae.message_json, '$.content')::JSON[]) AS block,
+        SELECT unnest({json_array_sql('ae.message_json', '$.content')}) AS block,
                generate_subscripts(
-                   json_extract(ae.message_json, '$.content')::JSON[], 1
+                   {json_array_sql('ae.message_json', '$.content')}, 1
                ) AS block_idx
     ) b
     WHERE json_extract_string(b.block, '$.type') = 'tool_use'
@@ -126,7 +126,7 @@ QUALIFY tool_use_id IS NULL OR ROW_NUMBER() OVER (
 
 # fact_tool_results: explode user messages' content[*] for tool_result blocks,
 # then JOIN to the user entry's toolUseResult payload.
-_PROJECT_RESULTS_SQL = """
+_PROJECT_RESULTS_SQL = f"""
 WITH user_entries AS (
     SELECT
         sle.entry_id,
@@ -146,7 +146,7 @@ exploded AS (
         b.block
     FROM user_entries ue,
     LATERAL (
-        SELECT unnest(json_extract(ue.message_json, '$.content')::JSON[]) AS block
+        SELECT unnest({json_array_sql('ue.message_json', '$.content')}) AS block
     ) b
     WHERE json_extract_string(b.block, '$.type') = 'tool_result'
 ),
@@ -159,7 +159,7 @@ tool_name_map AS (
         json_extract_string(b.block, '$.name') AS tool_name
     FROM etl.log_entries sle,
     LATERAL (
-        SELECT unnest(json_extract(sle.message_json, '$.content')::JSON[]) AS block
+        SELECT unnest({json_array_sql('sle.message_json', '$.content')}) AS block
     ) b
     WHERE sle.type = 'assistant'
       AND json_type(sle.message_json, '$.content') = 'ARRAY'
@@ -196,10 +196,10 @@ SELECT
                 list_transform(
                     COALESCE(json_extract(block, '$.content[*]')::JSON[],
                              CAST([] AS JSON[])),
-                    bb -> CASE WHEN json_extract_string(bb, '$.type') = 'text'
-                               THEN json_extract_string(bb, '$.text') END
+                    lambda bb: CASE WHEN json_extract_string(bb, '$.type') = 'text'
+                                    THEN json_extract_string(bb, '$.text') END
                 ),
-                t -> t IS NOT NULL
+                lambda t: t IS NOT NULL
             ),
             'string_agg', ' '
         )

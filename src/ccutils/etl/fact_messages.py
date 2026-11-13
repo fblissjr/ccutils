@@ -158,10 +158,10 @@ SELECT
                 list_transform(
                     COALESCE(json_extract(sle.message_json, '$.content[*]')::JSON[],
                              CAST([] AS JSON[])),
-                    b -> CASE WHEN json_extract_string(b, '$.type') = 'text'
-                              THEN json_extract_string(b, '$.text') END
+                    lambda b: CASE WHEN json_extract_string(b, '$.type') = 'text'
+                                   THEN json_extract_string(b, '$.text') END
                 ),
-                t -> t IS NOT NULL
+                lambda t: t IS NOT NULL
             ),
             'string_agg', ' '
         )

@@ -325,6 +325,23 @@ def curate_projects(projects):
     return curated
 
 
+def project_folder_for(session_file: Path) -> Path:
+    """The project directory a transcript belongs to.
+
+    Python mirror of etl/utils.py::project_dir_sql -- keep in sync; this is
+    the ONE Python copy (``find_all_sessions`` and the lake's partition slug
+    both call it). Cut at the LAST "subagents" segment each pass (a grouping
+    dir may sit below it -- workflow agents live in
+    ``subagents/workflows/<id>/``) and loop for nested delegation.
+    """
+    project_folder = Path(session_file).parent
+    while "subagents" in project_folder.parts:
+        parts = project_folder.parts
+        cut = len(parts) - 1 - parts[::-1].index("subagents")
+        project_folder = Path(*parts[: cut - 1])
+    return project_folder
+
+
 def find_all_sessions(
     folder, include_agents=False, project_filter=None, include_unsummarized=False,
     include_temp_sessions=False,
@@ -369,15 +386,7 @@ def find_all_sessions(
         if not include_agents and session_file.name.startswith("agent-"):
             continue
 
-        # Python mirror of etl/utils.py::project_dir_sql -- keep in sync.
-        # Cut at the LAST "subagents" segment each pass (a grouping dir may
-        # sit below it -- workflow agents live in subagents/workflows/<id>/)
-        # and loop for nested delegation.
-        project_folder = session_file.parent
-        while "subagents" in project_folder.parts:
-            parts = project_folder.parts
-            cut = len(parts) - 1 - parts[::-1].index("subagents")
-            project_folder = Path(*parts[: cut - 1])
+        project_folder = project_folder_for(session_file)
         project_key = project_folder.name
 
         # Skip projects that don't match filter

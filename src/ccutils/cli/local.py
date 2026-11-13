@@ -1,6 +1,7 @@
 """Session selection and conversion command."""
 
 import os
+import sys
 import tempfile
 from pathlib import Path
 
@@ -17,6 +18,7 @@ from ..parsers import (
 from ..parsers.discovery import (
     find_local_sessions_rich,
     group_by_project,
+    project_folder_for,
 )
 from ..tui import (
     build_flat_choices,
@@ -495,7 +497,12 @@ def _etl_session_files(
                 run_v15_etl(
                     conn,
                     session_file,
-                    project_name=project_name or session_file.parent.name,
+                    # The lake partition slug. An agent's parent dir is
+                    # `subagents`, so walk up the way discovery does.
+                    project_name=(
+                        project_name
+                        or project_folder_for(session_file.resolve()).name
+                    ),
                     parquet_lake_root=parquet_lake,
                     facet_extractor=facet_extractor,
                     include_thinking=include_thinking,
@@ -640,7 +647,7 @@ def _run_export_pipeline(
 
         conn = create_star_schema(db_path)
         parquet_lake = output_dir / "parquet_lake"
-        _etl_session_files(
+        failures = _etl_session_files(
             conn, session_files,
             project_name=project_name,
             parquet_lake=parquet_lake,
@@ -657,6 +664,7 @@ def _run_export_pipeline(
         conn.close()
 
         click.echo(f"Exported to {db_path}")
+        _exit_if_any_failed(failures)
 
     elif output_format == "json":
         # JSON output is a directory containing meta.json + dimensions/ + facts/.
@@ -671,7 +679,7 @@ def _run_export_pipeline(
 
         conn = create_star_schema(":memory:")
         parquet_lake = output_dir / "parquet_lake"
-        _etl_session_files(
+        failures = _etl_session_files(
             conn, session_files,
             project_name=project_name,
             parquet_lake=parquet_lake,
@@ -683,6 +691,20 @@ def _run_export_pipeline(
         export_star_schema_to_json(conn, output_dir)
         conn.close()
         click.echo(f"Exported to {output_dir}/")
+        _exit_if_any_failed(failures)
+
+
+def _exit_if_any_failed(failures):
+    """Exit 1 once the output is written if any session was skipped.
+
+    Per-file isolation keeps one bad file from aborting the rest, but a
+    build that skipped sessions is not a finished build. It used to exit 0
+    even when every session failed (a DuckDB 2.0 install: 65 of 65 skipped,
+    every fact empty), so nothing scripted could tell it from a good one.
+    tests/test_failed_sessions_exit_code.py.
+    """
+    if failures:
+        sys.exit(1)
 
 
 def _flat_mode_selection(projects_folder, limit, project_filter, expand_chains, style,
