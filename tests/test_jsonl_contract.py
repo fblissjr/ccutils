@@ -763,7 +763,12 @@ def tool_call_replay_corpus():
                         obj = json.loads(line)
                     except json.JSONDecodeError:
                         continue
-                    if not isinstance(obj, dict):
+                    # A tool call is an ASSISTANT entry. api-request-blob
+                    # copies (claim 13) carry tool_use blocks with no
+                    # timestamp: a copy of a prefix call would count as
+                    # misplaced, and one before the spawn would set the cut
+                    # to None and skip the fork.
+                    if not isinstance(obj, dict) or obj.get("type") != "assistant":
                         continue
                     message = obj.get("message")
                     content = message.get("content") if isinstance(message, dict) else None

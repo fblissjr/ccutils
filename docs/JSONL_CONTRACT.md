@@ -374,7 +374,9 @@ per hash. It repeats what the conversation's own entries already hold.
   `assistant`, the tool-call projections `assistant` and `user`), so no fact
   counts a copy. The claim-11 canary did not: it took any entry holding a
   `tool_result` block, counted 238 copies as parent results without a
-  payload, and went red with nothing wrong upstream.
+  payload, and went red with nothing wrong upstream. The claim-12 canary had
+  the same exposure (822 blobs carry `tool_use` blocks, with no timestamp)
+  and was still green; it now reads assistant entries only.
 - Consequence: a blob holds no `uuid`, so a populator that admitted one would
   fail on `fact_messages.message_id` rather than double count quietly.
 - Consequence: the Parquet lake keeps them in `raw_json`, as it keeps every
