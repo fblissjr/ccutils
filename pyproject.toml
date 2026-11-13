@@ -40,4 +40,9 @@ build-backend = "uv_build"
 dev = [
     "pytest>=9.0.2",
     "pytest-httpx>=0.35.0",
+    "pytest-xdist>=3.8.0",
 ]
+
+[tool.pytest.ini_options]
+# Parallel by default (pytest-xdist). Pass -n0 to run serially, e.g. for pdb.
+addopts = "-n auto"

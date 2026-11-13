@@ -1,6 +1,6 @@
 # Start Here
 
-Uses uv. Run tests: `uv run pytest tests/ --confcutdir=tests`. Run the dev CLI: `uv run ccutils --help`.
+Uses uv. Run tests: `uv run pytest tests/ --confcutdir=tests` (parallel by default through pytest-xdist, `addopts` in `pyproject.toml`; add `-n0` to run serially, e.g. under pdb). Run the dev CLI: `uv run ccutils --help`.
 
 Always practice TDD: write a failing test, watch it fail, then make it pass. Commit early and often; bundle test + implementation + docs per commit.
 
