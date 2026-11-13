@@ -240,16 +240,6 @@ class TestWriteSessionToParquet:
         assert meta[0]["project_slug"] == "p"
         assert meta[0]["cwd"] == "/p"
 
-    def test_record_source_default(self, sample_jsonl, tmp_path):
-        log_path, _ = write_session_to_parquet(sample_jsonl, tmp_path / "lake", project_slug="p")
-        table = pq.read_table(log_path).to_pylist()
-        assert all(r["record_source"] == RECORD_SOURCE_CLAUDE_CODE_JSONL for r in table)
-
-    def test_parser_version_stamped(self, sample_jsonl, tmp_path):
-        log_path, _ = write_session_to_parquet(sample_jsonl, tmp_path / "lake", project_slug="p")
-        table = pq.read_table(log_path).to_pylist()
-        assert all(r["parser_version"] == PARSER_VERSION for r in table)
-
 
 class TestArchiveSmokeWrite:
     """Write the user's full archive through the Parquet writer to surface

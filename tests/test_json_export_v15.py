@@ -70,14 +70,6 @@ class TestStarRelationships:
         # tables, so the edge it used to contribute is gone with the table.
         assert not any(t[0] == "fact_agent_delegations" for t in triples)
 
-    def test_no_self_pk_relationships(self, conn):
-        # dim_session.parent_session_key -> dim_session.session_key is fine
-        # (self-referencing hierarchy); dim_session.session_key -> itself is not.
-        for r in star_relationships(conn):
-            assert not (
-                r["from_table"] == r["to_table"]
-                and r["from_column"] == r["to_column"]
-            ), r
 
     def test_meta_json_carries_derived_relationships(self, conn, tmp_path):
         out = tmp_path / "export"

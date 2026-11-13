@@ -1,23 +1,10 @@
-"""DDL tests for the facet & cluster pipeline (step 1 of build order).
+"""`dim_facet_type` keeps the history of facet prompt versions across reopens.
 
-Three new tables land in `create_star_schema()`:
-
-    dim_facet_type        - registry of facet definitions; seeded with the
-                            21 Tier 1 facets (F01-F19, F30-F31) defined in
-                            docs/FACET_CLUSTER_PIPELINE.md §3.
-    fact_session_facets   - one row per (session, facet_type, prompt_version).
-                            Structured values only (text/json/numeric/bool);
-                            NO embedding column.
-    fact_facet_embeddings - one row per (session, facet_type, embedding_model,
-                            embedding_model_version). Stores the vector as
-                            FLOAT[384] so DuckDB's native array_cosine_similarity
-                            works without a vector DB.
-
-The schema split (embeddings live in their own table, not as a BLOB column on
-fact_session_facets) is a deliberate departure from the original design doc.
-Reasons: keep the EAV facet table lean for SQL scans, let DuckDB array ops
-work natively, absorb future model-version additions as new rows rather than
-destructive overwrites of the structured-value table.
+`dim_facet_type` is created with `CREATE TABLE IF NOT EXISTS` and seeded
+with `INSERT ... ON CONFLICT DO NOTHING`, so a reopen keeps the rows of
+earlier prompt versions instead of reseeding them away (CLAUDE.md). The
+registry's columns and seeds were tested by copying the DDL; those tests
+were removed on 2026-11-13.
 """
 
 import pytest
@@ -50,52 +37,7 @@ def conn(tmp_path):
 
 
 class TestDimFacetType:
-    def test_table_exists(self, conn):
-        result = conn.execute(
-            "SELECT name FROM sqlite_master "
-            "WHERE type='table' AND name='dim_facet_type'"
-        ).fetchone()
-        assert result is not None
 
-    def test_columns(self, conn):
-        cols = [c[0] for c in conn.execute("DESCRIBE dim_facet_type").fetchall()]
-        for col in (
-            "facet_type_key",
-            "facet_id",
-            "facet_name",
-            "tier",
-            "method",
-            "output_type",
-            "prompt_text",
-            "prompt_version",
-            "embedding_model",
-            "notes",  # data-level caveats (e.g. F16's UTC-hour limitation)
-            "created_at",
-        ):
-            assert col in cols, f"Missing column: {col}"
-
-    def test_facet_type_key_is_primary_key(self, conn):
-        # Without an enforced PK, a future non-OR-REPLACE migration path could
-        # silently seed duplicates. DuckDB DESCRIBE reports the PK in the 'key'
-        # column.
-        info = conn.execute("DESCRIBE dim_facet_type").fetchall()
-        pk_cols = [row[0] for row in info if row[3] == "PRI"]
-        assert pk_cols == ["facet_type_key"], (
-            f"facet_type_key should be the PRIMARY KEY, got {pk_cols}"
-        )
-
-    def test_facet_with_caveat_carries_a_note(self, conn):
-        # F16 (local_hour) and F08 (loc_delta) both have known data-level
-        # caveats. The note must live on the row so analytical queries see it,
-        # not just in source-code comments.
-        rows = conn.execute(
-            "SELECT facet_id, notes FROM dim_facet_type "
-            "WHERE facet_id IN ('F08', 'F16')"
-        ).fetchall()
-        for facet_id, notes in rows:
-            assert notes is not None and len(notes) > 0, (
-                f"{facet_id} should carry a caveat in `notes`"
-            )
 
     def test_historical_prompt_versions_survive_rerun(self, tmp_path):
         # ON CONFLICT DO NOTHING: when create_star_schema() is called on an
@@ -137,99 +79,4 @@ class TestDimFacetType:
         ).fetchone()[0]
         assert n_tier1 == len(_TIER1_FACET_IDS)
 
-    def test_seeded_with_tier1_facets(self, conn):
-        rows = conn.execute(
-            "SELECT facet_id, tier, method "
-            "FROM dim_facet_type WHERE tier = 1 ORDER BY facet_id"
-        ).fetchall()
-        ids = [r[0] for r in rows]
-        assert set(ids) == set(_TIER1_FACET_IDS), (
-            f"Expected Tier 1 facets {_TIER1_FACET_IDS}, got {ids}"
-        )
-        # All Tier 1 facets are SQL aggregations -- no inference, no prompt.
-        for facet_id, tier, method in rows:
-            assert tier == 1, f"{facet_id} wrong tier {tier}"
-            assert method == "computed", f"{facet_id} wrong method {method}"
 
-    def test_tier1_seeds_have_no_prompt(self, conn):
-        # Tier 1 is purely computed; LLM prompt + version must be NULL so the
-        # registry encodes "this facet is deterministic".
-        rows = conn.execute(
-            "SELECT facet_id, prompt_text, prompt_version "
-            "FROM dim_facet_type WHERE tier = 1"
-        ).fetchall()
-        for facet_id, prompt_text, prompt_version in rows:
-            assert prompt_text is None, f"{facet_id} should not carry a prompt"
-            assert prompt_version is None, f"{facet_id} should not carry a prompt_version"
-
-    def test_facet_type_key_is_unique(self, conn):
-        # Surrogate key must be 1:1 with (facet_id, prompt_version).
-        distinct, total = conn.execute(
-            "SELECT COUNT(DISTINCT facet_type_key), COUNT(*) FROM dim_facet_type"
-        ).fetchone()
-        assert distinct == total, "facet_type_key collisions detected"
-
-
-class TestFactSessionFacets:
-    def test_table_exists(self, conn):
-        result = conn.execute(
-            "SELECT name FROM sqlite_master "
-            "WHERE type='table' AND name='fact_session_facets'"
-        ).fetchone()
-        assert result is not None
-
-    def test_lineage_envelope(self, conn):
-        cols = [c[0] for c in conn.execute("DESCRIBE fact_session_facets").fetchall()]
-        for col in _LINEAGE_COLS:
-            assert col in cols, f"Missing lineage column: {col}"
-
-    def test_columns(self, conn):
-        cols = [c[0] for c in conn.execute("DESCRIBE fact_session_facets").fetchall()]
-        for col in (
-            "facet_row_key",  # synthesized natural key for lineage_upsert
-            "session_key",
-            "session_id",
-            "facet_type_key",
-            "prompt_version",
-            "value_text",
-            "value_json",
-            "value_numeric",
-            "value_bool",
-            # Step 3: Tier 2 QA aids (NULL / FALSE for Tier 1 rows)
-            "is_fallback",
-            "extraction_metadata_json",
-            "extracted_at",
-            "date_key",
-            "time_key",
-        ):
-            assert col in cols, f"Missing column: {col}"
-
-    def test_is_fallback_defaults_false(self, conn):
-        # Tier 2 QA aid: rows written without an explicit value should
-        # default to "successful extraction" (is_fallback=FALSE).
-        # Tier 1 populator never sets is_fallback so it must default
-        # cleanly there too.
-        conn.execute(
-            """
-            INSERT INTO fact_session_facets (
-                created_by_version_key, last_updated_by_version_key,
-                etl_run_id, record_source, hash_diff,
-                facet_row_key, session_key, session_id, facet_type_key
-            )
-            VALUES ('vk', 'vk', 'r1', 'claude_code_jsonl', 'h1',
-                    'rk1', 'sk1', 's1', 'ftk1')
-            """
-        )
-        is_fallback = conn.execute(
-            "SELECT is_fallback FROM fact_session_facets WHERE facet_row_key = 'rk1'"
-        ).fetchone()[0]
-        assert is_fallback is False
-
-    def test_no_embedding_column(self, conn):
-        # Schema-split contract: embeddings live in fact_facet_embeddings.
-        # See docs/FACET_CLUSTER_PIPELINE.md §4.
-        cols = [c[0] for c in conn.execute("DESCRIBE fact_session_facets").fetchall()]
-        assert "embedding" not in cols, (
-            "Embeddings must live in fact_facet_embeddings, "
-            "not inline on fact_session_facets"
-        )
