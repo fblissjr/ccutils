@@ -8,6 +8,7 @@ ETL is needed later, it warrants its own populator.
 """
 
 import html
+import re
 import tempfile
 from pathlib import Path
 
@@ -195,30 +196,40 @@ def _export_to_html(parsed, output, open_browser, private=False):
     )
     output.mkdir(parents=True, exist_ok=True)
 
+    # One directory per conversation, named by its WHOLE id: `id[:8]` put
+    # conversations whose ids share a prefix into one directory. The index
+    # links to the page generate_html says it wrote, never to a guessed name
+    # (it guessed `<dir>/index.html` after sessions became single files, and
+    # every link was dead). tests/test_import_cmd.py.
+    pages = {}
     for session_id, session_loglines in sessions.items():
-        session_name = session_id[:8]
-        session_output = output / session_name
-        generate_html(
+        session_output = output / _safe_dir_name(session_id)
+        pages[session_id] = Path(generate_html(
             loglines=session_loglines, output_dir=session_output, private=private
-        )
-        click.echo(f"  Generated: {session_output}")
+        ))
+        click.echo(f"  Generated: {pages[session_id]}")
 
     # Create index if multiple sessions
     if len(sessions) > 1:
-        _create_multi_session_index(output, sessions, parsed["_metadata"])
+        _create_multi_session_index(output, sessions, pages)
 
     click.echo(f"\nOutput: {output.resolve()}")
 
     if open_browser or auto_open:
         if len(sessions) == 1:
-            session_name = list(sessions.keys())[0][:8]
-            maybe_open_browser(output / session_name)
+            maybe_open_browser(next(iter(pages.values())))
         else:
-            maybe_open_browser(output)
+            maybe_open_browser(output / "index.html")
 
 
-def _create_multi_session_index(output_dir, sessions, metadata):
-    """Create an index.html linking to all session directories."""
+def _safe_dir_name(session_id):
+    """A directory name from a conversation id that cannot leave `output`."""
+    name = re.sub(r"[^A-Za-z0-9._-]", "_", str(session_id)).strip(".")
+    return name or "conversation"
+
+
+def _create_multi_session_index(output_dir, sessions, pages):
+    """Create an index.html linking to every conversation's page."""
     conv_count = len(sessions)
     html_content = f"""<!DOCTYPE html>
 <html>
@@ -241,12 +252,11 @@ def _create_multi_session_index(output_dir, sessions, metadata):
 """
 
     for session_id, loglines in sessions.items():
-        session_name = html.escape(session_id[:8])
+        href = html.escape(pages[session_id].relative_to(output_dir).as_posix(), quote=True)
         msg_count = len(loglines)
-        # Try to get conversation name from metadata or first message
-        conv_name = html.escape(session_id)  # fallback
+        conv_name = html.escape(session_id)
         html_content += f"""        <div class="session">
-            <a href="{session_name}/index.html">{conv_name}</a>
+            <a href="{href}">{conv_name}</a>
             <div class="meta">{msg_count} messages</div>
         </div>
 """
