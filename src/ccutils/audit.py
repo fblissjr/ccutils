@@ -1,14 +1,23 @@
 """Warehouse plausibility checks: the eyeballing that found every shipped
 structural bug, as a command that can gate.
 
-Three families:
+Four families:
 
 - structural invariants (natural keys unique, API-response grain, foreign
-  keys resolve, views execute, no run left 'running');
+  keys resolve, views execute, no run left 'running' or 'failed');
 - coverage reconciliation (what `etl.table_coverage` declares against what
   `etl.steps.table_name` says was written);
+- lake reconciliation (the declared grains of `fact_messages` and
+  `fact_tool_calls`, per session, against the Parquet lake the build wrote);
 - column plausibility (a column 100% NULL, or single-valued, on a table
   with enough rows to mean it).
+
+The first three are ERRORS: they decide the exit code. Column plausibility
+is a WARNING unless the caller asks for strict. It fires on any build
+scoped to one project, where one git branch or one memory scope is the
+scope and not a defect, and on 2026-11-13 it made a warehouse whose every
+run had failed and its correct rebuild exit alike. It still earns its keep
+on a full-corpus build, which is what `--strict` is for.
 
 Every finding is (check, object, detail, measured). `etl.audit_exceptions`
 is the allowlist: an accepted finding is reviewable data with a reason, not
@@ -23,6 +32,7 @@ reflects "did not look" must be distinguishable from one that looked.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from pathlib import Path
 
 from ccutils.schemas.star.json_export import _KEY_TARGETS
 from ccutils.schemas.star.schema import NATURAL_KEYS, TABLE_COVERAGE
@@ -56,7 +66,8 @@ class Finding:
 
 @dataclass
 class AuditReport:
-    findings: list[Finding] = field(default_factory=list)
+    findings: list[Finding] = field(default_factory=list)   # errors
+    warnings: list[Finding] = field(default_factory=list)
     allowed: list[Finding] = field(default_factory=list)
     checks_run: list[str] = field(default_factory=list)
     skipped: dict[str, str] = field(default_factory=dict)
@@ -64,6 +75,10 @@ class AuditReport:
     @property
     def clean(self) -> bool:
         return not self.findings
+
+    @property
+    def strict_clean(self) -> bool:
+        return not self.findings and not self.warnings
 
 
 def _scalar(conn, sql, params=None):
@@ -135,6 +150,87 @@ def check_stuck_runs(conn):
         n = _scalar(conn, f"SELECT COUNT(*) FROM {table} WHERE status = 'running'")
         if n:
             yield Finding("stuck_runs", table, None, f"{n} rows still 'running'")
+
+
+def check_failed_runs(conn):
+    """A session run that failed loaded nothing past the step that raised,
+    and the dimensions written before it stay: `dim_session` still lists
+    the session. The build exits 1 when this happens; a warehouse opened
+    later has only this row to say so."""
+    n, example = conn.execute(
+        "SELECT COUNT(*), ANY_VALUE(error_message) FROM etl.runs "
+        "WHERE status = 'failed'"
+    ).fetchone()
+    if n:
+        first = (example or "").splitlines()[0][:120] if example else "no error recorded"
+        yield Finding("failed_runs", "etl.runs", None,
+                      f"{n} runs failed, e.g. {first}")
+
+
+# The lake every build writes beside its warehouse: one log_entries file per
+# session (parsers/parquet_writer.py).
+LAKE_GLOB = "projects/*/sessions/*/log_entries.parquet"
+
+
+def check_lake_reconciliation(conn, lake_root: Path):
+    """Each declared grain, per session, against the lake.
+
+    `fact_messages` is one row per user/assistant entry and
+    `fact_tool_calls` one row per tool call per transcript (TABLE_COVERAGE),
+    so per session the lake and the live rows must agree. Only lake files a
+    SUCCESSFUL run of this warehouse wrote are counted: a lake directory can
+    hold another build's files, or a failed run's (`failed_runs` reports
+    those). Session identity is the lake's `session_id` column, stamped from
+    the file name at Tier 1, the same column the facts carry.
+    """
+    files = [str(p) for p in sorted(lake_root.glob(LAKE_GLOB))]
+    if not files:
+        return
+    conn.execute(
+        "CREATE OR REPLACE TEMP TABLE _audit_lake AS "
+        "SELECT session_id, type, message_json FROM read_parquet(?) "
+        "WHERE etl_run_id IN (SELECT etl_run_id FROM etl.runs WHERE status = 'success')",
+        [files],
+    )
+    try:
+        grains = {
+            "fact_messages": (
+                "SELECT session_id, COUNT(*) AS n FROM _audit_lake "
+                "WHERE type IN ('user', 'assistant') GROUP BY 1",
+                "SELECT session_id, COUNT(*) AS n FROM fact_messages "
+                "WHERE is_deleted = FALSE GROUP BY 1",
+            ),
+            "fact_tool_calls": (
+                "SELECT session_id, COUNT(DISTINCT json_extract_string(b, '$.id')) AS n "
+                "FROM (SELECT session_id, unnest(json_extract(message_json, '$.content[*]')) AS b "
+                "      FROM _audit_lake WHERE type = 'assistant') "
+                "WHERE json_extract_string(b, '$.type') = 'tool_use' GROUP BY 1",
+                "SELECT session_id, COUNT(*) AS n FROM fact_tool_calls "
+                "WHERE is_deleted = FALSE GROUP BY 1",
+            ),
+        }
+        for table, (lake_sql, fact_sql) in grains.items():
+            rows = conn.execute(
+                f"""
+                WITH lake AS ({lake_sql}), fact AS ({fact_sql}),
+                     scoped AS (SELECT DISTINCT session_id FROM _audit_lake)
+                SELECT s.session_id, COALESCE(l.n, 0), COALESCE(f.n, 0)
+                FROM scoped s
+                LEFT JOIN lake l USING (session_id)
+                LEFT JOIN fact f USING (session_id)
+                WHERE COALESCE(l.n, 0) <> COALESCE(f.n, 0)
+                ORDER BY s.session_id
+                """
+            ).fetchall()
+            if rows:
+                sid, lake_n, fact_n = rows[0]
+                yield Finding(
+                    "lake_reconciliation", table, None,
+                    f"{len(rows)} sessions disagree with the lake, "
+                    f"e.g. {sid}: lake {lake_n}, table {fact_n}",
+                )
+    finally:
+        conn.execute("DROP TABLE IF EXISTS _audit_lake")
 
 
 def check_fk_unresolved(conn, tables):
@@ -274,7 +370,9 @@ def check_delegation_ground_truth(conn):
 
 # --------------------------------------------------------------------------
 
-def run_audit(conn) -> AuditReport:
+def run_audit(conn, lake_root: Path | None = None) -> AuditReport:
+    """Run every check. ``lake_root`` is the build's ``parquet_lake``
+    directory; without one, ``lake_reconciliation`` is a stated skip."""
     report = AuditReport()
     exceptions = _exceptions(conn)
 
@@ -293,12 +391,21 @@ def run_audit(conn) -> AuditReport:
         ("natural_key_unique", lambda: check_natural_key_unique(conn)),
         ("api_response_grain", lambda: check_api_response_grain(conn)),
         ("stuck_runs", lambda: check_stuck_runs(conn)),
+        ("failed_runs", lambda: check_failed_runs(conn)),
         ("fk_unresolved", lambda: check_fk_unresolved(conn, populated_tables)),
         ("declared_but_unwritten", lambda: check_declared_but_unwritten(conn)),
         ("rows_without_step", lambda: check_rows_without_step(conn)),
         ("view_executes", lambda: check_view_executes(conn)),
         ("delegation_ground_truth", lambda: check_delegation_ground_truth(conn)),
     ]
+    if lake_root is not None and any(Path(lake_root).glob(LAKE_GLOB)):
+        checks.append(("lake_reconciliation",
+                       lambda: check_lake_reconciliation(conn, Path(lake_root))))
+    else:
+        report.skipped["lake_reconciliation"] = (
+            f"no lake at {lake_root}" if lake_root is not None else "no lake given"
+        )
+    warning_checks = {"null_column", "single_valued_column"}
     if big_tables:
         checks.append(("null_column", lambda: check_null_columns(conn, big_tables)))
         checks.append(("single_valued_column", lambda: check_single_valued_columns(conn, big_tables)))
@@ -319,6 +426,8 @@ def run_audit(conn) -> AuditReport:
             key_any = (finding.check, finding.object, None)
             if key_exact in exceptions or key_any in exceptions:
                 report.allowed.append(finding)
+            elif name in warning_checks:
+                report.warnings.append(finding)
             else:
                 report.findings.append(finding)
     return report
@@ -328,13 +437,16 @@ def format_report(report: AuditReport, path) -> str:
     lines = [f"ccutils audit: {path}", ""]
     for f in report.findings:
         lines.append(f"  FAIL  {f}")
+    for f in report.warnings:
+        lines.append(f"  warn  {f}")
     for f in report.allowed:
         lines.append(f"  allow {f}")
     for check, why in report.skipped.items():
         lines.append(f"  skip  {check}: {why}")
     lines.append("")
     lines.append(
-        f"{len(report.findings)} findings, {len(report.allowed)} allowed, "
+        f"{len(report.findings)} findings, {len(report.warnings)} warnings, "
+        f"{len(report.allowed)} allowed, "
         f"{len(report.checks_run)} checks run, {len(report.skipped)} skipped"
     )
     return "\n".join(lines)

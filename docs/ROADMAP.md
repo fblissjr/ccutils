@@ -165,7 +165,7 @@ git-tracked.
 
 | Release | Contents | Gate |
 |---|---|---|
-| **1.0.0** | The warehouse break (below) | **Next.** `ccutils audit` exits clean on a fresh full-corpus build |
+| **1.0.0** | The warehouse break (below) | **Next.** `ccutils audit --strict` exits clean on a fresh full-corpus build |
 | 1.1.0 | Decomposition + incremental CDC; Bash-derived file operations, skill and slash-command invocations, hook and permission denials; `tool-results/` index (path, size, type, never bodies) | Derived rows carry `derived_from`; a second run performs zero upsert steps |
 | 1.2.0 | `fact_commits` + attribution view; `ccutils report`; reader's guide extended; behavior analytics folded into the report | The report answers every question it declares |
 | pause | Use the tool for a while before rewriting under it | |
@@ -789,19 +789,17 @@ Found while building phase 0 (2026-09-22) or on the first default-root run
   runs inside it.
 - Commits are signed through a 1Password agent whose socket is outside the
   sandbox, so `git commit` needs the sandbox off for that one command.
-- **The suite runs on whatever DuckDB the lockfile resolves; a user gets
-  whatever the floor allows.** `duckdb>=1.5.5` has no ceiling, and an install
-  without the lock (`uv tool install`, `pip`) takes the newest release. That
-  is how 2.0 emptied a Linux build on 2026-11-12 while the suite, locked at
-  1.5, stayed green (CHANGELOG, Unreleased). Open: keep the lock on the
-  newest DuckDB and run the suite on the floor too
-  (`uv run --with duckdb==<floor> pytest ...`), or cap the major version.
-  Either way, check a new DuckDB major against the suite before a release.
+- **DuckDB and Python floors are 2.0 and 3.13 (decided 2026-11-13).** A
+  1.5 floor with a 1.5 lock is how 2.0 emptied a Linux build while the
+  suite stayed green; one supported DuckDB means the lock tests what a
+  fresh install gets. No ceiling, deliberately: run the suite against a new
+  DuckDB major before a release rather than pin it out.
 - **A failed session run leaves its dimensions behind.** `run_v15_etl`
   writes the stub dimensions and `dim_session` before the facts, and
   nothing rolls them back when a fact populator raises, so a warehouse whose
   runs all failed still lists every session. `etl.runs` records the failure
-  and the build now exits 1, but `dim_session` alone overstates what loaded.
+  and the build now exits 1 (and `ccutils audit` fails on `failed_runs`),
+  but `dim_session` alone overstates what loaded.
   Open: one transaction per session run, or a reader rule keyed on run
   status.
 - `tests/test_jsonl_contract.py::TestToolResultPayloadPresence::test_a_parent_result_states_the_payload`

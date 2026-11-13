@@ -158,9 +158,12 @@ class TestPlantedDefectsAreFound:
             "FROM fact_tool_calls r, range(60) t(i) LIMIT 60"
         )
         conn.close()
-        findings, _ = _findings(warehouse, "null_column")
+        # A warning, not an error: the column profile fires on every build
+        # scoped to one project (tests/test_audit_severity_and_lake.py).
+        _, report = _findings(warehouse)
         assert ("fact_tool_calls", "webfetch_http_code") in [
-            (f.object, f.detail) for f in findings
+            (f.object, f.detail) for f in report.warnings
+            if f.check == "null_column"
         ]
 
     def test_view_that_fails_to_execute(self, warehouse):

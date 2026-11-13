@@ -47,7 +47,7 @@ One command converts; two do the things that are not converting.
 | `ccutils --source` | Convert every session under a directory (the Claude projects dir by default) |
 | `ccutils import` | Import a Claude.ai account export (Settings > Privacy > Export) |
 | `ccutils open` | Open a built warehouse in the DuckDB SQL UI |
-| `ccutils audit` | Check a built warehouse for the defect classes that have shipped; exits nonzero on any finding |
+| `ccutils audit` | Check a built warehouse for the defect classes that have shipped; exits nonzero on any error (`--strict`: on warnings too) |
 | `ccutils guide` | Regenerate the reader's guide (`README.md`) beside a warehouse; every duckdb build writes it |
 
 A conversion that skips a session (it is reported, and the others still
@@ -135,6 +135,7 @@ regenerates it.
 ```bash
 ccutils audit                     # the default archive
 ccutils audit -o ./analytics      # a warehouse you built elsewhere
+ccutils audit --strict            # warnings fail too: for a full-corpus build
 ```
 
 Every structural bug this project shipped passed its unit suite and was
@@ -142,10 +143,15 @@ caught by a person eyeballing corpus numbers. `ccutils audit` is that
 eyeballing as a command: natural keys unique, one token-usage row per API
 response, foreign keys resolving, declared coverage (`etl.table_coverage`)
 against what runs actually wrote (`etl.steps.table_name`), every kept view
-executing, no run left `running`, delegation rollups scored against the
-agent's own transcript, and columns that are always NULL or single-valued
-on tables large enough to mean it. Exit 0 is clean, 1 is findings, 2 is no
-warehouse or one written by a different schema. Accepted findings live in
+executing, no run left `running` or `failed`, delegation rollups scored
+against the agent's own transcript, and the grains of `fact_messages` and
+`fact_tool_calls` checked per session against the `parquet_lake/` beside
+the warehouse (only files this warehouse's successful runs wrote). Those
+are errors. Columns that are always NULL or single-valued, on tables large
+enough to mean it, are warnings: on a build scoped to one project, one git
+branch is the scope, not a defect. Exit 0 is no errors, 1 is errors (or
+warnings, under `--strict`), 2 is no warehouse or one written by a
+different schema. Accepted findings live in
 `etl.audit_exceptions` with a reason, so a check is never deleted to make a
 warehouse pass.
 
