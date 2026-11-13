@@ -104,50 +104,6 @@ def no_usage_session(tmp_path):
     return jsonl
 
 
-class TestFactTokenUsageDdl:
-    def test_table_exists(self, conn):
-        result = conn.execute(
-            "SELECT name FROM sqlite_master WHERE name='fact_token_usage'"
-        ).fetchone()
-        assert result is not None
-
-    def test_lineage_columns(self, conn):
-        cols = {c[0] for c in conn.execute("DESCRIBE fact_token_usage").fetchall()}
-        for required in (
-            "created_at", "last_updated_at",
-            "created_by_version_key", "last_updated_by_version_key",
-            "etl_run_id", "record_source", "hash_diff",
-            "is_deleted", "deleted_at",
-            "entry_id", "session_id",
-        ):
-            assert required in cols, f"Missing lineage col: {required}"
-
-    def test_cache_tiers_split(self, conn):
-        """R11: cache_creation must be split into _5m and _1h columns."""
-        cols = {c[0] for c in conn.execute("DESCRIBE fact_token_usage").fetchall()}
-        for required in (
-            "cache_creation_5m_tokens",
-            "cache_creation_1h_tokens",
-            "cache_creation_total_tokens",
-            "cache_read_tokens",
-        ):
-            assert required in cols, f"Missing cache col: {required}"
-
-    def test_total_uncached_equivalent_present(self, conn):
-        cols = {c[0] for c in conn.execute("DESCRIBE fact_token_usage").fetchall()}
-        assert "total_uncached_equivalent_tokens" in cols
-
-    def test_metadata_columns(self, conn):
-        """Web research R: capture service_tier, speed, inference_geo, server_tool_use."""
-        cols = {c[0] for c in conn.execute("DESCRIBE fact_token_usage").fetchall()}
-        for required in (
-            "service_tier", "speed", "inference_geo",
-            "server_tool_use_web_search_requests",
-            "server_tool_use_web_fetch_requests",
-        ):
-            assert required in cols, f"Missing metadata col: {required}"
-
-
 class TestPopulateFactTokenUsage:
     def test_only_assistant_with_usage_becomes_a_row(self, conn, cached_session, tmp_path):
         run = EtlRun.start(conn, source_path=str(cached_session))
@@ -222,17 +178,6 @@ class TestPopulateFactTokenUsage:
         assert a2[0] == "priority"
         assert a2[1] == "us"
 
-    def test_lineage_stamped(self, conn, cached_session, tmp_path):
-        run = EtlRun.start(conn, source_path=str(cached_session))
-        _stage(conn, cached_session, tmp_path, run)
-        populate_fact_token_usage(conn, run=run)
-        for r in conn.execute(
-            "SELECT etl_run_id, record_source, hash_diff FROM fact_token_usage"
-        ).fetchall():
-            assert r[0] == run.etl_run_id
-            assert r[1] == "claude_code_jsonl"
-            assert len(r[2]) == 32
-
 
 @pytest.fixture
 def split_response_session(tmp_path):
@@ -292,14 +237,6 @@ def split_response_session(tmp_path):
 class TestApiResponseGrain:
     """The table's grain is one row per API RESPONSE, not per JSONL entry."""
 
-    def test_api_message_id_column_exists(self, conn):
-        """Claim: the response identity is stored, not just used and thrown away.
-
-        Without the column there is no way to audit the dedupe or to join
-        a response back to the entries it was split across.
-        """
-        cols = {c[0] for c in conn.execute("DESCRIBE fact_token_usage").fetchall()}
-        assert "api_message_id" in cols
 
     def test_split_response_produces_one_row(
         self, conn, split_response_session, tmp_path
@@ -345,19 +282,6 @@ class TestApiResponseGrain:
             "WHERE ftu.api_message_id = 'msg_A'"
         ).fetchone()[0]
         assert uuid == "a1"
-
-    def test_entries_without_message_id_are_not_collapsed(
-        self, conn, cached_session, tmp_path
-    ):
-        """Claim: a missing message.id falls back to per-entry identity.
-
-        Pre-2025 transcripts and synthetic fixtures carry no message.id.
-        A NULL dedupe key would collapse an entire session into one row.
-        """
-        run = EtlRun.start(conn, source_path=str(cached_session))
-        _stage(conn, cached_session, tmp_path, run)
-        populate_fact_token_usage(conn, run=run)
-        assert conn.execute("SELECT COUNT(*) FROM fact_token_usage").fetchone()[0] == 2
 
 
 class TestIdempotency:

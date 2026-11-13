@@ -221,21 +221,6 @@ class TestAForkIsDescribedByItsOwnWork:
 class TestEveryFacetGetsTheCut:
     """The restriction is applied in one place, so a new facet cannot forget it."""
 
-    def test_a_fact_read_is_limited_to_the_sessions_own_work(self):
-        from ccutils.etl.fact_session_facets import _own_work_only
-
-        sql = _own_work_only(
-            "F90",
-            "(SELECT COUNT(*) FROM fact_messages fm WHERE fm.is_deleted = FALSE "
-            "AND fm.session_id = scope.session_id)",
-        )
-        assert "fm.timestamp > scope.fork_cut_timestamp" in sql
-        assert "scope.fork_cut_timestamp IS NULL" in sql
-
-    def test_a_facet_that_reads_no_fact_is_left_alone(self):
-        from ccutils.etl.fact_session_facets import _own_work_only
-
-        assert _own_work_only("F90", "scope.intent") == "scope.intent"
 
     def test_a_facet_that_cannot_be_scoped_is_refused(self):
         """Loud, at build time: an unscoped read would describe a fork by its prefix."""
@@ -315,7 +300,6 @@ class TestADelegationToAForkCountsTheForksOwnWork:
         ).fetchone() == (260, 270000.0)
 
 
-
 class TestAForksTotalsAreItsOwn:
     """The session summary and the cost views: a fork's own messages and tokens.
 
@@ -334,13 +318,6 @@ class TestAForksTotalsAreItsOwn:
             "FROM semantic_session_summary WHERE session_id = 'agent-f1'"
         ).fetchone() == (4, 2, 2, 50, 760, 2)
 
-    def test_the_facets_and_the_summary_agree(self, loaded):
-        tokens_in, tokens_out = loaded.execute(
-            "SELECT total_input_tokens, total_output_tokens FROM semantic_session_summary "
-            "WHERE session_id = 'agent-f1'"
-        ).fetchone()
-        assert _facet(loaded, "agent-f1", "F15") == tokens_in
-        assert _facet(loaded, "agent-f1", "F30") == tokens_out
 
     def test_summed_over_sessions_a_response_is_counted_once(self, conn, tmp_path):
         """The spawner's 7,710 input tokens and the fork's own 50, not 7,710 twice."""

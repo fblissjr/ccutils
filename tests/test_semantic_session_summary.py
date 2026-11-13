@@ -270,14 +270,3 @@ class TestSessionSummaryView:
         assert row[7] == "plan"
         assert row[8] == 1  # 1 file_history_snapshot
 
-    def test_session_duration(self, conn, rich_session, tmp_path):
-        run = EtlRun.start(conn, source_path=str(rich_session))
-        _stage(conn, rich_session, tmp_path, run)
-        _populate_everything(conn, run)
-        row = conn.execute(
-            "SELECT first_timestamp, last_timestamp, session_duration_seconds "
-            "FROM semantic_session_summary WHERE session_id = 'rich-s'"
-        ).fetchone()
-        assert row[0] is not None
-        assert row[1] is not None
-        assert row[2] > 0

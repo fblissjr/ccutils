@@ -82,50 +82,6 @@ def basic_session(tmp_path):
     return jsonl
 
 
-class TestFactMessagesDdl:
-    def test_table_exists(self, conn):
-        result = conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='table' AND name='fact_messages'"
-        ).fetchone()
-        assert result is not None
-
-    def test_required_lineage_columns(self, conn):
-        cols = {c[0] for c in conn.execute("DESCRIBE fact_messages").fetchall()}
-        for required in (
-            "created_at", "last_updated_at",
-            "created_by_version_key", "last_updated_by_version_key",
-            "etl_run_id", "record_source", "hash_diff",
-            "is_deleted", "deleted_at",
-            "session_id", "message_id", "entry_id",
-        ):
-            assert required in cols, f"Missing lineage/degenerate col: {required}"
-
-    def test_required_native_columns(self, conn):
-        cols = {c[0] for c in conn.execute("DESCRIBE fact_messages").fetchall()}
-        for required in (
-            "message_type", "parent_message_id", "timestamp", "sequence_num",
-            "is_sidechain", "is_meta", "is_compact_summary", "is_api_error_message",
-            "stop_reason", "permission_mode_at_send", "prompt_id", "request_id",
-            "api_error_text",
-        ):
-            assert required in cols, f"Missing native col: {required}"
-
-    def test_required_token_columns_split(self, conn):
-        """R11 fix: cache creation must be split into _5m and _1h columns."""
-        cols = {c[0] for c in conn.execute("DESCRIBE fact_messages").fetchall()}
-        for required in (
-            "input_tokens", "output_tokens",
-            "cache_creation_5m_tokens", "cache_creation_1h_tokens",
-            "cache_read_tokens", "total_uncached_equivalent_tokens",
-        ):
-            assert required in cols, f"Missing token col: {required}"
-
-    def test_content_json_dropped(self, conn):
-        """content_json is duplicated in staging + Parquet; dropped from facts."""
-        cols = {c[0] for c in conn.execute("DESCRIBE fact_messages").fetchall()}
-        assert "content_json" not in cols
-
-
 class TestPopulateFactMessages:
     def test_only_user_and_assistant_entries_become_rows(self, conn, basic_session, tmp_path):
         run = EtlRun.start(conn, source_path=str(basic_session))

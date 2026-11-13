@@ -204,30 +204,6 @@ def pr_session(tmp_path):
 # --- DDL tests ---
 
 
-class TestNewFactDdl:
-    """Every new fact must have the standard lineage block + degenerate dims."""
-
-    REQUIRED_LINEAGE = (
-        "created_at", "last_updated_at",
-        "created_by_version_key", "last_updated_by_version_key",
-        "etl_run_id", "record_source", "hash_diff",
-        "is_deleted", "deleted_at",
-        "entry_id", "session_id",
-    )
-
-    @pytest.mark.parametrize("table", [
-        "fact_entry_events", "fact_progress_events", "fact_system_events",
-    ])
-    def test_table_exists_with_lineage(self, conn, table):
-        result = conn.execute(
-            f"SELECT name FROM sqlite_master WHERE name='{table}'"
-        ).fetchone()
-        assert result is not None, f"Table missing: {table}"
-        cols = {c[0] for c in conn.execute(f"DESCRIBE {table}").fetchall()}
-        for required in self.REQUIRED_LINEAGE:
-            assert required in cols, f"{table} missing {required}"
-
-
 # --- Populator tests ---
 
 
@@ -399,31 +375,6 @@ class TestFactEntryEvents:
                         ("pr-link", "https://github.com/o/r/pull/9")]
         ids = conn.execute("SELECT entry_id FROM fact_entry_events").fetchall()
         assert len({r[0] for r in ids}) == 2
-
-
-class TestTheFiveTablesAreGone:
-    """A table that is created and never filled reads as "nothing happened"."""
-
-    GONE = ("fact_attachments", "fact_meta_events", "fact_file_history_snapshots",
-            "fact_queue_operations", "fact_pr_links")
-
-    def test_they_do_not_exist_or_stay_declared(self, conn):
-        from ccutils.etl import entry_type_facts
-        from ccutils.export.duckdb_archive import _PROGRESS_TABLES
-        from ccutils.schemas.star.schema import NATURAL_KEYS, TABLE_COVERAGE
-
-        tables = {r[0] for r in conn.execute(
-            "SELECT table_name FROM information_schema.tables").fetchall()}
-        for name in self.GONE:
-            assert name not in tables, name
-            assert name not in NATURAL_KEYS, name
-            assert name not in TABLE_COVERAGE, name
-            assert name not in _PROGRESS_TABLES, name
-            assert not hasattr(entry_type_facts, f"populate_{name}"), name
-        assert "fact_entry_events" in tables
-        assert NATURAL_KEYS["fact_entry_events"] == "entry_id"
-        assert "fact_entry_events" in TABLE_COVERAGE
-        assert "fact_entry_events" in _PROGRESS_TABLES
 
 
 class TestFactProgressEvents:

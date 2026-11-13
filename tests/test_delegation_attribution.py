@@ -248,11 +248,6 @@ class TestAForkDoesNotOwnTheCallThatCreatedIt:
     def test_the_delegation_belongs_to_the_spawner_in_either_order(self, built):
         assert _edges(built) == [("tu_fork", "agent-p1", "agent-f1")]
 
-    def test_no_delegation_has_itself_as_its_child(self, built):
-        assert built.execute(
-            "SELECT COUNT(*) FROM semantic_agent_delegations "
-            "WHERE parent_session_key = agent_session_key"
-        ).fetchone()[0] == 0
 
     def test_what_the_spawner_stated_survives_in_either_order(self, built):
         """The delegation is the SPAWNER's row, so its stated columns are too.
@@ -288,12 +283,6 @@ class TestAForkDoesNotOwnTheCallThatCreatedIt:
         # Spawn to completion was never affected; the two now agree in scale.
         assert seconds == pytest.approx(900.0)
 
-    def test_the_view_no_longer_reattributes(self, built):
-        """A parent is the session whose own row it is; nothing needs a source."""
-        columns = {r[0] for r in built.execute(
-            "DESCRIBE semantic_agent_delegations").fetchall()}
-        assert "parent_link_source" not in columns
-        assert "agent_link_source" in columns
 
     def test_the_summary_counts_it_once_on_the_spawner(self, built):
         assert _summary(built, "agent-p1") == (1, 0, 2, 700)

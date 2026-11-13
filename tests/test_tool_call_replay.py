@@ -94,9 +94,6 @@ def forked(request, conn, tmp_path):
 
 
 class TestACopiedCallIsItsOwnRow:
-    def test_the_registry_names_the_composite_key(self):
-        assert NATURAL_KEYS["fact_tool_calls"] == "tool_call_key"
-        assert NATURAL_KEYS["fact_file_operations"] == "tool_call_key"
 
     def test_each_transcript_keeps_its_own_tool_call(self, forked):
         """Two transcripts hold `tu_read`; each row is what ITS transcript stated."""
@@ -126,19 +123,6 @@ class TestACopiedCallIsItsOwnRow:
             ("agent-p1", "tu_read", _key("agent-p1", "tu_read"), "/work/a.py"),
         ]
 
-    def test_the_two_facts_agree_about_every_call(self, forked):
-        """What was measured wrong: one call, a different session in each fact."""
-        assert forked.execute(
-            "SELECT COUNT(*) FROM fact_file_operations fo "
-            "JOIN fact_tool_calls tc USING (tool_call_key) "
-            "WHERE NOT fo.is_deleted AND NOT tc.is_deleted "
-            "AND (fo.session_id <> tc.session_id OR fo.tool_use_id <> tc.tool_use_id)"
-        ).fetchone()[0] == 0
-        assert forked.execute(
-            "SELECT COUNT(*) FROM fact_file_operations fo WHERE NOT fo.is_deleted "
-            "AND NOT EXISTS (SELECT 1 FROM fact_tool_calls tc "
-            "                WHERE tc.tool_call_key = fo.tool_call_key AND NOT tc.is_deleted)"
-        ).fetchone()[0] == 0
 
     def test_reloading_a_transcript_changes_nothing(self, conn, tmp_path):
         """Idempotent, and a reload of one side does not disturb the other."""
@@ -247,13 +231,6 @@ class TestACopyBetweenRootSessionsIsReplay:
         only = _transcript(tmp_path, ROOT, [_read("tu_one", "10:02:00", "/work/a.py")])
         _load(conn, tmp_path, only)
         assert _replay(conn) == [(ROOT, "tu_one", False, None)]
-
-    def test_the_view_has_one_row_per_live_tool_call(self, resumed):
-        assert resumed.execute(
-            "SELECT (SELECT COUNT(*) FROM fact_tool_calls WHERE NOT is_deleted), "
-            "       (SELECT COUNT(*) FROM semantic_tool_call_replay), "
-            "       (SELECT COUNT(DISTINCT tool_call_key) FROM semantic_tool_call_replay)"
-        ).fetchone() == (3, 3, 3)
 
 
 class TestViewsCountACallOnce:

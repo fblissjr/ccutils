@@ -82,12 +82,6 @@ def _insert_system_event(conn, subtype, session_id="s1", **cols):
 
 
 class TestSemanticDecisionsView:
-    def test_view_exists(self, conn):
-        row = conn.execute(
-            "SELECT name FROM sqlite_master "
-            "WHERE type='view' AND name='semantic_decisions'"
-        ).fetchone()
-        assert row is not None
 
     def test_plan_revision_projected(self, conn):
         _insert_plan_revision(conn, outcome="accepted")

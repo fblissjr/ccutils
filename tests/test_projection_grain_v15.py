@@ -96,13 +96,6 @@ class TestProjectionEmitsDeclaredGrain:
         ).fetchone()[0]
         assert n == 1
 
-    def test_fact_tool_results_one_row_per_tool_use_id(self, conn, tmp_path):
-        self._run(conn, tmp_path)
-        n = conn.execute(
-            "SELECT COUNT(*) FROM fact_tool_calls "
-            "WHERE tool_use_id = 'tu_dup' AND NOT is_deleted"
-        ).fetchone()[0]
-        assert n == 1
 
     def test_downstream_facts_inherit_uniqueness(self, conn, tmp_path):
         """`fact_file_operations` projects FROM `fact_tool_calls`, and

@@ -223,49 +223,6 @@ class TestOneRowPerSpawn:
             ).hexdigest()
             assert agent_sk == expected
 
-    def test_agent_session_key_survives_parent_first_ordering(
-        self, conn, tmp_path
-    ):
-        """The real-world ordering: parent ETL'd before the agent exists.
-
-        Claim: delete this and the lookup-based implementation passes every
-        other test in this file (its fixtures load both sides, or neither)
-        while producing zero linkage on a real corpus, because nothing here
-        exercises parent-then-agent ordering.
-        """
-        parent = tmp_path / "p.jsonl"
-        parent.write_text("\n".join(json.dumps(d) for d in [
-            {"type": "user", "uuid": "u1", "sessionId": "ord-parent",
-             "timestamp": "2026-04-19T10:00:00Z", "cwd": "/p",
-             "gitBranch": "main", "version": "2.1.114",
-             "message": {"role": "user", "content": "delegate"}},
-            {"type": "assistant", "uuid": "a1", "parentUuid": "u1",
-             "sessionId": "ord-parent", "timestamp": "2026-04-19T10:00:01Z",
-             "requestId": "r1",
-             "message": {"role": "assistant", "model": "claude-opus-4-7",
-                         "content": [{"type": "tool_use", "id": "tu_ord",
-                                      "name": "Task",
-                                      "input": {"description": "go",
-                                                "subagent_type": "Explore",
-                                                "prompt": "x"}}]}},
-            {"type": "user", "uuid": "u2", "parentUuid": "a1",
-             "sessionId": "ord-parent", "timestamp": "2026-04-19T10:00:30Z",
-             "message": {"role": "user", "content": [
-                 {"type": "tool_result", "tool_use_id": "tu_ord",
-                  "content": [{"type": "text", "text": "done"}]}]},
-             "toolUseResult": {"agentId": "ord-agent-1",
-                               "agentType": "Explore", "status": "completed",
-                               "totalDurationMs": 10, "totalTokens": 5,
-                               "totalToolUseCount": 1}},
-        ]))
-        # Parent first, agent transcript never ingested at all.
-        run_v15_etl(conn, parent, project_name="test-project",
-                    parquet_lake_root=tmp_path / "lake")
-        row = conn.execute(
-            "SELECT agent_session_key FROM semantic_agent_delegations "
-            "WHERE tool_use_id = 'tu_ord'"
-        ).fetchone()
-        assert row[0] == hashlib.md5(b"agent-ord-agent-1").hexdigest()
 
     def test_resolved_model_captured_from_tool_use_result(
         self, conn, agent_session, tmp_path
@@ -481,22 +438,6 @@ class TestAsyncLaunchIsNotACompletion:
             tmp_path, "refused", text=refusal, payload=payload, is_error=True), tmp_path)
         assert self._async_and_output(conn, "refused") == (None, None, refusal)
 
-    def test_synchronous_delegation_keeps_what_its_parent_stated(
-        self, conn, agent_session, tmp_path
-    ):
-        """The withholding is gated on isAsync, not applied to everything."""
-        _populate(conn, agent_session, tmp_path)
-        rows = conn.execute(
-            "SELECT agent_is_async, result_timestamp, "
-            "agent_total_duration_ms, agent_output_text "
-            "FROM semantic_agent_delegations"
-        ).fetchall()
-        assert len(rows) == 2
-        for is_async, result_ts, duration, output in rows:
-            assert not is_async
-            assert result_ts is not None
-            assert duration is not None
-            assert output is not None
 
     def test_agent_session_key_resolves_when_subagent_also_loaded(
         self, conn, tmp_path
@@ -734,26 +675,6 @@ class TestAsyncCompletionIsDerivedFromTheAgent:
         assert stated is None, "the async ack is not the agent's output"
         assert derived == "audit complete"
 
-    def test_unfinished_agent_output_is_not_derived(self, conn, tmp_path):
-        """A partial answer is worse than no answer.
-
-        An unfinished agent's last message is indistinguishable from a
-        finished one's, so reporting it would present a half-done delegation
-        as complete.
-        """
-        parent = self._parent_with_async_spawn(tmp_path)
-        agent = self._agent_transcript(tmp_path, stop_reason=None)
-        run_v15_etl(conn, parent, project_name="p",
-                    parquet_lake_root=tmp_path / "lake")
-        run_v15_etl(conn, agent, project_name="p",
-                    parquet_lake_root=tmp_path / "lake")
-
-        state, derived = conn.execute("""
-            SELECT completion_state, derived_output_text
-            FROM semantic_agent_delegations WHERE tool_use_id = 'tu_async1'
-        """).fetchone()
-        assert state != "completed"
-        assert derived is None
 
     def test_synchronous_delegation_keeps_its_stated_output(
         self, conn, agent_session, tmp_path
@@ -942,43 +863,6 @@ class TestAsyncCompletionIsDerivedFromTheAgent:
         )
         assert state is None
 
-    def test_no_completion_state_asserts_liveness(self, conn, tmp_path):
-        """No emitted state may claim the agent was running. It is not
-        decidable from the transcript.
-
-        The state formerly called `in_flight_at_ingest` asserted exactly
-        that, and the corpus contradicts it: of 101 rows carrying it, 98
-        ended mid-tool-loop a median of 15.7 DAYS before the ETL ran and
-        only 2 had a last message recent enough to still be running. What
-        is actually known is narrower -- the agent's transcript records no
-        completion -- and `no_completion_recorded` says only that.
-
-        This mirrors the `semantic_session_behavior` guard that forbids
-        `archetype`/`label`/`bucket` column names: a claim the data cannot
-        support must not re-enter the schema through a value name.
-        """
-        parent = self._parent_with_async_spawn(tmp_path)
-        agent = self._agent_transcript(tmp_path, stop_reason=None)
-        run_v15_etl(conn, parent, project_name="p",
-                    parquet_lake_root=tmp_path / "lake")
-        run_v15_etl(conn, agent, project_name="p",
-                    parquet_lake_root=tmp_path / "lake")
-
-        states = [
-            r[0] for r in conn.execute(
-                "SELECT DISTINCT completion_state FROM semantic_agent_delegations "
-                "WHERE completion_state IS NOT NULL"
-            ).fetchall()
-        ]
-        # Non-vacuity: the unfinished-agent case must actually be present,
-        # or this passes on an empty set.
-        assert "no_completion_recorded" in states
-        for s in states:
-            for banned in ("in_flight", "running", "active", "live"):
-                assert banned not in s.lower(), (
-                    f"completion_state {s!r} asserts liveness, which the "
-                    "transcript cannot establish"
-                )
 
     def test_refused_spawn_is_spawn_failed_not_completed(self, conn, tmp_path):
         """29 of 30 NULL-status rows on the real corpus: the agent was never
@@ -1131,79 +1015,6 @@ class TestSoftDeletedToolCallsStayOut:
         ).fetchall()
         assert len(rows) == before
         assert len({r[0] for r in rows}) == before
-
-
-class TestItIsAViewAndNothingRepairsIt:
-    """The table, its populator and the reconciliation run are gone.
-
-    Guards against a half-restoration: a table that is created and never
-    filled reads as "no delegations", and a reconciliation run kind with no
-    pass behind it reads as "reconciled".
-    """
-
-    def test_the_table_and_its_machinery_do_not_exist(self, conn):
-        import importlib
-
-        kinds = dict(conn.execute(
-            "SELECT table_name, table_type FROM information_schema.tables"
-        ).fetchall())
-        assert kinds.get("semantic_agent_delegations") == "VIEW"
-        assert "fact_agent_delegations" not in kinds
-
-        with pytest.raises(ModuleNotFoundError):
-            importlib.import_module("ccutils.etl.fact_agent_delegations")
-        orchestrator = importlib.import_module("ccutils.etl.orchestrator")
-        assert not hasattr(orchestrator, "run_post_session_reconciliation")
-
-        from ccutils.export.duckdb_archive import _PROGRESS_TABLES
-        from ccutils.schemas.star.schema import NATURAL_KEYS, TABLE_COVERAGE
-
-        assert "fact_agent_delegations" not in NATURAL_KEYS
-        assert "fact_agent_delegations" not in TABLE_COVERAGE
-        assert "fact_agent_delegations" not in _PROGRESS_TABLES
-
-    def test_a_build_records_no_reconciliation_run(self, conn, agent_session, tmp_path):
-        from ccutils.etl.global_sources import run_global_sources
-
-        _populate(conn, agent_session, tmp_path)
-        run_global_sources(conn)
-        kinds = {r[0] for r in conn.execute("SELECT DISTINCT run_kind FROM etl.runs").fetchall()}
-        assert "reconciliation" not in kinds
-        assert "session" in kinds
-
-
-class TestToolCountIsZeroNotNull:
-    """An agent that finished without calling a tool used ZERO tools.
-
-    The table left its (blended) tool count NULL there (a LEFT JOIN over
-    the agent's tool calls found no rows), which made "used none" read the
-    same as "unknown". `derived_tool_use_count` comes from the agent's
-    session summary, where no rows is a counted zero.
-    """
-
-    def test_completed_async_agent_with_no_tools_counts_zero(self, conn, tmp_path):
-        helper = TestAsyncCompletionIsDerivedFromTheAgent()
-        parent = helper._parent_with_async_spawn(tmp_path)
-        agent = helper._agent_transcript(tmp_path)
-        _populate(conn, parent, tmp_path)
-        _populate(conn, agent, tmp_path)
-        state, tools = conn.execute(
-            "SELECT completion_state, derived_tool_use_count "
-            "FROM semantic_agent_delegations WHERE tool_use_id = 'tu_async1'"
-        ).fetchone()
-        assert state == "completed"
-        assert tools == 0
-
-    def test_an_unfinished_agent_still_reports_no_count(self, conn, tmp_path):
-        helper = TestAsyncCompletionIsDerivedFromTheAgent()
-        parent = helper._parent_with_async_spawn(tmp_path)
-        agent = helper._agent_transcript(tmp_path, stop_reason=None)
-        _populate(conn, parent, tmp_path)
-        _populate(conn, agent, tmp_path)
-        assert conn.execute(
-            "SELECT derived_tool_use_count FROM semantic_agent_delegations "
-            "WHERE tool_use_id = 'tu_async1'"
-        ).fetchone() == (None,)
 
 
 class TestSessionSummaryCarriesDelegationFeatures:

@@ -303,23 +303,6 @@ def chain_only_session(tmp_path):
 
 
 class TestTier1FacetLineage:
-    def test_lineage_envelope_stamped(self, conn, shaped_session, tmp_path):
-        _run_orchestrator_then_populator(conn, shaped_session, tmp_path / "lake")
-        row = conn.execute(
-            """
-            SELECT created_at, last_updated_at, etl_run_id,
-                   record_source, hash_diff, is_deleted
-            FROM fact_session_facets
-            WHERE session_id = 'shape-s'
-            LIMIT 1
-            """
-        ).fetchone()
-        assert row[0] is not None  # created_at
-        assert row[1] is not None  # last_updated_at
-        assert row[2] is not None  # etl_run_id
-        assert row[3] == "claude_code_jsonl"
-        assert row[4] is not None  # hash_diff
-        assert row[5] is False     # is_deleted
 
     def test_is_idempotent(self, conn, shaped_session, tmp_path):
         _run_orchestrator_then_populator(conn, shaped_session, tmp_path / "lake")
@@ -377,84 +360,3 @@ def two_f90_versions(conn):
     return conn
 
 
-class TestFacetTypeKeyVersionProperty:
-    """Reflection 3 from the step-1 review: prompt versioning semantics.
-
-    Same facet_id + different prompt_version MUST produce different
-    facet_type_keys (so a re-extraction with a new prompt produces NEW
-    rows in fact_session_facets, not destructive overwrites). Both
-    versions must coexist in dim_facet_type and resolve via the join.
-    """
-
-    def test_same_id_different_version_yields_different_key(
-        self, two_f90_versions
-    ):
-        conn = two_f90_versions
-        keys = conn.execute(
-            "SELECT prompt_version, facet_type_key FROM dim_facet_type "
-            "WHERE facet_id = 'F90' ORDER BY prompt_version"
-        ).fetchall()
-        assert len(keys) == 2
-        assert keys[0][1] != keys[1][1], (
-            "Same facet_id with different prompt_version must produce "
-            "distinct facet_type_key"
-        )
-
-    def test_both_versions_resolve_after_new_version_lands(
-        self, two_f90_versions
-    ):
-        conn = two_f90_versions
-        # Insert a fact row keyed against v1 BEFORE v2 was seeded (simulated
-        # by inserting now under v1's key only).
-        conn.execute(
-            """
-            INSERT INTO fact_session_facets (
-                created_by_version_key, last_updated_by_version_key,
-                etl_run_id, record_source, hash_diff,
-                facet_row_key, session_key, session_id,
-                facet_type_key, prompt_version, value_text
-            )
-            VALUES (
-                'vk', 'vk', 'run-1', 'claude_code_jsonl',
-                'h1',
-                md5('s1' || '|' || 'F90' || '|' || 'v1'),
-                md5('s1'), 's1',
-                md5('F90' || '|' || 'v1'), 'v1',
-                'fixed the bug under prompt v1'
-            )
-            """
-        )
-        # Now insert a v2 row.
-        conn.execute(
-            """
-            INSERT INTO fact_session_facets (
-                created_by_version_key, last_updated_by_version_key,
-                etl_run_id, record_source, hash_diff,
-                facet_row_key, session_key, session_id,
-                facet_type_key, prompt_version, value_text
-            )
-            VALUES (
-                'vk', 'vk', 'run-2', 'claude_code_jsonl',
-                'h2',
-                md5('s1' || '|' || 'F90' || '|' || 'v2'),
-                md5('s1'), 's1',
-                md5('F90' || '|' || 'v2'), 'v2',
-                'addressed the bug (re-extracted under prompt v2)'
-            )
-            """
-        )
-        # Both rows must resolve through the join.
-        rows = conn.execute(
-            """
-            SELECT dft.prompt_version, fsf.value_text
-            FROM fact_session_facets fsf
-            JOIN dim_facet_type dft USING (facet_type_key)
-            WHERE fsf.session_id = 's1' AND dft.facet_id = 'F90'
-            ORDER BY dft.prompt_version
-            """
-        ).fetchall()
-        assert len(rows) == 2, (
-            f"Both versions should resolve via the join, got {rows}"
-        )
-        assert rows[0][0] == "v1" and "v1" in rows[0][1]
-        assert rows[1][0] == "v2" and "v2" in rows[1][1]

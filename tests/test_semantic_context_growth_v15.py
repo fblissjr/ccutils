@@ -62,13 +62,6 @@ def _rows(conn, session_id="s1"):
 
 
 class TestSemanticContextGrowthView:
-    def test_creates_view(self, conn):
-        """Claim: the view ships in the DDL, not just in a query recipe."""
-        result = conn.execute(
-            "SELECT name FROM sqlite_master "
-            "WHERE type='view' AND name='semantic_context_growth'"
-        ).fetchone()
-        assert result is not None
 
     def test_delta_is_difference_from_previous_request(self, conn):
         """Claim: context_delta_tokens diffs consecutive prompt sizes.

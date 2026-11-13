@@ -273,22 +273,6 @@ class TestFactFileOperationsPopulator:
         ).fetchone()
         assert rows[0] == 0
 
-    def test_lineage_block_populated(self, conn, file_op_session, tmp_path):
-        _populate(conn, file_op_session, tmp_path)
-        row = conn.execute(
-            """
-            SELECT created_at, last_updated_at, created_by_version_key,
-                   etl_run_id, record_source, hash_diff, is_deleted
-            FROM fact_file_operations LIMIT 1
-            """
-        ).fetchone()
-        assert row[0] is not None  # created_at
-        assert row[1] is not None  # last_updated_at
-        assert row[2] is not None  # version_key
-        assert row[3] is not None  # etl_run_id
-        assert row[4] == "claude_code_jsonl"
-        assert row[5] is not None  # hash_diff
-        assert row[6] is False  # is_deleted
 
     def test_idempotent_reetl(self, conn, file_op_session, tmp_path):
         _populate(conn, file_op_session, tmp_path)

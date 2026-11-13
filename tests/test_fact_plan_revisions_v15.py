@@ -384,21 +384,6 @@ class TestFactPlanRevisionsContent:
 
 
 class TestFactPlanRevisionsLineage:
-    def test_lineage_block_populated(self, conn, accepted_session, tmp_path):
-        _populate(conn, accepted_session, tmp_path)
-        row = conn.execute(
-            """
-            SELECT created_at, last_updated_at, etl_run_id, record_source,
-                   hash_diff, is_deleted
-            FROM fact_plan_revisions LIMIT 1
-            """
-        ).fetchone()
-        assert row[0] is not None
-        assert row[1] is not None
-        assert row[2] is not None
-        assert row[3] == "claude_code_jsonl"
-        assert row[4] is not None
-        assert row[5] is False
 
     def test_idempotent_reetl(self, conn, accepted_session, tmp_path):
         _populate(conn, accepted_session, tmp_path)

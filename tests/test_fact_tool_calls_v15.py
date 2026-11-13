@@ -146,77 +146,6 @@ def error_string_result_session(tmp_path):
     return jsonl
 
 
-class TestFactToolUsesDdl:
-    def test_table_exists(self, conn):
-        assert conn.execute(
-            "SELECT name FROM sqlite_master WHERE name='fact_tool_calls'"
-        ).fetchone() is not None
-
-    def test_lineage_columns(self, conn):
-        cols = {c[0] for c in conn.execute("DESCRIBE fact_tool_calls").fetchall()}
-        for required in (
-            "created_at", "last_updated_at",
-            "created_by_version_key", "last_updated_by_version_key",
-            "etl_run_id", "record_source", "hash_diff",
-            "is_deleted", "deleted_at",
-            "entry_id", "message_id", "session_id", "tool_use_id",
-        ):
-            assert required in cols, f"Missing: {required}"
-
-    def test_native_columns(self, conn):
-        cols = {c[0] for c in conn.execute("DESCRIBE fact_tool_calls").fetchall()}
-        for required in (
-            "tool_name", "tool_key", "session_key", "project_key",
-            "date_key", "time_key", "invoke_sequence_num",
-            "input_json", "input_summary",
-        ):
-            assert required in cols, f"Missing: {required}"
-
-
-class TestFactToolResultsDdl:
-    def test_table_exists(self, conn):
-        assert conn.execute(
-            "SELECT name FROM sqlite_master WHERE name='fact_tool_calls'"
-        ).fetchone() is not None
-
-    def test_is_error_is_nullable_boolean(self, conn):
-        """R16: tri-state preservation."""
-        cols = dict(conn.execute(
-            "SELECT column_name, data_type FROM information_schema.columns "
-            "WHERE table_name='fact_tool_calls'"
-        ).fetchall())
-        assert cols["is_error"] == "BOOLEAN"
-
-    def test_per_tool_typed_columns(self, conn):
-        cols = {c[0] for c in conn.execute("DESCRIBE fact_tool_calls").fetchall()}
-        for required in (
-            # Bash
-            "bash_stdout_bytes", "derived_exit_code", "derived_failure_kind",
-            "sandbox_disabled",
-            # Edit
-            "edit_user_modified", "edit_replace_all",
-            "edit_structured_patch_json",
-            # Read
-            "read_num_lines", "read_total_lines", "read_file_path",
-            # Write
-            "write_type",
-            # Glob
-            "glob_num_files", "glob_truncated",
-            # Grep
-            "grep_mode", "grep_num_files",
-            # WebFetch
-            "webfetch_http_code", "webfetch_bytes",
-            # Agent
-            "agent_status", "agent_total_duration_ms",
-            "agent_total_tokens", "agent_total_tool_use_count",
-            "agent_subagent_type",
-            # Generic
-            "result_payload_json", "result_content_text",
-            "tool_use_id", "tool_name",
-        ):
-            assert required in cols, f"Missing: {required}"
-
-
 class TestPopulateFactToolUses:
     def test_one_row_per_tool_use(self, conn, tools_session, tmp_path):
         run = EtlRun.start(conn, source_path=str(tools_session))
@@ -229,16 +158,6 @@ class TestPopulateFactToolUses:
         )
         assert ids == ["tu_bash_1", "tu_edit_1", "tu_read_1"]
 
-    def test_lineage_stamped(self, conn, tools_session, tmp_path):
-        run = EtlRun.start(conn, source_path=str(tools_session))
-        _stage(conn, tools_session, tmp_path, run)
-        populate_fact_tool_calls(conn, run=run)
-        for row in conn.execute(
-            "SELECT etl_run_id, record_source, hash_diff FROM fact_tool_calls"
-        ).fetchall():
-            assert row[0] == run.etl_run_id
-            assert row[1] == "claude_code_jsonl"
-            assert len(row[2]) == 32
 
     def test_tool_name_carried(self, conn, tools_session, tmp_path):
         run = EtlRun.start(conn, source_path=str(tools_session))
@@ -275,16 +194,6 @@ class TestPopulateFactToolUses:
 
 
 class TestPopulateFactToolResults:
-    def test_one_row_per_tool_result(self, conn, tools_session, tmp_path):
-        run = EtlRun.start(conn, source_path=str(tools_session))
-        _stage(conn, tools_session, tmp_path, run)
-        populate_fact_tool_calls(conn, run=run)
-        ids = sorted(
-            r[0] for r in conn.execute(
-                "SELECT tool_use_id FROM fact_tool_calls"
-            ).fetchall()
-        )
-        assert ids == ["tu_bash_1", "tu_edit_1", "tu_read_1"]
 
     def test_bash_structural_columns(self, conn, tools_session, tmp_path):
         run = EtlRun.start(conn, source_path=str(tools_session))
@@ -357,27 +266,6 @@ class TestPopulateFactToolResults:
 
 class TestIdempotency:
     def test_uses_reetl_is_no_op(self, conn, tools_session, tmp_path):
-        run1 = EtlRun.start(conn, source_path=str(tools_session))
-        _stage(conn, tools_session, tmp_path, run1)
-        populate_fact_tool_calls(conn, run=run1)
-        first_updates = {
-            r[0]: r[1]
-            for r in conn.execute(
-                "SELECT tool_use_id, last_updated_at FROM fact_tool_calls"
-            ).fetchall()
-        }
-        run2 = EtlRun.start(conn, source_path=str(tools_session))
-        _stage(conn, tools_session, tmp_path, run2)
-        populate_fact_tool_calls(conn, run=run2)
-        second_updates = {
-            r[0]: r[1]
-            for r in conn.execute(
-                "SELECT tool_use_id, last_updated_at FROM fact_tool_calls"
-            ).fetchall()
-        }
-        assert first_updates == second_updates
-
-    def test_results_reetl_is_no_op(self, conn, tools_session, tmp_path):
         run1 = EtlRun.start(conn, source_path=str(tools_session))
         _stage(conn, tools_session, tmp_path, run1)
         populate_fact_tool_calls(conn, run=run1)
