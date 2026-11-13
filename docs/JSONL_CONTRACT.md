@@ -202,9 +202,17 @@ appear rarely, including `summary`, `fork-context-ref` and `journal`.
 `advisor_tool_result` appears as a content block kind and has no handler
 anywhere in `src/`. That is a known gap, not a decision.
 
-- Canary: `tests/test_typed_parser.py::TestArchiveCoveragePostA2`.
-- If a new type appears: it lands in staging and is ignored by every populator,
-  silently. The coverage layer is where that becomes visible.
+- Not current: the list above predates Claude Code 2.1.316. One 2.1.323
+  session on 2026-11-13 also held `api-request`, `api-request-blob` (claim
+  13), `api-request-shape`, `atis-latch`, `session-owner`,
+  `file-history-delta` and `tools-used`. Re-measure on the corpus before
+  relying on the list.
+- Canary: none. The archive scan that stood here
+  (`test_typed_parser.py::TestArchiveCoveragePostA2`) only printed, so it
+  could not fail, and it exercised parsers nothing in `src` called; it was
+  deleted with them on 2026-11-13.
+- If a new type appears: it lands in staging, is kept in the Parquet lake's
+  `raw_json`, and is ignored by every populator, silently.
 
 ## 10. Surrogate key formulas
 

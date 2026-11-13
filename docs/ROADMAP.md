@@ -833,16 +833,12 @@ Stated once so green is read correctly:
   whole-transcript is wrong.
 - **Tests that cost time and check little.** From a timing run of the
   suite on 2026-10-13:
-  - `tests/test_typed_parser.py::TestArchiveCoveragePostA2::test_no_unknown_content_blocks_or_subtypes_in_archive`
-    and `::TestToolUseResultArchiveCoverage::test_every_archive_tool_result_dispatches_cleanly`
-    contain no `assert` (confirmed by reading them): each scans the corpus
-    and can fail only by raising. Give each an assertion, or state in its
-    docstring that raising is the check.
-  - The run reported 388 tests that create a warehouse and never run the
-    ETL, 51 of them in `tests/test_star_schema_ddl.py`. Not re-derived;
-    measure before acting on it.
-  - Its other suggestions, none done: a marker for the corpus canaries, one
-    shared corpus pass, wider fixture scopes, parallel workers.
+  - Closed 2026-11-13: the two `test_typed_parser.py` archive scans that
+    contained no `assert` were deleted with the dead parsers they ran; the
+    DDL-copy tests in `test_star_schema_ddl.py` were deleted by the test
+    audit; the suite runs in parallel (pytest-xdist).
+  - Still open: a marker for the corpus canaries (listed under "Next
+    session"), one shared corpus pass.
 - **Concurrency.** Nothing tests two writers against one warehouse, and
   `ccutils --source -j N` writes in parallel.
 - **One backend, one platform.** DuckDB, macOS, one Python.
