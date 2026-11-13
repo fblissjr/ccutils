@@ -1,6 +1,9 @@
+# path-privacy: skip-file -- generic placeholder paths only
 """Tests for single-file conversion (positional arg to default command)."""
 
 import json
+
+import pytest
 
 from click.testing import CliRunner
 
@@ -20,7 +23,7 @@ def _session_with_subagents(tmp_path, n_agents=2):
     def entry(**over):
         base = {
             "type": "user", "uuid": "u1", "sessionId": "sess-parent",
-            "timestamp": "2026-01-15T10:00:00.000Z", "cwd": "/home/user/demo",  # path-privacy: ignore
+            "timestamp": "2026-01-15T10:00:00.000Z", "cwd": "/home/user/demo",
             "message": {"role": "user", "content": "do the thing"},
         }
         base.update(over)
@@ -160,16 +163,62 @@ class TestFileConversionHTML:
         assert result.exit_code != 0
         assert "not found" in result.output.lower() or "Error" in result.output
 
-    def test_private_flag_accepted_on_html(self, sample_session_file, output_dir):
-        """--private is honored on the HTML path (PathSanitizer is wired
-        into generate_html)."""
-        runner = CliRunner()
-        result = runner.invoke(
-            cli,
-            [str(sample_session_file), "-o", str(output_dir), "--private"],
-        )
 
-        assert result.exit_code == 0
+
+class TestPrivateChangesWhatHtmlContains:
+    """--private on html removes the session's absolute paths, through the CLI.
+
+    The flag used to be tested here by exit code alone, and on 2026-11-13
+    the audit dropped it from the single-file call (`private=False`) with the
+    whole suite green: the silent-privacy-no-op class, which has shipped
+    three times. Each case renders the same session with and without the
+    flag; the control proves the paths are there to remove.
+
+    What breaks without it: `--private` html is a no-op and nothing fails.
+    """
+
+    CWD = "/home/user/proj"
+
+    def _session(self, root):
+        proj = root / "projects" / "-home-user-proj"
+        proj.mkdir(parents=True)
+        lines = [
+            {"type": "user", "uuid": "u1", "sessionId": "priv-s", "cwd": self.CWD,
+             "timestamp": "2026-11-13T10:00:00Z",
+             "message": {"role": "user", "content": "read the config"}},
+            {"type": "assistant", "uuid": "a1", "parentUuid": "u1", "sessionId": "priv-s",
+             "cwd": self.CWD, "timestamp": "2026-11-13T10:00:05Z",
+             "message": {"role": "assistant", "model": "claude-opus-4-7", "content": [
+                 {"type": "tool_use", "id": "t1", "name": "Read",
+                  "input": {"file_path": f"{self.CWD}/src/settings.py"}}]}},
+            {"type": "user", "uuid": "u2", "parentUuid": "a1", "sessionId": "priv-s",
+             "cwd": self.CWD, "timestamp": "2026-11-13T10:00:06Z",
+             "message": {"role": "user", "content": [
+                 {"type": "tool_result", "tool_use_id": "t1",
+                  "content": f"see {self.CWD}/src/settings.py and /home/user/.netrc"}]}},
+        ]
+        f = proj / "priv-s.jsonl"
+        f.write_text("\n".join(json.dumps(x) for x in lines))
+        return f
+
+    def _html(self, out):
+        return "".join(p.read_text() for p in out.rglob("*.html"))
+
+    @pytest.mark.parametrize("mode", ["file", "source"])
+    def test_absolute_paths_are_gone_and_relative_ones_remain(self, tmp_path, mode):
+        session = self._session(tmp_path / "in")
+        target = [str(session)] if mode == "file" else ["--source", str(tmp_path / "in" / "projects")]
+        runner = CliRunner()
+        plain = runner.invoke(cli, [*target, "-o", str(tmp_path / "plain")])
+        private = runner.invoke(cli, [*target, "-o", str(tmp_path / "private"), "--private"])
+        assert plain.exit_code == 0, plain.output
+        assert private.exit_code == 0, private.output
+
+        before, after = self._html(tmp_path / "plain"), self._html(tmp_path / "private")
+        assert f"{self.CWD}/src/settings.py" in before, "control: the path was rendered"
+        assert "/home/user" not in after
+        assert "src/settings.py" in after
+        assert "~/.netrc" in after
 
 
 class TestHonestyGuards:

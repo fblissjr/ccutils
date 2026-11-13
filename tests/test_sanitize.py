@@ -8,6 +8,8 @@ flag's wiring through the v0.15 ETL is verified separately by the ETL
 test suite.
 """
 
+import pytest
+
 from ccutils.sanitize import PathSanitizer
 
 
@@ -98,13 +100,13 @@ class TestSanitizeProjectPath:
     def test_strips_to_basename(self):
         san = PathSanitizer("/Users/dev/workspace/project")
         result = san.sanitize_project_path(
-            "/Users/dev/.claude/projects/-Users-fred-workspace-project"
+            "/Users/dev/.claude/projects/-Users-user-workspace-project"
         )
-        assert result == "-Users-fred-workspace-project"
+        assert result == "-Users-user-workspace-project"
 
     def test_none_cwd_returns_original(self):
         san = PathSanitizer(None)
-        original = "/Users/dev/.claude/projects/-Users-fred-workspace-project"
+        original = "/Users/dev/.claude/projects/-Users-user-workspace-project"
         assert san.sanitize_project_path(original) == original
 
     def test_none_path_returns_none(self):
@@ -191,7 +193,44 @@ class TestAutoDetectHome:
         assert result == "~/.claude/settings.json"
 
     def test_auto_detect_from_home_prefix(self):
-        san = PathSanitizer("/home/fred/workspace/project")
-        result = san.sanitize_path("/home/fred/.bashrc")
+        san = PathSanitizer("/home/user/workspace/project")
+        result = san.sanitize_path("/home/user/.bashrc")
         assert result == "~/.bashrc"
 
+
+
+class TestTextReplacementStopsAtAPathBoundary:
+    """`sanitize_text` replaces a prefix only where a path component ends.
+
+    Plain string replacement turned `/home/user/proj-other/secret.txt` into
+    `.-other/secret.txt` when cwd was `/home/user/proj`, and a home of
+    `/Users/dev` turned `/Users/devops/x` into `~ops/x` (found by the
+    2026-11-13 test audit). `sanitize_path` already compares whole
+    components, so standalone paths are checked two ways: against a
+    hand-written expectation and against `sanitize_path`.
+
+    What breaks without it: --private output mangles every path that shares
+    a text prefix with the project or the home directory.
+    """
+
+    SAN = PathSanitizer("/home/user/proj")
+
+    @pytest.mark.parametrize("path, expected", [
+        ("/home/user/proj-other/secret.txt", "~/proj-other/secret.txt"),
+        ("/home/user/project2/x.py", "~/project2/x.py"),
+        ("/home/user2/notes.md", "/home/user2/notes.md"),
+        ("/home/user/proj/src/a.py", "src/a.py"),
+        ("/home/user/proj", "."),
+        ("/home/user/.bashrc", "~/.bashrc"),
+        # The prefix in the middle of another path is not that path.
+        ("/mnt/home/user/proj/a", "/mnt/home/user/proj/a"),
+    ])
+    def test_a_path_alone(self, path, expected):
+        assert self.SAN.sanitize_text(path) == expected
+        assert self.SAN.sanitize_path(path) == expected
+
+    def test_paths_inside_prose(self):
+        text = ("cd /home/user/proj && cat /home/user/proj-other/secret.txt "
+                "/home/user2/x and /home/user/proj/src/a.py.")
+        assert self.SAN.sanitize_text(text) == (
+            "cd . && cat ~/proj-other/secret.txt /home/user2/x and src/a.py.")

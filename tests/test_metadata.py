@@ -63,21 +63,21 @@ class TestDeriveProjectName:
 
     def test_none_cwd_falls_back_to_folder(self):
         # get_project_display_name strips -Users- prefix, "workspace" is not
-        # in skip_dirs, so result is "fred-workspace-ccutils"
+        # in skip_dirs, so result is "user-workspace-ccutils"
         assert (
-            derive_project_name(None, "-Users-fred-workspace-ccutils")
-            == "fred-workspace-ccutils"
+            derive_project_name(None, "-Users-user-workspace-ccutils")
+            == "user-workspace-ccutils"
         )
 
     def test_empty_cwd_falls_back_to_folder(self):
         assert (
-            derive_project_name("", "-Users-fred-workspace-ccutils")
-            == "fred-workspace-ccutils"
+            derive_project_name("", "-Users-user-workspace-ccutils")
+            == "user-workspace-ccutils"
         )
 
     def test_none_cwd_projects_folder(self):
         # "projects" IS in skip_dirs
-        assert derive_project_name(None, "-Users-fred-projects-myapp") == "myapp"
+        assert derive_project_name(None, "-Users-user-projects-myapp") == "myapp"
 
     def test_deep_path(self):
         assert derive_project_name("/home/user/code/apps/webapp", "") == "webapp"
@@ -326,7 +326,7 @@ class TestExtractRichMetadata:
             ],
         )
 
-        meta = extract_rich_metadata(path, "-Users-fred-projects-myproject")
+        meta = extract_rich_metadata(path, "-Users-user-projects-myproject")
 
         assert meta.session_id is None
         assert meta.model is None

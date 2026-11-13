@@ -81,15 +81,15 @@ class PathSanitizer:
         if text is None or self.is_noop:
             return text
 
-        # Replace cwd/ first (files under cwd)
-        text = text.replace(self.cwd + "/", "")
-        # Replace cwd alone (e.g. "cd /path/to/project")
-        text = text.replace(self.cwd, ".")
-
-        # Replace home dir paths
+        # Each prefix is replaced only where it is a whole path: not preceded
+        # by a path character (so `/mnt/home/u/p` is left alone) and, for the
+        # bare forms, not followed by one (so cwd `/home/u/p` does not eat the
+        # `/home/u/p` of `/home/u/p-other`, which plain str.replace did).
+        text = _replace_path(text, self.cwd + "/", "")
+        text = _replace_path(text, self.cwd, ".", bare=True)
         if self.home_dir:
-            text = text.replace(self.home_dir + "/", "~/")
-            text = text.replace(self.home_dir, "~")
+            text = _replace_path(text, self.home_dir + "/", "~/")
+            text = _replace_path(text, self.home_dir, "~", bare=True)
 
         return text
 
@@ -102,6 +102,18 @@ class PathSanitizer:
         if json_str is None or self.is_noop:
             return json_str
         return self.sanitize_text(json_str)
+
+
+# Characters that can continue a path component. A prefix followed by one is
+# part of a longer name; a trailing "." counts only before whitespace or the
+# end, so "in /home/u/p." still reads as the path /home/u/p.
+_NAME_CHAR = r"[A-Za-z0-9_\-~]"
+
+
+def _replace_path(text: str, prefix: str, replacement: str, bare: bool = False) -> str:
+    start = r"(?<![A-Za-z0-9_\-.~/])"
+    end = rf"(?!{_NAME_CHAR}|\.(?!\s|$))" if bare else ""
+    return re.sub(start + re.escape(prefix) + end, lambda _m: replacement, text)
 
 
 def _detect_home_dir(cwd: str) -> str | None:
