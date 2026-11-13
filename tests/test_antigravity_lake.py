@@ -736,9 +736,58 @@ class TestReadAllowlist:
                             lambda p, *a, **k: regular if Path(p) == target else real_lstat(p, *a, **k))
         spec = writer.FileSpec(rel, "artifact", stores.BYTES, "antigravity_conversation_file")
         with traced() as trace:
-            row = writer.file_row(home.store(), spec)
+            row = writer.file_row(home.store(), spec, data_root=home.root)
         assert row is not None and row["kind"] == "symlink" and row["content"] is None
         assert violations(trace, home.root) == []
+
+    # Until 2026-11-13 the allowlist was checked only here, after the fact:
+    # `stores.is_allowed` had no caller in src, so the lake read whatever
+    # discovery handed it and a discovery change that reached a credential
+    # would have read it. The two open points now refuse first. These tests
+    # widen discovery or call an open point directly, and assert from the
+    # audit trace that the file was never opened, which a chmod-000 decoy
+    # alone cannot show (an unguarded open of it fails too, after the read
+    # was attempted).
+
+    def test_a_widened_discovery_is_refused_before_the_open(self, home, lake_root, monkeypatch):
+        import dataclasses
+        from ccutils.parsers import antigravity as ag
+        mcp = (home.root / "config" / "mcp_config.json").resolve()
+        assert mcp.exists(), "the fixture plants mcp_config.json as a decoy"
+        (home.root / "config" / "projects").mkdir(parents=True, exist_ok=True)
+        (home.root / "config" / "projects" / "p.json").write_text("{}")
+        real = ag.AntigravitySource.discover
+
+        def widened(self, root):
+            # The regression this models: the config glob reaching beyond
+            # config/projects/ (e.g. `config.rglob("*.json")`).
+            d = real(self, root)
+            units = [dataclasses.replace(u, source_relpaths=u.source_relpaths + ("config/mcp_config.json",))
+                     if u.unit_kind == "config_projects" else u for u in d.units]
+            return dataclasses.replace(d, units=units)
+
+        monkeypatch.setattr(ag.AntigravitySource, "discover", widened)
+        with traced() as trace:
+            result = run(home, lake_root)
+        assert not any(Path(p).resolve() == mcp for _e, p in trace)
+        config = [o for o in result.outcomes if o.unit_kind == "config_projects"]
+        assert [o.status for o in config] == ["error"]
+        assert "allowlist" in (config[0].error or "")
+
+    def test_each_open_point_refuses_a_path_outside_the_allowlist(self, home, tmp_path):
+        from ccutils.parsers.antigravity import writer
+        root = home.root
+        spec = writer.FileSpec("../oauth_creds.json", "x", stores.BYTES, "antigravity_store_file")
+        with traced() as trace:
+            with pytest.raises(writer.ReadRefused):
+                writer.file_row(home.store(), spec, data_root=root)
+            with pytest.raises(writer.ReadRefused):
+                writer.snapshot_sqlite(root / "antigravity-backup" / "conversations" / f"{CONV_A}.db",
+                                       tmp_path / "scratch", data_root=root)
+        assert violations(trace, home.root) == []
+        # Control: an allowed path still reads.
+        ok = writer.FileSpec(f"brain/{CONV_A}/task.md", "artifact", stores.BYTES, "antigravity_conversation_file")
+        assert writer.file_row(home.store(), ok, data_root=root)["content"]
 
     def test_allowlist_is_anchored(self, home):
         root = home.root.resolve()

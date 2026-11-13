@@ -231,8 +231,20 @@ Observed step types, both stores: 15 `PLANNER_RESPONSE` 26,293 · 132 `GENERIC`
   the open is not followed either; excluded directories are never entered. It keeps credential FILES out. It
   does not make the lake shareable: transcript content can hold secrets that
   agents printed.
+- Enforced at runtime since 2026-11-13. Before that `stores.is_allowed` had
+  no caller in `src` and the measurement above held only because discovery
+  happened to hand over allowed paths. Both open points (`writer.file_row`,
+  `writer.snapshot_sqlite`) now call `writer.require_allowed` first, with the
+  data root a required argument, and refuse anything else. A full real run
+  after the change (app 2.31.2) wrote every unit with no refusal.
+- Not independent of discovery: `is_allowed` and store discovery share
+  `KNOWN_STORES`, so widening that constant widens both. The decoys are what
+  catch it.
 - Canary: `tests/test_antigravity_lake.py::TestReadAllowlist`, with `chmod
-  000` decoys, a symlink to the credentials file, and a positive control.
+  000` decoys, a symlink to the credentials file, and a positive control;
+  `test_a_widened_discovery_is_refused_before_the_open` widens discovery to
+  `config/mcp_config.json` and asserts from the audit trace that it was
+  never opened.
 
 ## 13. There is no retention setting
 

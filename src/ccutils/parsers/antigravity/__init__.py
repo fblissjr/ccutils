@@ -68,6 +68,8 @@ class AntigravitySource:
 
     def discover(self, root: Path | None) -> Discovery:
         root = Path(root) if root is not None else stores.default_root()
+        # Every open is checked against the allowlist under this root.
+        self._data_root = root.resolve()
         found, notes = stores.discover_stores(root, self.only)
         units: list[LakeUnit] = []
         for store in found:
@@ -191,7 +193,8 @@ class AntigravitySource:
             prefix = f"brain/{unit.unit_id}/{stores.GIT_DIR}/"
             specs = [FileSpec(rel, stores.git_file_kind(rel[len(prefix):]), stores.BYTES,
                               "antigravity_conversation_file") for rel in unit.source_relpaths]
-            rows = write_files(out_dir / "git_files.parquet", unit.source_root, specs, envelope, unit.unit_id)
+            rows = write_files(out_dir / "git_files.parquet", unit.source_root, specs, envelope, unit.unit_id,
+                               data_root=self._data_root)
             return UnitWrite(tables={"git_files": rows})
         specs_by_kind = {
             "store_files": ("store_files", "antigravity_store_file", lambda rel: stores.store_file_kind(rel)),
@@ -200,14 +203,15 @@ class AntigravitySource:
         }
         table, record_source, kind_of = specs_by_kind[unit.unit_kind]
         specs = [FileSpec(rel, kind_of(rel) or "unknown", stores.BYTES, record_source) for rel in unit.source_relpaths]
-        rows = write_files(out_dir / f"{table}.parquet", unit.source_root, specs, envelope, None)
+        rows = write_files(out_dir / f"{table}.parquet", unit.source_root, specs, envelope, None,
+                           data_root=self._data_root)
         return UnitWrite(tables={table: rows})
 
     def _write_sqlite(self, unit, out_dir, envelope, rel, expected, record_source, conversation_id,
                       optional=None):
         scratch = out_dir / ".snapshot"
         try:
-            copy, method = snapshot_sqlite(unit.source_root / rel, scratch)
+            copy, method = snapshot_sqlite(unit.source_root / rel, scratch, data_root=self._data_root)
             tables, notes = mirror_sqlite(copy, out_dir, expected, envelope, record_source, rel,
                                           conversation_id, optional)
         finally:
@@ -233,7 +237,8 @@ class AntigravitySource:
             classified = stores.classify_conversation_file(within, area)
             kind, keep = classified if classified else ("symlink", "symlink")
             specs.append(FileSpec(rel, kind, keep, "antigravity_conversation_file"))
-        written.tables["files"] = write_files(out_dir / "files.parquet", unit.source_root, specs, envelope, conv_id)
+        written.tables["files"] = write_files(out_dir / "files.parquet", unit.source_root, specs, envelope, conv_id,
+                                              data_root=self._data_root)
         return written
 
     # -- continuity --------------------------------------------------------

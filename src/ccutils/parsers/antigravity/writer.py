@@ -48,9 +48,38 @@ def _stat_key(path: Path):
     return (st.st_size, st.st_mtime_ns, st.st_ino)
 
 
-def snapshot_sqlite(db: Path, scratch: Path, attempts: int = SNAPSHOT_ATTEMPTS) -> tuple[Path, str]:
+class ReadRefused(LakeWriteError):
+    """A path outside the read allowlist was about to be opened."""
+
+
+def require_allowed(data_root: Path, path: Path) -> None:
+    """Refuse to open `path` unless the read allowlist permits it.
+
+    The data root holds OAuth tokens, a browser profile and MCP config beside
+    the transcripts (CLAUDE.md, contract claim 12). Discovery is written to
+    hand over only allowed paths, but until 2026-11-13 nothing checked that
+    at runtime: `stores.is_allowed` was called only from the tests, so a
+    discovery change that reached a credential would have read it. Both open
+    points call this first, with the data root as a required argument, so a
+    new call site cannot skip it. Paths are resolved, so a directory symlink
+    leading out of the data root is refused too.
+    """
+    root = Path(data_root).resolve()
+    resolved = Path(path).resolve()
+    if not stores.is_allowed(root, resolved):
+        try:
+            shown = resolved.relative_to(root).as_posix()
+        except ValueError:
+            shown = str(resolved)
+        raise ReadRefused(f"refused to open {shown}: outside the read allowlist")
+
+
+def snapshot_sqlite(db: Path, scratch: Path, attempts: int = SNAPSHOT_ATTEMPTS, *,
+                    data_root: Path) -> tuple[Path, str]:
     """Copy a SQLite file and its WAL into `scratch`; returns (copy, method)."""
     wal = db.with_name(db.name + "-wal")
+    require_allowed(data_root, db)
+    require_allowed(data_root, wal)
     scratch.mkdir(parents=True, exist_ok=True)
     dst = scratch / db.name
     dst_wal = dst.with_name(dst.name + "-wal")
@@ -210,7 +239,7 @@ def _utc(ns: int) -> datetime:
     return datetime.fromtimestamp(ns / 1e9, tz=timezone.utc)
 
 
-def file_row(source_root: Path, spec: FileSpec) -> dict | None:
+def file_row(source_root: Path, spec: FileSpec, *, data_root: Path) -> dict | None:
     """One files-table row; None if the file vanished since discovery."""
     path = source_root / spec.relpath
     try:
@@ -224,6 +253,7 @@ def file_row(source_root: Path, spec: FileSpec) -> dict | None:
         return row  # never followed, never opened
     if not stat_mod.S_ISREG(st.st_mode):
         return None
+    require_allowed(data_root, path)
     keep_bytes = spec.keep == stores.BYTES or (
         spec.keep == stores.CAPPED and st.st_size <= stores.UNCLASSIFIED_MAX_BYTES)
     digest = hashlib.sha256()
@@ -265,11 +295,13 @@ def write_files(
     specs: list[FileSpec],
     envelope: Envelope,
     conversation_id: str | None,
+    *,
+    data_root: Path,
 ) -> int:
     writer = TableWriter(out_path, ag_schema.files_schema())
     try:
         for spec in specs:
-            row = file_row(source_root, spec)
+            row = file_row(source_root, spec, data_root=data_root)
             if row is None:
                 continue
             writer.add({**envelope.row(spec.record_source, spec.relpath),
