@@ -86,10 +86,6 @@ unnecessary rather than merely better-documented.
   facts. A dimension cannot become a view, so instead the classifiers run over
   **staging** during `dim_session`'s own populate. The columns stay where
   consumers expect them; the fact dependency disappears.
-- `fact_session_facets` mixes Tier 1 (SQL-derivable) and Tier 2 (billed Haiku
-  calls, not recomputable). It splits: Tier 2 stays a stored table, Tier 1
-  becomes a view, and a union view presents them as one for consumers that
-  just want every facet for a session.
 
 ---
 

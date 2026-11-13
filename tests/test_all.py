@@ -250,8 +250,8 @@ class TestFindAllSessions:
 class TestFindAllSessionsTempDirExclusion:
     """Sessions whose cwd resolves under the OS temp directory (sandboxed
     eval harnesses, CI scratch dirs) are excluded by default -- they're
-    synthetic/ephemeral, not real usage, and pollute session counts and
-    facets if ingested."""
+    synthetic/ephemeral, not real usage, and pollute session counts if
+    ingested."""
 
     @pytest.fixture
     def mixed_projects_dir(self):

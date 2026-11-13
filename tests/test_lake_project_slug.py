@@ -59,7 +59,7 @@ def test_named_files_put_agents_under_their_project(tmp_path):
     conn = create_star_schema(tmp_path / "w.duckdb")
     failures = _etl_session_files(
         conn, files, project_name=None, parquet_lake=lake,
-        facet_extractor=None, include_thinking=True, output_format="duckdb",
+        include_thinking=True, output_format="duckdb",
     )
     assert failures == []
     partitions = sorted(

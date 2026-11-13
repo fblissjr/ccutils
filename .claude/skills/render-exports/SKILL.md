@@ -21,7 +21,10 @@ arbitrary HTML/JS pasted by users or emitted by tools.
    `tests/test_generate_html.py::test_template_interpolation_escapes_transcript_content`
    holds it. Every `|safe` in the macros is safe only because its content was
    pre-sanitized (nh3) or pre-escaped (`html.escape`); a new `|safe` needs
-   you to say which.
+   you to say which, and a case in `tests/test_html_pre_escaped_channels.py`,
+   which plants a script in each pre-escaped channel (tool results as a
+   string, as a list of text, around a commit card; tool input). Dropping one
+   `html.escape` left the whole suite green until that file existed.
 
 Every document also ships a strict CSP built by `export/html.py::_build_csp`:
 `default-src 'none'`, with the inline `<style>` and `<script>` blocks pinned

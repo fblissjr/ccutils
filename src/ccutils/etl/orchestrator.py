@@ -35,8 +35,6 @@ from ccutils.etl.entry_type_facts import (
     populate_fact_progress_events,
     populate_fact_system_events,
 )
-from ccutils.etl.facets import FacetExtractor
-from ccutils.etl.facets.populator import populate_tier2_facets
 from ccutils.etl.dim_session_chain import populate_dim_session_chain
 from ccutils.etl.dim_session_heuristics import populate_dim_session_heuristics
 from ccutils.etl.fact_diagnostics import populate_fact_diagnostics
@@ -47,7 +45,6 @@ from ccutils.etl.fact_file_operations import (
 from ccutils.etl.fact_plan_revisions import populate_fact_plan_revisions
 from ccutils.etl.subagent_enrichment import populate_subagent_dim_session
 from ccutils.etl.fact_messages import populate_fact_messages
-from ccutils.etl.fact_session_facets import populate_tier1_facets
 from ccutils.etl.fact_token_usage import populate_fact_token_usage
 from ccutils.etl.fact_tool_calls import populate_fact_tool_calls
 from ccutils.etl.lineage import EtlRun
@@ -308,7 +305,6 @@ def run_v15_etl(
     *,
     project_name: str = "unknown",
     parquet_lake_root: str | Path | None = None,
-    facet_extractor: FacetExtractor | None = None,
     include_thinking: bool = True,
     batch_run_id: str | None = None,
 ) -> dict[str, Any]:
@@ -321,10 +317,6 @@ def run_v15_etl(
             actual project_name in dim_project is derived from source_path.
         parquet_lake_root: where to write the per-session Parquet files.
             Defaults to a sibling 'parquet_lake' dir next to session_path.
-        facet_extractor: optional Tier 2 LLM-facet extractor. None (the
-            default) disables Tier 2 entirely. When supplied, the Tier 2
-            populator runs after Tier 1 and before semantic_session_summary
-            so the summary roll-up still sees every facet.
         include_thinking: when False, `etl.log_entries` is cleared at the
             end of this call. `fact_messages.content_text` already excludes
             thinking by SQL projection (the populator picks only
@@ -415,22 +407,12 @@ def run_v15_etl(
             # each run since adding a new session can re-aggregate the chain
             with run.step("dim_session_chain", table="dim_session_chain"):
                 populate_dim_session_chain(conn, run=run)
-            # Tier 1 facets: 19 SQL-computed facets per session (F01..F19) into
-            # fact_session_facets. Runs after every source fact / dim is in
-            # place; runs before semantic_session_summary so summary stays the
-            # final aggregate roll-up.
-            populate_tier1_facets(conn, run=run)
-            # Tier 2 facets (LLM-extracted) only run when a FacetExtractor is
-            # injected. Default None disables Tier 2 entirely.
-            if facet_extractor is not None:
-                # No include_thinking here: Tier 2 inputs never carry thinking.
-                populate_tier2_facets(conn, run=run, extractor=facet_extractor)
 
             # No per-thinking staging cleanup here: `staging_scope` clears
             # etl.log_entries unconditionally at exit, so the raw message_json
             # (which carries thinking blocks) never survives the run regardless
             # of include_thinking. include_thinking still governs what lands in
-            # the FACTS (dim_session.last_assistant_message, Tier 2 inputs,
+            # the FACTS (dim_session.last_assistant_message and the
             # fact_messages.content_text projection).
 
             # complete() derives facts_inserted/updated from steps; the CDC

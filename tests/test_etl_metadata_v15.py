@@ -348,7 +348,7 @@ class TestReviewFixes:
             _etl_session_files(
                 conn, [session],
                 project_name="p", parquet_lake=tmp_path / "lake",
-                facet_extractor=None, include_thinking=True,
+                include_thinking=True,
                 output_format="duckdb",
             )
         monkeypatch.setattr(lineage_mod.BatchRun, "complete", real_complete)
@@ -376,7 +376,6 @@ class TestJsonExportCompleteness:
             "fact_messages.json",
             "fact_tool_calls.json",
             "fact_entry_events.json",
-            "fact_session_facets.json",
         ):
             assert required in facts, f"missing {required}"
         assert "fact_tool_calls.json" in facts

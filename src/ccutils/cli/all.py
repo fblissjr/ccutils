@@ -16,7 +16,6 @@ from ..export import (
     generate_json_archive,
 )
 from .utils import (
-    build_facet_extractor_or_exit,
     default_archive_output,
     maybe_open_browser,
     warn_private_best_effort,
@@ -113,18 +112,6 @@ from .utils import (
     is_flag=True,
     help="Skip search index generation.",
 )
-@optgroup.group("Enrichment")
-@optgroup.option(
-    "--batch-llm-facets",
-    is_flag=True,
-    default=False,
-    help=(
-        "Extract Tier 2 LLM facets (F20 task_description via Haiku) into "
-        "fact_session_facets across the whole batch. Requires "
-        "ANTHROPIC_API_KEY or a ccutils-anthropic keychain entry. Star "
-        "schema only."
-    ),
-)
 def all_cmd(
     source,
     output,
@@ -140,7 +127,6 @@ def all_cmd(
     batch_size,
     quiet,
     no_search_index,
-    batch_llm_facets,
 ):
     """Convert all local Claude Code sessions to HTML, DuckDB, or JSON archives.
 
@@ -173,11 +159,6 @@ def all_cmd(
         )
     if private:
         warn_private_best_effort()
-
-    # Build the Tier 2 facet extractor at the CLI boundary so credential
-    # failures exit cleanly here rather than as a stack trace deep in the
-    # batch.
-    facet_extractor = build_facet_extractor_or_exit(batch_llm_facets)
 
     # Default source folder
     if source is None:
@@ -320,7 +301,6 @@ def all_cmd(
             max_workers=jobs,
             batch_size=batch_size,
             private=private,
-            facet_extractor=facet_extractor,
             projects=projects,
             scope_history=bool(project_filter),
         )
@@ -340,7 +320,6 @@ def all_cmd(
             max_workers=jobs,
             batch_size=batch_size,
             private=private,
-            facet_extractor=facet_extractor,
             projects=projects,
             scope_history=bool(project_filter),
         )

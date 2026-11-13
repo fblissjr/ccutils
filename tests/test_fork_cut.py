@@ -97,20 +97,6 @@ def loaded(request, conn, tmp_path):
     return conn
 
 
-def _facet(conn, session_id, facet_id):
-    row = conn.execute(
-        "SELECT f.value_text, f.value_json, f.value_numeric, f.value_bool "
-        "FROM fact_session_facets f JOIN dim_facet_type t USING (facet_type_key) "
-        "WHERE f.session_id = ? AND t.facet_id = ? AND NOT f.is_deleted",
-        [session_id, facet_id],
-    ).fetchone()
-    assert row is not None, f"no {facet_id} row for {session_id}"
-    text, as_json, numeric, as_bool = row
-    if as_json is not None:
-        return json.loads(as_json)
-    return next((v for v in (text, numeric, as_bool) if v is not None), None)
-
-
 class TestTheCutIsStoredOnce:
     def test_a_fork_states_where_its_own_history_starts(self, loaded):
         assert loaded.execute(
@@ -174,27 +160,25 @@ class TestAForkIsDescribedByItsOwnWork:
         assert counts == (4, 12), "the fixture no longer straddles the thresholds"
         assert rows["agent-f1"] == "simple"
 
-    def test_its_tool_histogram_is_its_own(self, loaded):
-        assert _facet(loaded, "agent-f1", "F06") == [{"tool": "Edit", "count": 1}]
+    def test_its_tool_calls_are_its_own(self, loaded):
+        """One Edit; the inherited Agent, ExitPlanMode and Read are the spawner's."""
+        assert loaded.execute(
+            "SELECT total_tool_uses, unique_tools_used FROM semantic_session_summary "
+            "WHERE session_id = 'agent-f1'"
+        ).fetchone() == (1, 1)
 
     def test_its_files_are_its_own(self, loaded):
-        assert _facet(loaded, "agent-f1", "F08") == 1.0
-        assert _facet(loaded, "agent-f1", "F09") == ["ts"]
-
-    def test_its_tokens_are_its_own(self, loaded):
-        """The Edit's response and its final one: 40 + 10 in, 60 + 700 out."""
-        assert _facet(loaded, "agent-f1", "F15") == 50.0
-        assert _facet(loaded, "agent-f1", "F30") == 760.0
-        assert sum(m["tokens"] for m in _facet(loaded, "agent-f1", "F11")) == 810
-
-    def test_its_duration_starts_after_its_spawn(self, loaded):
-        """10:05:59, the entry carrying its prompt, to 10:20:00. Not from 10:00:00."""
-        assert _facet(loaded, "agent-f1", "F12") == 841.0
+        """The one file it edited; the file the spawner read is not its own."""
+        assert loaded.execute(
+            "SELECT f.file_path, sf.edit_count, sf.read_count FROM semantic_session_files sf "
+            "JOIN dim_file f USING (file_key) WHERE sf.session_id = 'agent-f1'"
+        ).fetchall() == [("/work/dates.ts", 1, 0)]
 
     def test_it_delegated_nothing_and_planned_nothing(self, loaded):
         """The spawn and the plan in its transcript are its spawner's."""
-        assert _facet(loaded, "agent-f1", "F17") is False
-        assert _facet(loaded, "agent-f1", "F19") is False
+        assert loaded.execute(
+            "SELECT total_delegations FROM semantic_session_summary WHERE session_id = 'agent-f1'"
+        ).fetchone()[0] == 0
         assert loaded.execute(
             "SELECT COUNT(*) FROM fact_plan_revisions "
             "WHERE session_id = 'agent-f1' AND NOT is_deleted"
@@ -203,11 +187,10 @@ class TestAForkIsDescribedByItsOwnWork:
     def test_the_spawner_keeps_everything_it_did(self, conn, tmp_path):
         """A control: the cut removes nothing from a session that is not a fork."""
         _load(conn, tmp_path, _spawner(tmp_path), _fork(tmp_path))
-        assert sorted((t["tool"], t["count"]) for t in _facet(conn, "agent-p1", "F06")) == [
-            ("Agent", 2), ("ExitPlanMode", 1), ("Read", 1)]
-        assert _facet(conn, "agent-p1", "F17") is True
-        assert _facet(conn, "agent-p1", "F19") is True
-        assert _facet(conn, "agent-p1", "F15") == 2000 + 300 + 400 + 5000 + 10
+        assert conn.execute(
+            "SELECT total_tool_uses, unique_tools_used, total_input_tokens "
+            "FROM semantic_session_summary WHERE session_id = 'agent-p1'"
+        ).fetchone() == (4, 3, 2000 + 300 + 400 + 5000 + 10)
         assert conn.execute(
             "SELECT COUNT(*) FROM fact_plan_revisions "
             "WHERE session_id = 'agent-p1' AND NOT is_deleted"
@@ -216,47 +199,6 @@ class TestAForkIsDescribedByItsOwnWork:
             "SELECT first_user_message FROM dim_session WHERE session_id = 'agent-p1'"
         ).fetchone()[0]
         assert SPAWNER_PROMPT in first
-
-
-class TestEveryFacetGetsTheCut:
-    """The restriction is applied in one place, so a new facet cannot forget it."""
-
-
-    def test_a_facet_that_cannot_be_scoped_is_refused(self):
-        """Loud, at build time: an unscoped read would describe a fork by its prefix."""
-        from ccutils.etl.fact_session_facets import _own_work_only
-
-        with pytest.raises(ValueError, match="F90"):
-            _own_work_only(
-                "F90",
-                "(SELECT COUNT(*) FROM fact_messages fm "
-                "WHERE fm.session_id IN (SELECT session_id FROM dim_session))",
-            )
-
-
-class TestWhatLeavesTheMachineIsTheForksOwn:
-    def test_tier_2_inputs_hold_no_inherited_conversation(self, conn, tmp_path):
-        """The text sent to the API for a fork is the fork's, not its spawner's."""
-        from ccutils.etl.facets import FacetOutput
-
-        captured = []
-
-        class _Spy:
-            def extract(self, session_inputs, enabled_facets):
-                captured.append(session_inputs)
-                return {spec.facet_id: FacetOutput(
-                    facet_id=spec.facet_id, prompt_version=spec.prompt_version,
-                    value="canned") for spec in enabled_facets}
-
-        run_v15_etl(conn, _fork(tmp_path), project_name="demo",
-                    parquet_lake_root=tmp_path / "lake", facet_extractor=_Spy())
-        assert len(captured) == 1
-        sent = repr(captured[0])
-        assert FORK_PROMPT in sent
-        assert SPAWNER_PROMPT not in sent
-        assert "Edit" in sent and "ExitPlanMode" not in sent and "Read" not in sent
-        # From its cut at 10:05:00 to 10:20:00, not from the spawner's 10:00:00.
-        assert captured[0].duration_seconds == 900
 
 
 class TestADelegationToAForkCountsTheForksOwnWork:
@@ -304,9 +246,9 @@ class TestAForksTotalsAreItsOwn:
     """The session summary and the cost views: a fork's own messages and tokens.
 
     The fork's transcript holds twelve messages and six API responses; four
-    messages and two responses came after its spawn. Its facets already said
-    so, and the summary did not, so a fork's `F15` and its summary token
-    total disagreed and its per-session cost read several times too high.
+    messages and two responses came after its spawn. The summary used to
+    count all twelve, so a fork's per-session cost read several times too
+    high.
 
     Delete these and a fork is billed for the conversation it inherited.
     """
@@ -357,3 +299,33 @@ class TestAForksTotalsAreItsOwn:
             "SELECT DISTINCT in_fork_prefix FROM semantic_token_usage "
             "WHERE session_id = 'agent-p1'"
         ).fetchall() == [(False,)]
+
+
+class TestTheCutItself:
+    """`own_work_sql`: a row at or before the cut is inherited, after it is the fork's.
+
+    The rule's boundary was guarded only through the Tier 1 facets until
+    they were removed on 2026-11-13; with them gone, turning `>` into `>=`
+    left every per-session test green, because the entry at the cut (the
+    spawning call) moves no number the remaining readers report. So the
+    predicate is checked on its own, against hand-placed rows.
+
+    What breaks without it: a fork claims its spawner's spawning call, or
+    loses its own first entry, and nothing notices.
+    """
+
+    def test_rows_before_at_and_after_the_cut(self):
+        import duckdb
+
+        from ccutils.etl.utils import own_work_sql
+
+        conn = duckdb.connect()
+        rows = conn.execute(
+            "SELECT label FROM (VALUES "
+            "('before', TIMESTAMP '2026-07-17 10:04:59', TIMESTAMP '2026-07-17 10:05:00'), "
+            "('at', TIMESTAMP '2026-07-17 10:05:00', TIMESTAMP '2026-07-17 10:05:00'), "
+            "('after', TIMESTAMP '2026-07-17 10:05:01', TIMESTAMP '2026-07-17 10:05:00'), "
+            "('not a fork', TIMESTAMP '2026-07-17 09:00:00', NULL)"
+            ") t(label, ts, cut) WHERE " + own_work_sql("ts", "cut") + " ORDER BY label"
+        ).fetchall()
+        assert rows == [("after",), ("not a fork",)]

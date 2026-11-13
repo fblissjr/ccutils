@@ -246,28 +246,6 @@ WHERE session_id = '<id>' AND NOT in_fork_prefix
 ORDER BY request_seq;
 ```
 
-## Facets (EAV shape)
-
-One row per (session, facet, prompt_version); exactly ONE `value_*` column is
-populated per row, chosen by `dim_facet_type.output_type` (text/enum→`value_text`,
-json→`value_json`, int/float→`value_numeric`, bool→`value_bool`).
-
-```sql
--- Tier 2 task descriptions (F20), skipping fallback rows
-SELECT fsf.session_id, fsf.value_text AS task_description
-FROM fact_session_facets fsf
-JOIN dim_facet_type dft USING (facet_type_key)
-WHERE dft.facet_id = 'F20' AND fsf.is_fallback = FALSE
-  AND fsf.is_deleted = FALSE;
-
--- Tier 1 tool-mix histograms (F06, json-valued)
-SELECT session_id, value_json FROM fact_session_facets fsf
-JOIN dim_facet_type dft USING (facet_type_key)
-WHERE dft.facet_id = 'F06' AND fsf.is_deleted = FALSE;
-```
-
-Facet id → meaning: `docs/FACET_CLUSTER_PIPELINE.md` §3.
-
 ## ETL observability
 
 ```sql

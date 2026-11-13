@@ -352,7 +352,7 @@ class TestAgenticRunGrain:
 
     Delete these and the chain grain can silently regress to one step per
     entry, which makes prev/next_tool_key universally NULL and empties
-    semantic_tool_patterns and facet F07 without failing anything. That
+    semantic_tool_patterns without failing anything. That
     shipped once: 71,175 of 71,216 steps at position 1.
     """
 

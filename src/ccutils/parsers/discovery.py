@@ -184,7 +184,7 @@ def is_temp_dir_cwd(cwd: str | None) -> bool:
 
     Sessions run from a temp dir are sandboxed/ephemeral tooling (eval
     harnesses, CI scratch runs) rather than real projects -- ingesting them
-    pollutes session counts, intent/domain classification, and facets with
+    pollutes session counts and intent/domain classification with
     synthetic, non-representative activity. Only a real prefix match counts
     (a project literally named "my-tmp-experiments" must not false-positive).
     """

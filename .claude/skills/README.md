@@ -8,7 +8,7 @@ hierarchy so each task loads only the context it needs:
    plus the handful of rules that must never be missed.
 3. **`references/*.md`** (read on demand) -- worked recipes and full contracts for
    one specific sub-task. Read the one the SKILL.md routes you to; skip the rest.
-4. **Repo docs and source** (`docs/STAR_SCHEMA.md`, `docs/FACET_CLUSTER_PIPELINE.md`,
+4. **Repo docs and source** (`docs/STAR_SCHEMA.md`, `docs/ETL_ARCHITECTURE.md`,
    module docstrings) -- ground truth. References point into these with section
    anchors instead of duplicating them; when a reference and a doc disagree, the
    doc and the code win, and the reference should be fixed.
@@ -16,7 +16,7 @@ hierarchy so each task loads only the context it needs:
 | Skill | Scenario |
 |---|---|
 | `query-warehouse` | Answering questions against a ccutils DuckDB warehouse (usage, cost, tools, files, plans, agents, ETL health) |
-| `etl-dev` | Extending the ETL: new facts, new dimensions, new columns, facets, releases |
+| `etl-dev` | Extending the ETL: new facts, new dimensions, new columns, releases |
 | `render-exports` | HTML/markdown exporters, Jinja2 templates, filter UI, `--private`, `--no-thinking` |
 | `release` | The version bump and tag checklist (user-invoked only) |
 

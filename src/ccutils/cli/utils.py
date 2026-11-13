@@ -1,13 +1,9 @@
 """Utility functions for CLI commands."""
 
-import sys
 import webbrowser
 from pathlib import Path
 
 import click
-
-from ..api import CredentialsError, resolve_anthropic_key
-from ..etl.facets import AnthropicFacetExtractor
 
 
 def default_archive_output():
@@ -37,28 +33,6 @@ def default_lake_root():
     warehouse to rebuild it must not be able to take the archive with it.
     """
     return Path.home() / ".ccutils" / "lake"
-
-
-def build_facet_extractor_or_exit(with_llm_facets: bool):
-    """Resolve Anthropic credentials and construct an AnthropicFacetExtractor
-    at the CLI boundary. CredentialsError surfaces as a helpful message +
-    non-zero exit code rather than a stack trace deep in the ETL.
-
-    Returns None when the flag is off (default), keeping the basic
-    pipeline credential-free.
-
-    Shared by `local_cmd` and `all_cmd` so credential resolution and the
-    error message stay in lockstep. Any change to the error wording or
-    keychain service name happens here once.
-    """
-    if not with_llm_facets:
-        return None
-    try:
-        api_key = resolve_anthropic_key()
-    except CredentialsError as e:
-        click.echo(str(e), err=True)
-        sys.exit(2)
-    return AnthropicFacetExtractor(api_key=api_key)
 
 
 def warn_private_best_effort():

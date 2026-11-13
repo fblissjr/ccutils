@@ -46,9 +46,9 @@ payload_cols=[...], hash_cols=[...])`.
   propagate; include a volatile per-run column and idempotency dies.
 - Aggregate facts whose inbound table has no `timestamp` column pass
   `timestamp_col=` (e.g. `semantic_session_summary` uses `first_timestamp`).
-- **Shared tables** (two populators writing one table, e.g.
-  `fact_session_facets`) MUST pass `soft_delete_scope_sql` or each populator
-  soft-deletes the other's rows.
+- **One populator per table.** `lineage_upsert` soft-deletes every row of a
+  staged session that its inbound set lacks, so a second writer to the same
+  table would have its rows deleted.
 - Inbound built from **permanent facts** (not staging) must scope to staged
   sessions: `AND session_id IN (SELECT DISTINCT session_id FROM etl.log_entries ...)`.
 - The step row (`upsert:<table>`) is self-recorded with real affected-row

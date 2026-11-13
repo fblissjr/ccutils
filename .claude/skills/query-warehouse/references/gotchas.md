@@ -89,10 +89,9 @@ GROUP BY ALL ORDER BY own_calls DESC LIMIT 20;
   fork's sidecar. `later_copy` is a rule (among the holders of a call, the
   session that ended first is taken as the original), and it can pick the
   wrong one of two sessions that share a prefix and both continued.
-- **A fork's facets, heuristics and plan revisions describe its own work.**
+- **A fork's heuristics and plan revisions describe its own work.**
   `dim_session.fork_cut_timestamp` is where a fork's own history starts
-  (NULL for anything that is not a fork), and `fact_session_facets`, the
-  `dim_session` heuristics (`first_user_message`, `intent`, ...) and
+  (NULL for anything that is not a fork), and the `dim_session` heuristics (`first_user_message`, `intent`, ...) and
   `fact_plan_revisions` are computed from what came after it. So are the
   `derived_*` figures a delegation takes from a fork child.
 - **A fork's message and token totals are its own too.** The message and
@@ -112,7 +111,7 @@ GROUP BY ALL ORDER BY own_calls DESC LIMIT 20;
   or `fact_entry_events` must apply the cut itself; for entry events use
   `COALESCE(timestamp, derived_timestamp)`, since several entry types state
   no time.
-- A copy between root sessions has no cut: its facets, heuristics and plan
+- A copy between root sessions has no cut: its heuristics and plan
   revisions still include the replayed part, and cross-session token sums
   still double-count continuations.
 - The measurements are `docs/JSONL_CONTRACT.md` claim 12.
@@ -195,15 +194,6 @@ Cache-creation pricing differs: 5m tokens bill at 1.25x, 1h at 2x.
 - An agent whose parent was pruned keeps `depth_level = 0`.
 - Exclude sidechains from "human conversation" metrics:
   `fact_messages.is_sidechain = FALSE`, or `dim_session.is_agent = FALSE`.
-
-## Facet EAV shape
-
-`fact_session_facets` populates exactly one of `value_text` / `value_json` /
-`value_numeric` / `value_bool` per row, routed by `dim_facet_type.output_type`
-(`OUTPUT_TYPE_TO_COL` in `src/ccutils/etl/facets/extractor.py`). Tier 2 rows can
-be fallbacks — filter `is_fallback = FALSE` for real extractions. `prompt_version`
-is NULL for Tier 1; the same facet_id can have rows under multiple prompt
-versions, so pin `prompt_version` when comparing across time.
 
 ## DuckDB JSON idioms (project conventions)
 

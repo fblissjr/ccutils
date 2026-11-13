@@ -38,7 +38,6 @@ _PROGRESS_TABLES = (
     "fact_file_operations",
     "fact_diagnostics",
     "fact_plan_revisions",
-    "fact_session_facets",
 )
 
 
@@ -52,7 +51,6 @@ def generate_duckdb_archive(
     max_workers=1,
     batch_size=10,
     private=False,
-    facet_extractor=None,
     output_format="duckdb",
     projects=None,
     scope_history=False,
@@ -88,7 +86,6 @@ def generate_duckdb_archive(
             upstream so library callers won't normally hit this. If you call
             this function programmatically with private=True, you will NOT
             get sanitized paths.
-        facet_extractor: Optional Tier 2 facet extractor; None disables.
         output_format: label recorded on the etl.batch_runs row --
             "duckdb" for a direct archive, "json" when driven by
             generate_json_archive.
@@ -152,7 +149,6 @@ def generate_duckdb_archive(
                 session_path,
                 project_name=project_name,
                 parquet_lake_root=parquet_lake,
-                facet_extractor=facet_extractor,
                 include_thinking=include_thinking,
                 batch_run_id=batch.batch_run_id,
             )
@@ -349,7 +345,6 @@ def generate_json_archive(
     max_workers=1,
     batch_size=10,
     private=False,
-    facet_extractor=None,
     projects=None,
     scope_history=False,
 ):
@@ -358,10 +353,6 @@ def generate_json_archive(
     Builds the v0.15 star DuckDB in a temp dir, then exports it as a
     JSON directory tree (meta.json + dimensions/ + facts/). The DuckDB
     is discarded after export.
-
-    Footgun: pairing this with `facet_extractor` pays the full LLM API
-    cost during the temp-DB build, then throws the DB away. Use
-    ``generate_duckdb_archive`` if you want the queryable DuckDB.
     """
     import tempfile
 
@@ -381,7 +372,6 @@ def generate_json_archive(
             max_workers=max_workers,
             batch_size=batch_size,
             private=private,
-            facet_extractor=facet_extractor,
             output_format="json",
             projects=projects,
             # Forward the scope: JSON is the most shareable output we

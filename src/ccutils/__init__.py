@@ -41,9 +41,6 @@ from .parsers import (
     shorten_model_name,
 )
 
-# API key resolution for the Tier 2 facet extractor
-from .api import CredentialsError
-
 # Export format imports (from modular package)
 from .export import (
     generate_duckdb_archive,

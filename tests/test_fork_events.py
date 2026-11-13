@@ -120,7 +120,7 @@ class TestAForksEventsAreItsOwn:
         ).fetchone() == (1,)
 
     def test_its_duration_starts_at_its_first_own_message(self, loaded):
-        """10:05:59 to 10:20:00, as its F12 facet already says. Not from 10:00:00."""
+        """10:05:59 to 10:20:00, Not from 10:00:00."""
         assert loaded.execute(
             "SELECT session_duration_seconds FROM semantic_session_summary "
             "WHERE session_id = 'agent-f1'"

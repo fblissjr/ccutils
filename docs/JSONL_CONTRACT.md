@@ -133,11 +133,6 @@ empty on most blocks and holds short text on some.
   text in `dim_session.last_assistant_message` unless built with
   `--no-thinking`. `tests/test_guide.py::TestGuideOnReasoningText` pins it,
   because the reader's guide states it.
-- Consequence: what `--llm-facets` sends to the API is built without thinking
-  whatever the flag says (`etl/facets/populator.py::_build_session_inputs`,
-  pinned by
-  `tests/test_no_thinking_v15.py::TestTier2WithNoThinkingExcludesThinkingFromExtractor`).
-  Until 2026-10-09 it followed the flag.
 - Canary: `tests/test_jsonl_contract.py::TestThinkingTextIsAMinority`, which
   scans the whole corpus from `THINKING_TEXT_SINCE` and asserts the share
   stays under `THINKING_TEXT_MAJORITY`.
@@ -332,7 +327,7 @@ timestamps, so one call sits in several transcripts.
   (`later_copy`), and is wrong in the case the third bullet describes.
 - Consequence: the fork cut is stored once, as
   `dim_session.fork_cut_timestamp`, and whatever describes a fork reads only
-  what came after it: the per-session facets, the heuristics, the plan
+  what came after it: the heuristics, the plan
   revisions, and what a delegation derives from its child. In every fork
   transcript measured, the first entry after the spawn call is one user
   entry holding both the "Fork started" result and the fork's own prompt,

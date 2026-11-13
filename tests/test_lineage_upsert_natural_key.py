@@ -246,7 +246,7 @@ class TestNaturalKeysMapCoversEveryUpsertTarget:
 
         This used to grep the source with a regex that matched 8 of the 11
         call sites: a comment between arguments hid `fact_tool_calls`, and a
-        non-literal `inbound_table` hid both `fact_session_facets` sites, so
+        non-literal `inbound_table` hid both facet populator sites, so
         changing fact_tool_calls' key left it green (2026-11-13 audit). It
         now records the calls themselves during `run_v15_etl`.
 

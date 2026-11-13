@@ -182,37 +182,6 @@ class TestOpenCommand:
         assert not target.exists()
 
 
-class TestIgnoredFlagsFailLoudly:
-    """A flag that cannot do anything must say so, not exit 0.
-
-    `--private` already worked this way on duckdb/json and is the model.
-    `--llm-facets` on a render format did not: it demanded an
-    ANTHROPIC_API_KEY and exited 2 before doing any work, blocking a valid
-    HTML export on a credential that format would never use. (`--embed` had
-    the same defect until the flag itself was removed in 1.0.0; see
-    TestRemovedEmbed.)
-    """
-
-    def test_llm_facets_rejected_on_html_without_asking_for_credentials(
-        self, tmp_path, monkeypatch
-    ):
-        """The rejection must not depend on having a key.
-
-        With a key present the old code sailed past the check and silently
-        ignored the flag; without one it failed for the wrong reason. Assert
-        the format is what is rejected, with a key in the environment.
-        """
-        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-not-used-here")
-        f = _session(tmp_path / "proj")
-        result = CliRunner().invoke(
-            cli, [str(f), "--format", "html", "--llm-facets", "-o", str(tmp_path / "o")]
-        )
-
-        assert result.exit_code != 0
-        assert "--llm-facets" in result.output
-        assert "api key" not in result.output.lower()
-
-
 class TestOutputIsADirectory:
     """`-o` names a directory everywhere.
 
@@ -304,7 +273,7 @@ class TestOneWarehouseShape:
 class TestModeOnlyFlagsFailLoudly:
     """A flag that does nothing in the chosen mode must say so.
 
-    Same rule the `--llm-facets` guard follows. These were
+    These were
     missed: `ccutils session.jsonl --dry-run -q -j 4` wrote files and
     printed output -- a dry run that creates things and a quiet run that
     talks. `--dry-run` is the worst of them, because being ignored produces

@@ -1,6 +1,6 @@
 ---
 name: query-warehouse
-description: Query a ccutils DuckDB star-schema warehouse to answer questions about Claude Code usage — sessions, token costs, tool calls, errors, files touched, plans, subagent delegations, facets, or ETL run health. Use when the user asks an analytical question about their Claude Code history, wants SQL against an archive.duckdb, or needs a warehouse generated first. Covers locating/building the database, routing questions to the right semantic view, and the join gotchas that produce silently-wrong answers.
+description: Query a ccutils DuckDB star-schema warehouse to answer questions about Claude Code usage — sessions, token costs, tool calls, errors, files touched, plans, subagent delegations, or ETL run health. Use when the user asks an analytical question about their Claude Code history, wants SQL against an archive.duckdb, or needs a warehouse generated first. Covers locating/building the database, routing questions to the right semantic view, and the join gotchas that produce silently-wrong answers.
 ---
 
 # Querying the ccutils warehouse
@@ -44,7 +44,6 @@ no view answers the question.
 | Prompt history | `semantic_prompt_history` |
 | What Claude has learned about a project (auto memory) | `semantic_memory` (current state), `dim_memory` (version history) |
 | How memories reference each other / what the index catalogues | `semantic_memory_links` (filter `link_syntax`) |
-| Facets (F01–F19 SQL, F20+ LLM) | `fact_session_facets` + `dim_facet_type` (EAV — see gotchas) |
 | ETL observability / did my export work | `semantic_etl_runs`, `etl.batch_runs` |
 | Permission modes, titles, attachments, queue operations, PR links | `fact_entry_events` (filter on `entry_type`) |
 | Compactions, API errors, turn durations | `fact_system_events` |
@@ -80,7 +79,7 @@ no view answers the question.
 ## 4. Go deeper (read only what the task needs)
 
 - `references/query-recipes.md` — worked SQL per question family (copy, adapt).
-- `references/gotchas.md` — join traps, unpopulated columns/tables, EAV facets,
+- `references/gotchas.md` — join traps, unpopulated columns/tables,
   DuckDB JSON idioms. Read before writing joins against raw facts.
 - `docs/STAR_SCHEMA.md` — full column reference for every table and view.
   Grep for the table name; don't read the whole file.

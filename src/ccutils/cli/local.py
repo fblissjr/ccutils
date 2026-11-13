@@ -42,7 +42,6 @@ from ..export import (
     generate_multi_session_index,
 )
 from .utils import (
-    build_facet_extractor_or_exit,
     default_archive_output,
     maybe_open_browser,
     warn_private_best_effort,
@@ -151,18 +150,6 @@ from .utils import (
     "--no-search-index", is_flag=True,
     help="Skip search index generation (--source only).",
 )
-@optgroup.group("Enrichment")
-@optgroup.option(
-    "--llm-facets",
-    "with_llm_facets",
-    is_flag=True,
-    default=False,
-    help=(
-        "Extract Tier 2 LLM facets (F20 task_description via Haiku) into "
-        "fact_session_facets. Requires ANTHROPIC_API_KEY or a "
-        "ccutils-anthropic keychain entry. Star schema only."
-    ),
-)
 def convert_cmd(
     paths,
     source,
@@ -181,7 +168,6 @@ def convert_cmd(
     batch_size,
     quiet,
     no_search_index,
-    with_llm_facets,
 ):
     """Convert Claude Code sessions to HTML, Markdown, DuckDB, or JSON.
 
@@ -197,12 +183,11 @@ def convert_cmd(
       ccutils --source -o ./archive            # everything, HTML archive
       ccutils --source --format duckdb -o ./w  # everything, star schema
       ccutils --source -p myproject -o ./out   # one project
-      ccutils --format duckdb -o ./w --llm-facets   # picked, with Tier 2 facets
     """
     include_thinking = not no_thinking
 
-    # A flag that cannot act in the chosen mode is an error, not a no-op --
-    # the same rule --llm-facets follows below. Checked against
+    # A flag that cannot act in the chosen mode is an error, not a no-op.
+    # Checked against
     # click's parameter SOURCE so a default never trips it: only a value the
     # user actually typed counts.
     ctx = click.get_current_context()
@@ -253,33 +238,13 @@ def convert_cmd(
     if private:
         warn_private_best_effort()
 
-    # A flag that cannot do anything must say so. `--private` on duckdb/json
-    # has always failed this way and is the model; `--llm-facets` did not.
-    #
-    # It was worse than ignored: the extractor was built before the format
-    # was dispatched, so an HTML export demanded an ANTHROPIC_API_KEY and
-    # exited 2 on a credential it would never use. The check comes BEFORE
-    # any credential resolution, so the rejection is about the format and
-    # does not depend on having a key.
-    if output_format in ("html", "markdown"):
-        if with_llm_facets:
-            raise click.UsageError(
-                f"--llm-facets does nothing with --format {output_format}: "
-                "Tier 2 facets are written to fact_session_facets, which the "
-                "render formats do not build. Use --format duckdb, or drop "
-                "--llm-facets."
-            )
-
     # Every path below may open an existing warehouse. A foreign schema
     # is refused with a rebuild instruction, not a traceback.
     try:
         if source is not None:
             # Batch mode: every session under a directory. Delegates to the
             # batch implementation rather than duplicating it -- one scan, one
-            # set of exporters, and it builds its own facet extractor, which is
-            # why this path must NOT build one too. Doing both constructed two
-            # extractors per invocation: two credential resolutions, and for a
-            # real one, two clients.
+            # set of exporters.
             #
             # `--source` with no value means the Claude projects directory,
             # which the batch path resolves itself.
@@ -300,14 +265,8 @@ def convert_cmd(
                 batch_size=batch_size,
                 quiet=quiet,
                 no_search_index=no_search_index,
-                batch_llm_facets=with_llm_facets,
             )
             return
-
-        # Build the Tier 2 facet extractor at the CLI boundary -- credential
-        # failures exit cleanly here rather than as a stack trace from inside
-        # _run_export_pipeline. Returns None when --llm-facets is off.
-        facet_extractor = build_facet_extractor_or_exit(with_llm_facets)
 
         if paths:
             # ONE pipeline call for all named files, not one per file. Running it
@@ -319,7 +278,7 @@ def convert_cmd(
             # browser window opened per file.
             _convert_files(
                 paths, output, output_format, open_browser,
-                include_thinking, private, facet_extractor,
+                include_thinking, private,
                 include_subagents=not no_subagents,
             )
         else:
@@ -327,14 +286,14 @@ def convert_cmd(
             _interactive_mode(
                 output, output_format, open_browser, flat, expand_chains,
                 project_filter, include_thinking, not no_subagents, private,
-                facet_extractor, include_temp_sessions,
+                include_temp_sessions,
             )
     except SchemaMismatchError as exc:
         raise click.ClickException(str(exc)) from exc
 
 
 def _convert_files(input_files, output, output_format, open_browser,
-                   include_thinking, private, facet_extractor=None,
+                   include_thinking, private,
                    include_subagents=True):
     """Convert the named session files, in ONE pipeline run.
 
@@ -381,13 +340,12 @@ def _convert_files(input_files, output, output_format, open_browser,
         project_name=paths[0].parent.name or "unknown",
         open_browser=open_browser,
         agent_map=agent_map,
-        facet_extractor=facet_extractor,
     )
 
 
 def _interactive_mode(output, output_format, open_browser, flat, expand_chains,
                       project_filter, include_thinking, include_subagents,
-                      private, facet_extractor=None,
+                      private,
                       include_temp_sessions=False):
     """Interactive session picker followed by export."""
     projects_folder = Path.home() / ".claude" / "projects"
@@ -452,7 +410,6 @@ def _interactive_mode(output, output_format, open_browser, flat, expand_chains,
         private=private,
         open_browser=open_browser,
         agent_map=agent_map,
-        facet_extractor=facet_extractor,
     )
 
 
@@ -462,7 +419,6 @@ def _etl_session_files(
     *,
     project_name,
     parquet_lake,
-    facet_extractor,
     include_thinking,
     output_format=None,
 ):
@@ -504,7 +460,6 @@ def _etl_session_files(
                         or project_folder_for(session_file.resolve()).name
                     ),
                     parquet_lake_root=parquet_lake,
-                    facet_extractor=facet_extractor,
                     include_thinking=include_thinking,
                     batch_run_id=batch.batch_run_id,
                 )
@@ -543,7 +498,6 @@ def _run_export_pipeline(
     open_browser=False,
     project_name=None,
     agent_map=None,
-    facet_extractor=None,
 ):
     """Shared export pipeline for all output formats.
 
@@ -559,9 +513,6 @@ def _run_export_pipeline(
         open_browser: Open result in browser after HTML export.
         project_name: Override project name (for single-file mode).
         agent_map: Agent session relationships (from interactive picker).
-        facet_extractor: Pre-built FacetExtractor instance (or None).
-            Construction happens at the CLI boundary in convert_cmd so
-            credential errors exit cleanly before any work starts.
     """
     if agent_map is None:
         agent_map = {}
@@ -651,7 +602,6 @@ def _run_export_pipeline(
             conn, session_files,
             project_name=project_name,
             parquet_lake=parquet_lake,
-            facet_extractor=facet_extractor,
             include_thinking=include_thinking,
             output_format="duckdb",
         )
@@ -683,7 +633,6 @@ def _run_export_pipeline(
             conn, session_files,
             project_name=project_name,
             parquet_lake=parquet_lake,
-            facet_extractor=facet_extractor,
             include_thinking=include_thinking,
             output_format="json",
         )

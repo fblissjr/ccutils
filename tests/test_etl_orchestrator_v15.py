@@ -17,7 +17,6 @@ import pytest
 from helpers_ccutils import write_minimal_session
 
 from ccutils import create_star_schema
-from ccutils.etl.facets import CannedFacetExtractor
 from ccutils.etl.orchestrator import run_v15_etl
 
 

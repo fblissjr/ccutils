@@ -44,8 +44,7 @@ machine that has it; nothing here depends on it.
   session, a bridge event, a user-stopped agent, a worktree, an API error,
   a compaction and a plan. On it every call has exactly one row that is not
   a replay, the two facts agree on every call, no delegation is its own
-  child, every fork's summary equals its facets and its usage after the
-  cut, and the audit reports only two columns that sample never fills.
+  child, every fork's summary equals its usage after the cut, and the audit reports only two columns that sample never fills.
   Not exercised by it: a fork that inherited system events (none of the
   sample's forks did), and anything that only shows at scale. The
   full-corpus build in step 5 is still the first time any of this meets the
@@ -70,18 +69,11 @@ machine that has it; nothing here depends on it.
 **From the 2026-11-13 test audit, before anything below.** Fixes and
 deletions landed (CHANGELOG, Unreleased); what is left:
 
-- **Owner decisions, open.** (a) The `dim_model` and `dim_tool` backfills:
-  recompute every row each run (recommended; a newer ccutils re-derives an
-  existing warehouse's categories) or delete and rebuild after upgrades;
-  their two tests wait on it. (b) Tier 2 facets send the first user and
-  last assistant message to the API unsanitized while the docstrings say
-  "privacy-sanitized": build the allowlist CLAUDE.md requires, or narrow
-  the rule and say what is sent. (c) Tier 1 facets: F01-F04 equal
-  `dim_session`'s intent/complexity/outcome/domain and F15/F30 equal the
-  summary's token totals on 65 of 65 sessions, and nothing reads the
-  table; trim to the facets that compute something new, drop Tier 1, or
-  leave it. F30's `COALESCE(SUM, 0)` against "absent is not a value" goes
-  with (c).
+- **Backfills, planned for next session.** Make the `dim_model` and
+  `dim_tool` backfills recompute every row each run instead of only rows
+  marked `unknown`, so a newer ccutils re-derives an existing warehouse's
+  categories (a tool re-mapped from one category to another never updates
+  today), and rewrite their two tests around that.
 - **Rewrites.** The audit's REWRITE verdicts: chiefly the agent fixtures
   that give an agent its own `sessionId` (depth recompute, sidecar
   type/description), the Antigravity snapshot test (needs a fixture in WAL
@@ -154,7 +146,7 @@ Resume in this order. Each item was designed and its reads done on
    `fact_entry_events(entry_id, entry_type, subtype, value_text,
    payload_json)`, written by one populator from a declared list of entry
    types. `semantic_session_summary`, `semantic_decisions`,
-   `fact_diagnostics` and facet F18 read it. Verified on a one-project build
+   and `fact_diagnostics` read it. Verified on a one-project build
    of the real corpus against the 2026-09-18 warehouse: every row of the
    five old tables is in the new one with the same values; the record is in
    `CHANGELOG.md`. The table also gained `sequence_num` and
@@ -201,8 +193,8 @@ git-tracked.
 | 1.3.0 | The ETL layer rewrite (`docs/ETL_ARCHITECTURE.md`) | Report-output diff: every changed answer explained |
 
 Behind the rewrite, unscheduled: `fact_file_backups`, memory history
-backfill, the Cowork `audit.jsonl` ingester, facet Tier 2 to Tier 3
-clustering, comprehensive `--private` hardening.
+backfill, the Cowork `audit.jsonl` ingester, comprehensive `--private`
+hardening.
 
 Harnesses other than Claude Code run on their own track, below
 ("Harnesses beyond Claude Code"): phase 0 is built, phases 1 and 1b add no
@@ -481,8 +473,7 @@ they land.
   puts that text in `dim_session.last_assistant_message`. `--no-thinking`
   closes it, and the reader's guide states it. Left as is on purpose: the
   column stays on the machine and follows the flag. The other half of this
-  finding is closed: the `SessionInputs` that `--llm-facets` sends to the API
-  are now built without thinking whatever the flag says.
+  finding (the Tier 2 facet inputs) went with the facet layer on 2026-11-13.
 
 - **Replay is handled for tool calls and file operations only.** Done
   2026-10-13: both facts are keyed on `(session_id, tool_use_id)` so a
@@ -493,8 +484,7 @@ they land.
   - A fork's replayed prefix: done 2026-10-13 for the populated
     per-session facts and for the delegation views. The cut is stored once
     as `dim_session.fork_cut_timestamp` (the fork's own spawn call, from its
-    sidecar and its own transcript) and `fact_session_facets` (both tiers),
-    the `dim_session` heuristics, `fact_plan_revisions`, and the derived
+    sidecar and its own transcript) and the `dim_session` heuristics, `fact_plan_revisions`, and the derived
     figures of `semantic_agent_delegations` read only what came after it.
     Measured on two one-project builds before the change: about three
     quarters of forks' `derived_io_tokens` was their spawner's replayed
@@ -534,13 +524,6 @@ they land.
   `is_replay` must be computed within a file as well as across a chain. The
   same build had 1,889 uuids spanning more than one session file (11
   sessions, 64 of them on typed messages).
-- **F14 `human_message_count` counts tool-result entries.** The facet
-  (`etl/fact_session_facets.py`, the F14 `_insert_facet`) counts every
-  non-meta `message_type = 'user'` row, and tool results are user rows. In
-  one session it reported 87 where 7 were typed; the other 80 matched that
-  session's 80 tool calls exactly. Filter `has_tool_result` (and
-  `is_compact_summary`). A value fix, not a schema change. Found 2026-09-18.
-
 - **`tests/test_fact_token_usage_v15.py` needs a grain oracle** asserting
   `count(*) = count(DISTINCT api_message_id)`. `lineage_upsert` cannot catch
   a grain regression there because the declared natural key is `entry_id`.
@@ -595,25 +578,14 @@ they land.
   sidechain transcripts at `tasks/*.output`. This pipeline knows
   `<uuid>/subagents/agent-*.jsonl` and `subagents/workflows/<wf-id>/`.
   Establish whether that layout is real before building against it.
-- **Facet Tier 2 has never run at scale.** F20 has zero rows corpus-wide, so
-  there is no quality evidence for the description text that Tier 3
-  clustering would embed. Run F20 across the corpus and read the output
-  before expanding `FACET_SPECS`.
-- **Tier 2 inputs are weaker than they look.** Measured 2026-09-18:
-  `SessionInputs.last_assistant_message` (`etl/facets/populator.py`,
-  `_build_session_inputs`) takes the last assistant entry whether or not it
-  carries text, so it is empty when a session ends on a tool call (11 of 50
-  sampled sessions). Take the last assistant entry that has text, and check
-  whether `dim_session.last_assistant_message` shares the bug. Separately,
-  the "first user message" is a slash-command wrapper in 146 of 320
-  sessions and a paste longer than the 800-character cut in 73, so F20's
-  main input is often harness text rather than the user's request. And the
-  `first_user` query skips `is_meta` rows only: compaction summaries
-  (Claude-written, able to quote tool output) are user rows too, and none of
-  19 measured carries `isMeta`. 1 of 320 sessions opens with one, and 5 open
-  with a tool result, giving an empty first message. Filter
-  `is_compact_summary`, and skip tool-result rows when picking the first
-  message.
+- **`dim_session.first_user_message` and `last_assistant_message` may pick
+  the wrong entry.** Measured 2026-09-18 for the Tier 2 facet inputs, which
+  were built the same way: the last assistant entry is taken whether or not
+  it carries text, so it is empty when a session ends on a tool call (11 of
+  50 sampled sessions); the first user message is a slash-command wrapper in
+  146 of 320 sessions and a paste longer than 800 characters in 73; and
+  compaction summaries and tool results are user rows that the `is_meta`
+  filter does not skip. Check the `dim_session` columns against those cases.
 - **`--private` is best-effort on render formats only.** Known channels:
   message text, thinking, raw non-message entries, tool_use keys beyond the
   allowlist, list-form tool results, the batch search index, index and
@@ -622,9 +594,9 @@ they land.
 - **Behavior classifiers are untrustworthy.** Keyword `outcome` labels do not
   discriminate (sessions labeled `failure` committed cleanly about as often
   as `success`). Demote `outcome` to `keyword_outcome`, emit measured
-  booleans (`had_clean_commit`, `ended_on_tool_error`) as Tier 1 facets
-  F32/F33, and decide whether `fact_agentic_runs` is materialized before any
-  Tier 2 run-grain facet.
+  booleans (`had_clean_commit`, `ended_on_tool_error`) where the other
+  per-session figures are, and decide whether `fact_agentic_runs` is
+  materialized.
 
 ### 1.2.0: how agents consume the warehouse
 
@@ -849,8 +821,7 @@ Stated once so green is read correctly:
   `tests/conftest.py` isolates that now (`default_claude_home`). What still
   reads real data, on purpose and read-only, is the corpus canaries.
 - **No test holds every view to the fork cut or the replay view.** A
-  Tier 1 facet that reads a fact without the session scope is refused
-  (`_own_work_only`). A view is held only by the fixture tests that name it
+  view is held only by the fixture tests that name it
   (`tests/test_fork_cut.py`, `tests/test_fork_events.py`,
   `tests/test_tool_call_replay.py`), so a new or edited view that describes
   a session can read a fork's inherited prefix, or count a replayed call,
@@ -935,6 +906,16 @@ from the commit message.
   fork's copy is not part of this: its sidecar states the cut.
 - **`TaskCreate` is not an agent spawn.** `Agent` is the only tool name in
   the corpus carrying an agent rollup; `Task` is kept for older transcripts.
+- **The facet layer is removed (2026-11-13).** `fact_session_facets`,
+  `dim_facet_type`, the Tier 1 SQL facets, the Tier 2 LLM extractor
+  (`--llm-facets`, the Anthropic key path, `httpx`) and the design doc are
+  gone. Nothing in the warehouse read the table; F01-F04 equalled
+  `dim_session`'s intent, complexity, outcome and domain and F15/F30 the
+  summary's token totals on 65 of 65 sessions; the clustering step it was
+  built for never started; and Tier 2 sent transcript text off the machine
+  unsanitized. If facets come back they are rebuilt from scratch, born
+  conforming to `docs/ETL_ARCHITECTURE.md`, and anything that leaves the
+  machine passes the egress allowlist in `CLAUDE.md`.
 - **TypeSafe Jev for Tier 2 enum facets is closed.** The owner ended the
   exploration on 2026-10-09. It never ran against the service, and its
   untracked test harness and probe file are deleted. It no longer gates

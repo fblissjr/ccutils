@@ -79,12 +79,8 @@ ccutils --format duckdb -o ./analytics           # Pick sessions, star schema
 ccutils -p myproject                             # Filter by project name
 ccutils --flat                                   # Single-list picker mode
 ccutils --no-thinking --no-subagents             # Exclude thinking blocks / related agent sessions
-ccutils --format duckdb --llm-facets -o ./out    # + Tier 2 LLM facets (F20 via Haiku)
 ```
 
-`--llm-facets` requires `ANTHROPIC_API_KEY` in the environment OR a `ccutils-anthropic` keychain entry (`security add-generic-password -s ccutils-anthropic -a $USER -w`). Star schema only.
-
-Note: pairing `--llm-facets` with `--format json` runs the full LLM extraction against a temporary DuckDB that's discarded after the JSON export — you pay the API cost but don't get a queryable database to inspect the F20 outputs. If you want to see the extracted facets, use `--format duckdb` instead.
 
 ### Converting everything
 
@@ -94,7 +90,6 @@ Batch convert every session. Agents and thinking blocks included by default.
 ccutils --source -o ./archive                    # Flat HTML archive: index + one file per session
 ccutils --source --format markdown -o ./md-archive   # One .md per session, per-project tree
 ccutils --source --format duckdb -o ./analytics  # v0.15 star schema for all sessions
-ccutils --source --format duckdb --llm-facets -o ./out   # + Tier 2 LLM facets
 ccutils --source -j 4 --batch-size 20 -o ./archive   # Parallel processing
 ccutils --source --no-subagents --no-thinking    # Exclude agents and thinking (any format)
 ccutils --source --dry-run                       # Preview without converting
@@ -231,16 +226,15 @@ Every fact carries the v0.15 lineage convention: `created_at`, `last_updated_at`
 
 Subagent transcripts are first-class sessions: agent files carry their parent's `sessionId` internally, so ccutils keys them by file identity (`agent-<id>`), links them to their parent session, and computes delegation depth -- your agents don't silently merge into their parents.
 
-**Replayed history is kept and marked, not double-counted.** A resumed, backgrounded or forked session starts its transcript with a copy of earlier history, under the same tool-call ids. Each transcript's copy is its own row in `fact_tool_calls` and `fact_file_operations` (keyed on the session and the call), and the `semantic_tool_call_replay` view says which rows are copies; every `semantic_` view that counts tool calls, file operations or delegations leaves them out. A fork is described by its own work: `dim_session.fork_cut_timestamp` records where its own history starts, and its facets, classifications, summary totals and delegation figures begin there. A query against the raw facts has to apply both itself. `docs/JSONL_CONTRACT.md` claims 11 and 12 say what the source does and does not state about this.
+**Replayed history is kept and marked, not double-counted.** A resumed, backgrounded or forked session starts its transcript with a copy of earlier history, under the same tool-call ids. Each transcript's copy is its own row in `fact_tool_calls` and `fact_file_operations` (keyed on the session and the call), and the `semantic_tool_call_replay` view says which rows are copies; every `semantic_` view that counts tool calls, file operations or delegations leaves them out. A fork is described by its own work: `dim_session.fork_cut_timestamp` records where its own history starts, and its classifications, summary totals and delegation figures begin there. A query against the raw facts has to apply both itself. `docs/JSONL_CONTRACT.md` claims 11 and 12 say what the source does and does not state about this.
 
 **Tables populated by `run_v15_etl`:**
 
 - **Machinery, in the `etl` schema:** `etl.versions`, `etl.batch_runs`, `etl.runs`, `etl.steps`, `etl.schema_version` (plus transient `etl.log_entries` staging). `main` holds only dimensions, facts and views.
-- **Dimensions:** `dim_session` (with intent/complexity/outcome/domain enrichment + subagent linkage), `dim_project`, `dim_tool`, `dim_model`, `dim_file`, `dim_session_chain`, `dim_facet_type` (facet registry).
+- **Dimensions:** `dim_session` (with intent/complexity/outcome/domain enrichment + subagent linkage), `dim_project`, `dim_tool`, `dim_model`, `dim_file`, `dim_session_chain`.
 - **Core facts:** `fact_messages`, `fact_tool_calls` (one row per tool use per transcript: the call, its typed `toolUseResult` payload where the transcript states one, the derived failure kind, and its position in the agentic run), `fact_token_usage` (R11 cache split: `cache_creation_5m_tokens` + `cache_creation_1h_tokens`), `semantic_session_summary`.
 - **Entry-type facts:** `fact_entry_events` (attachments, every permission-mode / title / agent-name / last-prompt entry, file-history snapshots, queue operations and PR links, one row per entry in file order), `fact_progress_events`, `fact_system_events`.
 - **Derived:** `fact_file_operations` (+ the `semantic_session_files` view), `fact_diagnostics`, `fact_plan_revisions` (structural outcome from `fact_tool_calls.is_error`), the `semantic_agent_delegations` view (each Agent/Task spawn a session made itself, joined to the agent's own session), and the `semantic_tool_call_replay` view (which tool-call rows are a transcript's own).
-- **Facets:** `fact_session_facets` Tier 1 (F01-F19, SQL-computed; always on). Tier 2 (F20+, LLM-extracted via Haiku) is opt-in via `--llm-facets`.
 
 **Populated after the per-session loop** (global sources, not per-session, so they are outside `run_v15_etl`; every command that builds a warehouse runs them, and a build of a subset keeps prompt history to the projects it covers):
 
@@ -347,7 +341,6 @@ The encrypted volume covers both the DuckDB file and the parquet lake (they're j
 
 - **`--private` is best-effort and not wired through the v0.15 ETL** (the flag is rejected on `duckdb`/`json`). On the render formats (html, markdown) it only masks cwd/home-prefixed paths in a subset of channels -- `tool_use` inputs (`file_path`/`command`/`content`/`path`) and string `tool_result` content. It does **not** sanitize message text, thinking blocks, non-message entries (e.g. `file-history-snapshot` paths), project directory names, or absolute paths from another machine/user pasted into content. When it can't resolve a working directory (agent transcripts, `.json`/claude.ai exports) it now prints a loud warning rather than silently no-opping. Treat `--private` as a convenience for local encrypted archives, not a guarantee for public sharing; review output before sharing. (Comprehensive channel-walking is a tracked follow-up.)
 - **The archive is machine-wide transcript data -- keep it out of your checkouts.** With no `-o` the output goes to `~/.ccutils/claude-archive`, which is home-anchored precisely so a default run never writes unredacted transcripts for every project on the machine into whatever repo you happened to be standing in. If you pass `-o` yourself, point it somewhere outside your worktrees (an encrypted volume as above, or any path a `git add -A` cannot reach).
-- **Tier 2 LLM facets cost real money at full-system scale.** `--llm-facets` runs one Haiku call per session -- pennies on a handful of sessions, but potentially dollars across hundreds. Omit it for a bulk archive run, or run it separately on a filtered subset.
 
 Portable alternative (any OS), encrypting the export as a single artifact with [age](https://github.com/FiloSottile/age):
 
@@ -375,8 +368,7 @@ tar czf - ./archive | age -r <recipient-key> > archive.tar.gz.age && rm -rf ./ar
 --no-thinking              Exclude thinking from outputs. Drops thinking from
                            dim_session messages and clears the staging
                            artifact (fact_messages already excludes thinking
-                           by projection, and Tier 2 facet inputs never carry
-                           it). Parquet lake is unaffected -- delete it
+                           by projection). Parquet lake is unaffected -- delete it
                            post-run if needed.
 --no-subagents             Exclude related agent sessions
 --include-temp-sessions    Include sessions whose cwd is under the OS temp
@@ -386,18 +378,13 @@ tar czf - ./archive | age -r <recipient-key> > archive.tar.gz.age && rm -rf ./ar
 --private                  Sanitize file paths for sharing (html/markdown only; not wired through the v0.15 ETL)
 
 # Rejected rather than ignored
-# --llm-facets writes to the star schema, so it is a hard error on
-# --format html/markdown rather than a silent no-op. --private is a hard
-# error on duckdb/json for the same reason.
+# --private is a hard error on duckdb/json rather than a silent no-op.
 
 # Selection
 --flat                     Flat single-list mode (picker)
 --expand-chains            Show individual sessions in resumed chains (picker)
 -p, --project TEXT         Filter by project name
 --dry-run                  Preview without converting (--source)
-
-# Enrichment (star schema only)
---llm-facets               Extract Tier 2 LLM facets (F20 via Haiku)
 
 # Batch processing (--source)
 -j, --jobs N               Parallel workers (default: 1)
@@ -409,14 +396,13 @@ tar czf - ./archive | age -r <recipient-key> > archive.tar.gz.age && rm -rf ./ar
 ## Documentation
 
 - [Star Schema Reference](docs/STAR_SCHEMA.md) -- table definitions, populator notes, example queries.
-- [Facet & Cluster Pipeline](docs/FACET_CLUSTER_PIPELINE.md) -- Tier 1/2/3 facet design, status, and roadmap.
 - [Harness Architecture](docs/HARNESS_ARCHITECTURE.md) -- ingesting transcript sources other than Claude Code: principles, tiers, phases.
 - [Antigravity Contract](docs/ANTIGRAVITY_CONTRACT.md) -- where Antigravity stores everything and the measured claims the lake relies on.
 
 ## Development
 
 ```bash
-uv run pytest tests/ --confcutdir=tests   # Full suite (1 skipped test = live-API smoke, expected)
+uv run pytest tests/ --confcutdir=tests   # Full suite, in parallel (-n0 to run serially)
 uv run ccutils --help                     # Run development version
 uv run pytest --cov=ccutils               # Coverage
 ```

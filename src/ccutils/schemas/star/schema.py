@@ -1283,172 +1283,6 @@ def _create_objects(conn) -> None:
     """
     )
 
-    # =========================================================================
-    # Facet & Cluster Pipeline (docs/FACET_CLUSTER_PIPELINE.md)
-    # =========================================================================
-    # dim_facet_type        - registry of facet definitions (Tier 1/2/3)
-    # fact_session_facets   - one row per (session, facet, prompt_version);
-    #                         typed value columns; NO embedding here.
-    #
-    # Facet embeddings (Tier 3 clustering) get their own table when Tier 3 is
-    # built -- born conforming then, not declared empty now.
-    # rather than destructive overwrites of structured-value facets.
-
-    # IMPORTANT: dim_facet_type uses CREATE IF NOT EXISTS, not CREATE OR
-    # REPLACE. The registry holds historical prompt_version rows that
-    # fact_session_facets references by facet_type_key -- wiping them on
-    # every create_star_schema() call (the CLI path) would orphan fact rows.
-    # Tier 1 seeds below use INSERT ... ON CONFLICT DO NOTHING for the same
-    # reason: existing seed rows from a prior run survive untouched.
-    conn.execute(
-        """
-        CREATE TABLE IF NOT EXISTS dim_facet_type (
-            facet_type_key VARCHAR PRIMARY KEY,
-            facet_id VARCHAR NOT NULL,
-            facet_name VARCHAR NOT NULL,
-            tier INTEGER NOT NULL,
-            method VARCHAR NOT NULL,
-            output_type VARCHAR NOT NULL,
-            prompt_text VARCHAR,
-            prompt_version VARCHAR,
-            embedding_model VARCHAR,
-            notes VARCHAR,
-            created_at TIMESTAMP NOT NULL DEFAULT current_timestamp
-        )
-        """
-    )
-
-    # Facet id namespace -- keep these blocks disjoint or the same id means
-    # two different things depending on tier, and analyses silently mix them:
-    #   F01-F19  Tier 1, SQL-computed (this list)
-    #   F20-F29  Tier 2, LLM-extracted. RESERVED by FACET_CLUSTER_PIPELINE.md
-    #            §3 even where not yet implemented (F21 accomplishment,
-    #            F22 blocker_type, ...). Do NOT reuse for Tier 1.
-    #   F30+     Tier 1 additions made after the original F01-F19 block.
-    #   F40-F49  clustering outputs (design, not yet built).
-    #   F90+     hypothetical ids for test fixtures only.
-    #
-    # Seed Tier 1 facets. Names + output types mirror
-    # FACET_CLUSTER_PIPELINE.md §3 "Tier 1" exactly. Tier 1 is computed by SQL
-    # off existing facts so prompt_text / prompt_version stay NULL.
-    # `notes` carries data-level caveats so future analytical queries can see
-    # them (F16's UTC-hour limitation is the current example).
-    _tier1_seeds = [
-        ("F01", "session_intent", "enum", None),
-        ("F02", "session_complexity", "enum", None),
-        ("F03", "session_outcome", "enum", None),
-        ("F04", "session_domain", "enum", None),
-        ("F05", "error_signature", "json", None),
-        ("F06", "tool_mix", "json", None),
-        ("F07", "tool_bigram_top3", "json", None),
-        ("F08", "loc_delta", "int",
-         "Proxy: count of write+edit operations. Literal LOC requires "
-         "unpacking fact_tool_calls.edit_structured_patch_json."),
-        ("F09", "file_extensions_touched", "json", None),
-        ("F10", "repo_slug", "text", None),
-        ("F11", "model_mix", "json", None),
-        ("F12", "duration_seconds", "int", None),
-        ("F13", "agent_depth", "int", None),
-        ("F14", "human_message_count", "int", None),
-        ("F15", "tokens_in", "int", None),
-        ("F16", "local_hour", "int",
-         "Hour-of-day in UTC; user-local TZ not preserved at capture time."),
-        ("F17", "had_subagents", "bool", None),
-        ("F18", "pr_referenced", "bool", None),
-        ("F19", "had_plan_revision", "bool", None),
-        ("F30", "tokens_out", "int",
-         "Counterpart to F15. Sums fact_token_usage.output_tokens; 0 for "
-         "transcripts that predate typed usage blocks."),
-        ("F31", "thinking_blocks", "int",
-         "Count of assistant entries carrying a thinking block. Claude Code "
-         "writes one content block per entry, so entries == blocks. Sourced "
-         "from fact_messages, not semantic_session_summary, because the summary "
-         "populator runs last."),
-    ]
-    conn.executemany(
-        """
-        INSERT INTO dim_facet_type
-            (facet_type_key, facet_id, facet_name, tier, method, output_type,
-             notes)
-        VALUES (md5(? || '|' || ''), ?, ?, 1, 'computed', ?, ?)
-        ON CONFLICT (facet_type_key) DO NOTHING
-        """,
-        [(fid, fid, fname, otype, notes)
-         for (fid, fname, otype, notes) in _tier1_seeds],
-    )
-
-    # Seed Tier 2 facets from the catalog module. Each FacetSpec produces
-    # one row keyed by md5(facet_id || '|' || prompt_version) -- bumping
-    # prompt_version on a FacetSpec adds a new row rather than overwriting
-    # (ON CONFLICT DO NOTHING preserves the historical row that existing
-    # fact_session_facets rows reference). The description text becomes
-    # prompt_text in the registry so it's queryable / auditable post-hoc.
-    from ccutils.etl.facets.catalog import FACET_SPECS as _TIER2_SPECS
-
-    conn.executemany(
-        """
-        INSERT INTO dim_facet_type
-            (facet_type_key, facet_id, facet_name, tier, method, output_type,
-             prompt_text, prompt_version)
-        VALUES (md5(? || '|' || ?), ?, ?, 2, 'llm', ?, ?, ?)
-        ON CONFLICT (facet_type_key) DO NOTHING
-        """,
-        [
-            (
-                spec.facet_id, spec.prompt_version,
-                spec.facet_id, spec.facet_name, spec.output_type,
-                spec.description, spec.prompt_version,
-            )
-            for spec in _TIER2_SPECS
-        ],
-    )
-
-    conn.execute(
-        """
-        CREATE TABLE IF NOT EXISTS fact_session_facets (
-            -- Lineage envelope (v0.15 convention)
-            created_at TIMESTAMP NOT NULL DEFAULT current_timestamp,
-            created_by_version_key VARCHAR NOT NULL,
-            last_updated_at TIMESTAMP NOT NULL DEFAULT current_timestamp,
-            last_updated_by_version_key VARCHAR NOT NULL,
-            etl_run_id VARCHAR NOT NULL,
-            record_source VARCHAR NOT NULL,
-            hash_diff VARCHAR NOT NULL,
-            is_deleted BOOLEAN NOT NULL DEFAULT FALSE,
-            deleted_at TIMESTAMP,
-
-            -- Natural key (synthesized, single-column for lineage_upsert):
-            -- md5(session_id || '|' || facet_id || '|' || COALESCE(prompt_version, ''))
-            facet_row_key VARCHAR NOT NULL,
-
-            -- Natural key parts + degenerate dims
-            session_key VARCHAR NOT NULL,
-            session_id VARCHAR NOT NULL,
-            facet_type_key VARCHAR NOT NULL,
-            prompt_version VARCHAR,
-
-            -- Typed value columns (one populated per row depending on output_type)
-            value_text VARCHAR,
-            value_json JSON,
-            value_numeric DOUBLE,
-            value_bool BOOLEAN,
-
-            -- Tier 2 QA aids. NULL / FALSE for Tier 1 rows.
-            -- is_fallback distinguishes "model said it couldn't extract"
-            -- (genuine null) from "we couldn't parse the response"
-            -- (parse-fail null). extraction_metadata_json holds raw model
-            -- response + retry/cache bookkeeping for QA inspection.
-            is_fallback BOOLEAN NOT NULL DEFAULT FALSE,
-            extraction_metadata_json JSON,
-
-            date_key INTEGER,
-            time_key INTEGER,
-            extracted_at TIMESTAMP NOT NULL DEFAULT current_timestamp
-        )
-        """
-    )
-
-
 
     # =========================================================================
     # Semantic Views (15)
@@ -2525,7 +2359,6 @@ TABLE_COVERAGE = {
     "dim_session_chain": ("table", "populated", "session", "sessions sharing a slug (continuations); dim_session.chain_key points here"),
     "dim_date": ("table", "populated", "session", "one row per calendar date seen in staging"),
     "dim_time": ("table", "populated", "ddl_seed", "1440 minute-of-day rows, seeded at creation"),
-    "dim_facet_type": ("table", "populated", "ddl_seed", "facet registry from etl.facets.catalog, seeded at creation; history-retaining"),
     "dim_prompt": ("table", "populated", "global_source", "prompt history from history.jsonl, scoped to covered projects on subset builds"),
     "dim_memory": ("table", "populated", "global_source", "Type 2 history of Claude Code auto-memory files"),
     # --- facts
@@ -2538,7 +2371,6 @@ TABLE_COVERAGE = {
     "fact_file_operations": ("table", "populated", "session", "one row per file tool call; Bash-derived writes are NOT captured yet (1.1.0)"),
     "fact_diagnostics": ("table", "populated", "session", "LSP diagnostics flattened from attachments"),
     "fact_plan_revisions": ("table", "populated", "session", "ExitPlanMode outcomes with revision chain"),
-    "fact_session_facets": ("table", "populated", "session", "Tier 1 facets per session; Tier 2 rows only with --llm-facets"),
     "bridge_memory_link": ("table", "populated", "global_source", "memory link graph, wiki and markdown syntaxes, dangling links included"),
     # --- views
     "semantic_session_summary": ("view", "keep", None, "per-session rollup over every fact; was a table written last by every run"),
@@ -2566,12 +2398,6 @@ TABLE_COVERAGE = {
 AUDIT_EXCEPTIONS: dict[tuple[str, str, str | None], str] = {
     ("fk_unresolved", "dim_session", "parent_session_key"):
         "agent whose parent transcript was pruned upstream; the key names a real session and is kept",
-    ("null_column", "fact_session_facets", "prompt_version"):
-        "Tier 2 (LLM) facets only; NULL on every Tier 1 row",
-    ("null_column", "fact_session_facets", "extraction_metadata_json"):
-        "Tier 2 (LLM) facets only; NULL on every Tier 1 row",
-    ("single_valued_column", "fact_session_facets", "is_fallback"):
-        "Tier 2 only; false on every Tier 1 row",
 }
 
 
@@ -2603,5 +2429,4 @@ NATURAL_KEYS = {
     "fact_file_operations": "tool_call_key",
     "fact_diagnostics": "diagnostic_id",
     "fact_plan_revisions": "revision_key",
-    "fact_session_facets": "facet_row_key",
 }

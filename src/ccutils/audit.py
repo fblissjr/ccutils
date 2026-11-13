@@ -380,7 +380,7 @@ def run_audit(conn, lake_root: Path | None = None) -> AuditReport:
         n for n, (kind, status, _, _) in TABLE_COVERAGE.items()
         if kind == "table" and status == "populated"
     ]
-    # Seeded constants (dim_time, dim_facet_type) are not evidence of anything.
+    # Seeded constants (dim_time) are not evidence of anything.
     big_tables = [
         t for t in populated_tables
         if TABLE_COVERAGE[t][2] != "ddl_seed"

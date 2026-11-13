@@ -29,7 +29,6 @@ DuckDB:
     fact_token_usage, fact_entry_events, fact_progress_events,
     fact_system_events, fact_file_operations, fact_diagnostics,
     fact_plan_revisions,
-    fact_session_facets,
     semantic_session_summary                         (Tier 3 -- warehouse)
 ```
 
@@ -91,8 +90,6 @@ The orchestrator at `src/ccutils/etl/orchestrator.py` (`run_v15_etl`) runs per s
    - `fact_plan_revisions` (ExitPlanMode outcome classification via R16 tri-state `is_error`)
    - `dim_session` heuristic enrichment (intent / complexity / outcome / domain)
    - `dim_session_chain` (slug-grouped chain aggregate)
-   - `fact_session_facets` Tier 1 (F01..F19, SQL-computed)
-   - `fact_session_facets` Tier 2 (LLM-extracted, only when a `FacetExtractor` is injected)
 5. `semantic_session_summary` LAST (aggregates over everything above).
 
 After the per-session loop, two global sources are best-effort populated, both outside `run_v15_etl` because neither is per-session: `dim_prompt` from the Claude Code prompt-history JSONL, and `dim_memory` / `bridge_memory_link` from the auto-memory directories.
@@ -319,9 +316,6 @@ Markdown links count only when the target names a sibling markdown file; externa
 Columns: `memory_link_key` (PK, `md5(memory_key || ordinal)`), `memory_key` (FK to the SOURCE version), `memory_id`, `project_key`, `scope`, `owner_key`, `target_name` (raw `[[text]]`, or the file name for a markdown link), `target_memory_id`, `is_resolved`, `link_syntax`, `link_text` (the index's own label for the target -- not recoverable from the target file), `ordinal` (document order across BOTH syntaxes).
 
 Dangling links are retained with `is_resolved = FALSE` and a NULL target: a link to a memory that was never written marks something Claude meant to record, which dropping the row would hide.
-
-#### dim_facet_type
-Catalog of every facet (F01+). Seeded by `create_star_schema()` from `src/ccutils/etl/facets/catalog.py::FACET_SPECS` via `INSERT ... ON CONFLICT DO NOTHING`. One row per (facet_id, prompt_version); bumping `prompt_version` adds a new row and old fact rows survive.
 
 ### Core Facts (v0.15)
 
@@ -653,29 +647,7 @@ WHERE tc.is_deleted = FALSE AND NOT rp.is_replay AND tc.session_id = '<id>'
 GROUP BY ALL ORDER BY calls DESC;
 ```
 
-**A fork's replayed prefix is left out of what describes the fork.** The populated per-session facts cannot use this view's cross-session rule, and for a fork they do not need it: `dim_session.fork_cut_timestamp` needs only the fork's own sidecar and transcript. `fact_session_facets` (both tiers), the `dim_session` heuristics (`first_user_message`, `intent`, `complexity`, `outcome`) and `fact_plan_revisions` read only what came after it, so a fork is described by its own prompt, tools, files, plans, tokens and duration. The message and token columns of `semantic_session_summary` apply the same cut, so `semantic_session_behavior` and anything else that reads the summary bill a fork for its own work, and a fork's summary agrees with its facets. The event counts follow the same cut (turns, compactions, API errors, stop events, progress, attachments), as do `permission_mode_transition_count` and `session_duration_seconds`, and `semantic_decisions` lists a fork's own decisions. A mode change is judged against the mode the fork inherited and counted only if the fork made it. Entries that state no time are placed by `fact_entry_events.derived_timestamp`. What is still not replay-aware: any of this for a copy between ROOT sessions, where nothing states a cut.
-
-#### fact_session_facets
-One row per (session_key, facet_type_key). Tier 1 facets (F01-F19) populated via SQL; Tier 2 facets (F20+) populated via the LLM extractor when injected. Both describe a session by its own work: every fact a facet reads is limited to what came after `dim_session.fork_cut_timestamp`, which is NULL unless the session is a fork.
-
-| Column | Type | Description |
-|--------|------|-------------|
-| facet_row_key | VARCHAR | PK (md5 of session_id + facet_id + prompt_version) |
-| session_key | VARCHAR | FK to dim_session |
-| session_id | VARCHAR | Degenerate dimension |
-| facet_type_key | VARCHAR | FK to dim_facet_type |
-| prompt_version | VARCHAR | NULL for Tier 1 (SQL-computed); the FacetSpec's version for Tier 2 |
-| value_text | VARCHAR | Facet value (text / enum form) |
-| value_json | JSON | Facet value (structured form, when applicable) |
-| value_numeric | DOUBLE | Facet value (numeric form, when applicable) |
-| value_bool | BOOLEAN | Facet value (boolean form, when applicable) |
-| is_fallback | BOOLEAN | Tier 2 QA aid: TRUE when the extractor couldn't produce a real value (distinct from a parse failure). FALSE/default for Tier 1 |
-| extraction_metadata_json | JSON | Tier 2 QA aid: raw model response + retry/cache bookkeeping. NULL for Tier 1 |
-| date_key | INTEGER | FK to dim_date |
-| time_key | INTEGER | FK to dim_time |
-| extracted_at | TIMESTAMP | When this facet was computed |
-
-`value_text` / `value_json` / `value_numeric` / `value_bool` is an EAV shape: exactly one is populated per row, per `dim_facet_type.output_type` (`OUTPUT_TYPE_TO_COL` in `src/ccutils/etl/facets/extractor.py` is the routing table). See `src/ccutils/etl/facets/catalog.py` for the full facet registry.
+**A fork's replayed prefix is left out of what describes the fork.** The populated per-session facts cannot use this view's cross-session rule, and for a fork they do not need it: `dim_session.fork_cut_timestamp` needs only the fork's own sidecar and transcript. The `dim_session` heuristics (`first_user_message`, `intent`, `complexity`, `outcome`) and `fact_plan_revisions` read only what came after it, so a fork is described by its own prompt, tools, files, plans, tokens and duration. The message and token columns of `semantic_session_summary` apply the same cut, so `semantic_session_behavior` and anything else that reads the summary bill a fork for its own work. The event counts follow the same cut (turns, compactions, API errors, stop events, progress, attachments), as do `permission_mode_transition_count` and `session_duration_seconds`, and `semantic_decisions` lists a fork's own decisions. A mode change is judged against the mode the fork inherited and counted only if the fork made it. Entries that state no time are placed by `fact_entry_events.derived_timestamp`. What is still not replay-aware: any of this for a copy between ROOT sessions, where nothing states a cut.
 
 #### semantic_session_summary (view)
 A view since 1.0.0: it was a table written last by every run and joined by six views, and nothing in it was stated. One row per `dim_session` row, rolling up every fact; `date_key` / `time_key` derive from `first_timestamp`; there is no lineage block because nothing is stored.

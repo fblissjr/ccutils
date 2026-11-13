@@ -30,10 +30,9 @@ After any rename, grep two places or the suite/views break at a distance:
 
 ## History-retaining dimensions
 
-`dim_facet_type` is the template: `CREATE TABLE IF NOT EXISTS` +
-`INSERT ... ON CONFLICT DO NOTHING`, so historical rows (old prompt_versions)
-survive re-seeding within one warehouse's life. Use the same pattern for any
-future dim that must keep history across ETL runs.
+Use `CREATE TABLE IF NOT EXISTS` + `INSERT ... ON CONFLICT DO NOTHING`, so
+historical rows survive re-seeding within one warehouse's life. (`dim_facet_type`
+was the template until the facet layer was removed on 2026-11-13.)
 
 ## Release / version bump
 
