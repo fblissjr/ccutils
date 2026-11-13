@@ -794,12 +794,14 @@ Found while building phase 0 (2026-09-22) or on the first default-root run
   suite stayed green; one supported DuckDB means the lock tests what a
   fresh install gets. No ceiling, deliberately: run the suite against a new
   DuckDB major before a release rather than pin it out.
-- `tests/test_jsonl_contract.py::TestToolResultPayloadPresence::test_a_parent_result_states_the_payload`
-  fails on the developer corpus as of 2026-11-13, on DuckDB 1.5 and 2.0
-  alike: the share of parent tool results with no `toolUseResult` is over
-  the 0.1% the canary allows (it prints the counts). Claim 11 of
-  `docs/JSONL_CONTRACT.md` needs re-measuring against the raw transcripts
-  before anything is changed.
+- **Entry types a current Claude Code writes that no populator reads.** On
+  one 2.1.323 session the lake holds `api-request`, `api-request-blob`,
+  `api-request-shape`, `mode`, `atis-latch`, `session-owner`,
+  `bridge-session`, `ai-title`, `file-history-delta` and `tools-used`
+  entries; none reaches a fact (claim 9 says a new type is ignored
+  silently, and claim 13 that the blobs are copies). The lake keeps them.
+  Open: which of them states something a consumer would want, measured on
+  the raw transcripts before any populator is written.
 
 ## What the test suite cannot see
 

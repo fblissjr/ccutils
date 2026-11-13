@@ -355,6 +355,36 @@ timestamps, so one call sits in several transcripts.
   news: a copy now states its origin, and the tie-break should be replaced
   by reading it.
 
+## 13. `api-request-blob` entries copy request messages, and are not conversation
+
+From Claude Code 2.1.316 a transcript also holds entries of type
+`api-request-blob`, beside `api-request-shape` and `api-request` entries.
+A blob carries only `hash`, `message`, `sessionId` and `type`: no `uuid`,
+`timestamp`, `version` or `toolUseResult`. Its `message` is one message of an
+API request (a system prompt, a user turn, an assistant turn with its
+thinking and tool_use blocks, a user turn of tool_result blocks), stored once
+per hash. It repeats what the conversation's own entries already hold.
+
+- Measured 2026-11-13 on the developer corpus: 20 of 5,230 transcripts,
+  parents and agents, every one written by 2.1.316 or later; 183 blobs in one
+  2,179-line session, each hash distinct. Re-derive with a scan for
+  `"type": "api-request-blob"`.
+- Consequence: anything that reads `message.content` must first ask what kind
+  of entry holds it. Every populator does (`fact_messages` takes `user` and
+  `assistant`, the tool-call projections `assistant` and `user`), so no fact
+  counts a copy. The claim-11 canary did not: it took any entry holding a
+  `tool_result` block, counted 238 copies as parent results without a
+  payload, and went red with nothing wrong upstream.
+- Consequence: a blob holds no `uuid`, so a populator that admitted one would
+  fail on `fact_messages.message_id` rather than double count quietly.
+- Consequence: the Parquet lake keeps them in `raw_json`, as it keeps every
+  line, thinking blocks included.
+- Canary: `tests/test_api_request_blob_entries.py`. Adding the measured blob
+  and shape entries to a session leaves every fact table unchanged; widening
+  `fact_messages`' type filter turns it red.
+- Not established: what `api-request-shape` and `api-request` state beyond
+  referencing blobs. Neither is read by any populator (claim 9).
+
 ---
 
 ## Adding to this document

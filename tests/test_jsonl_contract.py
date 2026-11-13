@@ -468,8 +468,14 @@ def tool_result_payload_corpus():
                     for block in content:
                         if isinstance(block, dict) and block.get("type") == "tool_use":
                             names[block.get("id")] = block.get("name")
-                    if any(isinstance(b, dict) and b.get("type") == "tool_result"
-                           for b in content):
+                    # A tool result is a USER entry. From 2.1.316,
+                    # `api-request-blob` entries copy request messages,
+                    # tool_result blocks included, with no toolUseResult
+                    # beside them (claim 13); counting those turned this
+                    # canary red on 2026-11-13 with nothing wrong upstream.
+                    if obj.get("type") == "user" and any(
+                            isinstance(b, dict) and b.get("type") == "tool_result"
+                            for b in content):
                         results.append(obj)
         except OSError:
             continue
