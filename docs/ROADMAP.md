@@ -830,9 +830,12 @@ lose data.
   setting ... conversations persist until deleted in the app") was measured
   on the hub and is false for the CLI. The summaries row outlives the
   conversation and is then its only trace. Consequence: the lake has to run
-  on a schedule shorter than the window. ccutils ships no scheduler;
-  `README.md` shows a systemd user timer, and the machine this was found on
-  runs one hourly. A machine without one is unprotected.
+  on a schedule shorter than the window to keep everything. ccutils ships
+  no scheduler; `README.md` shows a systemd user timer. Owner decision,
+  2026-11-20: no schedule on either machine for now, and losing what the
+  app prunes or empties between manual runs is acceptable. The timer
+  installed on the Linux machine that day is disabled, its unit files left
+  in place. Do not re-enable it or add one elsewhere without being asked.
 - **Media is inventory only.** Generated images and video are recorded as
   path, size and hash. They are most of a brain directory by size, and a
   pruned conversation takes them with it. Open: archive the bytes,

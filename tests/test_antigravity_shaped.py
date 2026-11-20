@@ -5,6 +5,8 @@ claims 17 and 18); the corpus canaries in test_antigravity_contract.py hold
 that map against the real store.
 """
 
+import io
+import re
 from datetime import datetime, timezone
 
 from ccutils.parsers.antigravity import shaped
@@ -295,6 +297,23 @@ class TestShapeLake:
         assert result.undecoded_steps == 1
 
 
+    def test_progress_reports_each_conversation_and_how_it_ended(self, cli_home, lake_root):
+        lake(cli_home, lake_root)
+        events = []
+        result = shaped.shape_lake(lake_root, on_unit=events.append)
+        assert {e.phase for e in events} == {"decode"}
+        total = result.written
+        assert total > 1 and {e.total for e in events} == {total}
+        ends = [e for e in events if e.status is not None]
+        assert [e.index for e in ends] == list(range(1, total + 1))
+        assert {e.status for e in ends} == {"written"}
+        assert sum(e.rows["steps"] for e in ends) == result.steps
+        assert [e.index for e in events if e.status is None] == list(range(1, total + 1))
+        events = []
+        shaped.shape_lake(lake_root, on_unit=events.append)
+        assert [e.status for e in events] == ["unchanged"] * total
+
+
 class TestViews:
     def test_a_cleared_step_reads_from_the_fuller_row_the_lake_kept(self, cli_home, lake_root):
         lake(cli_home, lake_root)
@@ -392,6 +411,8 @@ class TestViews:
 from click.testing import CliRunner
 
 from ccutils.cli import cli
+from ccutils.cli.lake_cmd import Reporter
+from ccutils.parsers.lake import UnitEvent
 
 
 def decode_cmd(cli_home, out, *flags):
@@ -444,6 +465,90 @@ class TestDecodeCommand:
         result = decode_cmd(cli_home, tmp_path / "out", "--no-thinking")
         assert result.exit_code == 2
         assert not (tmp_path / "out").exists()
+
+
+class TestProgressOutput:
+    """What a person watching the run sees. Progress goes to stderr, so the
+    summary on stdout is the same with or without it."""
+
+    def test_verbose_names_every_unit_it_wrote_and_decoded(self, cli_home, tmp_path):
+        out = tmp_path / "out"
+        result = decode_cmd(cli_home, out, "--decode", "--verbose")
+        assert result.exit_code == 0, result.output
+        lines = result.stderr.splitlines()
+        named = [l for l in lines if f"antigravity-cli/conversation/{CONV_A}" in l]
+        mirrored = [l for l in named if " mirror " in l]
+        assert len(mirrored) == 1 and "written" in mirrored[0] and "steps 4" in mirrored[0]
+        assert re.search(r"\[\s*\d+/\d+\]", mirrored[0])
+        decoded = [l for l in named if " decode " in l]
+        assert len(decoded) == 1 and "steps 4" in decoded[0]
+        assert len(named) == 2
+        assert "\r" not in result.stderr
+        # The summary is still on stdout, and none of the progress is.
+        assert "Lake:" in result.stdout and CONV_A not in result.stdout
+
+    def test_verbose_says_nothing_per_unit_when_nothing_changed(self, cli_home, tmp_path):
+        out = tmp_path / "out"
+        decode_cmd(cli_home, out, "--decode")
+        result = decode_cmd(cli_home, out, "--decode", "--verbose")
+        assert result.exit_code == 0, result.output
+        assert CONV_A not in result.stderr
+
+    def test_without_a_terminal_or_the_flag_nothing_is_added(self, cli_home, tmp_path):
+        result = decode_cmd(cli_home, tmp_path / "out", "--decode")
+        assert result.exit_code == 0, result.output
+        assert result.stderr == ""
+
+    def test_verbose_shows_a_failed_unit_as_it_fails(self, cli_home, tmp_path):
+        db = cli_home / "antigravity-cli" / "conversations" / f"{CONV_A}.db"
+        db.write_bytes(b"not a database")
+        result = decode_cmd(cli_home, tmp_path / "out", "--verbose")
+        assert result.exit_code == 1
+        failed = [l for l in result.stderr.splitlines() if CONV_A in l and "[" in l]
+        assert failed and "error" in failed[0]
+
+
+class TestLiveLine:
+    """On a terminal, one line is redrawn in place and removed at the end."""
+
+    def _events(self, n=3, status="written"):
+        for i in range(1, n + 1):
+            yield UnitEvent("mirror", i, n, "antigravity-cli", "conversation", f"{i:08d}-aaaa-bbbb-cccc-dddddddddddd")
+            yield UnitEvent("mirror", i, n, "antigravity-cli", "conversation",
+                            f"{i:08d}-aaaa-bbbb-cccc-dddddddddddd", status=status, rows={"steps": i})
+
+    def test_it_redraws_one_line_and_leaves_none_behind(self):
+        stream = io.StringIO()
+        reporter = Reporter(stream, live=True, verbose=False, width=lambda: 60)
+        reporter.phase("Scanning")
+        for event in self._events():
+            reporter.unit(event)
+        reporter.clear()
+        text = stream.getvalue()
+        assert "\n" not in text
+        assert "Scanning" in text and "[3/3]" in text and "00000003" in text
+        assert text.endswith("\r\x1b[K")
+        drawn = [d for d in text.split("\r") if d]
+        assert all(len(d.replace("\x1b[K", "")) < 60 for d in drawn)
+
+    def test_a_unit_that_starts_work_is_always_drawn_and_unchanged_ones_are_throttled(self):
+        clock = iter(x * 0.001 for x in range(10_000))
+        stream = io.StringIO()
+        reporter = Reporter(stream, live=True, verbose=False, width=lambda: 80, clock=lambda: next(clock))
+        for i in range(1, 501):
+            reporter.unit(UnitEvent("mirror", i, 501, "s", "conversation", f"unit-{i}", status="unchanged"))
+        assert stream.getvalue().count("\r") < 50
+        reporter.unit(UnitEvent("mirror", 501, 501, "s", "conversation", "the-slow-one"))
+        assert "the-slow-one" in stream.getvalue()
+
+    def test_neither_live_nor_verbose_writes_nothing(self):
+        stream = io.StringIO()
+        reporter = Reporter(stream, live=False, verbose=False)
+        reporter.phase("Scanning")
+        for event in self._events():
+            reporter.unit(event)
+        reporter.clear()
+        assert stream.getvalue() == ""
 
 
 def test_the_readmes_antigravity_recipes_bind_against_the_views(cli_home, lake_root):

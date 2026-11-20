@@ -53,7 +53,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Iterator, Protocol
+from typing import Callable, Iterator, Mapping, Protocol
 
 import pyarrow as pa
 import pyarrow.compute as pc
@@ -562,6 +562,29 @@ class UnitOutcome:
     carried: dict[str, int] = field(default_factory=dict)
 
 
+@dataclass(frozen=True)
+class UnitEvent:
+    """One moment of a run, for a caller that shows progress.
+
+    `status` None means work on the unit is starting; otherwise it is how the
+    unit ended. A unit that needs no work (`unchanged`) reports only its end.
+    `index` counts from 1 against `total` within a `phase`: `mirror` (a unit
+    the source holds), `gone` (a unit being marked because its source went
+    away) or, from a derived layer, a phase of its own."""
+    phase: str
+    index: int
+    total: int
+    store: str
+    unit_kind: str
+    unit_id: str
+    status: str | None = None
+    rows: Mapping[str, int] = field(default_factory=dict)
+    error: str | None = None
+
+
+OnUnit = Callable[[UnitEvent], None]
+
+
 @dataclass
 class LakeRunResult:
     lake_run_id: str
@@ -594,8 +617,11 @@ def write_lake(
     lake_root: Path,
     root: Path | None = None,
     force: bool = False,
+    on_unit: OnUnit | None = None,
 ) -> LakeRunResult:
-    """Mirror one harness's native store into ``<lake_root>/<harness>/``."""
+    """Mirror one harness's native store into ``<lake_root>/<harness>/``.
+
+    `on_unit` is called with a `UnitEvent` as each unit starts and ends."""
     harness_dir = Path(lake_root) / source.harness_id
     harness_dir.mkdir(parents=True, exist_ok=True)
     run_id = uuid.uuid4().hex
@@ -611,7 +637,7 @@ def write_lake(
         }
         _write_runs(harness_dir, runs + [run_row])
         try:
-            result = _run(source, harness_dir, run_id, root, force)
+            result = _run(source, harness_dir, run_id, root, force, on_unit)
         except BaseException as e:
             run_row.update(status="failed", finished_at=_now(), error=f"{type(e).__name__}: {e}")
             _write_runs(harness_dir, runs + [run_row])
@@ -666,7 +692,8 @@ def _adopt_unlisted(source: LakeSource, harness_dir: Path, previous: dict[tuple[
     return adopted
 
 
-def _run(source: LakeSource, harness_dir: Path, run_id: str, root: Path | None, force: bool) -> LakeRunResult:
+def _run(source: LakeSource, harness_dir: Path, run_id: str, root: Path | None, force: bool,
+         on_unit: OnUnit | None = None) -> LakeRunResult:
     previous = {(r["store"], r["unit_kind"], r["unit_id"]): r for r in read_manifest(harness_dir)}
     adopted = _adopt_unlisted(source, harness_dir, previous)
     discovery = source.discover(root)
@@ -681,9 +708,15 @@ def _run(source: LakeSource, harness_dir: Path, run_id: str, root: Path | None, 
         rows = {**previous, **manifest}
         _write_small_table(harness_dir / MANIFEST_FILE, [rows[k] for k in sorted(rows)], _MANIFEST_SCHEMA)
 
+    def report(phase: str, index: int, total: int, key: tuple[str, str, str], status: str | None = None,
+               rows: Mapping[str, int] | None = None, error: str | None = None) -> None:
+        if on_unit is not None:
+            on_unit(UnitEvent(phase, index, total, *key, status=status, rows=rows or {}, error=error))
+
     if adopted:
         checkpoint()
-    for unit in discovery.units:
+    total = len(discovery.units)
+    for index, unit in enumerate(discovery.units, 1):
         now = _now()
         fp = fingerprint(unit)
         prev = previous.get(unit.key)
@@ -697,7 +730,10 @@ def _run(source: LakeSource, harness_dir: Path, run_id: str, root: Path | None, 
             manifest[unit.key] = {**prev, "status": "unchanged", "source_present": True,
                                   "last_seen_at": now, "lake_run_id": run_id}
             outcomes.append(UnitOutcome(*unit.key, status="unchanged"))
+            report("mirror", index, total, unit.key, "unchanged")
             continue
+
+        report("mirror", index, total, unit.key)
 
         envelope = Envelope(
             harness=source.harness_id, store=unit.store, lake_run_id=run_id,
@@ -737,6 +773,7 @@ def _run(source: LakeSource, harness_dir: Path, run_id: str, root: Path | None, 
                                   "error": error, "last_seen_at": now, "lake_run_id": run_id}
             outcomes.append(UnitOutcome(*unit.key, status="error", error=error))
             checkpoint()
+            report("mirror", index, total, unit.key, "error", error=error)
             continue
 
         status = "superseded" if superseded else "written"
@@ -754,9 +791,14 @@ def _run(source: LakeSource, harness_dir: Path, run_id: str, root: Path | None, 
         outcomes.append(UnitOutcome(*unit.key, status=status, tables=written.tables,
                                     notes=written.notes, carried=carried))
         checkpoint()
+        report("mirror", index, total, unit.key, status, rows=written.tables)
 
     missing = []
     scanned = discovery.scanned_stores
+    to_mark = sum(1 for key, prev in previous.items()
+                  if key not in manifest and (scanned is None or prev["store"] in scanned)
+                  and prev["status"] != "source_missing")
+    marking = 0
     for key, prev in previous.items():
         if key in manifest:
             continue
@@ -765,14 +807,18 @@ def _run(source: LakeSource, harness_dir: Path, run_id: str, root: Path | None, 
             continue
         missing.append(key)
         if prev["status"] != "source_missing":
+            marking += 1
+            report("gone", marking, to_mark, key)
             final = harness_dir / prev["out_relpath"]
             try:
                 if final.is_dir():
                     _mark_unit_absent(final, run_id)
             except Exception as e:  # the unit is untouched; retried next run
-                manifest[key] = {**prev, "status": "error", "source_present": False,
-                                 "error": f"marking absent: {type(e).__name__}: {e}"}
+                error = f"marking absent: {type(e).__name__}: {e}"
+                manifest[key] = {**prev, "status": "error", "source_present": False, "error": error}
+                report("gone", marking, to_mark, key, "error", error=error)
                 continue
+            report("gone", marking, to_mark, key, "source_missing")
         manifest[key] = {**prev, "status": "source_missing", "source_present": False, "error": None}
 
     rows = [manifest[k] for k in sorted(manifest)]

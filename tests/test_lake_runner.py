@@ -521,3 +521,55 @@ class TestTableWriter:
         w = TableWriter(tmp_path / "t.parquet", schema)
         assert w.close() == 0
         assert pq.read_table(tmp_path / "t.parquet").schema.names == ["idx"]
+
+
+class TestProgress:
+    """`on_unit` is how a caller watches a run: an event when work on a unit
+    starts (status None) and one when it ends, counted against the total."""
+
+    def test_a_first_run_reports_each_unit_starting_and_how_it_ended(self, root, lake_root):
+        events = []
+        write_lake(ToySource(), lake_root=lake_root, root=root, on_unit=events.append)
+        assert {e.phase for e in events} == {"mirror"}
+        assert {e.total for e in events} == {3}
+        starts = [e for e in events if e.status is None]
+        ends = [e for e in events if e.status is not None]
+        assert [(e.index, e.store, e.unit_kind, e.unit_id) for e in starts] == [
+            (1, "s1", "doc", "a"), (2, "s1", "doc", "b"), (3, "s2", "doc", "c")]
+        assert [(e.index, e.unit_id, e.status) for e in ends] == [(1, "a", "written"), (2, "b", "written"), (3, "c", "written")]
+        assert ends[0].rows == {"lines": 2, "tags": 2}
+        # A unit's start comes before its end, and before the next unit's start.
+        assert [(e.unit_id, e.status) for e in events][:3] == [("a", None), ("a", "written"), ("b", None)]
+
+    def test_an_unchanged_unit_reports_only_that(self, root, lake_root):
+        write_lake(ToySource(), lake_root=lake_root, root=root)
+        events = []
+        write_lake(ToySource(), lake_root=lake_root, root=root, on_unit=events.append)
+        assert [(e.index, e.unit_id, e.status) for e in events] == [(1, "a", "unchanged"), (2, "b", "unchanged"), (3, "c", "unchanged")]
+
+    def test_a_failed_unit_reports_its_error(self, root, lake_root):
+        events = []
+        write_lake(ToySource(fail_on="b"), lake_root=lake_root, root=root, on_unit=events.append)
+        failed = [e for e in events if e.status == "error"]
+        assert [(e.unit_id, e.error) for e in failed] == [("b", "RuntimeError: crash mid-unit")]
+
+    def test_a_unit_whose_source_is_gone_is_reported_as_it_is_marked(self, root, lake_root):
+        write_lake(ToySource(), lake_root=lake_root, root=root)
+        (root / "s1" / "b.txt").unlink()
+        (root / "s2" / "c.txt").unlink()
+        events = []
+        write_lake(ToySource(), lake_root=lake_root, root=root, on_unit=events.append)
+        gone = [e for e in events if e.phase == "gone"]
+        assert [(e.index, e.total, e.unit_id, e.status) for e in gone if e.status] == [
+            (1, 2, "b", "source_missing"), (2, 2, "c", "source_missing")]
+        assert [(e.index, e.unit_id) for e in gone if e.status is None] == [(1, "b"), (2, "c")]
+        # Already marked: nothing is done to it on the next run, so nothing is
+        # reported, and it is not counted in the total of a later run either.
+        events = []
+        write_lake(ToySource(), lake_root=lake_root, root=root, on_unit=events.append)
+        assert [e for e in events if e.phase == "gone"] == []
+        (root / "s1" / "a.txt").unlink()
+        events = []
+        write_lake(ToySource(), lake_root=lake_root, root=root, on_unit=events.append)
+        assert [(e.index, e.total, e.unit_id, e.status) for e in events if e.phase == "gone"] == [
+            (1, 1, "a", None), (1, 1, "a", "source_missing")]

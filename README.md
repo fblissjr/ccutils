@@ -162,7 +162,15 @@ terminal UI instead, any DuckDB client works — point it at the same file.
 ccutils lake antigravity                    # mirror Google Antigravity's store into ~/.ccutils/lake/
 ccutils lake antigravity --store antigravity-cli -o DIR
 ccutils lake antigravity --decode           # ...then derive readable tables and views beside it
+ccutils lake antigravity --decode --verbose # a line on stderr per unit as it is written or decoded
 ```
+
+On a terminal the command redraws one progress line in place, naming the
+unit it is working on, and removes it before the summary. `-v`/`--verbose`
+prints a line per unit that was written, marked gone or decoded, with its
+row counts, and says nothing about units that did not change. Both go to
+stderr; with neither a terminal nor the flag (a scheduler, a pipe) nothing
+is added.
 
 Mirrors another harness's native transcript store into a Parquet lake, Tier 1
 only (no warehouse). For Antigravity that is every table of every

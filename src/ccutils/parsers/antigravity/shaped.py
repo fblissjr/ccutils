@@ -32,7 +32,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 
 from ccutils.parsers.antigravity import decode
-from ccutils.parsers.lake import read_manifest
+from ccutils.parsers.lake import OnUnit, UnitEvent, read_manifest
 
 # Step field 1. Six types remain in the CLI store (claim 17).
 USER_INPUT, PLANNER_RESPONSE, ERROR_MESSAGE, CHECKPOINT, SYSTEM_MESSAGE, GENERIC = 14, 15, 17, 23, 101, 132
@@ -327,7 +327,8 @@ def _shape_transcript(unit_dir: Path, out: Path, store: str, conv: str, include_
     return rows.close(), unparsed
 
 
-def shape_lake(lake_root: Path | str, *, include_thinking: bool = True, force: bool = False) -> ShapeResult:
+def shape_lake(lake_root: Path | str, *, include_thinking: bool = True, force: bool = False,
+               on_unit: OnUnit | None = None) -> ShapeResult:
     """Derive `<lake_root>/antigravity-decoded/` from `<lake_root>/antigravity/`.
 
     One directory per conversation unit, `step.parquet` and
@@ -337,7 +338,10 @@ def shape_lake(lake_root: Path | str, *, include_thinking: bool = True, force: b
     the lake is touched; deleting the derived tree loses nothing.
 
     `include_thinking=False` writes no thinking text into either table. The
-    lake keeps it regardless (it is the archive)."""
+    lake keeps it regardless (it is the archive).
+
+    `on_unit` is called with a `UnitEvent` (phase `decode`) as each
+    conversation starts and ends; one that needs no work reports only its end."""
     lake_root = Path(lake_root)
     harness_dir = lake_root / HARNESS_DIR
     tree = lake_root / SHAPED_DIR
@@ -346,9 +350,16 @@ def shape_lake(lake_root: Path | str, *, include_thinking: bool = True, force: b
     manifest_path = tree / SHAPED_MANIFEST
     previous = {r["out_relpath"]: r for r in pq.read_table(manifest_path).to_pylist()} if manifest_path.exists() else {}
     rows: dict[str, dict] = {}
-    for unit in read_manifest(harness_dir):
-        if unit["unit_kind"] != "conversation" or not (harness_dir / unit["out_relpath"]).is_dir():
-            continue
+    units = [u for u in read_manifest(harness_dir)
+             if u["unit_kind"] == "conversation" and (harness_dir / u["out_relpath"]).is_dir()]
+
+    def report(index: int, unit: dict, status: str | None = None, rows: dict[str, int] | None = None,
+               error: str | None = None) -> None:
+        if on_unit is not None:
+            on_unit(UnitEvent("decode", index, len(units), unit["store"], unit["unit_kind"], unit["unit_id"],
+                              status=status, rows=rows or {}, error=error))
+
+    for index, unit in enumerate(units, 1):
         rel = unit["out_relpath"]
         # Changes when the unit is rewritten, and when its source goes away.
         derived_from = f"{unit['last_ingested_at']}|{unit['status'] == 'source_missing'}"
@@ -359,7 +370,9 @@ def shape_lake(lake_root: Path | str, *, include_thinking: bool = True, force: b
                 and prev["include_thinking"] == include_thinking and final.is_dir()):
             rows[rel] = prev
             result.unchanged += 1
+            report(index, unit, "unchanged")
             continue
+        report(index, unit)
         store, conv = unit["store"], unit["unit_id"]
         tmp = final.parent / f".{final.name}.tmp-{uuid.uuid4().hex}"
         base = {"store": store, "conversation_id": conv, "out_relpath": rel, "derived_from": derived_from,
@@ -377,6 +390,7 @@ def shape_lake(lake_root: Path | str, *, include_thinking: bool = True, force: b
             rows[rel] = {**base, "status": "error", "error": error, "steps": None, "undecoded_steps": None,
                          "transcript_lines": None, "unparsed_lines": None}
             result.errors.append(f"{rel}: {error}")
+            report(index, unit, "error", error=error)
             continue
         rows[rel] = {**base, "status": "written", "error": None, "steps": steps, "undecoded_steps": undecoded,
                      "transcript_lines": lines, "unparsed_lines": unparsed}
@@ -385,6 +399,7 @@ def shape_lake(lake_root: Path | str, *, include_thinking: bool = True, force: b
         result.undecoded_steps += undecoded
         result.transcript_lines += lines
         result.unparsed_lines += unparsed
+        report(index, unit, "written", rows={"steps": steps, "transcript_lines": lines})
     tmp_manifest = manifest_path.with_name(f".{manifest_path.name}.tmp-{uuid.uuid4().hex}")
     pq.write_table(pa.Table.from_pylist([rows[k] for k in sorted(rows)], schema=_MANIFEST), str(tmp_manifest))
     os.replace(tmp_manifest, manifest_path)
