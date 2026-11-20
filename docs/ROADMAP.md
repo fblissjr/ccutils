@@ -12,6 +12,62 @@ logs, the external audit transcripts) stays under `internal/`. Where an item
 below has a longer write-up there, the file is named so it can be found on a
 machine that has it; nothing here depends on it.
 
+## Vision: an agent can reconstruct what happened
+
+Stated by the owner on 2026-11-20. Any agent (Claude, Gemini, another)
+should be able to read this project's structured data and either replay a
+session in full or, more often, go to whatever depth a question needs:
+patterns across sessions, or what went wrong in one, or what happened in a
+project over many days and across projects, written up as a report at the
+level of detail the owner asks for. Asking an agent for that is easy. It
+succeeds only if the data lets it go as granular as needed, with subagents
+opening the actual code and commits of a repository when the question
+reaches them.
+
+That makes the reader an agent opening the data cold, and it sets what the
+data owes that reader. Each line is a requirement new work is checked
+against; where it stands is as of that date.
+
+1. **Nothing is silently missing.** Every event of a session is a row, or
+   its absence is stated with the reason (emptied by the app, pruned,
+   truncated, not decoded). A NULL an agent cannot explain becomes a guess
+   in its report. Standing: the Antigravity views name where each text was
+   read and flag emptied and pruned rows; the undecoded parts are listed
+   under "Antigravity lake: known gaps".
+2. **Levels, each with a key into the next.** Project, conversation, turn,
+   step, tool call or task, file, commit. An agent starts wide and narrows
+   by key, never by re-reading everything. Standing: Antigravity has
+   conversation, step, tool call and task. It has no project level, no
+   turn level, no file level (paths are inside tool arguments) and no
+   commit.
+3. **The bottom level is the whole thing.** Full prompt, reply, thinking,
+   tool arguments, tool output and log text are reachable by key, not a
+   preview of them. Standing: yes where decoded; older tool calls' bodies
+   and emptied steps' arguments are not.
+4. **Trees are stated.** Which call started which subagent conversation and
+   how it ended; which steps a fork inherited. Standing: the warehouse has
+   `semantic_agent_delegations`. Antigravity states parent and depth per
+   conversation and marks inherited steps, and does not tie a spawning call
+   to its child.
+5. **One project across harnesses and machines.** A project worked on in
+   Claude Code and in Antigravity, on two machines, is one thing to ask
+   about. Standing: not at all. The two harnesses are separate stores, each
+   machine has its own lake, and no row says which machine it came from.
+   Phase 3 (harness identity) is where this lands.
+6. **Tied to the code.** The files a session read and changed, and the
+   commits it made, with enough to check out that commit. Standing: the
+   warehouse has file operations and the branch; neither side has commits.
+7. **Self-describing.** A guide generated from the data it sits beside:
+   grains, keys, joins, coverage, known gaps. Standing: `ccutils guide`
+   does this for the warehouse; the Antigravity views have nothing.
+8. **Scoped when handed over.** An agent gets the named projects and
+   nothing else (the rule in `CLAUDE.md`); the vision does not loosen it.
+
+Order this suggests for the Antigravity side, before more fields are
+decoded: a guide (7), turns and a project key (2), the spawn tie (4), files
+and commits (6). Decoding more fields serves 1 and 3 and continues beside
+them.
+
 ## Where things stand
 
 - **Released:** 0.20.1, tagged 2026-08-28.
