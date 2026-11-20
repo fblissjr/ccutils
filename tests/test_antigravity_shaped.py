@@ -438,6 +438,21 @@ class TestViews:
         assert (parent, depth, agent) == (CONV_A, 1, "worker")
         assert conn.execute("SELECT count(*) FROM antigravity_steps WHERE conversation_id = ?", [CONV_B]).fetchone()[0] == 4
 
+    def test_a_time_the_app_never_set_is_null_not_year_one(self, cli_home, lake_root):
+        # The app's columns are NOT NULL, so "no time" is stored as year 1.
+        zero = "0001-01-01 00:00:00+00:00"
+        (cli_home / "antigravity-cli" / "conversation_summaries.db").unlink()
+        write_summaries_db(cli_home / "antigravity-cli" / "conversation_summaries.db", [
+            {"conversation_id": CONV_A, "app_data_dir": "antigravity-cli",
+             "last_modified_time": zero, "last_user_input_time": zero},
+            {"conversation_id": CONV_B, "app_data_dir": "antigravity-cli",
+             "last_modified_time": "2026-09-19 21:31:07.5+00:00", "last_user_input_time": zero}])
+        lake(cli_home, lake_root)
+        shaped.shape_lake(lake_root)
+        assert views(lake_root).execute(
+            "SELECT conversation_id, last_modified_time, last_user_input_time FROM antigravity_conversations "
+            "ORDER BY 1").fetchall() == [(CONV_A, None, None), (CONV_B, "2026-09-19 21:31:07.5+00:00", None)]
+
     def test_tool_calls_and_usage(self, cli_home, lake_root):
         lake(cli_home, lake_root)
         shaped.shape_lake(lake_root)

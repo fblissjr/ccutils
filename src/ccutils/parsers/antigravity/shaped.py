@@ -508,8 +508,10 @@ SELECT
     NULLIF(s.title, '') AS title,
     s.preview,
     s.step_count,
-    s.last_modified_time,
-    s.last_user_input_time,
+    -- The app's time columns are NOT NULL, so a time it never set is stored
+    -- as year 1. That is no time, and here it is NULL.
+    CASE WHEN s.last_modified_time NOT LIKE '0001-01-01%' THEN s.last_modified_time END AS last_modified_time,
+    CASE WHEN s.last_user_input_time NOT LIKE '0001-01-01%' THEN s.last_user_input_time END AS last_user_input_time,
     s.workspace_uris,
     -- Which project this is, for asking across machines. The repository's
     -- NAME, because it is the one thing that agrees: one repository sits at

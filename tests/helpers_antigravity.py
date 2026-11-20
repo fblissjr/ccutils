@@ -324,7 +324,7 @@ def write_summaries_db(path: Path, rows: list[dict]) -> None:
             "winning_conversation_id": "",
             "not_fully_idle": 0,
             "killed": 0,
-            "last_user_input_time": "2026-09-19 21:30:00.000000+00:00",
+            "last_user_input_time": r.get("last_user_input_time", "2026-09-19 21:30:00.000000+00:00"),
             "last_user_input_step_index": -1,
             "app_data_dir": r.get("app_data_dir", "antigravity"),
             "raw_summary": r.get("raw_summary", f_varint(2, r.get("step_count", 0))),
