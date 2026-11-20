@@ -464,6 +464,9 @@ in field 4 of the message in field 5.
   is that rule. The bodies of the per-tool types are not read; their output
   comes from the transcript line, a reading that is measured for `GENERIC`
   (claim 17) and assumed for them.
+- An `ERROR_MESSAGE` step can be a tool call's only record: 132 of them on
+  that Mac state a call in `5.4`, and for none does another step of the
+  conversation state the same call id. They are tool calls that failed.
 - A checkpoint states usage too: 468 `CHECKPOINT` steps on the Linux
   corpus carry token counts and no model, 466 of them under the generation
   index of the response that follows, with different counts. That is read

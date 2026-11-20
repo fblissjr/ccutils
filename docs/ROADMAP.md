@@ -449,8 +449,9 @@ Still to build, in the order they unblock questions:
   (1,700 of 3,432 `VIEW_FILE`, 1,046 of 2,083 `RUN_COMMAND`), so their
   output is only in the undecoded body. 132 `ERROR_MESSAGE` steps state a
   tool call; they are in `antigravity_tool_calls` as errors with
-  `error_text`. Whether another step states the same call (which would
-  count it twice) is unmeasured. 3 `BROWSER_SUBAGENT` steps state usage.
+  `error_text`. No other step of their conversation states the same call
+  id (0 of 132), so each is the only record of its call and none is
+  counted twice. 3 `BROWSER_SUBAGENT` steps state usage.
 - **Background tasks tie by step index** (contract claim 19): the tool
   step that started one, `tasks/task-<idx>.log`, and the system message
   that reports its exit code. A view of a task with its outcome is the
