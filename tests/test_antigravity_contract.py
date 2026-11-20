@@ -58,7 +58,8 @@ def dbs():
 
 
 def _ro(path: Path) -> sqlite3.Connection:
-    return sqlite3.connect(f"file:{path}?immutable=1", uri=True)
+    # mode=ro as well: immutable=1 alone creates a file that is not there.
+    return sqlite3.connect(f"file:{path}?mode=ro&immutable=1", uri=True)
 
 
 def _ddl(conn) -> tuple[str, ...]:
@@ -265,9 +266,32 @@ class TestWalMode:
 # created_at is the step metadata's created_at (field 5.1) to the second.
 # ---------------------------------------------------------------------------
 
-# Measured: 5 of ~50,000 joined lines name a type other than their step_type's
-# dominant name. The threshold is ~10x headroom.
+# A revert re-uses step indices and the transcript appends, so an index can
+# carry lines from a branch the database no longer holds. A line belongs to a
+# step when the index AND the creation second agree. Measured 2026-11-20 on a
+# CLI-only store where reverts are common: joined that way no line names a
+# type other than its step_type's dominant name, a handful of steps have lines
+# at their index and none at their second, and on every index written more
+# than once the last line is the database's step. Joined on the index alone
+# the same store disagrees on about a quarter of a percent of lines, which is
+# what this canary used to measure. Run with -s for the counts.
 MAX_NAME_DISAGREEMENT = 0.001
+MAX_STEPS_WITHOUT_THEIR_LINE = 0.001
+MIN_LAST_LINE_IS_CURRENT = 0.99
+
+
+def _seconds(iso: str | None) -> int | None:
+    try:
+        return int(datetime.strptime(iso or "", "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc).timestamp())
+    except ValueError:
+        return None
+
+
+def lines_at(joined: list[dict], seconds: float | None) -> list[dict]:
+    """The lines at a step's index that were written for THAT step."""
+    if seconds is None:
+        return []
+    return [line for line in joined if _seconds(line.get("created_at")) == int(seconds)]
 
 
 def name_disagreement(pairs) -> tuple[dict[int, str], float]:
@@ -279,16 +303,6 @@ def name_disagreement(pairs) -> tuple[dict[int, str], float]:
     total = sum(sum(c.values()) for c in by_type.values())
     off = sum(sum(c.values()) - c[dominant[t]] for t, c in by_type.items())
     return dominant, (off / total if total else 0.0)
-
-
-def created_at_mismatches(pairs) -> int:
-    """(metadata created_at seconds, transcript created_at ISO string) pairs."""
-    bad = 0
-    for seconds, iso in pairs:
-        stated = datetime.strptime(iso, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc).timestamp()
-        if seconds is None or int(seconds) != int(stated):
-            bad += 1
-    return bad
 
 
 def _transcript(db: Path) -> dict[int, list[dict]]:
@@ -308,7 +322,8 @@ def _transcript(db: Path) -> dict[int, list[dict]]:
 
 class TestStepNamesAreStated:
     def test_corpus_holds(self, dbs):
-        names, times = [], []
+        names = []
+        with_lines = without_their_line = rewritten = last_is_current = 0
         for db in dbs:
             lines = _transcript(db)
             if not lines:
@@ -316,25 +331,36 @@ class TestStepNamesAreStated:
             conn = _ro(db)
             for idx, step_type, metadata in conn.execute("SELECT idx, step_type, metadata FROM steps"):
                 joined = lines.get(idx) or []
-                for line in joined:
-                    names.append((step_type, line.get("type")))
-                # A step_index written twice can carry two different times
-                # (measured: all 32 mismatches corpus-wide are on duplicated
-                # indices); the claim is about indices written once.
-                if len(joined) == 1 and joined[0].get("created_at"):
-                    times.append((timestamp_seconds(get(metadata, 1)), joined[0]["created_at"]))
+                if not joined:
+                    continue
+                with_lines += 1
+                mine = lines_at(joined, timestamp_seconds(get(metadata, 1)))
+                without_their_line += not mine
+                names += [(step_type, line.get("type")) for line in mine]
+                if len(joined) > 1:
+                    rewritten += 1
+                    last_is_current += bool(mine) and mine[-1] is joined[-1]
             conn.close()
         assert len(names) > 1000, "too few joined lines to say anything"
         dominant, rate = name_disagreement(names)
+        print(f"\nsteps with a transcript line {with_lines}; none at their creation second "
+              f"{without_their_line}; indices written more than once {rewritten}, last line current "
+              f"{last_is_current}; name disagreement {rate:.4%}; names {dominant}")
         assert rate <= MAX_NAME_DISAGREEMENT, f"{rate:.4%} of lines disagree with their type's name"
         assert len(set(dominant.values())) == len(dominant), f"two step types share a name: {dominant}"
-        assert created_at_mismatches(times) == 0
+        assert without_their_line / with_lines <= MAX_STEPS_WITHOUT_THEIR_LINE
+        if rewritten:
+            assert last_is_current / rewritten >= MIN_LAST_LINE_IS_CURRENT
 
     def test_oracle(self):
         pairs = [(15, "PLANNER_RESPONSE")] * 99 + [(15, "GENERIC")]
         dominant, rate = name_disagreement(pairs)
         assert dominant == {15: "PLANNER_RESPONSE"} and rate == pytest.approx(0.01)
-        assert created_at_mismatches([(1_790_000_000.9, "2026-09-21T14:13:20Z"), (5.0, "2026-09-21T14:13:20Z")]) == 1
+        old = {"type": "GENERIC", "created_at": "2026-09-21T14:13:20Z"}       # the abandoned branch
+        new = {"type": "USER_INPUT", "created_at": "2026-09-21T14:43:20Z"}    # what the database holds
+        assert lines_at([old, new], 1_790_001_800.9) == [new]
+        assert lines_at([old, new], 1_790_000_000) == [old]
+        assert lines_at([old, new], 5.0) == [] and lines_at([old, {"type": "X"}], None) == []
 
 
 # ---------------------------------------------------------------------------

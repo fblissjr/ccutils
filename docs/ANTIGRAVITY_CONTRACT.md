@@ -1,7 +1,7 @@
 <!-- path-privacy: skip-file -- references universal Antigravity data and install paths (not personal) -->
 # The Antigravity on-disk contract
 
-Last updated: 2026-10-09
+Last updated: 2026-11-20
 
 What `ccutils lake antigravity` assumes about how Google Antigravity (the Gemini
 agentic IDE/hub and its `agy` CLI, from the Windsurf "Cascade" lineage) stores
@@ -15,6 +15,13 @@ Corpus at time of writing: Antigravity hub 2.15.1 installed; 414 conversation
 databases (309 hub, 105 CLI), 54,001 steps, 2025-11-21 to 2026-09-19. Unless a
 claim says "survey", the numbers were measured by a full scan, not a sample,
 and the canary re-measures them on every test run.
+
+**A second corpus, 2026-11-20: a machine with only the CLI store (`agy`
+1.5.13).** It contradicts or narrows claims 6, 9, 11, 13, 14 and 15 and the
+store map. Claims 6, 13, 14 and 16 below carry the correction; the rest are
+listed in `docs/ROADMAP.md` under "Antigravity lake: known gaps" and are not
+rewritten here yet. Where a claim below says "hub corpus" or "CLI corpus", it
+holds for that one only.
 
 ---
 
@@ -156,7 +163,18 @@ files in `language_server` 2.15.1; decoding with it found 0 unknown fields in
   label source, not a replacement for the database.
 - Consequence: Phase 1 can name step types from data the app wrote rather
   than from a hard-coded table, and the descriptors can be cross-checked.
-- Canary: `TestStepNamesAreStated` (rate threshold 0.1%).
+- Corrected 2026-11-20 on the CLI corpus. A line belongs to a step when the
+  index AND the creation second agree: a revert re-uses indices (claim 14)
+  and the transcript appends, so an index also carries the abandoned
+  branch's lines. Joined on the index alone, a store where reverts are
+  common disagrees far above the threshold; joined on both, no line
+  disagrees, and on every index written more than once the LAST line is the
+  database's step. The CLI transcript also states more than this claim says:
+  tool calls with their arguments, thinking text, and since autumn 2026
+  token counts on model responses. It still carries no call id, and a model
+  id on few lines.
+- Canary: `TestStepNamesAreStated` (rate thresholds in the test; `-s` prints
+  the counts).
 
 Observed step types, both stores: 15 `PLANNER_RESPONSE` 26,293 · 132 `GENERIC`
 14,200 · 8 `VIEW_FILE` 3,432 · 5 `CODE_ACTION` 2,483 · 21 `RUN_COMMAND` 2,083 ·
@@ -246,7 +264,7 @@ Observed step types, both stores: 15 `PLANNER_RESPONSE` 26,293 · 132 `GENERIC`
   `config/mcp_config.json` and asserts from the audit trace that it was
   never opened.
 
-## 13. There is no retention setting
+## 13. There is no retention setting, and the CLI prunes anyway
 
 - Measured: no retention, auto-delete or cleanup setting in the hub's
   `app.asar`, the `language_server` binary, the IDE extension's settings or
@@ -258,6 +276,22 @@ Observed step types, both stores: 15 `PLANNER_RESPONSE` 26,293 · 132 `GENERIC`
   current tree except into `_superseded/`. A unit whose source disappears is
   kept; a summaries row, a brain file or a whole table the source dropped is
   carried forward with `source_present = false`.
+- Corrected 2026-11-20 on the CLI corpus: the CLI deletes old conversations
+  itself. The count of conversation databases on disk is capped (a round
+  number plus those created since the CLI last started); the summaries index
+  lists conversations with no database and no brain directory, and every one
+  of them was last modified before every conversation still on disk; the
+  lake's earlier snapshot holds conversations that have since left the disk.
+  Subagent conversations take slots like roots, and the brain directory goes
+  with the database. The binary holds `trajectorystore.(*Manager).PruneAll`
+  and `summarystore.(*StoreClient).pruneAfterReconcile`; no settings key,
+  flag, environment variable or experiment flag names a limit, and the
+  vendor's settings reference and changelog state none. The cap's value is
+  inferred from counts, not read from the binary. Only `historySize` exists,
+  and it caps the prompt history file. The hub was not re-measured.
+- Consequence, added: the lake must run more often than the window turns
+  over, and the summaries row, which outlives the conversation, is then the
+  only statement of its parent and depth.
 - Canary: none; re-check on a major app update.
 
 ## 14. Every step states its creation time, and a revert re-uses indices
@@ -280,6 +314,32 @@ Observed step types, both stores: 15 `PLANNER_RESPONSE` 26,293 · 132 `GENERIC`
 - Canary: `TestStepCreationTimeIsStated` (every step has field 1). The reuse
   itself is a survey number, not a canary: the design is the same whether it
   is rare or common.
+- Corrected 2026-11-20 on the CLI corpus: reverts are common there, not
+  rare, and the unmeasured question has its evidence. The creation time does
+  stay fixed across an in-place update, including the one that empties the
+  step (claim 16), so this check cannot see a body that was lost.
+
+## 16. The CLI empties old steps in place
+
+- Measured 2026-11-20 on the CLI corpus: about a third of all steps have
+  status 5 (`CORTEX_STEP_STATUS_CLEARED` in the binary). Such a step keeps
+  its idx, its creation time and its metadata, usage included, and has lost
+  its body: text, thinking, tool output, the typed tool payload and with it
+  the exit code, and the tool arguments on about half. They sit in the long
+  conversations as a prefix that ends before the last checkpoint. The brain
+  transcript, joined as in claim 6, still has content for most of them; a
+  few thousand have no transcript line and are gone from disk. Comparing a
+  lake snapshot with the same conversations five days later, no step of an
+  idle conversation had shrunk, so clearing happens while a conversation is
+  live. What triggers it is undetermined.
+- Consequence: the database is not a stable record of a step's content, and
+  no single source is complete. The lake keeps the fuller row
+  (`schema.VERSION_KEYS`): a `steps` row whose payload got shorter under the
+  same idx stays beside the new one, marked `source_present = false`. A
+  shaped layer reads a cleared step's content from the transcript and says
+  that it did.
+- Canary: none on the real store. The behaviour is held by
+  `tests/test_antigravity_lake.py::TestClearedSteps`.
 
 ## 15. The hub's summaries database carries a full-text index, and its columns are untyped
 

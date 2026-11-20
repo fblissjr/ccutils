@@ -310,6 +310,20 @@ over the format 2 lake just written: 677 units, 0 errors, every row count
 equal to the first run's plus the summaries unit, and the mixed-storage
 columns' class counts equal to the source's.
 
+Lake format 4, 2026-11-20, after the audit of a CLI-only machine
+("Antigravity lake: known gaps" has what it found and what is still open).
+Two ways the archive could lose what it held are closed. The manifest is
+checkpointed after every unit that changes the lake, and a unit directory no
+manifest lists is adopted (`unit_dirs`), because the only run on that machine
+had been interrupted and the CLI then pruned conversations it wrote. And a
+step the CLI empties in place keeps its full row (`schema.VERSION_KEYS`,
+contract claim 16), because neither the idx set nor the creation time shows
+that loss. The same bump names the `subagents/`, `swarm/` and task-inbox
+brain files, which were `unclassified` and capped, and declares
+`conversation_parents`. Checked by breaking each rule and watching its test
+fail, and then on a copy of that machine's real lake before the real one;
+the run's numbers are in `_runs.parquet` and `_manifest.parquet` there.
+
 The command and the lake layout are outside semver until declared stable.
 Declaring them stable is a decision for after phase 1, when a consumer exists.
 
@@ -368,9 +382,9 @@ ended) and `checkpoint`. Whatever depends on another conversation's rows
 is its own column. Swarm files stay lake-only until more than a handful of
 conversations use them.
 
-Order: the two lake fixes under "Antigravity lake: known gaps" first, then
-a complete run and a schedule, then the shaped layer from the plain-JSON
-and plain-column sources, then the field-number decode for what those lack.
+Order: the two lake fixes (done, lake format 4), a complete run and a
+schedule, then the shaped layer from the plain-JSON and plain-column
+sources, then the field-number decode for what those lack.
 
 1. **Capture the schema into the lake.** Extract the `FileDescriptorSet` from
    the installed Go binary (rodata scan for `FileDescriptorProto` bytes, walk
@@ -771,9 +785,6 @@ here and stays local.
 
 ### Antigravity lake: known gaps
 
-Found while building phase 0 (2026-09-22) or on the first default-root run
-(2026-10-09), not fixed. None blocks the lake.
-
 Found on 2026-11-20, auditing a machine that holds only the CLI store
 (`agy` 1.5.13). Measurements and the scripts that produce them:
 `internal/antigravity_audit_2026-11-20/` (local-only). Ordered by what can
@@ -788,50 +799,34 @@ lose data.
   on the hub and is false for the CLI. The summaries row outlives the
   conversation and is then its only trace. Consequence: the lake has to run
   on a schedule shorter than the window, and nothing schedules it today.
-- **An interrupted run orphans what it wrote.** The manifest is written once,
-  at the end of `_run` (`parsers/lake.py`). After a run that dies part-way,
-  every unit already swapped in is on disk and in no manifest; if its source
-  then disappears, the next run neither lists it nor marks it absent, and its
-  rows still say `source_present = true`. Nothing is deleted. Reproduced on
-  the toy source (`scripts/tie/repro.py` there). The only run on that machine
-  ended this way, and the app has since pruned conversations it wrote. Fix:
-  write the manifest as units land, and adopt a unit directory the manifest
-  does not know.
-- **A cleared step would overwrite its fuller copy.** The CLI clears the
-  body of old steps in place while a conversation is live: same idx, same
-  creation time, status `CLEARED`. `supersedes`
-  (`parsers/antigravity/__init__.py`) compares the idx set and the
-  creation-time bytes, so it sees nothing, and the rewritten unit replaces
-  the full row with the cleared one. Not yet observed in a lake (the one
-  snapshot compared equal to the disk on every step), but a conversation
-  archived before a clearing and again after it would lose the bodies.
-  Fix: a step row whose payload shrank under the same creation time keeps
-  its earlier version. Contract claim 14 needs the same correction.
 - **Media is inventory only.** Generated images and video are recorded as
   path, size and hash. They are most of a brain directory by size, and a
   pruned conversation takes them with it. Open: archive the bytes,
   content-addressed by the hash already computed.
-- **Brain kinds the rules do not name.** `subagents/<id>.json` (the
-  delegation tree with type and role), `swarm/`, `logs/media/`, a top-level
-  `brain/tempmediaStorage/` and a per-task inbox are archived only as
-  `unclassified`, capped at `UNCLASSIFIED_MAX_BYTES`, or not read at all.
-- **`conversation_parents` is not declared.** The CLI's summaries database
-  has the table (empty) and the full-text tables; the first is missing from
-  `schema.SUMMARIES_OPTIONAL_TABLES`, so every run notes it as drift. There
-  is still no corpus canary for claim 15.
 - **The installed version is not recorded on Linux.** `HUB_INFO_PLIST` is a
   macOS path, and the CLI's version is read from nowhere.
-- **`TestStepNamesAreStated` is red on that corpus.** It joins transcript
-  lines to steps on the index alone, and reverts, which are common in the
-  CLI store and rare in the corpus the claim was measured on, leave stale
-  lines under re-used indices. Joining on the index and the creation second
-  gives no disagreement. The same file's `_ro` opens `immutable=1` without
-  `mode=ro`, which creates a missing file.
-- **The contract describes a corpus this machine does not have.** Claims 6,
-  9, 11, 13, 14, 15 and the store map are wrong or incomplete for the CLI
-  store; the list is section 8 of the audit's `FINDINGS.md`.
+- **The contract still describes the hub corpus in places.** Claims 6, 13,
+  14 and the new 16 carry the CLI correction. Still to rewrite for the CLI
+  store: claim 9 (a parent's invoke step does not name every child), claim
+  11 (three payload shapes, typed tool messages the majority), claim 15 (the
+  CLI's index has the full-text tables, and there is no corpus canary), and
+  the store map (no brain `.git`, no `.resolved` files, the new kinds). The
+  list is section 8 of the audit's `FINDINGS.md`.
+- **A top-level `brain/tempmediaStorage/` is not read.** A sibling of the
+  conversation directories holding a few images; it matches no conversation
+  id, so discovery notes it and skips it.
+- **The prompt snapshot is not versioned.** One `gen_metadata` row per long
+  conversation holds the whole prompt, and it appears to move to the newest
+  generation. After a compaction the next snapshot's prompt is the shorter
+  one and the lake keeps only that. Keeping each would store the prompt
+  again on every run; unmeasured whether earlier rows shrink, and open
+  whether to keep one per compaction.
+- **Claim 13 and claim 16 have no corpus canary.** Pruning and clearing are
+  held by fixture tests, not by a measurement that would go red if the CLI
+  stopped doing either.
 
-Older, still open:
+Found while building phase 0 (2026-09-22) or on the first default-root run
+(2026-10-09), not fixed. None blocks the lake.
 - **The lake has no self-check.** The manifest records what was written, and
   the contract canaries check the SOURCE, but nothing verifies the lake
   against the source after the fact the way `ccutils audit` checks the

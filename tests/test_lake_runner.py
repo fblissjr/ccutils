@@ -43,11 +43,20 @@ class ToySource:
     record_sources = frozenset({"claude_code_jsonl"})
 
     def __init__(self, fail_on: str | None = None, discover_raises: bool = False,
-                 stores: tuple[str, ...] | None = None):
+                 stores: tuple[str, ...] | None = None, interrupt_on: str | None = None,
+                 versioned: bool = False):
         self.fail_on = fail_on
         self.discover_raises = discover_raises
         self.stores = stores
+        self.interrupt_on = interrupt_on
+        self.versioned = versioned
         self.written: list[str] = []
+
+    def unit_dirs(self, harness_dir):
+        return [(store.name, "doc", d.name, f"{store.name}/docs/{d.name}")
+                for store in sorted(p for p in harness_dir.iterdir() if p.is_dir())
+                for d in sorted((store / "docs").glob("*"))
+                if d.is_dir() and not d.name.startswith((".", "_"))]
 
     def discover(self, root):
         if self.discover_raises:
@@ -62,6 +71,7 @@ class ToySource:
                     store=store, unit_kind="doc", unit_id=p.stem, source_root=root / store,
                     source_relpaths=tuple(rels), out_relpath=f"{store}/docs/{p.stem}",
                     carry_keys=(("tags", "tag"),),
+                    version_keys=(("lines", "idx", "text"),) if self.versioned else (),
                 ))
         return Discovery(units=units, notes=["toy note"], context={"app_version": "9.9"},
                          scanned_stores=frozenset(scanned))
@@ -75,6 +85,8 @@ class ToySource:
         return f"lines: idx {sorted(lost)} gone" if lost else None
 
     def write_unit(self, unit, out_dir, envelope):
+        if self.interrupt_on == unit.unit_id:
+            raise KeyboardInterrupt
         self.written.append(unit.unit_id)
         schema = pa.schema(envelope_fields() + [pa.field("idx", pa.int64()), pa.field("text", pa.string())])
         w = TableWriter(out_dir / "lines.parquet", schema)
@@ -302,6 +314,139 @@ class TestArchiveSemantics:
         (root / "s1" / "a.txt").write_text("one\ntwo\nthree\n")
         write_lake(ToySource(), lake_root=lake_root, root=root)
         assert not (lake_root / "toy" / "s1" / "docs" / "_superseded").exists()
+
+
+class TestInterruptedRun:
+    """A run that dies part-way must not leave units the next run cannot see.
+
+    The manifest used to be written once, at the end. The first real run on a
+    second machine was interrupted, the app then pruned conversations it had
+    archived, and the next run would have neither listed them nor marked
+    them absent."""
+
+    def test_units_written_before_an_interrupt_are_in_the_manifest(self, root, lake_root):
+        with pytest.raises(KeyboardInterrupt):
+            write_lake(ToySource(interrupt_on="b"), lake_root=lake_root, root=root)
+        assert {r["unit_id"] for r in read_manifest(lake_root / "toy")} == {"a"}
+
+    def test_a_source_that_vanishes_after_an_interrupt_is_marked_absent(self, root, lake_root):
+        with pytest.raises(KeyboardInterrupt):
+            write_lake(ToySource(interrupt_on="c"), lake_root=lake_root, root=root)
+        (root / "s1" / "a.txt").unlink()
+        result = write_lake(ToySource(), lake_root=lake_root, root=root)
+        manifest = {r["unit_id"]: r for r in read_manifest(lake_root / "toy")}
+        assert manifest["a"]["status"] == "source_missing"
+        assert ("s1", "doc", "a") in result.missing
+        assert {r["source_present"] for r in _lines(lake_root)} == {False}
+
+    def test_an_interrupt_keeps_the_rows_of_units_it_never_reached(self, root, lake_root):
+        write_lake(ToySource(), lake_root=lake_root, root=root)
+        with pytest.raises(KeyboardInterrupt):
+            write_lake(ToySource(interrupt_on="b"), lake_root=lake_root, root=root, force=True)
+        manifest = {r["unit_id"]: r for r in read_manifest(lake_root / "toy")}
+        assert set(manifest) == {"a", "b", "c"}
+        assert manifest["c"]["status"] == "written"  # as the first run left it
+
+    def test_a_unit_directory_no_manifest_lists_is_adopted_and_marked_absent(self, root, lake_root):
+        # The lake the old runner left behind: unit directories and no manifest.
+        write_lake(ToySource(), lake_root=lake_root, root=root)
+        (lake_root / "toy" / "_manifest.parquet").unlink()
+        (root / "s1" / "b.txt").unlink()
+        result = write_lake(ToySource(), lake_root=lake_root, root=root)
+        manifest = {r["unit_id"]: r for r in read_manifest(lake_root / "toy")}
+        assert manifest["b"]["status"] == "source_missing" and manifest["b"]["source_present"] is False
+        assert ("s1", "doc", "b") in result.missing
+        assert {r["source_present"] for r in _lines(lake_root, "b")} == {False}
+        assert any("adopted" in n for n in result.notes)
+
+    def test_an_adopted_unit_keeps_what_its_source_has_since_dropped(self, root, lake_root):
+        first = write_lake(ToySource(), lake_root=lake_root, root=root)
+        ingested = {r["unit_id"]: r["first_ingested_at"] for r in read_manifest(lake_root / "toy")}
+        (lake_root / "toy" / "_manifest.parquet").unlink()
+        (root / "s1" / "a.tags").write_text("red\n")
+        result = write_lake(ToySource(), lake_root=lake_root, root=root)
+        assert _status(result)["a"] == "written"
+        tags = _tags(lake_root)
+        assert tags["green"]["source_present"] is False and tags["green"]["lake_run_id"] == first.lake_run_id
+        assert tags["red"]["source_present"] is True
+        manifest = {r["unit_id"]: r for r in read_manifest(lake_root / "toy")}
+        assert manifest["a"]["first_ingested_at"] == ingested["a"]
+
+    def test_a_listed_unit_is_not_adopted_again(self, root, lake_root):
+        write_lake(ToySource(), lake_root=lake_root, root=root)
+        result = write_lake(ToySource(), lake_root=lake_root, root=root)
+        assert set(_status(result).values()) == {"unchanged"}
+        assert not any("adopted" in n for n in result.notes)
+
+
+def _texts(lake_root, unit="a"):
+    return sorted((r["idx"], r["text"], r["source_present"]) for r in _lines(lake_root, unit))
+
+
+class TestEarlierVersions:
+    """A row rewritten in place with less in it keeps its fuller version.
+
+    Antigravity clears the body of old steps under the same idx and creation
+    time, so neither the idx set nor the creation time shows it, and the
+    rewrite used to replace the full row with the emptied one."""
+
+    def test_a_row_that_shrank_keeps_its_earlier_version(self, root, lake_root):
+        write_lake(ToySource(versioned=True), lake_root=lake_root, root=root)
+        (root / "s1" / "a.txt").write_text("one\nt\n")
+        result = write_lake(ToySource(versioned=True), lake_root=lake_root, root=root)
+        assert _status(result)["a"] == "written"
+        assert _texts(lake_root) == [(0, "one", True), (1, "t", True), (1, "two", False)]
+        outcome = next(o for o in result.outcomes if o.unit_id == "a")
+        assert outcome.carried == {"lines": 1}
+
+    def test_a_row_that_grew_replaces_what_was_there(self, root, lake_root):
+        write_lake(ToySource(versioned=True), lake_root=lake_root, root=root)
+        (root / "s1" / "a.txt").write_text("one\ntwo and more\n")
+        write_lake(ToySource(versioned=True), lake_root=lake_root, root=root)
+        assert _texts(lake_root) == [(0, "one", True), (1, "two and more", True)]
+
+    def test_a_kept_version_survives_later_rewrites_once(self, root, lake_root):
+        write_lake(ToySource(versioned=True), lake_root=lake_root, root=root)
+        (root / "s1" / "a.txt").write_text("one\nt\n")
+        write_lake(ToySource(versioned=True), lake_root=lake_root, root=root)
+        (root / "s1" / "a.txt").write_text("one\nt\nthree\n")
+        write_lake(ToySource(versioned=True), lake_root=lake_root, root=root)
+        write_lake(ToySource(versioned=True), lake_root=lake_root, root=root, force=True)
+        assert _texts(lake_root) == [(0, "one", True), (1, "t", True), (1, "two", False), (2, "three", True)]
+
+    def test_a_version_shorter_than_a_regrown_row_is_still_kept(self, root, lake_root):
+        # Longer is not a superset: a kept version leaves only when the
+        # current row is byte for byte the same.
+        write_lake(ToySource(versioned=True), lake_root=lake_root, root=root)
+        (root / "s1" / "a.txt").write_text("one\nt\n")
+        write_lake(ToySource(versioned=True), lake_root=lake_root, root=root)
+        (root / "s1" / "a.txt").write_text("one\nsomething else\n")
+        write_lake(ToySource(versioned=True), lake_root=lake_root, root=root)
+        assert _texts(lake_root) == [(0, "one", True), (1, "something else", True), (1, "two", False)]
+
+    def test_a_version_as_long_as_the_current_row_is_compared_by_content(self, root, lake_root):
+        write_lake(ToySource(versioned=True), lake_root=lake_root, root=root)
+        (root / "s1" / "a.txt").write_text("one\nt\n")
+        write_lake(ToySource(versioned=True), lake_root=lake_root, root=root)
+        (root / "s1" / "a.txt").write_text("one\nxyz\n")   # as long as the kept "two", not the same
+        write_lake(ToySource(versioned=True), lake_root=lake_root, root=root)
+        assert _texts(lake_root) == [(0, "one", True), (1, "two", False), (1, "xyz", True)]
+
+    def test_a_source_that_left_and_came_back_unchanged_is_not_doubled(self, root, lake_root):
+        write_lake(ToySource(versioned=True), lake_root=lake_root, root=root)
+        text = (root / "s1" / "a.txt").read_text()
+        (root / "s1" / "a.txt").unlink()
+        write_lake(ToySource(versioned=True), lake_root=lake_root, root=root)
+        assert {p for _, _, p in _texts(lake_root)} == {False}
+        (root / "s1" / "a.txt").write_text(text)
+        write_lake(ToySource(versioned=True), lake_root=lake_root, root=root)
+        assert _texts(lake_root) == [(0, "one", True), (1, "two", True)]
+
+    def test_without_a_version_key_the_source_is_followed(self, root, lake_root):
+        write_lake(ToySource(), lake_root=lake_root, root=root)
+        (root / "s1" / "a.txt").write_text("one\nt\n")
+        write_lake(ToySource(), lake_root=lake_root, root=root)
+        assert _texts(lake_root) == [(0, "one", True), (1, "t", True)]
 
 
 class TestFailureHandling:

@@ -1,6 +1,6 @@
 # Harness architecture: more than one transcript source
 
-Last updated: 2026-09-22
+Last updated: 2026-11-20
 
 > **Status: PROPOSED.** One phase is built: the harness-generic lake runner
 > and the Antigravity lake source, shipped as the EXPERIMENTAL `ccutils lake`
@@ -73,8 +73,13 @@ keyed table and whole tables the source dropped carried forward marked
 new one is not a continuation, or when a carry would drop a column),
 missing-unit detection scoped to the stores actually scanned, a manifest, a
 run log and a lock. A `LakeSource` supplies `discover`, `write_unit` and
-`supersedes`; a unit declares its `carry_keys`. The interface is
-provisional until Claude Code joins it in Phase 2.
+`supersedes`; a unit declares its `carry_keys` and, for a table whose rows
+the source empties in place, its `version_keys` (a row whose payload got
+shorter under the same key keeps its earlier version, marked absent). The
+manifest is checkpointed after every unit that changed the lake, and a
+source's `unit_dirs` lets the runner adopt a unit directory no manifest
+lists, so a run that dies part-way leaves nothing the next run cannot see.
+The interface is provisional until Claude Code joins it in Phase 2.
 
 ## Neutral staging, sketch
 

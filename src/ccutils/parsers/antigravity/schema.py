@@ -33,7 +33,13 @@ from ccutils.parsers.antigravity import stores
 # 3: a column the contract does not declare takes its kind from the data
 #    (`typeof`), not from its declared type; one holding several storage
 #    classes is written as bytes plus a `<name>__storage` column (MIXED).
-LAKE_FORMAT_VERSION = 3
+#
+# 4: a step whose payload got shorter under the same idx keeps its earlier
+#    row beside the new one, marked absent (VERSION_KEYS). `steps` can hold
+#    several rows for one idx; the current one is `source_present`. Brain
+#    files under `subagents/`, `swarm/` and a task's inbox are named kinds
+#    kept whole, no longer `unclassified` and capped.
+LAKE_FORMAT_VERSION = 4
 
 TEXT, INTEGER, BLOB, REAL = "text", "integer", "blob", "real"
 
@@ -129,6 +135,8 @@ SUMMARIES_OPTIONAL_TABLES: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = 
     "conversations_fts_docsize": (("id", "sz"), ()),
     "conversations_fts_idx": (("segid", "term", "pgno"), ()),
     "search_schema_version": (("version",), ()),
+    # In the CLI's database, empty on every measurement so far (2026-11-20).
+    "conversation_parents": (("conversation_id", "parent_id"), ()),
 }
 
 # Per unit kind, (table, key) pairs whose rows are carried forward when the
@@ -141,6 +149,17 @@ CARRY_KEYS: dict[str, tuple[tuple[str, str], ...]] = {
     "store_files": (("store_files", "relpath"),),
     "implicit": (("implicit_files", "relpath"),),
     "config_projects": (("config_projects", "relpath"),),
+}
+
+# `(table, key, payload)` per unit kind: a row whose payload shrank in place
+# keeps its earlier version. The CLI empties old steps under their original
+# idx and creation time (status CLEARED), which neither IDX_TABLES nor the
+# creation-time check below can see. `gen_metadata` is left out on purpose:
+# its one very large row per conversation is a prompt snapshot that moves to
+# the newest generation, and keeping every one would store the prompt again
+# on each run.
+VERSION_KEYS: dict[str, tuple[tuple[str, str, str], ...]] = {
+    "conversation": (("steps", "idx", "step_payload"),),
 }
 
 # Conversation tables keyed on `idx`. A snapshot that lost an idx from any of
@@ -217,6 +236,7 @@ def format_fingerprint() -> str:
         repr(stores.CONVERSATION_FILE_RULES), repr(stores.UNCLASSIFIED_MAX_BYTES),
         repr(stores.GIT_DIR), repr(stores.GIT_FILE_RULES),
         repr(CARRY_KEYS), repr(IDX_TABLES), repr(STEP_CREATED_AT_FIELD),
+        repr(VERSION_KEYS),
         repr(("undeclared-column-kind", "typeof", MIXED, MIXED_STORAGE_SUFFIX)),
     ]
     return hashlib.sha256("\n".join(parts).encode()).hexdigest()

@@ -173,7 +173,9 @@ is decoded yet. The lake is an archive: unchanged units are skipped, and
 nothing it held leaves the current tree. Rows the app deleted (a
 conversation, its summary row, a brain file) stay with `source_present =
 false`, and a conversation that was reverted keeps its old snapshot under
-`_superseded/`. Reads are an
+`_superseded/`. A step the CLI has emptied in place keeps its full row
+beside the emptied one, also `source_present = false`, so `steps` can hold
+more than one row for an `idx`. Reads are an
 allowlist, so the OAuth tokens beside the data are never opened; the lake is
 still private data. **Experimental:** the command and the layout are outside
 semver until declared stable. Store map and measured claims:
@@ -184,9 +186,34 @@ phases: [docs/HARNESS_ARCHITECTURE.md](docs/HARNESS_ARCHITECTURE.md).
 -- DuckDB over the lake; union_by_name because a drifted file can carry extra columns
 SELECT store, step_type, count(*)
 FROM read_parquet('~/.ccutils/lake/antigravity/*/conversations/*/steps.parquet', union_by_name = true)
-WHERE source_present          -- drop this to include what the app has since deleted
+WHERE source_present          -- the source's current rows; drop it to add what the app has since
+                              -- deleted, and the fuller version of every step it emptied
 GROUP BY ALL ORDER BY 3 DESC;
 ```
+
+**Run it on a schedule.** The `agy` CLI deletes old conversations on its own
+once enough newer ones exist, brain directory included, and has no setting
+for it (`docs/ANTIGRAVITY_CONTRACT.md` claim 13). The lake keeps what it has
+already read, so it only has to run more often than the app prunes; daily is
+ample. A run that changes nothing is cheap, and one that is interrupted is
+picked up by the next. With systemd (a user timer, no root):
+
+```ini
+# ~/.config/systemd/user/ccutils-lake-antigravity.service
+[Service]
+Type=oneshot
+ExecStart=/path/to/uv run --project /path/to/ccutils ccutils lake antigravity
+
+# ~/.config/systemd/user/ccutils-lake-antigravity.timer
+[Timer]
+OnCalendar=daily
+Persistent=true
+[Install]
+WantedBy=timers.target
+```
+
+then `systemctl --user enable --now ccutils-lake-antigravity.timer`. On
+macOS a `launchd` agent with `StartCalendarInterval` does the same job.
 
 ## Export Formats
 

@@ -12,6 +12,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import shutil
 import sqlite3
 import sys
 from contextlib import contextmanager
@@ -36,6 +37,7 @@ from helpers_antigravity import (
     Step,
     append_steps,
     make_gemini_home,
+    step_payload,
     unlock,
     write_conversation_db,
 )
@@ -344,6 +346,17 @@ class TestSchemaDrift:
         content = table(self._summaries(lake_root, "conversations_fts_content"))
         assert [ag_schema.decode_mixed(r["c9"], r["c9__storage"]) for r in content] == ["[3]", b"\x01"]
 
+    def test_the_parents_table_is_declared_not_drift(self, home, lake_root):
+        # The CLI's summaries database has it, empty (measured 2026-11-20).
+        conn = sqlite3.connect(home.store() / "conversation_summaries.db")
+        conn.execute("CREATE TABLE conversation_parents (conversation_id TEXT, parent_id TEXT)")
+        conn.commit()
+        conn.close()
+        result = run(home, lake_root)
+        assert self._summaries_status(result)["antigravity"] == "written"
+        assert self._summaries_notes(lake_root) == []
+        assert table(self._summaries(lake_root, "conversation_parents")) == []
+
     def test_a_column_added_to_the_index_is_still_noted(self, home, lake_root):
         self._write_fts(home, extra_column=", future_col UNINDEXED")
         run(home, lake_root)
@@ -400,6 +413,29 @@ class TestConversationFiles:
             src = (home.store() / rel).read_bytes()
             assert files[rel]["content"] == src, rel
             assert files[rel]["sha256"] == hashlib.sha256(src).hexdigest(), rel
+
+    def test_delegation_swarm_and_task_inbox_files_are_named_and_kept_whole(self, home, lake_root):
+        # Kinds the CLI writes that the first rules did not name (measured
+        # 2026-11-20). As `unclassified` they were cut off at
+        # UNCLASSIFIED_MAX_BYTES; a board is an append-only log and grows.
+        b = home.store() / "brain" / CONV_A
+        child = "99999999-9999-4999-8999-999999999999"
+        big = b"x" * (stores.UNCLASSIFIED_MAX_BYTES + 1)
+        written = {
+            f".system_generated/subagents/{child}.json": (b'{"conversationId": "c", "spawnStepIndex": 1}', "subagent_record"),
+            ".system_generated/swarm/swarm.json": (b'{"swarm_id": "s"}', "swarm"),
+            ".system_generated/swarm/board.jsonl": (big, "swarm"),
+            f"task-3/.system_generated/messages/{child}.json": (b'{"id": "m"}', "agent_message"),
+        }
+        for rel, (data, _kind) in written.items():
+            (b / rel).parent.mkdir(parents=True, exist_ok=True)
+            (b / rel).write_bytes(data)
+        run(home, lake_root)
+        files = files_by_relpath(lake_root)
+        for rel, (data, kind) in written.items():
+            row = files[f"brain/{CONV_A}/{rel}"]
+            assert row["kind"] == kind, rel
+            assert row["content"] == data, rel
 
     def test_media_uploads_and_big_unknowns_are_inventory_only(self, home, lake_root):
         run(home, lake_root)
@@ -616,6 +652,98 @@ class TestReruns:
         assert len(kept) == 1 and len(table(kept[0])) == 3
 
 
+def _clear_step(home, idx, conv=CONV_A):
+    """Empty a step in place the way the CLI does: same idx, same creation
+    time, status CLEARED (5), the body gone from the payload."""
+    db = home.store() / "conversations" / f"{conv}.db"
+    conn = sqlite3.connect(db)
+    (meta,) = conn.execute("SELECT metadata FROM steps WHERE idx = ?", (idx,)).fetchone()
+    (full,) = conn.execute("SELECT step_payload FROM steps WHERE idx = ?", (idx,)).fetchone()
+    conn.execute("UPDATE steps SET status = 5, step_payload = ? WHERE idx = ?", (step_payload(15, 5, meta), idx))
+    conn.commit()
+    conn.close()
+    return full
+
+
+class TestClearedSteps:
+    """The CLI empties old steps in place while a conversation is live
+    (measured 2026-11-20: about a third of all steps in one store are status
+    5, under their original idx and creation time). Nothing `supersedes`
+    looks at changes, so the rewrite used to replace the full row."""
+
+    def test_a_step_cleared_in_place_keeps_its_full_row(self, home, lake_root):
+        run(home, lake_root)
+        full = _clear_step(home, 1)
+        result = run(home, lake_root)
+        assert conv_status(result)[CONV_A] == "written"   # same creation time: not a revert
+        rows = [r for r in table(conv_dir(lake_root, CONV_A) / "steps.parquet") if r["idx"] == 1]
+        assert sorted((r["status"], r["source_present"]) for r in rows) == [(3, False), (5, True)]
+        kept = next(r for r in rows if not r["source_present"])
+        assert kept["step_payload"] == full
+        assert len(table(conv_dir(lake_root, CONV_A) / "steps.parquet")) == 4
+
+    def test_the_full_row_survives_later_rewrites(self, home, lake_root):
+        run(home, lake_root)
+        full = _clear_step(home, 1)
+        run(home, lake_root)
+        (home.store() / "brain" / CONV_A / "walkthrough.md").write_text("# Walkthrough\n")
+        run(home, lake_root)
+        run(home, lake_root, force=True)
+        rows = [r for r in table(conv_dir(lake_root, CONV_A) / "steps.parquet") if r["idx"] == 1]
+        assert [r["step_payload"] for r in rows if not r["source_present"]] == [full]
+
+    def test_a_step_that_finished_does_not_keep_its_running_row(self, home, lake_root):
+        # A step caught in flight grows when it completes; the fuller row is
+        # the current one and nothing is kept beside it.
+        run(home, lake_root)
+        db = home.store() / "conversations" / f"{CONV_A}.db"
+        (_i, _t, _s, _h, _m, *_rest, payload, _f) = Step(2, 15, text="a much longer final answer").row(BASE_TS + 2)
+        conn = sqlite3.connect(db)
+        conn.execute("UPDATE steps SET step_payload = ? WHERE idx = 2", (payload,))
+        conn.commit()
+        conn.close()
+        run(home, lake_root)
+        assert len(table(conv_dir(lake_root, CONV_A) / "steps.parquet")) == 3
+
+
+class TestALakeWithNoManifest:
+    """What an interrupted run left before the manifest was checkpointed:
+    unit directories and nothing listing them."""
+
+    def test_every_unit_directory_is_listed_again(self, home, lake_root):
+        run(home, lake_root)
+        before = set(manifest(lake_root))
+        (lake_root / "antigravity" / "_manifest.parquet").unlink()
+        result = run(home, lake_root)
+        assert set(manifest(lake_root)) == before
+        assert not [o for o in result.outcomes if o.status == "error"]
+
+    def test_a_conversation_pruned_since_is_kept_and_marked_absent(self, home, lake_root):
+        run(home, lake_root)
+        (lake_root / "antigravity" / "_manifest.parquet").unlink()
+        (home.store() / "conversations" / f"{CONV_B}.db").unlink()
+        shutil.rmtree(home.store() / "brain" / CONV_B, ignore_errors=True)
+        result = run(home, lake_root)
+        key = ("antigravity", "conversation", CONV_B)
+        assert key in result.missing
+        assert manifest(lake_root)[key]["status"] == "source_missing"
+        steps = table(conv_dir(lake_root, CONV_B) / "steps.parquet")
+        assert steps and {r["source_present"] for r in steps} == {False}
+
+    def test_superseded_snapshots_are_not_mistaken_for_units(self, home, lake_root):
+        run(home, lake_root)
+        db = home.store() / "conversations" / f"{CONV_A}.db"
+        conn = sqlite3.connect(db)
+        conn.execute("DELETE FROM steps WHERE idx = 2")
+        conn.commit()
+        conn.close()
+        run(home, lake_root)                                   # supersedes CONV_A
+        before = set(manifest(lake_root))
+        (lake_root / "antigravity" / "_manifest.parquet").unlink()
+        run(home, lake_root)
+        assert set(manifest(lake_root)) == before
+
+
 # ---------------------------------------------------------------------------
 # Format version
 # ---------------------------------------------------------------------------
@@ -629,6 +757,7 @@ PINNED_FORMAT_FINGERPRINTS = {
     1: "e2f0012235d8d639a6f82710ed1649958ab5f198db3eb27d46b945212b3ab650",
     2: "a7bc2621b003ab91617f9c6ed80aea874d01c090d47a2aba291d46557f45f5b9",
     3: "25f91724d2756d200d82f1585816bb8d2d73c2a882239db44d90b6b2bd21bd9e",
+    4: "0982e791426ea188daa0ef79d6535c406efcd968ec48fc6b128db0b5908b5317",
 }
 
 

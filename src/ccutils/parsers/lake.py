@@ -90,7 +90,13 @@ class LakeUnit:
     column)`` pairs: rows of that table whose key vanishes from the source are
     carried forward rather than dropped. A table not listed is carried only
     when it vanishes whole; its rows otherwise follow the source (which is
-    what `LakeSource.supersedes` is for)."""
+    what `LakeSource.supersedes` is for).
+
+    version_keys lists ``(table, key column, payload column)``: a row whose
+    payload got shorter under the same key keeps its earlier version beside
+    the new one, marked ``source_present = false``. For a source that empties
+    old rows in place, where neither the key set nor anything `supersedes`
+    looks at shows the loss."""
 
     store: str
     unit_kind: str
@@ -99,6 +105,7 @@ class LakeUnit:
     source_relpaths: tuple[str, ...]
     out_relpath: str
     carry_keys: tuple[tuple[str, str], ...] = ()
+    version_keys: tuple[tuple[str, str, str], ...] = ()
 
     @property
     def key(self) -> tuple[str, str, str]:
@@ -183,6 +190,15 @@ class LakeSource(Protocol):
         knows what continuity means for its data (an ordered log that lost
         entries, an entry re-created under an old key); bias toward a reason,
         since a spurious one costs disk and a missed one costs data."""
+        ...
+
+    def unit_dirs(self, harness_dir: Path) -> list[tuple[str, str, str, str]]:
+        """``(store, unit_kind, unit_id, out_relpath)`` of every unit directory on disk.
+
+        Read from the lake's own layout, not from the source: it is how a
+        unit that no manifest lists (a run that died between the swap and the
+        manifest, or a lake written before the manifest was checkpointed) is
+        found again. Optional; a source without it gets no adoption."""
         ...
 
 
@@ -390,12 +406,87 @@ def _rewrite_with(path: Path, extra: pa.Table) -> None:
     os.replace(tmp, path)
 
 
-def _carry_forward(old_dir: Path, new_dir: Path, carry_keys: dict[str, str]) -> tuple[dict[str, int], bool]:
+def _select(path: Path, mask: pa.Array) -> pa.Table:
+    """The rows of the Parquet file at `path` that `mask` marks, one row group at a time."""
+    source = pq.ParquetFile(path)
+    parts, pos = [], 0
+    for i in range(source.num_row_groups):
+        n = source.metadata.row_group(i).num_rows
+        part = mask.slice(pos, n)
+        pos += n
+        if pc.any(part).as_py():
+            parts.append(source.read_row_group(i).filter(part))
+    return pa.concat_tables(parts) if parts else source.schema_arrow.empty_table()
+
+
+def _payload_rows(path: Path, key: str, payload: str) -> Iterator[tuple[object, int, bool, pa.Scalar]]:
+    """(key, payload byte length, source_present, payload scalar) per row, in file order.
+
+    One row group at a time: a row group is capped by bytes, a whole table of
+    payloads is not. The scalar points into its row group, so a caller that
+    keeps it keeps the group."""
+    source = pq.ParquetFile(path)
+    has_present = "source_present" in source.schema_arrow.names
+    columns = [key, payload] + (["source_present"] if has_present else [])
+    for i in range(source.num_row_groups):
+        group = source.read_row_group(i, columns=columns)
+        values = group.column(payload)
+        lengths = pc.binary_length(values).to_pylist()
+        present = group.column("source_present").to_pylist() if has_present else [True] * group.num_rows
+        for k, n, p, v in zip(group.column(key).to_pylist(), lengths, present, values):
+            yield k, n or 0, p is not False, v
+
+
+def _digest(value: pa.Scalar) -> bytes:
+    buffer = value.as_buffer() if value.is_valid else None
+    return hashlib.sha256(buffer if buffer is not None else b"").digest()
+
+
+def _earlier_versions(old_file: Path, new_file: Path, key: str, payload: str) -> pa.Array:
+    """Mask over the old table's rows: the ones to keep beside the new row of the same key.
+
+    A row the source held last time is kept when its payload was longer than
+    the one there now: the source emptied it in place. A row already kept
+    from an earlier snapshot stays unless the current row is byte for byte
+    the same, so nothing once kept leaves, and a source that went away and
+    came back unchanged is not stored twice. Longer is not treated as a
+    superset: a regrown row does not release the version kept before it.
+
+    Payloads are compared by length first; only an already-kept row exactly
+    as long as the current one is hashed, in a second pass over both files."""
+    current = {k: n for k, n, _, _ in _payload_rows(new_file, key, payload)}
+    keep: list[bool] = []
+    same_length: dict[int, object] = {}        # old row position -> key
+    for position, (k, n, present, _) in enumerate(_payload_rows(old_file, key, payload)):
+        now = current.get(k)
+        if now is None:
+            keep.append(False)                 # the key is gone: carry_keys or supersedes decides
+        elif present:
+            keep.append(n > now)
+        else:
+            keep.append(n != now)
+            if n == now:
+                same_length[position] = k
+    if same_length:
+        wanted = set(same_length.values())
+        digests = {k: _digest(v) for k, _, _, v in _payload_rows(new_file, key, payload) if k in wanted}
+        for position, (k, _, _, v) in enumerate(_payload_rows(old_file, key, payload)):
+            if position in same_length:
+                keep[position] = _digest(v) != digests[k]
+    return pa.array(keep, pa.bool_())
+
+
+def _carry_forward(
+    old_dir: Path, new_dir: Path, carry_keys: dict[str, str],
+    version_keys: dict[str, tuple[str, str]] | None = None,
+) -> tuple[dict[str, int], bool]:
     """Carry what the new snapshot lost into it. Returns (rows carried per table, lossless).
 
     A table missing from `new_dir` is copied whole; a keyed table gets the
-    old rows whose key is absent from the new one. Every carried row is
-    marked ``source_present = false`` and keeps its original envelope."""
+    old rows whose key is absent from the new one; a versioned table gets
+    the old rows that held more than the new row of the same key
+    (`_earlier_versions`). Every carried row is marked ``source_present =
+    false`` and keeps its original envelope."""
     carried: dict[str, int] = {}
     for old_file in sorted(old_dir.glob("*.parquet")):
         table = old_file.stem
@@ -409,14 +500,18 @@ def _carry_forward(old_dir: Path, new_dir: Path, carry_keys: dict[str, str]) -> 
             carried[table] = old.num_rows
             continue
         key = carry_keys.get(table)
-        if key is None:
+        version = (version_keys or {}).get(table)
+        mask = None
+        if key is not None:
+            new_keys = pq.read_table(new_file, columns=[key]).column(0)
+            old_keys = pq.read_table(old_file, columns=[key]).column(0)
+            mask = pc.invert(pc.is_in(old_keys, value_set=new_keys.combine_chunks())).combine_chunks()
+        if version is not None:
+            earlier = _earlier_versions(old_file, new_file, *version)
+            mask = earlier if mask is None else pc.or_(mask, earlier)
+        if mask is None or not pc.any(mask).as_py():
             continue
-        new_keys = pq.read_table(new_file, columns=[key]).column(0)
-        old_keys = pq.read_table(old_file, columns=[key]).column(0)
-        lost_mask = pc.invert(pc.is_in(old_keys, value_set=new_keys.combine_chunks()))
-        if not pc.any(lost_mask).as_py():
-            continue
-        lost = pq.read_table(old_file).filter(lost_mask)
+        lost = _select(old_file, mask)
         conformed = _conform(lost, pq.ParquetFile(new_file).schema_arrow)
         if conformed is None:
             return carried, False
@@ -531,11 +626,63 @@ def write_lake(
         return result
 
 
+def _first_ingested(unit_dir: Path) -> datetime | None:
+    """The earliest `ingested_at` any row of a unit carries."""
+    earliest = None
+    for path in sorted(unit_dir.glob("*.parquet")):
+        if "ingested_at" not in pq.ParquetFile(path).schema_arrow.names:
+            continue
+        value = pc.min(pq.read_table(path, columns=["ingested_at"]).column(0)).as_py()
+        if value is not None and (earliest is None or value < earliest):
+            earliest = value
+    return earliest
+
+
+def _adopt_unlisted(source: LakeSource, harness_dir: Path, previous: dict[tuple[str, str, str], dict]) -> int:
+    """Give every unit directory the manifest does not list a manifest row.
+
+    The row has no fingerprint, so a unit whose source is still there is
+    rewritten against what the directory holds (carry-forward and
+    `supersedes` apply), and one whose source is gone is marked absent like
+    any other missing unit."""
+    unit_dirs = getattr(source, "unit_dirs", None)
+    if unit_dirs is None:
+        return 0
+    adopted = 0
+    for store, unit_kind, unit_id, out_relpath in unit_dirs(harness_dir):
+        key = (store, unit_kind, unit_id)
+        if key in previous or not (harness_dir / out_relpath).is_dir():
+            continue
+        ingested = _first_ingested(harness_dir / out_relpath)
+        previous[key] = {
+            "store": store, "unit_kind": unit_kind, "unit_id": unit_id, "out_relpath": out_relpath,
+            "fingerprint": None, "lake_format_version": None, "parser_version": None,
+            "status": "adopted", "source_present": None, "snapshot": None, "tables": None,
+            "carried": None, "notes": json.dumps(["adopted: on disk, in no manifest"]), "error": None,
+            "first_ingested_at": ingested, "last_ingested_at": ingested, "last_seen_at": None,
+            "lake_run_id": None,
+        }
+        adopted += 1
+    return adopted
+
+
 def _run(source: LakeSource, harness_dir: Path, run_id: str, root: Path | None, force: bool) -> LakeRunResult:
     previous = {(r["store"], r["unit_kind"], r["unit_id"]): r for r in read_manifest(harness_dir)}
+    adopted = _adopt_unlisted(source, harness_dir, previous)
     discovery = source.discover(root)
     manifest: dict[tuple[str, str, str], dict] = {}
     outcomes: list[UnitOutcome] = []
+
+    def checkpoint() -> None:
+        """Write the manifest as it stands: this run's rows over the last run's.
+
+        Called after every unit that changed the lake, so a run that dies
+        leaves a manifest that lists what it wrote."""
+        rows = {**previous, **manifest}
+        _write_small_table(harness_dir / MANIFEST_FILE, [rows[k] for k in sorted(rows)], _MANIFEST_SCHEMA)
+
+    if adopted:
+        checkpoint()
     for unit in discovery.units:
         now = _now()
         fp = fingerprint(unit)
@@ -567,7 +714,9 @@ def _run(source: LakeSource, harness_dir: Path, run_id: str, root: Path | None, 
             reason = None
             if final.is_dir():
                 reason = source.supersedes(unit, final, tmp)
-                carried, lossless = _carry_forward(final, tmp, dict(unit.carry_keys))
+                carried, lossless = _carry_forward(
+                    final, tmp, dict(unit.carry_keys),
+                    {table: (key, payload) for table, key, payload in unit.version_keys})
                 if not lossless:
                     reason = reason or "carry-forward would drop an old column"
             if reason:
@@ -587,6 +736,7 @@ def _run(source: LakeSource, harness_dir: Path, run_id: str, root: Path | None, 
             manifest[unit.key] = {**base, "status": "error", "source_present": True,
                                   "error": error, "last_seen_at": now, "lake_run_id": run_id}
             outcomes.append(UnitOutcome(*unit.key, status="error", error=error))
+            checkpoint()
             continue
 
         status = "superseded" if superseded else "written"
@@ -603,6 +753,7 @@ def _run(source: LakeSource, harness_dir: Path, run_id: str, root: Path | None, 
         }
         outcomes.append(UnitOutcome(*unit.key, status=status, tables=written.tables,
                                     notes=written.notes, carried=carried))
+        checkpoint()
 
     missing = []
     scanned = discovery.scanned_stores
@@ -626,7 +777,10 @@ def _run(source: LakeSource, harness_dir: Path, run_id: str, root: Path | None, 
 
     rows = [manifest[k] for k in sorted(manifest)]
     _write_small_table(harness_dir / MANIFEST_FILE, rows, _MANIFEST_SCHEMA)
+    notes = list(discovery.notes)
+    if adopted:
+        notes.append(f"adopted {adopted} unit directories that no manifest listed")
     return LakeRunResult(
         lake_run_id=run_id, harness_dir=harness_dir, outcomes=outcomes,
-        missing=sorted(missing), notes=discovery.notes, context=discovery.context,
+        missing=sorted(missing), notes=notes, context=discovery.context,
     )

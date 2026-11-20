@@ -84,6 +84,12 @@ CONVERSATION_FILE_RULES: dict[str, tuple[tuple[str, str, str], ...]] = {
         (r"\.system_generated/messages/.+", "agent_message", BYTES),
         (r"\.system_generated/steps/\d+/.+", "step_output", BYTES),
         (r"\.system_generated/tasks/[^/]+\.log", "task_log", BYTES),
+        # One file per spawned child, in the parent: the delegation tree with
+        # the child's type and role. The swarm board is an append-only log.
+        (r"\.system_generated/subagents/[^/]+\.json", "subagent_record", BYTES),
+        (r"\.system_generated/swarm/.+", "swarm", BYTES),
+        # A background task's own inbox, at the conversation root.
+        (r"task-\d+/\.system_generated/messages/.+", "agent_message", BYTES),
         (r"\.agents/(.+/)?agent\.md", "agent_definition", BYTES),
         (r"\.user_uploaded/.+", "user_upload", INVENTORY),
         (r"\.tempmediaStorage/.+", "media", INVENTORY),

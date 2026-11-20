@@ -21,7 +21,8 @@ The store map and every measured claim behind these choices are in
 docs/ANTIGRAVITY_CONTRACT.md.
 
 Archive rules on top of the runner's: rows the source drops are carried
-forward per `schema.CARRY_KEYS`, and a conversation snapshot supersedes the
+forward per `schema.CARRY_KEYS`, a step emptied in place keeps its fuller
+row per `schema.VERSION_KEYS`, and a conversation snapshot supersedes the
 old one when it lost an idx or re-created a step (`supersedes`).
 """
 
@@ -140,6 +141,7 @@ class AntigravitySource:
                 source_root=store_root, source_relpaths=rels,
                 out_relpath=f"{store}/conversations/{conv_id}",
                 carry_keys=schema.CARRY_KEYS["conversation"],
+                version_keys=schema.VERSION_KEYS["conversation"],
             ))
         units += git_units
 
@@ -179,6 +181,28 @@ class AntigravitySource:
                 carry_keys=schema.CARRY_KEYS["implicit"],
             ))
         return units
+
+    def unit_dirs(self, harness_dir: Path) -> list[tuple[str, str, str, str]]:
+        """Every unit directory in the lake, by the layout `discover` writes.
+
+        The inverse of the `out_relpath` values above. `_superseded/` and the
+        runner's dot-prefixed scratch directories are not units."""
+        found: list[tuple[str, str, str, str]] = []
+        for store in stores.KNOWN_STORES:
+            base = harness_dir / store
+            for area, kind in (("conversations", "conversation"), ("brain_git", "brain_git")):
+                if (base / area).is_dir():
+                    found += [(store, kind, d.name, f"{store}/{area}/{d.name}")
+                              for d in sorted((base / area).iterdir())
+                              if d.is_dir() and stores.is_uuid(d.name)]
+            for name, kind, unit_id in (("summaries", "summaries", "conversation_summaries"),
+                                        ("store_files", "store_files", "store_files"),
+                                        ("implicit", "implicit", "implicit")):
+                if (base / name).is_dir():
+                    found.append((store, kind, unit_id, f"{store}/{name}"))
+        if (harness_dir / GLOBAL_STORE / "config_projects").is_dir():
+            found.append((GLOBAL_STORE, "config_projects", "config_projects", f"{GLOBAL_STORE}/config_projects"))
+        return found
 
     # -- writing -----------------------------------------------------------
 

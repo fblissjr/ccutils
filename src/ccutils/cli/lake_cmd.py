@@ -98,7 +98,7 @@ def lake_cmd(harness, output, source_root, stores, force):
     if rows:
         click.echo("Rows written: " + ", ".join(f"{t} {n:,}" for t, n in sorted(rows.items())))
     if carried:
-        click.echo("Carried forward (gone from the source, kept marked source_present=false): "
+        click.echo("Carried forward (gone from or emptied in the source, kept marked source_present=false): "
                    + ", ".join(f"{t} {n:,}" for t, n in sorted(carried.items())))
     unit_notes = [f"{o.store}/{o.unit_kind}/{o.unit_id}: {n}" for o in result.outcomes for n in o.notes]
     for heading, lines in (("Notes", result.notes), ("Unit notes (schema drift, supersedes)", unit_notes)):
