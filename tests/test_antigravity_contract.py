@@ -171,6 +171,33 @@ def payload_copy_violations(rows) -> list[tuple[int, str]]:
     return bad
 
 
+def unfilled_columns(rows) -> set[tuple[int, str]]:
+    """(idx, column) where the column is NULL and the payload states its field.
+
+    The payload still carries the step there, so this is the one way a column
+    may differ from its field. A column that states what the payload lacks, or
+    states something else, is never in this set."""
+    out = set()
+    for idx, _step_type, _status, _has_sub, *copies, payload in rows:
+        stated = {f for f, _wt, _v in parse(payload)}
+        out |= {(idx, col) for (col, f), value in zip(_COPIED_FIELDS.items(), copies)
+                if value is None and f in stated}
+    return out
+
+
+# Only `permissions` has been seen left NULL: 40 of 120,475 steps on the
+# owner's Mac, 2026-11-20, all GENERIC steps of the desktop app's store.
+UNFILLED_ALLOWED = ("permissions",)
+MAX_UNFILLED = 0.005
+
+
+def copy_verdict(rows) -> tuple[list[tuple[int, str]], int]:
+    """(violations that contradict the claim, columns left NULL that it allows)."""
+    found = payload_copy_violations(rows)
+    tolerated = {v for v in unfilled_columns(rows) if v[1] in UNFILLED_ALLOWED} if found else set()
+    return [v for v in found if v not in tolerated], len(tolerated)
+
+
 def copy_violation_shapes(rows) -> collections.Counter:
     """How each copied column disagrees with its Step field, as shapes: no
     bytes of either side. Keyed (column, step_type, status, shape)."""
@@ -202,7 +229,7 @@ class TestBlobColumnsAreCopies:
     def test_corpus_holds(self, dbs):
         bad = []
         shapes: collections.Counter = collections.Counter()
-        n = 0
+        n = unfilled = 0
         for db in dbs:
             conn = _ro(db)
             rows = conn.execute(
@@ -210,14 +237,18 @@ class TestBlobColumnsAreCopies:
                 "permissions, task_details, step_payload FROM steps").fetchall()
             conn.close()
             n += len(rows)
-            found = payload_copy_violations(rows)
-            bad += [(db.parent.parent.name, db.stem, *v) for v in found]
-            if found:
+            contradictions, tolerated = copy_verdict(rows)
+            unfilled += tolerated
+            bad += [(db.parent.parent.name, db.stem, *v) for v in contradictions]
+            if contradictions or tolerated:
                 shapes += copy_violation_shapes(rows)
         assert n > 0
+        print(f"\n{n} steps; a column left NULL beside its stated field: {unfilled}; "
+              f"(column, step_type, status, shape): {dict(shapes)}")
         stores = collections.Counter(b[0] for b in bad)
-        assert bad == [], (f"{len(bad)} of {n} steps: a column no longer mirrors its Step field. "
+        assert bad == [], (f"{len(bad)} of {n} steps: a column states what its Step field does not. "
                            f"By store: {dict(stores)}. (column, step_type, status, shape): {dict(shapes)}")
+        assert unfilled / n <= MAX_UNFILLED, f"{unfilled} of {n} steps leave a copied column NULL"
 
     def test_oracle(self):
         meta = f_timestamp(1, 1_790_000_000)
@@ -238,6 +269,16 @@ class TestBlobColumnsAreCopies:
             (4, 15, 3, 0, meta, None, b"x", None, good),                       # the payload states none
             (5, 15, 3, 0, meta, None, b"longer than it", None, twice),
         ]
+        # A column left NULL beside a stated field is the one disagreement in
+        # which the payload still carries everything; every other kind is not.
+        assert unfilled_columns(shaped_rows) == {(3, "permissions")}
+        assert unfilled_columns(rows) == set()
+        # Only that one is allowed, and only for `permissions`: a metadata
+        # column left NULL, or any column that states something else, fails.
+        assert copy_verdict(shaped_rows) == ([(1, "permissions"), (2, "permissions"), (4, "permissions"),
+                                              (5, "permissions")], 1)
+        assert copy_verdict([(0, 15, 3, 0, None, None, None, None, good)]) == ([(0, "metadata")], 0)
+        assert copy_verdict([(0, 15, 3, 0, meta, None, None, None, good)]) == ([], 0)
         assert copy_violation_shapes(shaped_rows) == collections.Counter({
             ("permissions", 15, 3, "column equals an earlier occurrence of 2"): 1,
             ("permissions", 15, 3, "column is the 2 occurrences joined"): 1,

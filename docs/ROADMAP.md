@@ -426,8 +426,6 @@ Still to build, in the order they unblock questions:
   `antigravity_tool_calls`, which reads `GENERIC` steps only. Whether they
   state a call id and name in metadata `5.4` is unmeasured; the Linux store
   holds none of them, so this is built against the Mac's lake.
-- **Contract claim 3 is false for `permissions` on the Mac** (39 of 120,241
-  steps). The canary prints the shapes; restate the claim from them.
 - Step types the name map does not know are kept by number with a NULL
   name.
 

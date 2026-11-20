@@ -121,17 +121,22 @@ files in `language_server` 2.15.1; decoding with it found 0 unknown fields in
   and has no enum in any descriptor (survey).
 - Consequence: `step_payload` alone carries the step; the lake still mirrors
   every column, because a mirror is not the place to decide which copy wins.
-- Contradicted 2026-11-20 on the owner's Mac, whose stores hold 120,241
-  steps: on 39 of them the `permissions` column is not field 133 of the
-  payload. Every other column agreed on every step. What the two sides hold
-  on those 39 is not measured yet; the canary now prints it as shapes
-  (which store, step type, status, and whether the column is NULL, the
-  field is absent, or the field occurs more than once). Until that is read,
-  this claim is a rate for `permissions` and an invariant for the rest, and
-  nothing derived reads `permissions`. The lake is unaffected: it keeps the
-  column and the payload both.
-- Canary: `TestBlobColumnsAreCopies`. It is red on that Mac and green on the
-  Linux CLI corpus.
+- Corrected 2026-11-20 on the owner's Mac (120,475 steps in the two
+  stores the canary reads). A column is its field's bytes OR NULL: on 40
+  steps the `permissions` column is NULL while the payload states field
+  133 once. All 40 are `GENERIC` steps of the desktop app's store
+  (`antigravity`), 39 with status `DONE` and one `ERROR`. The count was 39
+  on a run earlier the same afternoon, so the app (2.33.1 installed) was
+  still writing them that day. No column states anything its field lacks,
+  and no other column was NULL beside a stated field. The Linux corpus has
+  none.
+- Consequence, restated: the payload is the authority. Read a copied value
+  from `step_payload`, never from its column, which can be empty. Nothing
+  derived reads `permissions` yet.
+- Canary: `TestBlobColumnsAreCopies`. A column that contradicts its field
+  fails outright; `permissions` left NULL is held as a rate
+  (`MAX_UNFILLED`), and any other column left NULL fails. `-s` prints the
+  counts and shapes.
 
 ## 4. Stored types match declared types
 
