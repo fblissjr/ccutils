@@ -473,6 +473,29 @@ in field 4 of the message in field 5.
   states an id and a name. The repeated ids, the per-tool counts and the
   checkpoint usage are measurements with no canary.
 
+## 19. A background task is named after the step that started it
+
+- Measured 2026-11-20 on the Linux CLI corpus, through the lake and the
+  decoded views. A conversation's brain directory holds
+  `.system_generated/tasks/task-<N>.log` (4,021 files in 276
+  conversations). `N` is a step index: the step at that index is a
+  `run_command` tool step for 3,811 of them and a `schedule` tool step for
+  204. The other 6 land on a different step, which is what a revert
+  re-using the index would leave (claim 14); not checked one by one.
+- When the task ends, the app adds a `SYSTEM_MESSAGE` step whose text names
+  it: `Task id "<conversation>/task-<N>" finished with result:` followed by
+  the exit code, the output and the log's path. All 3,873 such messages
+  name a `run_command` step, and all but 2 come after it. 271 of them name
+  a task whose log file the lake does not hold.
+- System messages come in kinds a reader can tell apart by their opening:
+  a finished task (3,873), a `[Message] timestamp=... sender=...` from an
+  agent or task (2,197), a `Reminder:` (53), and others (445).
+- Consequence: a background task ties three things with no id of its own:
+  the tool step that started it, its log file, and the system message that
+  reports it, all through (conversation, step index). Nothing derived reads
+  this yet.
+- Canary: none yet.
+
 ---
 
 ## Adding to this document

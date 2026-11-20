@@ -534,9 +534,12 @@ CREATE OR REPLACE VIEW antigravity_tool_calls AS
 -- call id repeats inside a conversation and across forks. Both encodings
 -- are here, and `step_type_name` says which. `is_error` is read from the
 -- status number, so a status nobody has named is still not an error
--- instead of NULL.
+-- instead of NULL; and a call answered by an ERROR_MESSAGE step is an
+-- error whatever its status, with the message in `error_text`.
 SELECT store, conversation_id, idx, created_at, step_type_name, tool_call_id, tool_name, tool_args,
-       tool_output, tool_output_source, status, status_name, status = {error} AS is_error,
+       tool_output, tool_output_source, status, status_name,
+       COALESCE(status = {error}, FALSE) OR step_type = {error_message} AS is_error,
+       CASE WHEN step_type = {error_message} THEN text END AS error_text,
        is_cleared, is_inherited, execution_id
 FROM antigravity_steps WHERE is_tool_call;
 
@@ -571,7 +574,7 @@ def create_views(conn, lake_root: Path | str) -> list[str]:
             raise FileNotFoundError(f"nothing to read for {name}: {pattern} (run the lake, then shape it)")
     is_call = (f"(h.step_type = {GENERIC} OR COALESCE(h.tool_call_id, f.tool_call_id, "
                "h.tool_name, f.tool_name) IS NOT NULL)")
-    sql = _VIEWS.format(is_call=is_call, error=STATUS_ERROR,
+    sql = _VIEWS.format(is_call=is_call, error=STATUS_ERROR, error_message=ERROR_MESSAGE,
                         **{k: str(v).replace("'", "''") for k, v in globs.items()})
     for statement in sql.split(";\n"):
         if statement.strip():

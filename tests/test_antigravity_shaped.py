@@ -461,6 +461,9 @@ class TestViews:
             cli_step_row(5, GENERIC, T + 5, owner=CONV_A, status=1, tool=("call_3", "view_file", "{}")),
             cli_step_row(6, shaped.CHECKPOINT, T + 6, owner=CONV_A, text="summary so far",
                          usage={2: 9000, 3: 300}, generation=1),
+            # A call whose result is an error message step, in status DONE.
+            cli_step_row(7, shaped.ERROR_MESSAGE, T + 7, owner=CONV_A, text="path is outside the workspace",
+                         tool=("call_4", "view_file", '{"AbsolutePath": "/etc/x"}')),
         ]
         _insert(cli_home / "antigravity-cli" / "conversations" / f"{CONV_A}.db", rows)
         log = cli_home / "antigravity-cli" / "brain" / CONV_A / ".system_generated" / "logs" / "transcript_full.jsonl"
@@ -477,7 +480,8 @@ class TestViews:
             "FROM antigravity_tool_calls WHERE conversation_id = ? ORDER BY idx", [CONV_A]).fetchall() == [
                 (2, "GENERIC", "call_1", "run_command", "a.py\n", "database"),
                 (4, "RUN_COMMAND", "call_2", "run_command", "Output:\n/work\n", "transcript"),
-                (5, "GENERIC", "call_3", "view_file", None, None)]
+                (5, "GENERIC", "call_3", "view_file", None, None),
+                (7, "ERROR_MESSAGE", "call_4", "view_file", None, None)]
         # What the transcript holds for a tool call is its output, never the step's text.
         assert conn.execute("SELECT text, text_source FROM antigravity_steps WHERE conversation_id = ? AND idx = 4",
                             [CONV_A]).fetchone() == (None, None)
@@ -489,6 +493,17 @@ class TestViews:
         conn = views(lake_root)
         assert conn.execute("SELECT status, status_name, is_error FROM antigravity_tool_calls "
                             "WHERE conversation_id = ? AND idx = 5", [CONV_A]).fetchone() == (1, None, False)
+
+    def test_a_call_answered_by_an_error_message_is_an_error_with_its_text(self, cli_home, lake_root):
+        self._add_older_shapes(cli_home)
+        lake(cli_home, lake_root)
+        shaped.shape_lake(lake_root)
+        conn = views(lake_root)
+        assert conn.execute(
+            "SELECT idx, status_name, is_error, error_text FROM antigravity_tool_calls "
+            "WHERE conversation_id = ? ORDER BY idx", [CONV_A]).fetchall() == [
+                (2, "DONE", False, None), (4, "DONE", False, None), (5, None, False, None),
+                (7, "DONE", True, "path is outside the workspace")]
 
     def test_usage_says_which_kind_of_step_stated_it(self, cli_home, lake_root):
         self._add_older_shapes(cli_home)

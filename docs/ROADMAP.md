@@ -444,6 +444,17 @@ Still to build, in the order they unblock questions:
   - 54 conversations exist only as an index row (`is_pruned` NULL: the lake
     never read them), and 29 archived ones have no steps.
   - `EPHEMERAL_MESSAGE` and `CONVERSATION_HISTORY` bodies are unread.
+- **On the Mac the same audit, 2026-11-20:** about half of the older
+  per-tool calls have no output, and exactly those have no transcript line
+  (1,700 of 3,432 `VIEW_FILE`, 1,046 of 2,083 `RUN_COMMAND`), so their
+  output is only in the undecoded body. 132 `ERROR_MESSAGE` steps state a
+  tool call; they are in `antigravity_tool_calls` as errors with
+  `error_text`. Whether another step states the same call (which would
+  count it twice) is unmeasured. 3 `BROWSER_SUBAGENT` steps state usage.
+- **Background tasks tie by step index** (contract claim 19): the tool
+  step that started one, `tasks/task-<idx>.log`, and the system message
+  that reports its exit code. A view of a task with its outcome is the
+  cheapest next thing to build from what is already decoded.
 - Step types the name map does not know are kept by number with a NULL
   name.
 
