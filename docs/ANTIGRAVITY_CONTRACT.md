@@ -453,9 +453,25 @@ in field 4 of the message in field 5.
 - Consequence: a tool call is keyed on its step, (conversation, idx), and the
   call id is a column. Nothing joins on the id alone. The per-tool step
   types of claim 11 no longer occur at the top level in this store.
+- Measured 2026-11-20 on the owner's Mac, through the decoded views: the
+  per-tool step types of claim 11 state the call in the same place. Every
+  `VIEW_FILE` (3,432), `RUN_COMMAND` (2,083), `GREP_SEARCH` (928),
+  `LIST_DIRECTORY` (595), `FIND` (337), `MCP_TOOL` (318) and
+  `INVOKE_SUBAGENT` (103) step has an id and a name in `5.4`, and 2,373 of
+  2,483 `CODE_ACTION` steps do. `CONVERSATION_HISTORY` and
+  `EPHEMERAL_MESSAGE` state none and are not tool calls. So a tool call is
+  a step that states one, whatever its type; `antigravity_steps.is_tool_call`
+  is that rule. The bodies of the per-tool types are not read; their output
+  comes from the transcript line, a reading that is measured for `GENERIC`
+  (claim 17) and assumed for them.
+- A checkpoint states usage too: 468 `CHECKPOINT` steps on the Linux
+  corpus carry token counts and no model, 466 of them under the generation
+  index of the response that follows, with different counts. That is read
+  as the checkpoint's own call, and it is not a second copy of the
+  response's usage.
 - Canary: `TestStepFieldReadings` asserts every tool step in its sample
-  states an id and a name. The repeated ids are an audit measurement with no
-  canary.
+  states an id and a name. The repeated ids, the per-tool counts and the
+  checkpoint usage are measurements with no canary.
 
 ---
 

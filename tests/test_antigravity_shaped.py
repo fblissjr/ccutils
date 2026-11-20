@@ -22,6 +22,7 @@ from helpers_antigravity import (
     SYSTEM_MESSAGE,
     USER_INPUT,
     cli_body,
+    cli_metadata,
     cli_step_row,
     f_msg,
     f_str,
@@ -448,6 +449,57 @@ class TestViews:
         # The child's replayed response is its parent's usage, counted there and not twice.
         assert conn.execute("SELECT idx, input_tokens FROM antigravity_usage WHERE conversation_id = ?",
                             [CONV_B]).fetchall() == [(3, 50)]
+
+    def _add_older_shapes(self, cli_home):
+        """A per-tool step as the app wrote tool calls before GENERIC (claim
+        11), a tool step in a status nobody has named, and a checkpoint that
+        states the usage of its own model call."""
+        old_call = ("call_2", "run_command", '{"CommandLine": "pwd"}')
+        meta = cli_metadata(T + 4, idx=4, owner=CONV_A, tool=old_call)
+        rows = [
+            (4, 21, 3, 0, meta, None, None, None, None, step_payload(21, 3, meta), 0),
+            cli_step_row(5, GENERIC, T + 5, owner=CONV_A, status=1, tool=("call_3", "view_file", "{}")),
+            cli_step_row(6, shaped.CHECKPOINT, T + 6, owner=CONV_A, text="summary so far",
+                         usage={2: 9000, 3: 300}, generation=1),
+        ]
+        _insert(cli_home / "antigravity-cli" / "conversations" / f"{CONV_A}.db", rows)
+        log = cli_home / "antigravity-cli" / "brain" / CONV_A / ".system_generated" / "logs" / "transcript_full.jsonl"
+        with log.open("a") as f:
+            f.write(cli_transcript_line(4, "RUN_COMMAND", T + 4, content="Output:\n/work\n") + "\n")
+
+    def test_a_call_from_before_generic_steps_is_a_tool_call(self, cli_home, lake_root):
+        self._add_older_shapes(cli_home)
+        lake(cli_home, lake_root)
+        shaped.shape_lake(lake_root)
+        conn = views(lake_root)
+        assert conn.execute(
+            "SELECT idx, step_type_name, tool_call_id, tool_name, tool_output, tool_output_source "
+            "FROM antigravity_tool_calls WHERE conversation_id = ? ORDER BY idx", [CONV_A]).fetchall() == [
+                (2, "GENERIC", "call_1", "run_command", "a.py\n", "database"),
+                (4, "RUN_COMMAND", "call_2", "run_command", "Output:\n/work\n", "transcript"),
+                (5, "GENERIC", "call_3", "view_file", None, None)]
+        # What the transcript holds for a tool call is its output, never the step's text.
+        assert conn.execute("SELECT text, text_source FROM antigravity_steps WHERE conversation_id = ? AND idx = 4",
+                            [CONV_A]).fetchone() == (None, None)
+
+    def test_is_error_is_stated_for_a_status_nobody_has_named(self, cli_home, lake_root):
+        self._add_older_shapes(cli_home)
+        lake(cli_home, lake_root)
+        shaped.shape_lake(lake_root)
+        conn = views(lake_root)
+        assert conn.execute("SELECT status, status_name, is_error FROM antigravity_tool_calls "
+                            "WHERE conversation_id = ? AND idx = 5", [CONV_A]).fetchone() == (1, None, False)
+
+    def test_usage_says_which_kind_of_step_stated_it(self, cli_home, lake_root):
+        self._add_older_shapes(cli_home)
+        lake(cli_home, lake_root)
+        shaped.shape_lake(lake_root)
+        conn = views(lake_root)
+        # A checkpoint states its own call's usage under the generation of the
+        # response that follows it; the type tells the two apart.
+        assert conn.execute("SELECT idx, step_type_name, generation_idx, input_tokens FROM antigravity_usage "
+                            "WHERE conversation_id = ? ORDER BY idx", [CONV_A]).fetchall() == [
+            (1, "PLANNER_RESPONSE", 0, 100), (3, "PLANNER_RESPONSE", 1, 130), (6, "CHECKPOINT", 1, 9000)]
 
     def test_inherited_steps_are_in_the_view_and_marked(self, cli_home, lake_root):
         lake(cli_home, lake_root)

@@ -53,6 +53,7 @@ STEP_TYPE_NAMES = {
 # Step field 4, named from the transcript's `status` on time-matched lines.
 STATUS_NAMES = {2: "RUNNING", 3: "DONE", 4: "INVALID", 5: "CLEARED", 6: "CANCELED", 7: "ERROR"}
 STATUS_CLEARED = 5
+STATUS_ERROR = 7
 # Metadata field 3, named from the transcript's `source`.
 SOURCE_NAMES = {2: "MODEL", 4: "USER_EXPLICIT", 5: "SYSTEM", 6: "SYSTEM_SDK"}
 
@@ -505,18 +506,23 @@ SELECT
     COALESCE(h.tool_call_id, f.tool_call_id) AS tool_call_id,
     COALESCE(h.tool_name, f.tool_name) AS tool_name,
     COALESCE(h.tool_args, f.tool_args) AS tool_args,
+    -- A tool call is a step that states one, in either encoding: a GENERIC
+    -- step, or one of the per-tool types the app wrote before (claim 11).
+    {is_call} AS is_tool_call,
     -- Each value names where it was read: the database as it is now, an
     -- earlier row the lake kept, or the brain transcript, whose form of a
-    -- user, system or tool text is wrapped and can be truncated.
-    COALESCE(h.text, f.text, CASE WHEN h.step_type <> 132 THEN l.content END) AS text,
+    -- user, system or tool text is wrapped and can be truncated. What the
+    -- transcript holds for a tool call is its output, for any other step
+    -- its text.
+    COALESCE(h.text, f.text, CASE WHEN NOT {is_call} THEN l.content END) AS text,
     CASE WHEN h.text IS NOT NULL THEN 'database' WHEN f.text IS NOT NULL THEN 'archive'
-         WHEN h.step_type <> 132 AND l.content IS NOT NULL THEN 'transcript' END AS text_source,
+         WHEN NOT {is_call} AND l.content IS NOT NULL THEN 'transcript' END AS text_source,
     COALESCE(h.thinking, f.thinking, l.thinking) AS thinking,
     CASE WHEN h.thinking IS NOT NULL THEN 'database' WHEN f.thinking IS NOT NULL THEN 'archive'
          WHEN l.thinking IS NOT NULL THEN 'transcript' END AS thinking_source,
-    COALESCE(h.tool_output, f.tool_output, CASE WHEN h.step_type = 132 THEN l.content END) AS tool_output,
+    COALESCE(h.tool_output, f.tool_output, CASE WHEN {is_call} THEN l.content END) AS tool_output,
     CASE WHEN h.tool_output IS NOT NULL THEN 'database' WHEN f.tool_output IS NOT NULL THEN 'archive'
-         WHEN h.step_type = 132 AND l.content IS NOT NULL THEN 'transcript' END AS tool_output_source,
+         WHEN {is_call} AND l.content IS NOT NULL THEN 'transcript' END AS tool_output_source,
     l.is_truncated AS transcript_is_truncated,
     h.source_present AS in_source
 FROM head h
@@ -525,16 +531,22 @@ LEFT JOIN line l ON l.store = h.store AND l.conversation_id = h.conversation_id 
 
 CREATE OR REPLACE VIEW antigravity_tool_calls AS
 -- A tool call and its result are one step (claim 18). Keyed on the step: a
--- call id repeats inside a conversation and across forks.
-SELECT store, conversation_id, idx, created_at, tool_call_id, tool_name, tool_args,
-       tool_output, tool_output_source, status_name, status_name = 'ERROR' AS is_error,
+-- call id repeats inside a conversation and across forks. Both encodings
+-- are here, and `step_type_name` says which. `is_error` is read from the
+-- status number, so a status nobody has named is still not an error
+-- instead of NULL.
+SELECT store, conversation_id, idx, created_at, step_type_name, tool_call_id, tool_name, tool_args,
+       tool_output, tool_output_source, status, status_name, status = {error} AS is_error,
        is_cleared, is_inherited, execution_id
-FROM antigravity_steps WHERE step_type = 132;
+FROM antigravity_steps WHERE is_tool_call;
 
 CREATE OR REPLACE VIEW antigravity_usage AS
--- One row per step that states usage: a model response is one generation.
--- Not a fork's inherited steps, which are the source conversation's usage.
-SELECT store, conversation_id, idx, created_at, generation_idx, model_enum,
+-- One row per step that states usage. A model response states its
+-- generation's; a checkpoint states the usage of its own call, under the
+-- generation index of the response after it and with no model, so
+-- `step_type_name` is what tells the two apart. Not a fork's inherited
+-- steps, which are the source conversation's usage.
+SELECT store, conversation_id, idx, created_at, step_type_name, generation_idx, model_enum,
        input_tokens, output_tokens, cache_read_tokens, thinking_tokens, is_cleared
 FROM antigravity_steps
 WHERE input_tokens IS NOT NULL AND is_inherited IS NOT TRUE;
@@ -557,7 +569,10 @@ def create_views(conn, lake_root: Path | str) -> list[str]:
     for name, pattern in globs.items():
         if not glob.glob(str(pattern)):
             raise FileNotFoundError(f"nothing to read for {name}: {pattern} (run the lake, then shape it)")
-    sql = _VIEWS.format(**{k: str(v).replace("'", "''") for k, v in globs.items()})
+    is_call = (f"(h.step_type = {GENERIC} OR COALESCE(h.tool_call_id, f.tool_call_id, "
+               "h.tool_name, f.tool_name) IS NOT NULL)")
+    sql = _VIEWS.format(is_call=is_call, error=STATUS_ERROR,
+                        **{k: str(v).replace("'", "''") for k, v in globs.items()})
     for statement in sql.split(";\n"):
         if statement.strip():
             conn.execute(statement)

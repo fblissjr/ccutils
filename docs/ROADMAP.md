@@ -415,17 +415,35 @@ Still to build, in the order they unblock questions:
   artifact versions, media references, prompt history.
 - A view of a delegation with its outcome, from the child's side.
 - Unknown-field logging per message, as the drift canary for the field map.
-- **Per-tool steps are named and not decoded.** Before tool calls moved
-  into `GENERIC` (contract claim 11) each tool had its own step type
-  (`RUN_COMMAND`, `VIEW_FILE`, `CODE_ACTION`, ...). The first cut of the
-  name map held only the six types the CLI writes today, so on the owner's
-  Mac, 2026-11-20, `TestStepFieldReadings` failed on the type name of 431
-  of 9,374 sampled steps. The map is now claim 6's whole table, held
-  against the doc by a test (derived format 2). Still missing for those
-  steps: their body (the command, the path, the output), and a row in
-  `antigravity_tool_calls`, which reads `GENERIC` steps only. Whether they
-  state a call id and name in metadata `5.4` is unmeasured; the Linux store
-  holds none of them, so this is built against the Mac's lake.
+- **Per-tool steps are tool calls, with their bodies not decoded.** Before
+  tool calls moved into `GENERIC` (contract claim 11) each tool had its own
+  step type. They are named (derived format 2) and, since they state the
+  call in metadata `5.4` like a `GENERIC` step (claim 18), they are in
+  `antigravity_tool_calls`, with their output read from the transcript.
+  Their own bodies (the command, the path, the exit code) are unread. The
+  Linux store holds none, so that is built against the Mac's lake, or from
+  the old step a `GENERIC` step wraps.
+- **What a NULL audit of the views found, Linux, 2026-11-20** (per column
+  and step type; the counts are that day's):
+  - 18,190 tool calls have no arguments: the app emptied the step before
+    the lake read it. The model response's transcript line lists its calls
+    with arguments, so they are recoverable by position (the transcript
+    states no call id). Not built.
+  - 23,447 of the 54,647 uncleared responses that state thinking tokens
+    have no thinking text, in the database reading or the transcript. Not
+    known whether it is elsewhere in the payload.
+  - 21,181 uncleared responses have no text and no thinking because they
+    are only tool calls. The response's own list of calls (body `20.7`) is
+    not a column, so the link from a response to its calls is by order.
+  - Status numbers 1 and 8 have no name: no transcript line states one for
+    a step in either. 1 is seen on tool steps of live conversations.
+  - 5 uncleared user inputs have no text: their body holds fields 4, 7 or
+    9, 12, 13 and 18 and no text field. Unread.
+  - 98 tool steps in status `ERROR` have no output. `error_details` (Step
+    field 31) is not decoded.
+  - 54 conversations exist only as an index row (`is_pruned` NULL: the lake
+    never read them), and 29 archived ones have no steps.
+  - `EPHEMERAL_MESSAGE` and `CONVERSATION_HISTORY` bodies are unread.
 - Step types the name map does not know are kept by number with a NULL
   name.
 
