@@ -553,7 +553,63 @@ SELECT store, conversation_id, idx, created_at, step_type_name, generation_idx, 
        input_tokens, output_tokens, cache_read_tokens, thinking_tokens, is_cleared
 FROM antigravity_steps
 WHERE input_tokens IS NOT NULL AND is_inherited IS NOT TRUE;
+
+CREATE OR REPLACE VIEW antigravity_tasks AS
+-- A background task has no id of its own (claim 19). The tool step that
+-- started it, its log file and the system message that reports it share a
+-- step index, and this is the one place that tie is written down.
+WITH log AS (
+    SELECT store, conversation_id,
+           CAST(regexp_extract(relpath, '/tasks/task-([0-9]+)[.]log$', 1) AS BIGINT) AS idx,
+           relpath, size_bytes, source_present, content
+    FROM read_parquet('{files}', union_by_name = true)
+    WHERE kind = 'task_log'
+),
+named AS (
+    -- Not a fork's replayed messages: the task they name is the source's.
+    SELECT store, idx AS reported_idx, created_at AS reported_at, text,
+           regexp_extract(text, 'Task id "([0-9a-f-]+)/task-([0-9]+)" (finished|was canceled) with result',
+                          ['conversation_id', 'idx', 'verb']) AS task
+    FROM antigravity_steps
+    WHERE step_type = {system_message} AND is_inherited IS NOT TRUE AND text LIKE '%Task id "%with result%'
+),
+report AS (
+    SELECT store, task.conversation_id AS conversation_id, CAST(task.idx AS BIGINT) AS idx,
+           reported_idx, reported_at,
+           CASE task.verb WHEN 'finished' THEN 'finished' ELSE 'canceled' END AS outcome,
+           -- The first mention is the task's own: it comes before the output.
+           TRY_CAST(NULLIF(regexp_extract(text, 'exited with code (-?[0-9]+)', 1), '') AS BIGINT) AS exit_code
+    FROM named
+    WHERE task.idx <> ''
+    QUALIFY row_number() OVER (PARTITION BY store, task.conversation_id, task.idx ORDER BY reported_idx DESC) = 1
+),
+task AS (
+    SELECT COALESCE(l.store, r.store) AS store,
+           COALESCE(l.conversation_id, r.conversation_id) AS conversation_id,
+           COALESCE(l.idx, r.idx) AS idx,
+           r.outcome, r.exit_code, r.reported_at, r.reported_idx,
+           l.relpath, l.size_bytes, l.source_present, l.content
+    FROM log l
+    FULL JOIN report r ON r.store = l.store AND r.conversation_id = l.conversation_id AND r.idx = l.idx
+)
+SELECT
+    t.store, t.conversation_id, t.idx,
+    -- NULL when the step at that index is no longer the one that started the
+    -- task: a revert re-uses indices (claim 14) and leaves the old log behind.
+    s.tool_name, s.tool_args, s.created_at AS started_at, s.status_name AS launch_status_name,
+    -- NULL when nothing reported it: still running, or the conversation ended first.
+    t.outcome, t.exit_code, t.reported_at, t.reported_idx,
+    t.relpath IS NOT NULL AS has_log, t.relpath AS log_relpath, t.size_bytes AS log_size_bytes,
+    t.source_present AS log_in_source, try(decode(t.content)) AS log_text
+FROM task t
+LEFT JOIN antigravity_steps s ON s.store = t.store AND s.conversation_id = t.conversation_id AND s.idx = t.idx
+    AND s.tool_name IN ({task_tools});
 """
+
+# The tools whose step starts a background task (claim 19).
+TASK_TOOLS = ("run_command", "schedule")
+VIEW_NAMES = ("antigravity_conversations", "antigravity_steps", "antigravity_tool_calls", "antigravity_usage",
+              "antigravity_tasks")
 
 
 def create_views(conn, lake_root: Path | str) -> list[str]:
@@ -568,6 +624,7 @@ def create_views(conn, lake_root: Path | str) -> list[str]:
         "summaries": harness_dir / "*" / "summaries" / "conversation_summaries.parquet",
         "steps": tree / "*" / "conversations" / "*" / "step.parquet",
         "lines": tree / "*" / "conversations" / "*" / "transcript_line.parquet",
+        "files": harness_dir / "*" / "conversations" / "*" / "files.parquet",
     }
     for name, pattern in globs.items():
         if not glob.glob(str(pattern)):
@@ -575,11 +632,12 @@ def create_views(conn, lake_root: Path | str) -> list[str]:
     is_call = (f"(h.step_type = {GENERIC} OR COALESCE(h.tool_call_id, f.tool_call_id, "
                "h.tool_name, f.tool_name) IS NOT NULL)")
     sql = _VIEWS.format(is_call=is_call, error=STATUS_ERROR, error_message=ERROR_MESSAGE,
+                        system_message=SYSTEM_MESSAGE, task_tools=", ".join(f"'{t}'" for t in TASK_TOOLS),
                         **{k: str(v).replace("'", "''") for k, v in globs.items()})
     for statement in sql.split(";\n"):
         if statement.strip():
             conn.execute(statement)
-    return ["antigravity_conversations", "antigravity_steps", "antigravity_tool_calls", "antigravity_usage"]
+    return list(VIEW_NAMES)
 
 
 VIEWS_DATABASE = "antigravity.duckdb"

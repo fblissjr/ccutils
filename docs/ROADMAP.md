@@ -452,10 +452,12 @@ Still to build, in the order they unblock questions:
   `error_text`. No other step of their conversation states the same call
   id (0 of 132), so each is the only record of its call and none is
   counted twice. 3 `BROWSER_SUBAGENT` steps state usage.
-- **Background tasks tie by step index** (contract claim 19): the tool
-  step that started one, `tasks/task-<idx>.log`, and the system message
-  that reports its exit code. A view of a task with its outcome is the
-  cheapest next thing to build from what is already decoded.
+- **Background tasks: built** (`antigravity_tasks`, contract claim 19):
+  the tool step that started one, `tasks/task-<idx>.log`, and the system
+  message that reports its exit code. Left open: the outcome is parsed
+  from the message's wording, which has no canary; a `schedule` task's
+  ticks are not counted; whether the Mac's older `RUN_COMMAND` steps start
+  tasks under the same tool name is what the claim's canary will say there.
 - Step types the name map does not know are kept by number with a NULL
   name.
 

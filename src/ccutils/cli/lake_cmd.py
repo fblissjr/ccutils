@@ -237,8 +237,7 @@ def _decode(lake_root: Path, *, include_thinking: bool, reporter: Reporter) -> l
             database = shaped.write_views_database(lake_root)
         finally:
             reporter.clear()
-        click.echo(f"Views: {database}  (antigravity_conversations, antigravity_steps, "
-                   "antigravity_tool_calls, antigravity_usage)")
+        click.echo(f"Views: {database}  ({', '.join(shaped.VIEW_NAMES)})")
     except FileNotFoundError as e:
         click.echo(f"Views not written: {e}", err=True)
     if shaped_result.errors:

@@ -768,3 +768,50 @@ class TestStepFieldReadings:
         tool = dict(step, step_type=shaped.GENERIC, status=3, tool_output="out")
         assert ("tool output", True) in reading_comparisons(tool, dict(line, type="GENERIC", content="Output:\nout\n"))
         assert ("tool output", False) in reading_comparisons(tool, dict(line, type="GENERIC", content="cut"))
+
+
+# ---------------------------------------------------------------------------
+# Claim 19: a background task's number is the index of the step that started it.
+# ---------------------------------------------------------------------------
+
+MIN_TASK_LAUNCH = 0.99   # a revert leaves a log whose index now holds another step
+
+
+def task_launch_rate(tools: collections.Counter, task_tools: tuple[str, ...]) -> float:
+    """The share of task logs whose step is a call of a tool that starts tasks."""
+    total = sum(tools.values())
+    return sum(tools[t] for t in task_tools) / total if total else 0.0
+
+
+class TestTaskIsNamedAfterItsStep:
+    def test_corpus_holds(self, dbs):
+        import re
+        from ccutils.parsers.antigravity import shaped
+        tools: collections.Counter = collections.Counter()
+        for db in dbs:
+            tasks = db.parent.parent / "brain" / db.stem / ".system_generated" / "tasks"
+            if not tasks.is_dir():
+                continue
+            indices = sorted(int(m.group(1)) for f in tasks.iterdir()
+                             if (m := re.fullmatch(r"task-(\d+)\.log", f.name)))
+            if not indices:
+                continue
+            conn = _ro(db)
+            payloads = dict(conn.execute(
+                f"SELECT idx, step_payload FROM steps WHERE idx IN ({', '.join(map(str, indices))})"))
+            conn.close()
+            for index in indices:
+                payload = payloads.get(index)
+                tools[shaped.read_step(payload)["tool_name"] if payload else "(no step at that index)"] += 1
+        if not tools:
+            pytest.skip("no background task logs in this store")
+        rate = task_launch_rate(tools, shaped.TASK_TOOLS)
+        print(f"\n{sum(tools.values())} task logs; the step at their number calls: {dict(tools.most_common())}")
+        assert rate >= MIN_TASK_LAUNCH, f"only {rate:.2%} of task logs sit at a step that starts tasks: {dict(tools)}"
+
+    def test_oracle(self):
+        tools = collections.Counter({"run_command": 97, "schedule": 2, None: 1})
+        assert task_launch_rate(tools, ("run_command", "schedule")) == pytest.approx(0.99)
+        assert task_launch_rate(tools, ("run_command",)) == pytest.approx(0.97)
+        assert task_launch_rate(collections.Counter(), ("run_command",)) == 0.0
+

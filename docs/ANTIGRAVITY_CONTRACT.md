@@ -493,11 +493,23 @@ in field 4 of the message in field 5.
 - System messages come in kinds a reader can tell apart by their opening:
   a finished task (3,873), a `[Message] timestamp=... sender=...` from an
   agent or task (2,197), a `Reminder:` (53), and others (445).
+- A task that is stopped is reported the same way with `was canceled with
+  result:` (214 messages), and states no exit code. A fork replays its
+  source's reports: 271 of the finished messages sit in a conversation
+  other than the one they name, all of them inherited steps, and those are
+  the ones whose log the conversation does not hold. No task has more than
+  one report of its own. The phrase `exited with code` occurs once in all
+  but 2 finished messages; the first occurrence is the task's, since it
+  comes before the output.
 - Consequence: a background task ties three things with no id of its own:
   the tool step that started it, its log file, and the system message that
-  reports it, all through (conversation, step index). Nothing derived reads
-  this yet.
-- Canary: none yet.
+  reports it, all through (conversation, step index). `antigravity_tasks`
+  is that tie: 4,034 tasks on this corpus, 3,615 finished with an exit
+  code, 195 canceled, 224 with no report, 6 whose index no longer holds
+  the step that started them.
+- Canary: `TestTaskIsNamedAfterItsStep` holds the launch tie as a rate. The
+  message wording has none: if it changes, tasks lose their outcome and
+  keep their row.
 
 ---
 

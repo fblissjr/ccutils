@@ -528,6 +528,78 @@ class TestViews:
             shaped.create_views(duckdb.connect(), lake_root)
 
 
+class TestTasks:
+    """A background task has no id of its own: the tool step that started it,
+    its log file and the system message that reports it share a step index
+    (contract claim 19)."""
+
+    def _add_tasks(self, cli_home):
+        def report(n, verb, body):
+            return (f'[Message] timestamp=2026-09-21T14:13:29Z sender={CONV_A}/task-{n} priority=MESSAGE_PRIORITY_HIGH '
+                    f'content=Task id "{CONV_A}/task-{n}" {verb} with result:\n{body}')
+        finished = report(8, "finished", "Command exited with code 2.\n\nCommand output:\nmake: child exited with code 0\n")
+        rows = [
+            cli_step_row(8, GENERIC, T + 8, owner=CONV_A, tool=("call_8", "run_command", '{"CommandLine": "make"}')),
+            cli_step_row(9, SYSTEM_MESSAGE, T + 20, owner=CONV_A, source=5, text=finished),
+            cli_step_row(10, GENERIC, T + 21, owner=CONV_A, tool=("call_10", "schedule", '{"DurationSeconds": 60}')),
+            cli_step_row(11, GENERIC, T + 22, owner=CONV_A, tool=("call_11", "run_command", '{"CommandLine": "sleep 9"}')),
+            cli_step_row(12, SYSTEM_MESSAGE, T + 30, owner=CONV_A, source=5,
+                         text=report(11, "was canceled", "The command was stopped.")),
+        ]
+        _insert(cli_home / "antigravity-cli" / "conversations" / f"{CONV_A}.db", rows)
+        # The fork replays the report; the task is still its source's.
+        _insert(cli_home / "antigravity-cli" / "conversations" / f"{CONV_B}.db",
+                [cli_step_row(40, SYSTEM_MESSAGE, T + 20, owner=CONV_A, source=5, text=finished)])
+        tasks = cli_home / "antigravity-cli" / "brain" / CONV_A / ".system_generated" / "tasks"
+        tasks.mkdir(parents=True)
+        (tasks / "task-8.log").write_text("make: *** [all] Error 2\n")
+        (tasks / "task-10.log").write_text("tick\n")
+        # A log left by a branch the user reverted: its index now holds a user input.
+        (tasks / "task-0.log").write_text("from a reverted branch\n")
+        # Not a task log, though its path says task-<n>: a task's message inbox.
+        inbox = cli_home / "antigravity-cli" / "brain" / CONV_A / "task-8" / ".system_generated" / "messages"
+        inbox.mkdir(parents=True)
+        (inbox / f"{CONV_B}.json").write_text("{}")
+
+    def _tasks(self, cli_home, lake_root, columns, where="TRUE"):
+        self._add_tasks(cli_home)
+        lake(cli_home, lake_root)
+        shaped.shape_lake(lake_root)
+        return views(lake_root).execute(
+            f"SELECT {columns} FROM antigravity_tasks WHERE {where} ORDER BY conversation_id, idx").fetchall()
+
+    def test_one_row_per_task_from_its_log_or_its_report(self, cli_home, lake_root):
+        assert self._tasks(cli_home, lake_root, "conversation_id, idx, has_log, outcome") == [
+            (CONV_A, 0, True, None), (CONV_A, 8, True, "finished"),
+            (CONV_A, 10, True, None), (CONV_A, 11, False, "canceled")]
+
+    def test_a_finished_task_ties_its_command_its_exit_code_and_its_log(self, cli_home, lake_root):
+        assert self._tasks(cli_home, lake_root,
+                           "tool_name, tool_args, exit_code, reported_idx, log_relpath, log_size_bytes, log_text",
+                           "idx = 8") == [
+            ("run_command", '{"CommandLine": "make"}', 2, 9,
+             f"brain/{CONV_A}/.system_generated/tasks/task-8.log", 24, "make: *** [all] Error 2\n")]
+
+    def test_the_exit_code_is_the_commands_not_one_its_output_mentions(self, cli_home, lake_root):
+        assert self._tasks(cli_home, lake_root, "exit_code", "idx = 8") == [(2,)]
+
+    def test_times_are_the_launch_steps_and_the_reports(self, cli_home, lake_root):
+        assert self._tasks(cli_home, lake_root,
+                           "epoch(reported_at) - epoch(started_at)", "idx IN (8, 11)") == [(12.0,), (8.0,)]
+
+    def test_a_log_whose_index_no_longer_holds_its_command_keeps_its_row_and_states_no_launch(self, cli_home, lake_root):
+        assert self._tasks(cli_home, lake_root, "tool_name, tool_args, started_at, has_log", "idx = 0") == [
+            (None, None, None, True)]
+
+    def test_a_task_nothing_reported_states_no_outcome(self, cli_home, lake_root):
+        assert self._tasks(cli_home, lake_root, "tool_name, outcome, exit_code, reported_at", "idx = 10") == [
+            ("schedule", None, None, None)]
+
+    def test_a_fork_replaying_the_report_has_no_task_and_is_not_the_report(self, cli_home, lake_root):
+        rows = self._tasks(cli_home, lake_root, "conversation_id, reported_idx", "idx = 8")
+        assert rows == [(CONV_A, 9)]
+
+
 # ---------------------------------------------------------------------------
 # `ccutils lake antigravity --decode`: the effect, not the exit code
 # ---------------------------------------------------------------------------
@@ -685,6 +757,7 @@ def test_the_readmes_antigravity_recipes_bind_against_the_views(cli_home, lake_r
     readme = (Path(__file__).resolve().parents[1] / "README.md").read_text()
     blocks = re.findall(r"^```sql antigravity\n(.*?)^```", readme, re.M | re.S)
     assert blocks, "no ```sql antigravity block left in README.md"
+    TestTasks()._add_tasks(cli_home)
     lake(cli_home, lake_root)
     shaped.shape_lake(lake_root)
     conn = views(lake_root)

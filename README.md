@@ -220,11 +220,21 @@ duckdb -readonly ~/.ccutils/lake/antigravity-decoded/antigravity.duckdb
 | `antigravity_steps` | a step | one row per step however many versions the lake kept; `text`, `thinking` and `tool_output` read from the database, else the fuller row the lake kept, else the brain transcript, with a `*_source` column saying which; `is_inherited` for steps a fork replayed |
 | `antigravity_tool_calls` | a tool call with its result | keyed on the step, because a call id repeats; both encodings, a `GENERIC` step and the per-tool step types older conversations hold (`step_type_name` says which). For the older ones the output is read from the brain transcript; their bodies are not decoded yet. `is_error` is never NULL, and is true for a call answered by an error message step, whose message is `error_text` |
 | `antigravity_usage` | a step's stated token counts | a fork's inherited responses left out, so a sum counts each once; `step_type_name` separates a model response from a checkpoint, which states the usage of its own call and no model |
+| `antigravity_tasks` | a background task | the command that started it, its exit code and its log, which share only a step index: `outcome` is `finished`, `canceled`, or NULL when nothing reported it; the launch columns are NULL when a revert left the log behind; `log_text` is the whole log |
 
 ```sql antigravity
 SELECT strftime(created_at, '%Y-%m') AS month, count(*) AS responses,
        sum(input_tokens) AS input, sum(cache_read_tokens) AS cache_read, sum(output_tokens) AS output
 FROM antigravity_usage GROUP BY 1 ORDER BY 1;
+```
+
+Background commands that failed, newest first:
+
+```sql antigravity
+SELECT conversation_id, idx, started_at, exit_code, left(tool_args, 120) AS command
+FROM antigravity_tasks
+WHERE outcome = 'finished' AND exit_code <> 0
+ORDER BY started_at DESC LIMIT 20;
 ```
 
 To catch up on one conversation, the prompts and the written replies in
