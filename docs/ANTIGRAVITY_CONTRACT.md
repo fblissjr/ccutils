@@ -511,6 +511,36 @@ in field 4 of the message in field 5.
   message wording has none: if it changes, tasks lose their outcome and
   keep their row.
 
+## 20. A conversation states its workspaces, each with its repository
+
+- Measured 2026-11-20 on two machines' lakes, 1,258 `trajectory_metadata_blob`
+  rows (one per conversation). Field `1` of the blob repeats, one message
+  per workspace: `.1` the workspace URI (every entry), `.2` the git root's
+  URI, `.3` the repository as `{1: owner/repo, 2: remote URL}`, `.4` the
+  branch. 1,118 conversations state one workspace, 75 none, 65 between two
+  and nine. The first entry's URI is the index row's `workspace_uris` for
+  1,174 of 1,177. 1,222 of 1,542 entries state a repository, and the
+  `owner/repo` is how the remote URL ends for 1,202 of them.
+- One remote per workspace is stated, and which of a repository's several
+  remotes it is, is not stated. Remotes come as `git@host:owner/repo`,
+  `ssh://user@host:port/owner/repo` and `https://host/owner/repo`.
+- What does not identify a repository across machines, measured on the
+  owner's own: one repository sits at `ComfyUI/custom_nodes/<name>` on one
+  machine and `workspace/<name>` on the other, is cloned from a LAN git
+  server on one and from GitHub on the other, under two different owner
+  names. The path, the remote and the `owner/repo` all differ; the
+  repository's name is the same. No repository name on either machine
+  occurs under two unrelated repositories.
+- Consequence: `antigravity_conversations.project` is the repository's name
+  in lower case, taken from the first workspace's `owner/repo`, and failing
+  that the workspace directory's name (`project_source` says which). It is
+  a name, so two unrelated repositories that share one would be one
+  project; `repo_slug`, `git_remote` and `project_path` are beside it to
+  tell them apart. A conversation in a worktree is named for its
+  repository, which its path alone would not give.
+- Canary: `TestWorkspacesAreStated` (the first workspace against the index
+  row, and the slug against the remote, as rates).
+
 ---
 
 ## Adding to this document

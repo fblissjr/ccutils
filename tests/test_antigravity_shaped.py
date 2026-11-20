@@ -254,7 +254,7 @@ class TestDerivedFormatVersion:
     is READ out of a step reaches an existing tree only through the version."""
 
     def test_the_readings_are_pinned_to_the_version(self):
-        assert (shaped.SHAPED_FORMAT_VERSION, shaped.format_fingerprint()) == (2, PINNED_SHAPED_FINGERPRINT), (
+        assert (shaped.SHAPED_FORMAT_VERSION, shaped.format_fingerprint()) == (3, PINNED_SHAPED_FINGERPRINT), (
             "what the shaped layer reads or writes changed: bump SHAPED_FORMAT_VERSION, then update this pin")
 
     def test_a_new_version_rederives_a_tree_that_already_holds_the_rows(self, cli_home, lake_root, monkeypatch):
@@ -268,7 +268,7 @@ class TestDerivedFormatVersion:
         assert unit_table(lake_root, CONV_A, "step")[0]["step_type_name"] == "RENAMED"
 
 
-PINNED_SHAPED_FINGERPRINT = "df9db2fad33975c0"
+PINNED_SHAPED_FINGERPRINT = "666f86ff1750f691"
 
 
 class TestShapeLake:
@@ -790,33 +790,106 @@ class TestMachines:
         assert "moved" in result.output
 
 
-class TestProjectIdentity:
-    """A project is the workspace a conversation states, as a path under the
-    home directory, so the same checkout on two machines is one project."""
+def workspace_entry(uri, root=None, slug=None, remote=None, branch=None):
+    """One workspace of a conversation's metadata blob (claim 20): 1 uri,
+    2 git root, 3 {1 owner/repo, 2 remote}, 4 branch."""
+    parts = [f_str(1, uri)]
+    if root:
+        parts.append(f_str(2, root))
+    if slug or remote:
+        parts.append(f_msg(3, *([f_str(1, slug)] if slug else []), *([f_str(2, remote)] if remote else [])))
+    if branch:
+        parts.append(f_str(4, branch))
+    return f_msg(1, *parts)
 
-    def _conversations(self, cli_home, lake_root, uris):
-        write_summaries_db(cli_home / "antigravity-cli" / "conversation_summaries.db", [
-            {"conversation_id": conv, "step_count": 1, "app_data_dir": "antigravity-cli", "workspace_uris": uri}
-            for conv, uri in uris.items()])
+
+def _set_blob(cli_home, conv, blob):
+    conn = sqlite3.connect(cli_home / "antigravity-cli" / "conversations" / f"{conv}.db")
+    conn.execute("UPDATE trajectory_metadata_blob SET data = ?", (blob,))
+    conn.commit()
+    conn.close()
+
+
+class TestProjectIdentity:
+    """Which project a conversation belongs to. The measured case it has to
+    get right: one repository checked out at different paths on two machines,
+    from two remotes under two owner names. Only the repository's name agrees."""
+
+    A = workspace_entry("file:///home/someone/ComfyUI/custom_nodes/My-Repo", "file:///home/someone/ComfyUI/custom_nodes/My-Repo",
+                        "handle/My-Repo", "git@github.com:handle/My-Repo.git", "main")
+    B = workspace_entry("file:///Users/another/workspace/my-repo", "file:///Users/another/workspace/my-repo",
+                        "mirror-user/my-repo", "ssh://git@10.0.0.5:2222/mirror-user/my-repo", "feature/x")
+
+    def test_the_stated_workspaces_are_read_in_order(self):
+        blob = self.A + f_str(18, "project-1") + self.B
+        assert shaped.read_workspaces(blob) == [
+            {"ordinal": 0, "workspace_uri": "file:///home/someone/ComfyUI/custom_nodes/My-Repo",
+             "git_root_uri": "file:///home/someone/ComfyUI/custom_nodes/My-Repo", "repo_slug": "handle/My-Repo",
+             "git_remote": "git@github.com:handle/My-Repo.git", "git_branch": "main"},
+            {"ordinal": 1, "workspace_uri": "file:///Users/another/workspace/my-repo",
+             "git_root_uri": "file:///Users/another/workspace/my-repo", "repo_slug": "mirror-user/my-repo",
+             "git_remote": "ssh://git@10.0.0.5:2222/mirror-user/my-repo", "git_branch": "feature/x"}]
+        assert shaped.read_workspaces(f_str(18, "project-1")) == []
+        assert shaped.read_workspaces(workspace_entry("file:///x/y"))[0] == {
+            "ordinal": 0, "workspace_uri": "file:///x/y", "git_root_uri": None, "repo_slug": None,
+            "git_remote": None, "git_branch": None}
+        with pytest.raises(ValueError):
+            shaped.read_workspaces(b"\xff\xff\xff")
+
+    def _conversations(self, cli_home, lake_root, blobs, uris=None):
+        for conv, blob in blobs.items():
+            _set_blob(cli_home, conv, blob)
+        if uris is not None:
+            (cli_home / "antigravity-cli" / "conversation_summaries.db").unlink()
+            write_summaries_db(cli_home / "antigravity-cli" / "conversation_summaries.db", [
+                {"conversation_id": conv, "step_count": 1, "app_data_dir": "antigravity-cli", "workspace_uris": uri}
+                for conv, uri in uris.items()])
         lake(cli_home, lake_root)
         shaped.shape_lake(lake_root)
         return dict((r[0], r[1:]) for r in views(lake_root).execute(
-            "SELECT conversation_id, project_path, project_name, workspace_uri FROM antigravity_conversations").fetchall())
+            "SELECT conversation_id, project, project_source, repo_slug, git_remote, git_branch, project_path "
+            "FROM antigravity_conversations").fetchall())
 
-    def test_the_same_checkout_under_two_homes_is_one_project(self, cli_home, lake_root):
-        (cli_home / "antigravity-cli" / "conversation_summaries.db").unlink()
-        rows = self._conversations(cli_home, lake_root, {
-            CONV_A: '["file:///home/someone/workspace/proj-a"]',
-            CONV_B: '["file:///Users/another/workspace/proj-a"]'})
-        assert rows[CONV_A] == ("workspace/proj-a", "proj-a", "file:///home/someone/workspace/proj-a")
-        assert rows[CONV_B][:2] == ("workspace/proj-a", "proj-a")
+    def test_one_repository_at_two_paths_from_two_remotes_is_one_project(self, cli_home, lake_root):
+        rows = self._conversations(cli_home, lake_root, {CONV_A: self.A, CONV_B: self.B}, {
+            CONV_A: '["file:///home/someone/ComfyUI/custom_nodes/My-Repo"]',
+            CONV_B: '["file:///Users/another/workspace/my-repo"]'})
+        assert rows[CONV_A] == ("my-repo", "git_remote", "handle/My-Repo", "git@github.com:handle/My-Repo.git",
+                                "main", "ComfyUI/custom_nodes/My-Repo")
+        assert rows[CONV_B] == ("my-repo", "git_remote", "mirror-user/my-repo",
+                                "ssh://git@10.0.0.5:2222/mirror-user/my-repo", "feature/x", "workspace/my-repo")
 
-    def test_a_path_outside_a_home_is_kept_whole_and_no_workspace_is_no_project(self, cli_home, lake_root):
-        (cli_home / "antigravity-cli" / "conversation_summaries.db").unlink()
-        rows = self._conversations(cli_home, lake_root, {
-            CONV_A: '["file:///srv/build/my%20repo/"]', CONV_B: "[]"})
-        assert rows[CONV_A] == ("/srv/build/my repo", "my repo", "file:///srv/build/my%20repo/")
-        assert rows[CONV_B] == (None, None, None)
+    def test_the_first_workspace_is_the_conversations(self, cli_home, lake_root):
+        rows = self._conversations(cli_home, lake_root, {CONV_A: self.B + self.A})
+        assert rows[CONV_A][:3] == ("my-repo", "git_remote", "mirror-user/my-repo")
+
+    def test_with_no_remote_stated_the_project_is_the_workspaces_directory(self, cli_home, lake_root):
+        rows = self._conversations(cli_home, lake_root, {CONV_A: workspace_entry("file:///srv/build/My%20Repo/")}, {
+            CONV_A: '["file:///srv/build/My%20Repo/"]', CONV_B: "[]"})
+        assert rows[CONV_A] == ("my repo", "workspace_path", None, None, None, "/srv/build/My Repo")
+        # No workspace stated anywhere: no project, and no source for one.
+        assert rows[CONV_B] == (None, None, None, None, None, None)
+
+    def test_a_blob_that_does_not_parse_is_a_row_with_its_error_and_the_path_still_names_the_project(self, cli_home, lake_root):
+        rows = self._conversations(cli_home, lake_root, {CONV_A: b"\xff\xff\xff"}, {
+            CONV_A: '["file:///home/someone/workspace/proj-a"]', CONV_B: "[]"})
+        assert rows[CONV_A] == ("proj-a", "workspace_path", None, None, None, "workspace/proj-a")
+        table = unit_table(lake_root, CONV_A, "workspace")
+        assert len(table) == 1 and table[0]["decode_error"] and table[0]["ordinal"] is None
+
+    def test_a_machine_decoded_before_workspaces_still_reads_with_the_path_as_its_project(self, cli_home, tmp_path):
+        _set_blob(cli_home, CONV_A, self.A)
+        out, elsewhere = tmp_path / "out", tmp_path / "elsewhere"
+        assert decode_cmd(cli_home, elsewhere, "--decode", "--machine", "laptop").exit_code == 0
+        assert decode_cmd(cli_home, out, "--decode", "--machine", "desk").exit_code == 0
+        shutil.copytree(elsewhere / "machine=laptop", out / "machine=laptop")
+        for old in (out / "machine=laptop").rglob("workspace.parquet"):
+            old.unlink()
+        conn = duckdb.connect()
+        shaped.create_views(conn, out)
+        assert conn.execute("SELECT machine, project, project_source FROM antigravity_conversations "
+                            "WHERE conversation_id = ? ORDER BY 1", [CONV_A]).fetchall() == [
+            ("desk", "my-repo", "git_remote"), ("laptop", "project", "workspace_path")]
 
 
 class TestProgressOutput:

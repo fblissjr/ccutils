@@ -51,18 +51,25 @@ against; where it stands is as of that date.
    to its child.
 5. **One project across harnesses and machines.** A project worked on in
    Claude Code and in Antigravity, on two machines, is one thing to ask
-   about. Standing: machines are done for the Antigravity lake (a
-   `machine=<name>` directory per machine under one base, a `machine`
-   column in every view, built 2026-11-20), and its conversations carry
-   `project_path`, the stated workspace as a path under the home
-   directory. Not done: the Claude Code warehouse has neither, so the two
-   harnesses still cannot be asked about together. Phase 3 (harness
-   identity) is where that lands, and it should use the same two things.
-   Limits of `project_path`, accepted for now: it is a path, so one repo
-   checked out at different places is two projects and two repos at the
-   same place are one; a git remote would be the real identity and nothing
-   decoded states one yet. 54 of 594 conversations on the Linux machine
-   state no workspace, and a child does not inherit its parent's.
+   about. Standing, 2026-11-20: done for Antigravity across machines. The
+   lake is one base with a `machine=<name>` directory per machine, every
+   view carries `machine`, and `antigravity_conversations.project` is the
+   repository's name (contract claim 20). Both machines' lakes sit in the
+   Linux machine's base, and the owner's example repository reads as one
+   project there. The name is the key because the owner keeps several
+   remotes (a LAN git server, GitHub, usually both, sometimes only one) and
+   checks repositories out at different paths per machine, so the path,
+   the remote and the `owner/repo` all differ and only the name agrees.
+   Not done: Claude Code. Its warehouse has no machine and no such key, so
+   the same repository's Claude Code sessions and Antigravity conversations
+   on one machine still cannot be asked about together. What that takes,
+   from looking at that repository on the Linux machine: a Claude Code
+   transcript states `cwd` and a branch and no remote, so the name has to
+   come from the directory, and the repository's work is spread over
+   several transcript directories (the repository itself, a subdirectory,
+   worktrees under `.claude/worktrees/`, scratch directories under the
+   temp dir) that must roll up to it. Phase 3 (harness identity) is where
+   it lands, on the same two things: a machine directory and `project`.
 6. **Tied to the code.** The files a session read and changed, and the
    commits it made, with enough to check out that commit. Standing: the
    warehouse has file operations and the branch; neither side has commits.

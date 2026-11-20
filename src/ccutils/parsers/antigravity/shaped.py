@@ -121,6 +121,26 @@ def read_step(payload: bytes) -> dict[str, object]:
     }
 
 
+def read_workspaces(data: bytes) -> list[dict[str, object]]:
+    """The workspaces a conversation's metadata blob states, in order (claim 20).
+
+    Field 1 repeats, one per workspace: `.1` its URI, `.2` the git root's
+    URI, `.3` the repository as `{1: owner/repo, 2: remote URL}`, `.4` the
+    branch. The first is the one the conversation index names. Raises
+    ValueError when the blob is not valid wire format."""
+    out: list[dict[str, object]] = []
+    for ordinal, entry in enumerate(decode.get_all(data, 1)):
+        out.append({
+            "ordinal": ordinal,
+            "workspace_uri": decode.text(decode.get(entry, 1)),
+            "git_root_uri": decode.text(decode.get(entry, 2)),
+            "repo_slug": decode.text(decode.get(entry, 3, 1)),
+            "git_remote": decode.text(decode.get(entry, 3, 2)),
+            "git_branch": decode.text(decode.get(entry, 4)),
+        })
+    return out
+
+
 def created_second(value: datetime | None) -> int | None:
     """A step's creation time to the second, the grain the transcript states it at."""
     return int(value.timestamp()) if value is not None else None
@@ -134,7 +154,7 @@ def created_second(value: datetime | None) -> int | None:
 # A unit whose lake unit is unchanged is skipped, so without the bump a new
 # reading never reaches a tree that already exists. `format_fingerprint` is
 # pinned to this number by a test.
-SHAPED_FORMAT_VERSION = 2
+SHAPED_FORMAT_VERSION = 3
 HARNESS_DIR = "antigravity"
 SHAPED_DIR = "antigravity-decoded"       # beside the lake's own tree, never inside it
 SHAPED_MANIFEST = "_shaped.parquet"
@@ -156,6 +176,14 @@ STEP_SCHEMA = pa.schema([
     ("tool_call_id", pa.string()), ("tool_name", pa.string()), ("tool_args", pa.large_string()),
     ("text", pa.large_string()), ("thinking", pa.large_string()), ("tool_output", pa.large_string()),
     ("payload_bytes", pa.int64()), ("decode_error", pa.string()),
+])
+WORKSPACE_SCHEMA = pa.schema([
+    ("store", pa.string()), ("conversation_id", pa.string()),
+    # NULL on the one row written for a blob that did not parse.
+    ("ordinal", pa.int64()),
+    ("workspace_uri", pa.string()), ("git_root_uri", pa.string()),
+    ("repo_slug", pa.string()), ("git_remote", pa.string()), ("git_branch", pa.string()),
+    ("source_present", pa.bool_()), ("decode_error", pa.string()),
 ])
 LINE_SCHEMA = pa.schema([
     ("store", pa.string()), ("conversation_id", pa.string()), ("line_no", pa.int64()),
@@ -189,7 +217,7 @@ def format_fingerprint() -> str:
     `read_step` (the tool call's path, the usage fields) is not in it, and a
     change there needs the version bumped by hand."""
     parts = [sorted(STEP_TYPE_NAMES.items()), sorted(STATUS_NAMES.items()), sorted(SOURCE_NAMES.items()),
-             sorted(_TEXT_PATH.items()), str(STEP_SCHEMA), str(LINE_SCHEMA)]
+             sorted(_TEXT_PATH.items()), str(STEP_SCHEMA), str(LINE_SCHEMA), str(WORKSPACE_SCHEMA)]
     return hashlib.sha256(repr(parts).encode()).hexdigest()[:16]
 
 
@@ -293,6 +321,25 @@ def _shape_steps(unit_dir: Path, out: Path, store: str, conv: str, include_think
                     "payload_bytes": len(payload), "decode_error": error,
                 })
     return rows.close(), undecoded, current
+
+
+def _shape_workspaces(unit_dir: Path, out: Path, store: str, conv: str) -> int:
+    """trajectory_metadata_blob.parquet -> workspace.parquet, a row per stated workspace."""
+    rows = _Rows(out / "workspace.parquet", WORKSPACE_SCHEMA)
+    source = unit_dir / "trajectory_metadata_blob.parquet"
+    if source.exists():
+        blobs = pq.read_table(source, columns=["data", "source_present"]).to_pylist()
+        # The row the source still has wins over one the lake kept after it went.
+        blobs.sort(key=lambda r: r["source_present"] is not True)
+        if blobs and blobs[0]["data"]:
+            base = {"store": store, "conversation_id": conv, "source_present": blobs[0]["source_present"]}
+            try:
+                for workspace in read_workspaces(blobs[0]["data"]):
+                    rows.add({**base, **workspace, "decode_error": None})
+            except ValueError as e:
+                rows.add({**base, "ordinal": None, "workspace_uri": None, "git_root_uri": None, "repo_slug": None,
+                          "git_remote": None, "git_branch": None, "decode_error": str(e)})
+    return rows.close()
 
 
 def _shape_transcript(unit_dir: Path, out: Path, store: str, conv: str, include_thinking: bool,
@@ -406,6 +453,7 @@ def shape_lake(lake_root: Path | str, *, include_thinking: bool = True, force: b
             tmp.mkdir(parents=True)
             steps, undecoded, current = _shape_steps(harness_dir / rel, tmp, store, conv, include_thinking)
             lines, unparsed = _shape_transcript(harness_dir / rel, tmp, store, conv, include_thinking, current)
+            _shape_workspaces(harness_dir / rel, tmp, store, conv)
             if final.exists():
                 shutil.rmtree(final)
             os.replace(tmp, final)
@@ -447,6 +495,11 @@ WITH archived AS (
     SELECT machine, unit_id AS conversation_id, store, status
     FROM read_parquet('{manifest}', {hive})
     WHERE unit_kind = 'conversation'
+),
+workspace AS (
+    -- The first workspace the conversation states is the one its index row
+    -- names (claim 20). A conversation can state more; they stay in the table.
+    SELECT * FROM read_parquet('{workspaces}', union_by_name = true, {hive}) WHERE ordinal = 0
 )
 SELECT
     s.machine,
@@ -458,12 +511,22 @@ SELECT
     s.last_modified_time,
     s.last_user_input_time,
     s.workspace_uris,
-    -- The project is the workspace the conversation states, as a path under
-    -- the home directory: the same checkout on two machines is one project.
-    -- A path outside a home is kept whole. NULL when no workspace is stated.
+    -- Which project this is, for asking across machines. The repository's
+    -- NAME, because it is the one thing that agrees: one repository sits at
+    -- different paths on different machines and is cloned from different
+    -- remotes under different owner names. Failing a stated repository, the
+    -- workspace's directory name, and `project_source` says which. Two
+    -- unrelated repositories with one name are one project here; `repo_slug`,
+    -- `git_remote` and `project_path` tell them apart.
+    lower(COALESCE(NULLIF(regexp_extract(w.repo_slug, '([^/]+)$', 1), ''),
+                   NULLIF(regexp_extract({project_path}, '([^/]+)$', 1), ''))) AS project,
+    CASE WHEN NULLIF(regexp_extract(w.repo_slug, '([^/]+)$', 1), '') IS NOT NULL THEN 'git_remote'
+         WHEN {project_path} IS NOT NULL THEN 'workspace_path' END AS project_source,
+    w.repo_slug, w.git_remote, w.git_branch, w.git_root_uri,
     {uri} AS workspace_uri,
+    -- The stated workspace as a path under the home directory; a path
+    -- outside a home is kept whole.
     {project_path} AS project_path,
-    regexp_extract({project_path}, '([^/]+)$', 1) AS project_name,
     s.project_id,
     NULLIF(s.agent_name, '') AS agent_name,
     NULLIF(s.parent_conversation_id, '') AS parent_conversation_id,
@@ -477,6 +540,8 @@ SELECT
     s.source_present AS in_index
 FROM read_parquet('{summaries}', union_by_name = true, {hive}) s
 LEFT JOIN archived a ON a.machine = s.machine AND a.conversation_id = s.conversation_id
+LEFT JOIN workspace w ON w.machine = s.machine AND w.conversation_id = s.conversation_id
+    AND w.store = COALESCE(a.store, s.store)
 -- Two stores can index one conversation; its own store's row is the one kept.
 QUALIFY row_number() OVER (
     PARTITION BY s.machine, s.conversation_id
@@ -638,6 +703,7 @@ def create_views(conn, lake_base: Path | str) -> list[str]:
         "steps": tree / "*" / "conversations" / "*" / "step.parquet",
         "lines": tree / "*" / "conversations" / "*" / "transcript_line.parquet",
         "files": harness_dir / "*" / "conversations" / "*" / "files.parquet",
+        "workspaces": tree / "*" / "conversations" / "*" / "workspace.parquet",
     }
     for name, pattern in globs.items():
         if not glob.glob(str(pattern)):

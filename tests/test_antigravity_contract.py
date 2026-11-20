@@ -815,3 +815,72 @@ class TestTaskIsNamedAfterItsStep:
         assert task_launch_rate(tools, ("run_command",)) == pytest.approx(0.97)
         assert task_launch_rate(collections.Counter(), ("run_command",)) == 0.0
 
+
+# ---------------------------------------------------------------------------
+# Claim 20: the metadata blob states each workspace with its repository.
+# ---------------------------------------------------------------------------
+
+MIN_FIRST_WORKSPACE_IS_THE_INDEX_ROWS = 0.99
+MIN_SLUG_IS_THE_REMOTES_TAIL = 0.95   # a remote can have been renamed since the slug was taken
+
+
+def slug_is_remote_tail(slug: str, remote: str) -> bool:
+    """`owner/repo` is how the remote URL ends, whatever the host and scheme."""
+    tail = remote.rstrip("/")
+    tail = tail[:-4] if tail.endswith(".git") else tail
+    return tail.lower().endswith(("/" + slug.lower(), ":" + slug.lower()))
+
+
+class TestWorkspacesAreStated:
+    def test_corpus_holds(self, dbs):
+        from ccutils.parsers.antigravity import shaped
+        index: dict[str, str | None] = {}
+        for store in DB_STORES:
+            path = ROOT / store / "conversation_summaries.db"
+            if not path.exists():
+                continue
+            conn = _ro(path)
+            for conv, uris in conn.execute("SELECT conversation_id, workspace_uris FROM conversation_summaries"):
+                try:
+                    stated = json.loads(uris) if uris else []
+                except json.JSONDecodeError:
+                    stated = []
+                index[conv] = stated[0] if stated else None
+            conn.close()
+        blobs = unparsed = with_workspace = compared = same = with_remote = tail = 0
+        for db in dbs:
+            conn = _ro(db)
+            rows = conn.execute("SELECT data FROM trajectory_metadata_blob").fetchall()
+            conn.close()
+            for (data,) in rows:
+                if not data:
+                    continue
+                blobs += 1
+                try:
+                    workspaces = shaped.read_workspaces(data)
+                except ValueError:
+                    unparsed += 1
+                    continue
+                if not workspaces:
+                    continue
+                with_workspace += 1
+                if index.get(db.stem):
+                    compared += 1
+                    same += workspaces[0]["workspace_uri"] == index[db.stem]
+                for w in workspaces:
+                    if w["repo_slug"] and w["git_remote"]:
+                        with_remote += 1
+                        tail += slug_is_remote_tail(w["repo_slug"], w["git_remote"])
+        print(f"\n{blobs} blobs, {unparsed} unparsed, {with_workspace} state a workspace; first workspace is the "
+              f"index row's {same}/{compared}; slug is the remote's tail {tail}/{with_remote}")
+        assert blobs and unparsed == 0
+        assert compared and same / compared >= MIN_FIRST_WORKSPACE_IS_THE_INDEX_ROWS
+        assert with_remote and tail / with_remote >= MIN_SLUG_IS_THE_REMOTES_TAIL
+
+    def test_oracle(self):
+        assert slug_is_remote_tail("handle/My-Repo", "git@github.com:handle/my-repo.git")
+        assert slug_is_remote_tail("user/repo", "ssh://git@10.0.0.5:2222/user/repo")
+        assert slug_is_remote_tail("user/repo", "https://example.org/user/repo/")
+        assert not slug_is_remote_tail("user/repo", "git@github.com:someone/user-repo.git")
+        assert not slug_is_remote_tail("repo", "git@github.com:user/other.git")
+
