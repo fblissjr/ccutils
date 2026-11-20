@@ -415,8 +415,21 @@ Still to build, in the order they unblock questions:
   artifact versions, media references, prompt history.
 - A view of a delegation with its outcome, from the child's side.
 - Unknown-field logging per message, as the drift canary for the field map.
+- **Per-tool steps are named and not decoded.** Before tool calls moved
+  into `GENERIC` (contract claim 11) each tool had its own step type
+  (`RUN_COMMAND`, `VIEW_FILE`, `CODE_ACTION`, ...). The first cut of the
+  name map held only the six types the CLI writes today, so on the owner's
+  Mac, 2026-11-20, `TestStepFieldReadings` failed on the type name of 431
+  of 9,374 sampled steps. The map is now claim 6's whole table, held
+  against the doc by a test (derived format 2). Still missing for those
+  steps: their body (the command, the path, the output), and a row in
+  `antigravity_tool_calls`, which reads `GENERIC` steps only. Whether they
+  state a call id and name in metadata `5.4` is unmeasured; the Linux store
+  holds none of them, so this is built against the Mac's lake.
+- **Contract claim 3 is false for `permissions` on the Mac** (39 of 120,241
+  steps). The canary prints the shapes; restate the claim from them.
 - Step types the name map does not know are kept by number with a NULL
-  name; a handful exist in conversations the app has since pruned.
+  name.
 
 1. **Capture the schema into the lake.** Extract the `FileDescriptorSet` from
    the installed Go binary (rodata scan for `FileDescriptorProto` bytes, walk

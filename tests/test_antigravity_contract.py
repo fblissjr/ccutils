@@ -171,9 +171,37 @@ def payload_copy_violations(rows) -> list[tuple[int, str]]:
     return bad
 
 
+def copy_violation_shapes(rows) -> collections.Counter:
+    """How each copied column disagrees with its Step field, as shapes: no
+    bytes of either side. Keyed (column, step_type, status, shape)."""
+    shapes: collections.Counter = collections.Counter()
+    for _idx, step_type, status, _has_sub, *copies, payload in rows:
+        occurrences: dict[int, list] = collections.defaultdict(list)
+        for f, _wt, v in parse(payload):
+            occurrences[f].append(v)
+        for (col, f), value in zip(_COPIED_FIELDS.items(), copies):
+            found = occurrences.get(f) or []
+            if value == (found[-1] if found else None):
+                continue
+            if value is None:
+                shape = f"column NULL, field stated {len(found)}x"
+            elif not found:
+                shape = "column stated, field absent"
+            elif value in found:
+                shape = f"column equals an earlier occurrence of {len(found)}"
+            elif isinstance(value, bytes) and value == b"".join(v for v in found if isinstance(v, bytes)):
+                shape = f"column is the {len(found)} occurrences joined"
+            else:
+                sizes = "longer" if len(value) > len(found[-1]) else "shorter" if len(value) < len(found[-1]) else "same length"
+                shape = f"both stated {len(found)}x, column {sizes}"
+            shapes[(col, step_type, status, shape)] += 1
+    return shapes
+
+
 class TestBlobColumnsAreCopies:
     def test_corpus_holds(self, dbs):
         bad = []
+        shapes: collections.Counter = collections.Counter()
         n = 0
         for db in dbs:
             conn = _ro(db)
@@ -182,9 +210,14 @@ class TestBlobColumnsAreCopies:
                 "permissions, task_details, step_payload FROM steps").fetchall()
             conn.close()
             n += len(rows)
-            bad += [(db.stem, *v) for v in payload_copy_violations(rows)]
+            found = payload_copy_violations(rows)
+            bad += [(db.parent.parent.name, db.stem, *v) for v in found]
+            if found:
+                shapes += copy_violation_shapes(rows)
         assert n > 0
-        assert bad == [], f"{len(bad)} of {n} steps: a column no longer mirrors its Step field, e.g. {bad[:3]}"
+        stores = collections.Counter(b[0] for b in bad)
+        assert bad == [], (f"{len(bad)} of {n} steps: a column no longer mirrors its Step field. "
+                           f"By store: {dict(stores)}. (column, step_type, status, shape): {dict(shapes)}")
 
     def test_oracle(self):
         meta = f_timestamp(1, 1_790_000_000)
@@ -196,6 +229,22 @@ class TestBlobColumnsAreCopies:
             (3, 15, 3, 1, meta, None, None, None, good),           # has_subtrajectory without field 6
         ]
         assert payload_copy_violations(rows) == [(1, "step_type"), (2, "metadata"), (3, "has_subtrajectory")]
+        twice = good + f_bytes(133, b"first") + f_bytes(133, b"second")
+        shaped_rows = [
+            (0, 15, 3, 0, meta, None, None, None, good),                       # agrees: no shape
+            (1, 15, 3, 0, meta, None, b"first", None, twice),                  # the column kept the first
+            (2, 15, 3, 0, meta, None, b"firstsecond", None, twice),            # the column kept both
+            (3, 15, 3, 0, meta, None, None, None, twice),                      # the column kept nothing
+            (4, 15, 3, 0, meta, None, b"x", None, good),                       # the payload states none
+            (5, 15, 3, 0, meta, None, b"longer than it", None, twice),
+        ]
+        assert copy_violation_shapes(shaped_rows) == collections.Counter({
+            ("permissions", 15, 3, "column equals an earlier occurrence of 2"): 1,
+            ("permissions", 15, 3, "column is the 2 occurrences joined"): 1,
+            ("permissions", 15, 3, "column NULL, field stated 2x"): 1,
+            ("permissions", 15, 3, "column stated, field absent"): 1,
+            ("permissions", 15, 3, "both stated 2x, column longer"): 1,
+        })
 
 
 # ---------------------------------------------------------------------------
@@ -625,6 +674,7 @@ class TestStepFieldReadings:
         sample = sorted(dbs, key=lambda p: p.stat().st_size)[::READING_SAMPLE_EVERY]
         seen: collections.Counter = collections.Counter()
         agree: collections.Counter = collections.Counter()
+        unnamed: collections.Counter = collections.Counter()
         steps = unparsed = tool_steps = tool_steps_named = 0
         for db in sample:
             lines = _transcript(db)
@@ -647,9 +697,12 @@ class TestStepFieldReadings:
                 for name, ok in reading_comparisons(step, mine[-1]):
                     seen[name] += 1
                     agree[name] += ok
+                    if name == "type" and not ok:
+                        unnamed[(step["step_type"], mine[-1].get("type"))] += 1
             conn.close()
         print(f"\n{len(sample)} databases, {steps} steps, {unparsed} unparsed; tool steps with id and name "
-              f"{tool_steps_named} of {tool_steps}; " + ", ".join(f"{k} {agree[k]}/{seen[k]}" for k in sorted(seen)))
+              f"{tool_steps_named} of {tool_steps}; " + ", ".join(f"{k} {agree[k]}/{seen[k]}" for k in sorted(seen))
+              + f"; (step type, the transcript's name) where the name map disagrees: {dict(unnamed)}")
         assert steps > 1000 and unparsed == 0
         assert tool_steps and tool_steps_named == tool_steps
         floors = {"type": MIN_EQUAL, "source": MIN_EQUAL, "response text": MIN_EQUAL, "thinking": MIN_EQUAL,

@@ -8,6 +8,7 @@ that map against the real store.
 import io
 import re
 from datetime import datetime, timezone
+from pathlib import Path
 
 from ccutils.parsers.antigravity import shaped
 
@@ -207,6 +208,62 @@ def _clear(cli_home, idx, conv=CONV_A):
                  (step_payload(step_type, CLEARED, meta), idx))
     conn.commit()
     conn.close()
+
+
+class TestStepTypeNames:
+    """The name map is the contract's measured table, both ways. The first cut
+    named only the six types the CLI store still writes, so on a store with
+    older conversations every per-tool step decoded with no name."""
+
+    def _observed(self):
+        doc = (Path(__file__).parent.parent / "docs" / "ANTIGRAVITY_CONTRACT.md").read_text()
+        start = doc.index("Observed step types, both stores:")
+        block = doc[start:doc.index("\n\n", start)]
+        return {int(n): name for n, name in re.findall(r"(\d+)\s+`([A-Z_]+)`", block)}
+
+    def test_every_type_the_contract_observed_is_named_and_nothing_else(self):
+        observed = self._observed()
+        assert len(observed) > 20 and observed[8] == "VIEW_FILE" and observed[132] == "GENERIC"
+        assert shaped.STEP_TYPE_NAMES == observed
+
+    def test_a_per_tool_step_is_named_in_the_derived_table(self, cli_home, lake_root):
+        db = cli_home / "antigravity-cli" / "conversations" / f"{CONV_A}.db"
+        conn = sqlite3.connect(db)
+        step_type, meta = conn.execute("SELECT step_type, metadata FROM steps WHERE idx = 2").fetchone()
+        conn.execute("UPDATE steps SET step_type = 21, step_payload = ? WHERE idx = 2",
+                     (step_payload(21, 3, meta),))
+        conn.commit()
+        conn.close()
+        lake(cli_home, lake_root)
+        shaped.shape_lake(lake_root)
+        steps = {r["idx"]: r for r in unit_table(lake_root, CONV_A, "step")}
+        assert (steps[2]["step_type"], steps[2]["step_type_name"]) == (21, "RUN_COMMAND")
+
+    def test_a_type_nobody_has_named_keeps_its_number_and_a_null_name(self):
+        assert 9999 not in shaped.STEP_TYPE_NAMES
+        assert shaped.read_step(step_payload(9999, 3, b""))["step_type"] == 9999
+
+
+class TestDerivedFormatVersion:
+    """A unit is skipped when its lake unit is unchanged, so a change to what
+    is READ out of a step reaches an existing tree only through the version."""
+
+    def test_the_readings_are_pinned_to_the_version(self):
+        assert (shaped.SHAPED_FORMAT_VERSION, shaped.format_fingerprint()) == (2, PINNED_SHAPED_FINGERPRINT), (
+            "what the shaped layer reads or writes changed: bump SHAPED_FORMAT_VERSION, then update this pin")
+
+    def test_a_new_version_rederives_a_tree_that_already_holds_the_rows(self, cli_home, lake_root, monkeypatch):
+        lake(cli_home, lake_root)
+        first = shaped.shape_lake(lake_root)
+        assert first.written and shaped.shape_lake(lake_root).written == 0
+        monkeypatch.setattr(shaped, "SHAPED_FORMAT_VERSION", shaped.SHAPED_FORMAT_VERSION + 1)
+        monkeypatch.setitem(shaped.STEP_TYPE_NAMES, shaped.USER_INPUT, "RENAMED")
+        again = shaped.shape_lake(lake_root)
+        assert (again.written, again.unchanged) == (first.written, 0)
+        assert unit_table(lake_root, CONV_A, "step")[0]["step_type_name"] == "RENAMED"
+
+
+PINNED_SHAPED_FINGERPRINT = "df9db2fad33975c0"
 
 
 class TestShapeLake:

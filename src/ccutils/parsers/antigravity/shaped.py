@@ -19,6 +19,7 @@ the two, and they say that they did.
 from __future__ import annotations
 
 import glob
+import hashlib
 import json
 import os
 import re
@@ -34,11 +35,20 @@ import pyarrow.parquet as pq
 from ccutils.parsers.antigravity import decode
 from ccutils.parsers.lake import OnUnit, UnitEvent, read_manifest
 
-# Step field 1. Six types remain in the CLI store (claim 17).
+# Step field 1. The names are the ones the brain transcript states for each
+# number (claim 6, "Observed step types"); a test holds this map against that
+# table both ways. Six types remain in what the app writes today (claim 17),
+# and those are the only ones whose bodies are read below. The per-tool types
+# are what tool calls were before they moved into GENERIC (claim 11): they
+# are named here, and their bodies are not decoded yet.
 USER_INPUT, PLANNER_RESPONSE, ERROR_MESSAGE, CHECKPOINT, SYSTEM_MESSAGE, GENERIC = 14, 15, 17, 23, 101, 132
 STEP_TYPE_NAMES = {
     USER_INPUT: "USER_INPUT", PLANNER_RESPONSE: "PLANNER_RESPONSE", ERROR_MESSAGE: "ERROR_MESSAGE",
     CHECKPOINT: "CHECKPOINT", SYSTEM_MESSAGE: "SYSTEM_MESSAGE", GENERIC: "GENERIC",
+    5: "CODE_ACTION", 7: "GREP_SEARCH", 8: "VIEW_FILE", 9: "LIST_DIRECTORY", 21: "RUN_COMMAND",
+    25: "FIND", 28: "COMMAND_STATUS", 31: "READ_URL_CONTENT", 33: "SEARCH_WEB", 38: "MCP_TOOL",
+    85: "BROWSER_SUBAGENT", 90: "EPHEMERAL_MESSAGE", 91: "GENERATE_IMAGE", 98: "CONVERSATION_HISTORY",
+    127: "INVOKE_SUBAGENT", 138: "ASK_QUESTION",
 }
 # Step field 4, named from the transcript's `status` on time-matched lines.
 STATUS_NAMES = {2: "RUNNING", 3: "DONE", 4: "INVALID", 5: "CLEARED", 6: "CANCELED", 7: "ERROR"}
@@ -120,7 +130,10 @@ def created_second(value: datetime | None) -> int | None:
 # ---------------------------------------------------------------------------
 
 # Bump when a table's columns or a reading changes: every unit is re-derived.
-SHAPED_FORMAT_VERSION = 1
+# A unit whose lake unit is unchanged is skipped, so without the bump a new
+# reading never reaches a tree that already exists. `format_fingerprint` is
+# pinned to this number by a test.
+SHAPED_FORMAT_VERSION = 2
 HARNESS_DIR = "antigravity"
 SHAPED_DIR = "antigravity-decoded"       # beside the lake's own tree, never inside it
 SHAPED_MANIFEST = "_shaped.parquet"
@@ -166,6 +179,17 @@ _MANIFEST = pa.schema([
 ])
 _TRUNCATED = re.compile(r"<truncated \d+ bytes>")
 _ROWS_PER_GROUP = 2000
+
+
+def format_fingerprint() -> str:
+    """A hash of the name maps, the text paths and the two table schemas.
+
+    It covers what is declared as data. A reading written as code in
+    `read_step` (the tool call's path, the usage fields) is not in it, and a
+    change there needs the version bumped by hand."""
+    parts = [sorted(STEP_TYPE_NAMES.items()), sorted(STATUS_NAMES.items()), sorted(SOURCE_NAMES.items()),
+             sorted(_TEXT_PATH.items()), str(STEP_SCHEMA), str(LINE_SCHEMA)]
+    return hashlib.sha256(repr(parts).encode()).hexdigest()[:16]
 
 
 @dataclass

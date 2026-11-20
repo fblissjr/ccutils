@@ -218,7 +218,7 @@ duckdb -readonly ~/.ccutils/lake/antigravity-decoded/antigravity.duckdb
 |---|---|---|
 | `antigravity_conversations` | a conversation | parent, depth and agent name as the app states them; `is_pruned` for one the app has deleted and the lake still holds |
 | `antigravity_steps` | a step | one row per step however many versions the lake kept; `text`, `thinking` and `tool_output` read from the database, else the fuller row the lake kept, else the brain transcript, with a `*_source` column saying which; `is_inherited` for steps a fork replayed |
-| `antigravity_tool_calls` | a tool call with its result | keyed on the step, because a call id repeats |
+| `antigravity_tool_calls` | a tool call with its result | keyed on the step, because a call id repeats. Calls from before the app moved them into `GENERIC` steps (older conversations) are in `antigravity_steps` under their own type names and not here yet |
 | `antigravity_usage` | a model response's token counts | a fork's inherited responses left out, so a sum counts each once |
 
 ```sql antigravity

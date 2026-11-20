@@ -121,7 +121,17 @@ files in `language_server` 2.15.1; decoding with it found 0 unknown fields in
   and has no enum in any descriptor (survey).
 - Consequence: `step_payload` alone carries the step; the lake still mirrors
   every column, because a mirror is not the place to decide which copy wins.
-- Canary: `TestBlobColumnsAreCopies`.
+- Contradicted 2026-11-20 on the owner's Mac, whose stores hold 120,241
+  steps: on 39 of them the `permissions` column is not field 133 of the
+  payload. Every other column agreed on every step. What the two sides hold
+  on those 39 is not measured yet; the canary now prints it as shapes
+  (which store, step type, status, and whether the column is NULL, the
+  field is absent, or the field occurs more than once). Until that is read,
+  this claim is a rate for `permissions` and an invariant for the rest, and
+  nothing derived reads `permissions`. The lake is unaffected: it keeps the
+  column and the payload both.
+- Canary: `TestBlobColumnsAreCopies`. It is red on that Mac and green on the
+  Linux CLI corpus.
 
 ## 4. Stored types match declared types
 
@@ -399,7 +409,7 @@ in field 4 of the message in field 5.
 
 | Field | Reading | Against the transcript |
 |---|---|---|
-| `1` | step type: 14 `USER_INPUT`, 15 `PLANNER_RESPONSE`, 17 `ERROR_MESSAGE`, 23 `CHECKPOINT`, 101 `SYSTEM_MESSAGE`, 132 `GENERIC` | `type`, equal on every line |
+| `1` | step type: 14 `USER_INPUT`, 15 `PLANNER_RESPONSE`, 17 `ERROR_MESSAGE`, 23 `CHECKPOINT`, 101 `SYSTEM_MESSAGE`, 132 `GENERIC` in what the CLI writes today; older conversations hold the per-tool types of claim 6's table, which the name map carries too | `type`, equal on every line |
 | `4` | status: 2 `RUNNING`, 3 `DONE`, 4 `INVALID`, 5 `CLEARED`, 6 `CANCELED`, 7 `ERROR` | `status`, equal on nearly all; a line can precede the step's last status |
 | `5.1` | creation time {1 seconds, 2 nanos} | `created_at`, the join itself |
 | `5.3` | source: 2 `MODEL`, 4 `USER_EXPLICIT`, 5 `SYSTEM`, 6 `SYSTEM_SDK` | `source`, equal on every line |
