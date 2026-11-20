@@ -227,6 +227,20 @@ SELECT strftime(created_at, '%Y-%m') AS month, count(*) AS responses,
 FROM antigravity_usage GROUP BY 1 ORDER BY 1;
 ```
 
+To catch up on one conversation, the prompts and the written replies in
+order. A lake run first makes it current; an agent reading the brain
+transcript by hand gets the same rows, wrapped in the app's markup and only
+until the app prunes the conversation:
+
+```sql antigravity
+SELECT idx, created_at, step_type_name, left(text, 200) AS said
+FROM antigravity_steps
+WHERE conversation_id = (SELECT conversation_id FROM antigravity_conversations
+                         ORDER BY last_modified_time DESC LIMIT 1)
+  AND step_type_name IN ('USER_INPUT', 'PLANNER_RESPONSE') AND text IS NOT NULL
+ORDER BY idx;
+```
+
 A value read from the transcript is the transcript's form of it: user,
 system and tool text arrive wrapped, and long values can be cut
 (`transcript_is_truncated`). Not decoded yet: exit codes, model id strings,
