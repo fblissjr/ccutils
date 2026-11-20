@@ -625,4 +625,7 @@ def test_the_readmes_antigravity_recipes_bind_against_the_views(cli_home, lake_r
         code = "\n".join(line.split("--", 1)[0] for line in block.splitlines())
         for statement in (s.strip() for s in code.split(";")):
             if statement:
-                conn.execute(statement).fetchall()
+                # Counted inside the engine: fetching a TIMESTAMPTZ into Python
+                # needs pytz, which is not a dependency and not the recipe's concern.
+                rows = conn.execute(f"SELECT count(*) FROM ({statement})").fetchone()[0]
+                assert rows > 0, f"a README recipe returns nothing on the fixture store:\n{statement}"
