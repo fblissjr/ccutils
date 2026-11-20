@@ -47,7 +47,9 @@ import fcntl
 import hashlib
 import json
 import os
+import re
 import shutil
+import socket
 import uuid
 from contextlib import contextmanager
 from dataclasses import dataclass, field
@@ -70,6 +72,81 @@ SUPERSEDED_DIR = "_superseded"
 # Row groups are capped by bytes, not rows: one Antigravity generation row is
 # ~97 MB (a full prompt snapshot with images) while most are a few KB.
 DEFAULT_ROW_GROUP_BYTES = 64 * 1024 * 1024
+
+
+# One lake base holds a directory per machine. A machine's whole lake (every
+# harness, its manifest, its lock, what is derived from it) lives under
+# `machine=<name>/`, so a run touches nothing of another machine's, and two
+# machines are brought together by copying a directory. The name is in the
+# path, hive-style, and never in a row: a reader gets it for every file,
+# including ones written before the lake had machines.
+MACHINE_PREFIX = "machine="
+MACHINE_FILE = "_this_machine"
+_MACHINE_NAME = re.compile(r"[a-z0-9][a-z0-9_-]{0,62}")
+
+
+def machine_root(base: Path, machine: str) -> Path:
+    return Path(base) / f"{MACHINE_PREFIX}{machine}"
+
+
+def this_machine(base: Path, explicit: str | None = None) -> str:
+    """The name this machine's lake goes under in `base`. Writes nothing.
+
+    The name the base recorded on its first run wins; a different explicit
+    name is refused, because it would start a second directory for the same
+    machine. With neither, the hostname's first label, lowercased. Raises
+    ValueError when no usable name comes out."""
+    path = Path(base) / MACHINE_FILE
+    recorded = path.read_text().strip() if path.exists() else None
+    if explicit is not None:
+        if not _MACHINE_NAME.fullmatch(explicit):
+            raise ValueError(f"not a machine name: {explicit!r} (lowercase letters, digits, - and _)")
+        if recorded and recorded != explicit:
+            raise ValueError(
+                f"this lake is recorded as machine {recorded!r}; to rename it, rename "
+                f"{MACHINE_PREFIX}{recorded} and edit {MACHINE_FILE}")
+        return explicit
+    if recorded:
+        if not _MACHINE_NAME.fullmatch(recorded):
+            raise ValueError(f"{path} holds {recorded!r}, which is not a machine name")
+        return recorded
+    name = re.sub(r"[^a-z0-9_-]+", "-", socket.gethostname().split(".")[0].lower()).strip("-_")
+    if not _MACHINE_NAME.fullmatch(name):
+        raise ValueError("no machine name could be made from the hostname; pass one")
+    return name
+
+
+def record_this_machine(base: Path, machine: str) -> bool:
+    """Remember `machine` as this base's own. True when it was not recorded before."""
+    path = Path(base) / MACHINE_FILE
+    if path.exists():
+        return False
+    Path(base).mkdir(parents=True, exist_ok=True)
+    path.write_text(machine + "\n")
+    return True
+
+
+def adopt_flat_layout(base: Path, machine: str, names: tuple[str, ...]) -> list[str]:
+    """Move directories a lake kept directly under `base`, before it had
+    machines, into this machine's directory. Whole, by rename: no file is
+    rewritten, so everything they held is still held. Returns what moved.
+
+    A harness directory is moved under its own lock, so a run that is still
+    writing it finishes first or this raises LakeLockedError."""
+    base, root = Path(base), machine_root(base, machine)
+    moved = []
+    for name in names:
+        old, new = base / name, root / name
+        if not old.is_dir() or new.exists():
+            continue
+        root.mkdir(parents=True, exist_ok=True)
+        if (old / LOCK_FILE).exists():
+            with _exclusive_lock(old / LOCK_FILE):
+                os.rename(old, new)
+        else:
+            os.rename(old, new)
+        moved.append(name)
+    return moved
 
 
 class LakeLockedError(RuntimeError):

@@ -18,7 +18,15 @@ from typing import Callable, TextIO
 
 import click
 
-from ..parsers.lake import LakeLockedError, UnitEvent, write_lake
+from ..parsers.lake import (
+    LakeLockedError,
+    UnitEvent,
+    adopt_flat_layout,
+    machine_root,
+    record_this_machine,
+    this_machine,
+    write_lake,
+)
 from .utils import default_lake_root
 
 LAKE_HARNESSES = ("antigravity",)
@@ -113,7 +121,13 @@ def _source(harness: str, stores: tuple[str, ...]):
 @click.argument("harness", type=click.Choice(LAKE_HARNESSES))
 @click.option(
     "-o", "--output", type=click.Path(file_okay=False, path_type=Path), default=None,
-    help="Lake root (default: ~/.ccutils/lake). The harness gets a subdirectory.",  # path-privacy: ignore
+    help="Lake base (default: ~/.ccutils/lake). It holds a directory per machine, "  # path-privacy: ignore
+         "machine=<name>, and each harness gets a subdirectory of that.",
+)
+@click.option(
+    "--machine", default=None,
+    help="This machine's name in the lake (lowercase letters, digits, - and _). Needed once at "
+         "most: the base remembers it, and without it the hostname is used.",
 )
 @click.option(
     "--source", "source_root", type=click.Path(exists=True, file_okay=False, path_type=Path), default=None,
@@ -138,7 +152,7 @@ def _source(harness: str, stores: tuple[str, ...]):
     help="Print a line on stderr for every unit as it is written, marked or decoded. "
          "Without it, a terminal shows one progress line that is redrawn in place.",
 )
-def lake_cmd(harness, output, source_root, stores, force, decode, no_thinking, verbose):
+def lake_cmd(harness, output, machine, source_root, stores, force, decode, no_thinking, verbose):
     """EXPERIMENTAL: mirror another harness's transcript store into Parquet.
 
     A byte-faithful Tier 1 archive: every source table and file, nothing
@@ -152,11 +166,19 @@ def lake_cmd(harness, output, source_root, stores, force, decode, no_thinking, v
         raise click.UsageError(
             "--no-thinking applies to --decode. The lake is a byte-faithful archive and keeps "
             "thinking text; there is nothing for the flag to do without --decode.")
-    lake_root = output if output is not None else default_lake_root()
+    lake_base = output if output is not None else default_lake_root()
     source = _source(harness, stores)
+    try:
+        machine = this_machine(lake_base, machine)
+    except ValueError as e:
+        raise click.UsageError(f"{e} (--machine)") from None
+    lake_root = machine_root(lake_base, machine)
     reporter = Reporter(sys.stderr, live=sys.stderr.isatty(), verbose=verbose)
     reporter.phase(f"Scanning the {harness} store")
     try:
+        named = record_this_machine(lake_base, machine)
+        # A lake written before it had machines sits directly under the base.
+        moved = adopt_flat_layout(lake_base, machine, (harness, f"{harness}-decoded"))
         result = write_lake(source, lake_root=lake_root, root=source_root, force=force, on_unit=reporter.unit)
     except LakeLockedError as e:
         reporter.clear()
@@ -166,6 +188,12 @@ def lake_cmd(harness, output, source_root, stores, force, decode, no_thinking, v
         reporter.clear()
 
     click.echo(_EXPERIMENTAL)
+    if named:
+        click.echo(f"This machine is recorded as '{machine}' in {lake_base}.")
+    if moved:
+        click.echo(f"The lake from before machines was moved into {lake_root} whole, nothing rewritten: "
+                   + ", ".join(moved))
+        (lake_root / f"{harness}-decoded" / "antigravity.duckdb").unlink(missing_ok=True)
     click.echo(f"Lake: {result.harness_dir}  (run {result.lake_run_id})")
     if result.context.get("app_version"):
         click.echo(f"Installed app version: {result.context['app_version']}")
@@ -205,13 +233,15 @@ def lake_cmd(harness, output, source_root, stores, force, decode, no_thinking, v
         click.echo("Errors (previous lake copy kept; retried next run):", err=True)
         for o in errors:
             click.echo(f"  - {o.store}/{o.unit_kind}/{o.unit_id}: {o.error}", err=True)
-    decode_errors = _decode(lake_root, include_thinking=not no_thinking, reporter=reporter) if decode else []
+    decode_errors = (_decode(lake_base, lake_root, include_thinking=not no_thinking, reporter=reporter)
+                     if decode else [])
     if errors or decode_errors:
         sys.exit(1)
 
 
-def _decode(lake_root: Path, *, include_thinking: bool, reporter: Reporter) -> list[str]:
-    """Derive the readable tables and the views database; returns the units that failed."""
+def _decode(lake_base: Path, lake_root: Path, *, include_thinking: bool, reporter: Reporter) -> list[str]:
+    """Derive this machine's readable tables, then the views database over
+    every machine under the base; returns the units that failed."""
     from ..parsers.antigravity import shaped
 
     reporter.phase("Decoding the lake")
@@ -234,7 +264,7 @@ def _decode(lake_root: Path, *, include_thinking: bool, reporter: Reporter) -> l
     reporter.phase("Writing the views database")
     try:
         try:
-            database = shaped.write_views_database(lake_root)
+            database = shaped.write_views_database(lake_base)
         finally:
             reporter.clear()
         click.echo(f"Views: {database}  ({', '.join(shaped.VIEW_NAMES)})")

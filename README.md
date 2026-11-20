@@ -159,7 +159,8 @@ terminal UI instead, any DuckDB client works — point it at the same file.
 ### lake (experimental)
 
 ```bash
-ccutils lake antigravity                    # mirror Google Antigravity's store into ~/.ccutils/lake/
+ccutils lake antigravity                    # mirror Google Antigravity's store into ~/.ccutils/lake/machine=<name>/
+ccutils lake antigravity --machine desk     # name this machine (once; the lake remembers, default: the hostname)
 ccutils lake antigravity --store antigravity-cli -o DIR
 ccutils lake antigravity --decode           # ...then derive readable tables and views beside it
 ccutils lake antigravity --decode --verbose # a line on stderr per unit as it is written or decoded
@@ -171,6 +172,23 @@ prints a line per unit that was written, marked gone or decoded, with its
 row counts, and says nothing about units that did not change. Both go to
 stderr; with neither a terminal nor the flag (a scheduler, a pipe) nothing
 is added.
+
+**One lake, every machine.** The lake base (`~/.ccutils/lake`) holds a
+directory per machine, `machine=<name>/`, with that machine's whole lake
+inside: every harness, its manifest and lock, and what is decoded from it.
+A run writes only its own machine's directory. To read two machines
+together, copy one machine's directory into the other's base and run
+`--decode` there; the views read every `machine=*` directory and carry a
+`machine` column, and no run ever touches a directory that is not its own:
+
+```bash
+rsync -a otherhost:.ccutils/lake/machine=laptop/ ~/.ccutils/lake/machine=laptop/
+ccutils lake antigravity --decode
+```
+
+The name lives in the path and nowhere else, so nothing in the archive is
+rewritten to add it. A lake written before this (directly under the base)
+is moved into its machine's directory whole on the next run.
 
 Mirrors another harness's native transcript store into a Parquet lake, Tier 1
 only (no warehouse). For Antigravity that is every table of every
@@ -194,16 +212,17 @@ phases: [docs/HARNESS_ARCHITECTURE.md](docs/HARNESS_ARCHITECTURE.md).
 ```sql
 -- DuckDB over the lake; union_by_name because a drifted file can carry extra columns
 SELECT store, step_type, count(*)
-FROM read_parquet('~/.ccutils/lake/antigravity/*/conversations/*/steps.parquet', union_by_name = true)
+FROM read_parquet('~/.ccutils/lake/machine=*/antigravity/*/conversations/*/steps.parquet', union_by_name = true)
 WHERE source_present          -- the source's current rows; drop it to add what the app has since
                               -- deleted, and the fuller version of every step it emptied
 GROUP BY ALL ORDER BY 3 DESC;
 ```
 
 **Reading it: `--decode`.** The lake is bytes. `--decode` derives a second
-tree from it, `~/.ccutils/lake/antigravity-decoded/`, and never writes inside
+tree from it, `machine=<name>/antigravity-decoded/`, and never writes inside
 the archive: one `step.parquet` and one `transcript_line.parquet` per
-conversation, and `antigravity.duckdb`, a DuckDB file holding only views.
+conversation. It then writes `~/.ccutils/lake/antigravity.duckdb`, a DuckDB
+file holding only views, over every machine under the base.
 Deleting that tree loses nothing; the next `--decode` rebuilds it, and only
 the conversations that changed. Steps are read by protobuf field number,
 each reading a measured claim in `docs/ANTIGRAVITY_CONTRACT.md` (17, 18).
@@ -211,12 +230,14 @@ each reading a measured claim in `docs/ANTIGRAVITY_CONTRACT.md` (17, 18).
 itself still holds it).
 
 ```bash
-duckdb -readonly ~/.ccutils/lake/antigravity-decoded/antigravity.duckdb
+duckdb -readonly ~/.ccutils/lake/antigravity.duckdb
 ```
+
+Every view's first column is `machine`, and a conversation or step is keyed with it: the same conversation id on two machines is two rows, and nothing joins across machines.
 
 | View | One row is | What it settles for you |
 |---|---|---|
-| `antigravity_conversations` | a conversation | parent, depth and agent name as the app states them; `is_pruned` for one the app has deleted and the lake still holds |
+| `antigravity_conversations` | a conversation on a machine | parent, depth and agent name as the app states them; `is_pruned` for one the app has deleted and the lake still holds; `project_path`, the stated workspace as a path under the home directory, so the same checkout on two machines is one project (`project_name` is its last part) |
 | `antigravity_steps` | a step | one row per step however many versions the lake kept; `text`, `thinking` and `tool_output` read from the database, else the fuller row the lake kept, else the brain transcript, with a `*_source` column saying which; `is_inherited` for steps a fork replayed |
 | `antigravity_tool_calls` | a tool call with its result | keyed on the step, because a call id repeats; both encodings, a `GENERIC` step and the per-tool step types older conversations hold (`step_type_name` says which). For the older ones the output is read from the brain transcript; their bodies are not decoded yet. `is_error` is never NULL, and is true for a call answered by an error message step, whose message is `error_text` |
 | `antigravity_usage` | a step's stated token counts | a fork's inherited responses left out, so a sum counts each once; `step_type_name` separates a model response from a checkpoint, which states the usage of its own call and no model |

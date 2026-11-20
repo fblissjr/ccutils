@@ -108,7 +108,7 @@ import pyarrow.parquet as pq
 import pytest
 
 from ccutils.parsers.antigravity import AntigravitySource
-from ccutils.parsers.lake import write_lake
+from ccutils.parsers.lake import read_manifest, write_lake
 
 from helpers_antigravity import (
     _STEP_COLUMNS,
@@ -181,9 +181,13 @@ def cli_home(tmp_path):
     return root
 
 
+MACHINE = "m1"
+
+
 @pytest.fixture
 def lake_root(tmp_path):
-    return tmp_path / "lake"
+    """One machine's root inside a lake base: the base holds a directory per machine."""
+    return tmp_path / "lake" / f"machine={MACHINE}"
 
 
 def lake(cli_home, lake_root):
@@ -197,7 +201,7 @@ def unit_table(lake_root, conv, name):
 
 def views(lake_root):
     conn = duckdb.connect()
-    shaped.create_views(conn, lake_root)
+    shaped.create_views(conn, lake_root.parent)
     return conn
 
 
@@ -612,6 +616,7 @@ from ccutils.parsers.lake import UnitEvent
 
 
 def decode_cmd(cli_home, out, *flags):
+    flags = flags if "--machine" in flags else (*flags, "--machine", MACHINE)
     return CliRunner().invoke(cli, ["lake", "antigravity", "-o", str(out), "--source", str(cli_home), *flags])
 
 
@@ -620,8 +625,8 @@ class TestDecodeCommand:
         out = tmp_path / "out"
         result = decode_cmd(cli_home, out, "--decode")
         assert result.exit_code == 0, result.output
-        assert len(unit_table(out, CONV_A, "step")) == 4
-        db = out / shaped.SHAPED_DIR / "antigravity.duckdb"
+        assert len(unit_table(out / f"machine={MACHINE}", CONV_A, "step")) == 4
+        db = out / "antigravity.duckdb"
         conn = duckdb.connect(str(db), read_only=True)
         assert conn.execute("SELECT count(*) FROM antigravity_steps").fetchone()[0] == 8
         assert conn.execute("SELECT count(*) FROM antigravity_conversations").fetchone()[0] == 2
@@ -631,7 +636,7 @@ class TestDecodeCommand:
     def test_without_the_flag_nothing_is_derived(self, cli_home, tmp_path):
         out = tmp_path / "out"
         assert decode_cmd(cli_home, out).exit_code == 0
-        assert not (out / shaped.SHAPED_DIR).exists()
+        assert not (out / f"machine={MACHINE}" / shaped.SHAPED_DIR).exists()
 
     def test_a_rerun_refreshes_the_views_database(self, cli_home, tmp_path):
         out = tmp_path / "out"
@@ -639,7 +644,7 @@ class TestDecodeCommand:
         _clear(cli_home, 3)
         result = decode_cmd(cli_home, out, "--decode")
         assert result.exit_code == 0, result.output
-        conn = duckdb.connect(str(out / shaped.SHAPED_DIR / "antigravity.duckdb"), read_only=True)
+        conn = duckdb.connect(str(out / "antigravity.duckdb"), read_only=True)
         assert conn.execute("SELECT is_cleared, text, text_source FROM antigravity_steps "
                             "WHERE conversation_id = ? AND idx = 3", [CONV_A]).fetchone() == (True, "One file.", "archive")
 
@@ -647,11 +652,11 @@ class TestDecodeCommand:
         out = tmp_path / "out"
         result = decode_cmd(cli_home, out, "--decode", "--no-thinking")
         assert result.exit_code == 0, result.output
-        conn = duckdb.connect(str(out / shaped.SHAPED_DIR / "antigravity.duckdb"), read_only=True)
+        conn = duckdb.connect(str(out / "antigravity.duckdb"), read_only=True)
         assert conn.execute("SELECT count(*) FROM antigravity_steps WHERE thinking IS NOT NULL").fetchone()[0] == 0
         assert conn.execute("SELECT count(*) FROM antigravity_steps WHERE thinking_tokens IS NOT NULL").fetchone()[0] > 0
         conn.close()
-        derived = out / shaped.SHAPED_DIR
+        derived = out / f"machine={MACHINE}" / shaped.SHAPED_DIR
         assert not any(b"list first" in p.read_bytes() or b"worker plan" in p.read_bytes()
                        for p in derived.rglob("*") if p.is_file())
         # The lake is the archive and keeps everything; the output says so.
@@ -661,6 +666,157 @@ class TestDecodeCommand:
         result = decode_cmd(cli_home, tmp_path / "out", "--no-thinking")
         assert result.exit_code == 2
         assert not (tmp_path / "out").exists()
+
+
+class TestMachines:
+    """One lake base holds a directory per machine, `machine=<name>`. A run
+    writes only its own; another machine's directory copied in beside it is
+    read by the same views, and every view says which machine a row is from."""
+
+    def test_a_run_writes_under_its_machines_directory_and_remembers_the_name(self, cli_home, tmp_path):
+        out = tmp_path / "out"
+        assert decode_cmd(cli_home, out, "--machine", "desk").exit_code == 0
+        assert (out / "machine=desk" / "antigravity" / "_manifest.parquet").exists()
+        assert not (out / "antigravity").exists()
+        assert (out / "_this_machine").read_text().strip() == "desk"
+        # The name is remembered, so later runs need not say it.
+        result = CliRunner().invoke(cli, ["lake", "antigravity", "-o", str(out), "--source", str(cli_home)])
+        assert result.exit_code == 0, result.output
+        assert sorted(p.name for p in out.iterdir() if p.name.startswith("machine=")) == ["machine=desk"]
+
+    def test_a_different_name_for_a_lake_that_has_one_is_refused(self, cli_home, tmp_path):
+        out = tmp_path / "out"
+        decode_cmd(cli_home, out, "--machine", "desk")
+        result = decode_cmd(cli_home, out, "--machine", "laptop")
+        assert result.exit_code == 2 and "desk" in result.output
+        assert not (out / "machine=laptop").exists()
+
+    def test_without_a_name_the_hostname_is_used(self, cli_home, tmp_path, monkeypatch):
+        import socket
+        monkeypatch.setattr(socket, "gethostname", lambda: "Some Host.local")
+        out = tmp_path / "out"
+        result = CliRunner().invoke(cli, ["lake", "antigravity", "-o", str(out), "--source", str(cli_home)])
+        assert result.exit_code == 0, result.output
+        assert (out / "_this_machine").read_text().strip() == "some-host"
+        assert (out / "machine=some-host" / "antigravity").is_dir() and "some-host" in result.output
+
+    def test_a_name_that_is_not_a_plain_word_is_refused(self, cli_home, tmp_path):
+        for bad in ("a=b", "../up", "Has Space", ""):
+            result = decode_cmd(cli_home, tmp_path / "out", "--machine", bad)
+            assert result.exit_code == 2, bad
+        assert not (tmp_path / "out").exists()
+
+    def _two_machines(self, cli_home, tmp_path, between=None):
+        """`laptop` ran elsewhere and its directory was copied in; `desk` ran
+        here, after `between` changed what the store holds."""
+        out, elsewhere = tmp_path / "out", tmp_path / "elsewhere"
+        assert decode_cmd(cli_home, elsewhere, "--decode", "--machine", "laptop").exit_code == 0
+        if between:
+            between()
+        assert decode_cmd(cli_home, out, "--decode", "--machine", "desk").exit_code == 0
+        shutil.copytree(elsewhere / "machine=laptop", out / "machine=laptop")
+        assert decode_cmd(cli_home, out, "--decode", "--machine", "desk").exit_code == 0   # the views see both
+        return out
+
+    def test_the_views_read_every_machine_and_say_which(self, cli_home, tmp_path):
+        out = self._two_machines(cli_home, tmp_path)
+        conn = duckdb.connect()
+        shaped.create_views(conn, out)
+        for view in shaped.VIEW_NAMES:
+            assert conn.execute(f"DESCRIBE {view}").fetchall()[0][0] == "machine", view
+        assert conn.execute("SELECT machine, count(*) FROM antigravity_conversations GROUP BY 1 ORDER BY 1"
+                            ).fetchall() == [("desk", 2), ("laptop", 2)]
+
+    def test_the_same_conversation_on_two_machines_is_two_and_nothing_joins_across(self, cli_home, tmp_path):
+        out = self._two_machines(cli_home, tmp_path)
+        conn = duckdb.connect()
+        shaped.create_views(conn, out)
+        # Each machine reads as it would alone: one row per step, per call, per response.
+        assert conn.execute("SELECT machine, count(*) FROM antigravity_steps GROUP BY 1 ORDER BY 1"
+                            ).fetchall() == [("desk", 8), ("laptop", 8)]
+        assert conn.execute("SELECT machine, count(*) FROM antigravity_tool_calls GROUP BY 1 ORDER BY 1"
+                            ).fetchall() == [("desk", 1), ("laptop", 1)]
+        assert conn.execute("SELECT machine, sum(input_tokens) FROM antigravity_usage GROUP BY 1 ORDER BY 1"
+                            ).fetchall() == [("desk", 280), ("laptop", 280)]
+        assert conn.execute("SELECT count(*), count(DISTINCT (machine, store, conversation_id, idx)) "
+                            "FROM antigravity_steps").fetchone() == (16, 16)
+
+    def test_a_step_emptied_on_one_machine_does_not_read_the_other_machines_copy(self, cli_home, tmp_path):
+        # The laptop archived the reply whole; the app then emptied it, and the
+        # desk only ever read it empty. The desk has the transcript, not the row.
+        out = self._two_machines(cli_home, tmp_path, between=lambda: _clear(cli_home, 3))
+        conn = duckdb.connect(str(out / "antigravity.duckdb"), read_only=True)
+        assert conn.execute("SELECT machine, is_cleared, text, text_source FROM antigravity_steps "
+                            "WHERE conversation_id = ? AND idx = 3 ORDER BY 1", [CONV_A]).fetchall() == [
+            ("desk", True, "One file.", "transcript"), ("laptop", False, "One file.", "database")]
+
+    def test_tasks_are_each_machines_own(self, cli_home, tmp_path):
+        TestTasks()._add_tasks(cli_home)
+        out = self._two_machines(cli_home, tmp_path)
+        conn = duckdb.connect(str(out / "antigravity.duckdb"), read_only=True)
+        assert conn.execute("SELECT machine, count(*), count(tool_name), count(exit_code), count(log_text) "
+                            "FROM antigravity_tasks GROUP BY 1 ORDER BY 1").fetchall() == [
+            ("desk", 4, 3, 1, 3), ("laptop", 4, 3, 1, 3)]
+
+    def test_a_later_run_here_leaves_the_other_machines_directory_alone(self, cli_home, tmp_path):
+        out = self._two_machines(cli_home, tmp_path)
+        before = {p.relative_to(out): p.stat().st_mtime_ns for p in (out / "machine=laptop").rglob("*") if p.is_file()}
+        (cli_home / "antigravity-cli" / "conversations" / f"{CONV_B}.db").unlink()
+        assert decode_cmd(cli_home, out, "--decode", "--force", "--machine", "desk").exit_code == 0
+        after = {p.relative_to(out): p.stat().st_mtime_ns for p in (out / "machine=laptop").rglob("*") if p.is_file()}
+        assert after == before
+        conn = duckdb.connect(str(out / "antigravity.duckdb"), read_only=True)
+        assert conn.execute("SELECT machine, is_pruned FROM antigravity_conversations WHERE conversation_id = ? "
+                            "ORDER BY 1", [CONV_B]).fetchall() == [("desk", True), ("laptop", False)]
+
+    def test_a_lake_from_before_machines_is_moved_whole_and_nothing_is_rewritten(self, cli_home, tmp_path):
+        out = tmp_path / "out"
+        write_lake(AntigravitySource(app_bundle=None), lake_root=out, root=cli_home)   # the old layout
+        shaped.shape_lake(out)
+        steps = out / "antigravity" / "antigravity-cli" / "conversations" / CONV_B / "steps.parquet"
+        held = pq.read_table(steps).to_pylist()
+        # The app deletes B; the lake is now its only copy.
+        (cli_home / "antigravity-cli" / "conversations" / f"{CONV_B}.db").unlink()
+        result = decode_cmd(cli_home, out, "--decode")
+        assert result.exit_code == 0, result.output
+        assert not (out / "antigravity").exists() and not (out / "antigravity-decoded").exists()
+        moved = out / f"machine={MACHINE}" / "antigravity" / "antigravity-cli" / "conversations"
+        kept = pq.read_table(moved / CONV_B / "steps.parquet").to_pylist()
+        assert [r["step_payload"] for r in kept] == [r["step_payload"] for r in held]
+        assert [r["lake_run_id"] for r in kept] == [r["lake_run_id"] for r in held]
+        assert not any(r["source_present"] for r in kept)
+        statuses = {r["unit_id"]: r["status"] for r in read_manifest(out / f"machine={MACHINE}" / "antigravity")}
+        assert statuses[CONV_A] == "unchanged" and statuses[CONV_B] == "source_missing"
+        assert "moved" in result.output
+
+
+class TestProjectIdentity:
+    """A project is the workspace a conversation states, as a path under the
+    home directory, so the same checkout on two machines is one project."""
+
+    def _conversations(self, cli_home, lake_root, uris):
+        write_summaries_db(cli_home / "antigravity-cli" / "conversation_summaries.db", [
+            {"conversation_id": conv, "step_count": 1, "app_data_dir": "antigravity-cli", "workspace_uris": uri}
+            for conv, uri in uris.items()])
+        lake(cli_home, lake_root)
+        shaped.shape_lake(lake_root)
+        return dict((r[0], r[1:]) for r in views(lake_root).execute(
+            "SELECT conversation_id, project_path, project_name, workspace_uri FROM antigravity_conversations").fetchall())
+
+    def test_the_same_checkout_under_two_homes_is_one_project(self, cli_home, lake_root):
+        (cli_home / "antigravity-cli" / "conversation_summaries.db").unlink()
+        rows = self._conversations(cli_home, lake_root, {
+            CONV_A: '["file:///home/someone/workspace/proj-a"]',
+            CONV_B: '["file:///Users/another/workspace/proj-a"]'})
+        assert rows[CONV_A] == ("workspace/proj-a", "proj-a", "file:///home/someone/workspace/proj-a")
+        assert rows[CONV_B][:2] == ("workspace/proj-a", "proj-a")
+
+    def test_a_path_outside_a_home_is_kept_whole_and_no_workspace_is_no_project(self, cli_home, lake_root):
+        (cli_home / "antigravity-cli" / "conversation_summaries.db").unlink()
+        rows = self._conversations(cli_home, lake_root, {
+            CONV_A: '["file:///srv/build/my%20repo/"]', CONV_B: "[]"})
+        assert rows[CONV_A] == ("/srv/build/my repo", "my repo", "file:///srv/build/my%20repo/")
+        assert rows[CONV_B] == (None, None, None)
 
 
 class TestProgressOutput:

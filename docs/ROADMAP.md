@@ -51,9 +51,18 @@ against; where it stands is as of that date.
    to its child.
 5. **One project across harnesses and machines.** A project worked on in
    Claude Code and in Antigravity, on two machines, is one thing to ask
-   about. Standing: not at all. The two harnesses are separate stores, each
-   machine has its own lake, and no row says which machine it came from.
-   Phase 3 (harness identity) is where this lands.
+   about. Standing: machines are done for the Antigravity lake (a
+   `machine=<name>` directory per machine under one base, a `machine`
+   column in every view, built 2026-11-20), and its conversations carry
+   `project_path`, the stated workspace as a path under the home
+   directory. Not done: the Claude Code warehouse has neither, so the two
+   harnesses still cannot be asked about together. Phase 3 (harness
+   identity) is where that lands, and it should use the same two things.
+   Limits of `project_path`, accepted for now: it is a path, so one repo
+   checked out at different places is two projects and two repos at the
+   same place are one; a git remote would be the real identity and nothing
+   decoded states one yet. 54 of 594 conversations on the Linux machine
+   state no workspace, and a child does not inherit its parent's.
 6. **Tied to the code.** The files a session read and changed, and the
    commits it made, with enough to check out that commit. Standing: the
    warehouse has file operations and the branch; neither side has commits.
@@ -1083,6 +1092,13 @@ from the commit message.
 
 ## Decisions that should not be relitigated
 
+- **A machine is a directory of the lake, named in the path and in no row.**
+  `<base>/machine=<name>/` holds one machine's whole lake. Decided
+  2026-11-20 with the owner ("I want unified"), against a `machine` column
+  in the row envelope: a column would have needed every archived unit
+  rewritten, and rows of conversations the app had already pruned could
+  never have been given one. A run writes only its own machine's
+  directory, which is what makes copying another machine's in safe.
 - **No migrations from the past unless the owner asks for one.** Rebuild
   instead. 1.0.0 deletes the machinery.
 - **No baseline warehouse is built or pinned.** Current output is not

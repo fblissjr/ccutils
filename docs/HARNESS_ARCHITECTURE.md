@@ -60,7 +60,7 @@ Claude.ai exports, and plain Gemini CLI chats.
 
 ```
 Tier 0  native store             Claude Code JSONL | Antigravity SQLite+protobuf | ...
-Tier 1  lake, per harness        <lake_root>/<harness>/...   byte-faithful mirror + envelope
+Tier 1  lake, per harness        <base>/machine=<name>/<harness>/...   byte-faithful mirror + envelope
 Tier 2  shaped staging           neutral stg_* (with `harness`) + harness-specific stg_*
 Tier 3  dims and facts           read staging only (ETL_ARCHITECTURE rule 1)
 Tier 4  views

@@ -25,16 +25,16 @@ def home(tmp_path):
 
 
 def invoke(*args):
-    return CliRunner().invoke(cli, ["lake", *args])
+    return CliRunner().invoke(cli, ["lake", *args, "--machine", "m1"])
 
 
 def test_writes_the_lake_under_output(home, tmp_path):
     out = tmp_path / "out"
     result = invoke("antigravity", "-o", str(out), "--source", str(home.root))
     assert result.exit_code == 0, result.output
-    steps = out / "antigravity" / "antigravity" / "conversations" / CONV_A / "steps.parquet"
+    steps = out / "machine=m1" / "antigravity" / "antigravity" / "conversations" / CONV_A / "steps.parquet"
     assert pq.read_table(steps).num_rows == 3
-    units = {(r["store"], r["unit_id"]): r["status"] for r in read_manifest(out / "antigravity")}
+    units = {(r["store"], r["unit_id"]): r["status"] for r in read_manifest(out / "machine=m1" / "antigravity")}
     assert units[("antigravity", CONV_A)] == "written"
     assert "antigravity-cli" in result.output
     assert "weird-store" in result.output  # skipped stores are reported, not silent
@@ -46,7 +46,7 @@ def test_second_run_reports_unchanged(home, tmp_path):
     result = invoke("antigravity", "-o", str(out), "--source", str(home.root))
     assert result.exit_code == 0
     assert "written 0" in result.output
-    assert {r["status"] for r in read_manifest(out / "antigravity")} == {"unchanged"}
+    assert {r["status"] for r in read_manifest(out / "machine=m1" / "antigravity")} == {"unchanged"}
 
 
 def test_default_root_is_home_anchored_never_cwd(home, tmp_path, monkeypatch):
@@ -58,7 +58,7 @@ def test_default_root_is_home_anchored_never_cwd(home, tmp_path, monkeypatch):
     monkeypatch.chdir(cwd)
     result = invoke("antigravity", "--source", str(home.root))
     assert result.exit_code == 0, result.output
-    assert (fake_home / ".ccutils" / "lake" / "antigravity" / "_manifest.parquet").exists()
+    assert (fake_home / ".ccutils" / "lake" / "machine=m1" / "antigravity" / "_manifest.parquet").exists()
     assert list(cwd.iterdir()) == []
 
 
@@ -66,7 +66,7 @@ def test_store_filter(home, tmp_path):
     out = tmp_path / "out"
     result = invoke("antigravity", "-o", str(out), "--source", str(home.root), "--store", "antigravity-cli")
     assert result.exit_code == 0, result.output
-    assert {r["store"] for r in read_manifest(out / "antigravity")} == {"antigravity-cli", "_global"}
+    assert {r["store"] for r in read_manifest(out / "machine=m1" / "antigravity")} == {"antigravity-cli", "_global"}
 
 
 def test_unit_error_exits_1_and_names_the_unit(home, tmp_path):
@@ -93,8 +93,8 @@ def test_unknown_harness_exits_2():
 
 def test_held_lock_exits_1(home, tmp_path):
     out = tmp_path / "out"
-    (out / "antigravity").mkdir(parents=True)
-    with _exclusive_lock(out / "antigravity" / ".lock"):
+    (out / "machine=m1" / "antigravity").mkdir(parents=True)
+    with _exclusive_lock(out / "machine=m1" / "antigravity" / ".lock"):
         result = invoke("antigravity", "-o", str(out), "--source", str(home.root))
     assert result.exit_code == 1
     assert "another lake run" in result.output

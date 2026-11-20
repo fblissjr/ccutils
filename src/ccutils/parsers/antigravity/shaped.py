@@ -33,7 +33,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 
 from ccutils.parsers.antigravity import decode
-from ccutils.parsers.lake import OnUnit, UnitEvent, read_manifest
+from ccutils.parsers.lake import MACHINE_PREFIX, OnUnit, UnitEvent, read_manifest
 
 # Step field 1. The names are the ones the brain transcript states for each
 # number (claim 6, "Observed step types"); a test holds this map against that
@@ -444,11 +444,12 @@ def shape_lake(lake_root: Path | str, *, include_thinking: bool = True, force: b
 _VIEWS = """
 CREATE OR REPLACE VIEW antigravity_conversations AS
 WITH archived AS (
-    SELECT unit_id AS conversation_id, store, status
-    FROM read_parquet('{manifest}')
+    SELECT machine, unit_id AS conversation_id, store, status
+    FROM read_parquet('{manifest}', {hive})
     WHERE unit_kind = 'conversation'
 )
 SELECT
+    s.machine,
     s.conversation_id,
     COALESCE(a.store, s.store) AS store,
     NULLIF(s.title, '') AS title,
@@ -457,6 +458,12 @@ SELECT
     s.last_modified_time,
     s.last_user_input_time,
     s.workspace_uris,
+    -- The project is the workspace the conversation states, as a path under
+    -- the home directory: the same checkout on two machines is one project.
+    -- A path outside a home is kept whole. NULL when no workspace is stated.
+    {uri} AS workspace_uri,
+    {project_path} AS project_path,
+    regexp_extract({project_path}, '([^/]+)$', 1) AS project_name,
     s.project_id,
     NULLIF(s.agent_name, '') AS agent_name,
     NULLIF(s.parent_conversation_id, '') AS parent_conversation_id,
@@ -468,37 +475,37 @@ SELECT
     a.status = 'source_missing' AS is_pruned,
     a.conversation_id IS NOT NULL AS is_archived,
     s.source_present AS in_index
-FROM read_parquet('{summaries}', union_by_name = true) s
-LEFT JOIN archived a USING (conversation_id)
+FROM read_parquet('{summaries}', union_by_name = true, {hive}) s
+LEFT JOIN archived a ON a.machine = s.machine AND a.conversation_id = s.conversation_id
 -- Two stores can index one conversation; its own store's row is the one kept.
 QUALIFY row_number() OVER (
-    PARTITION BY s.conversation_id
+    PARTITION BY s.machine, s.conversation_id
     ORDER BY (s.store = a.store) DESC NULLS LAST, s.source_present DESC, s.last_modified_time DESC
 ) = 1;
 
 CREATE OR REPLACE VIEW antigravity_steps AS
-WITH step AS (SELECT * FROM read_parquet('{steps}', union_by_name = true)),
+WITH step AS (SELECT * FROM read_parquet('{steps}', union_by_name = true, {hive})),
 head AS (
     -- One row per step: what the source holds now, or for a conversation
     -- the app has deleted, the last row the lake read.
     SELECT * FROM step
     QUALIFY row_number() OVER (
-        PARTITION BY store, conversation_id, idx
+        PARTITION BY machine, store, conversation_id, idx
         ORDER BY source_present DESC, lake_ingested_at DESC, payload_bytes DESC
     ) = 1
 ),
 fuller AS (
     -- The same step as the lake read it before the app emptied it.
     SELECT s.* FROM step s
-    JOIN head h ON h.store = s.store AND h.conversation_id = s.conversation_id AND h.idx = s.idx
+    JOIN head h ON h.machine = s.machine AND h.store = s.store AND h.conversation_id = s.conversation_id AND h.idx = s.idx
         AND h.created_second = s.created_second AND s.payload_bytes > h.payload_bytes
     QUALIFY row_number() OVER (
-        PARTITION BY s.store, s.conversation_id, s.idx ORDER BY s.payload_bytes DESC, s.lake_ingested_at DESC
+        PARTITION BY s.machine, s.store, s.conversation_id, s.idx ORDER BY s.payload_bytes DESC, s.lake_ingested_at DESC
     ) = 1
 ),
-line AS (SELECT * FROM read_parquet('{lines}', union_by_name = true) WHERE is_current)
+line AS (SELECT * FROM read_parquet('{lines}', union_by_name = true, {hive}) WHERE is_current)
 SELECT
-    h.store, h.conversation_id, h.idx, h.created_at,
+    h.machine, h.store, h.conversation_id, h.idx, h.created_at,
     h.step_type, h.step_type_name, h.status, h.status_name, h.is_cleared,
     h.source_name, h.execution_id, h.generation_idx,
     h.owner_conversation_id, h.is_inherited, h.model_enum,
@@ -526,8 +533,8 @@ SELECT
     l.is_truncated AS transcript_is_truncated,
     h.source_present AS in_source
 FROM head h
-LEFT JOIN fuller f ON f.store = h.store AND f.conversation_id = h.conversation_id AND f.idx = h.idx
-LEFT JOIN line l ON l.store = h.store AND l.conversation_id = h.conversation_id AND l.step_index = h.idx;
+LEFT JOIN fuller f ON f.machine = h.machine AND f.store = h.store AND f.conversation_id = h.conversation_id AND f.idx = h.idx
+LEFT JOIN line l ON l.machine = h.machine AND l.store = h.store AND l.conversation_id = h.conversation_id AND l.step_index = h.idx;
 
 CREATE OR REPLACE VIEW antigravity_tool_calls AS
 -- A tool call and its result are one step (claim 18). Keyed on the step: a
@@ -536,7 +543,7 @@ CREATE OR REPLACE VIEW antigravity_tool_calls AS
 -- status number, so a status nobody has named is still not an error
 -- instead of NULL; and a call answered by an ERROR_MESSAGE step is an
 -- error whatever its status, with the message in `error_text`.
-SELECT store, conversation_id, idx, created_at, step_type_name, tool_call_id, tool_name, tool_args,
+SELECT machine, store, conversation_id, idx, created_at, step_type_name, tool_call_id, tool_name, tool_args,
        tool_output, tool_output_source, status, status_name,
        COALESCE(status = {error}, FALSE) OR step_type = {error_message} AS is_error,
        CASE WHEN step_type = {error_message} THEN text END AS error_text,
@@ -549,7 +556,7 @@ CREATE OR REPLACE VIEW antigravity_usage AS
 -- generation index of the response after it and with no model, so
 -- `step_type_name` is what tells the two apart. Not a fork's inherited
 -- steps, which are the source conversation's usage.
-SELECT store, conversation_id, idx, created_at, step_type_name, generation_idx, model_enum,
+SELECT machine, store, conversation_id, idx, created_at, step_type_name, generation_idx, model_enum,
        input_tokens, output_tokens, cache_read_tokens, thinking_tokens, is_cleared
 FROM antigravity_steps
 WHERE input_tokens IS NOT NULL AND is_inherited IS NOT TRUE;
@@ -559,41 +566,42 @@ CREATE OR REPLACE VIEW antigravity_tasks AS
 -- started it, its log file and the system message that reports it share a
 -- step index, and this is the one place that tie is written down.
 WITH log AS (
-    SELECT store, conversation_id,
+    SELECT machine, store, conversation_id,
            CAST(regexp_extract(relpath, '/tasks/task-([0-9]+)[.]log$', 1) AS BIGINT) AS idx,
            relpath, size_bytes, source_present, content
-    FROM read_parquet('{files}', union_by_name = true)
+    FROM read_parquet('{files}', union_by_name = true, {hive})
     WHERE kind = 'task_log'
 ),
 named AS (
     -- Not a fork's replayed messages: the task they name is the source's.
-    SELECT store, idx AS reported_idx, created_at AS reported_at, text,
+    SELECT machine, store, idx AS reported_idx, created_at AS reported_at, text,
            regexp_extract(text, 'Task id "([0-9a-f-]+)/task-([0-9]+)" (finished|was canceled) with result',
                           ['conversation_id', 'idx', 'verb']) AS task
     FROM antigravity_steps
     WHERE step_type = {system_message} AND is_inherited IS NOT TRUE AND text LIKE '%Task id "%with result%'
 ),
 report AS (
-    SELECT store, task.conversation_id AS conversation_id, CAST(task.idx AS BIGINT) AS idx,
+    SELECT machine, store, task.conversation_id AS conversation_id, CAST(task.idx AS BIGINT) AS idx,
            reported_idx, reported_at,
            CASE task.verb WHEN 'finished' THEN 'finished' ELSE 'canceled' END AS outcome,
            -- The first mention is the task's own: it comes before the output.
            TRY_CAST(NULLIF(regexp_extract(text, 'exited with code (-?[0-9]+)', 1), '') AS BIGINT) AS exit_code
     FROM named
     WHERE task.idx <> ''
-    QUALIFY row_number() OVER (PARTITION BY store, task.conversation_id, task.idx ORDER BY reported_idx DESC) = 1
+    QUALIFY row_number() OVER (PARTITION BY machine, store, task.conversation_id, task.idx ORDER BY reported_idx DESC) = 1
 ),
 task AS (
-    SELECT COALESCE(l.store, r.store) AS store,
+    SELECT COALESCE(l.machine, r.machine) AS machine,
+           COALESCE(l.store, r.store) AS store,
            COALESCE(l.conversation_id, r.conversation_id) AS conversation_id,
            COALESCE(l.idx, r.idx) AS idx,
            r.outcome, r.exit_code, r.reported_at, r.reported_idx,
            l.relpath, l.size_bytes, l.source_present, l.content
     FROM log l
-    FULL JOIN report r ON r.store = l.store AND r.conversation_id = l.conversation_id AND r.idx = l.idx
+    FULL JOIN report r ON r.machine = l.machine AND r.store = l.store AND r.conversation_id = l.conversation_id AND r.idx = l.idx
 )
 SELECT
-    t.store, t.conversation_id, t.idx,
+    t.machine, t.store, t.conversation_id, t.idx,
     -- NULL when the step at that index is no longer the one that started the
     -- task: a revert re-uses indices (claim 14) and leaves the old log behind.
     s.tool_name, s.tool_args, s.created_at AS started_at, s.status_name AS launch_status_name,
@@ -602,7 +610,7 @@ SELECT
     t.relpath IS NOT NULL AS has_log, t.relpath AS log_relpath, t.size_bytes AS log_size_bytes,
     t.source_present AS log_in_source, try(decode(t.content)) AS log_text
 FROM task t
-LEFT JOIN antigravity_steps s ON s.store = t.store AND s.conversation_id = t.conversation_id AND s.idx = t.idx
+LEFT JOIN antigravity_steps s ON s.machine = t.machine AND s.store = t.store AND s.conversation_id = t.conversation_id AND s.idx = t.idx
     AND s.tool_name IN ({task_tools});
 """
 
@@ -612,13 +620,18 @@ VIEW_NAMES = ("antigravity_conversations", "antigravity_steps", "antigravity_too
               "antigravity_tasks")
 
 
-def create_views(conn, lake_root: Path | str) -> list[str]:
-    """Create the `antigravity_*` views in `conn` over the lake and its derived tree.
+def create_views(conn, lake_base: Path | str) -> list[str]:
+    """Create the `antigravity_*` views in `conn` over every machine's lake
+    and derived tree under `lake_base`.
+
+    `machine` is read from the directory a file sits under (`machine=<name>`),
+    so it is stated for every row, including those written before the lake
+    had machines, and no archive file carries it.
 
     Raises FileNotFoundError when there is nothing to read, instead of
     creating views that fail at query time."""
-    lake_root = Path(lake_root)
-    harness_dir, tree = lake_root / HARNESS_DIR, lake_root / SHAPED_DIR
+    machines = Path(lake_base) / f"{MACHINE_PREFIX}*"
+    harness_dir, tree = machines / HARNESS_DIR, machines / SHAPED_DIR
     globs = {
         "manifest": harness_dir / "_manifest.parquet",
         "summaries": harness_dir / "*" / "summaries" / "conversation_summaries.parquet",
@@ -631,7 +644,13 @@ def create_views(conn, lake_root: Path | str) -> list[str]:
             raise FileNotFoundError(f"nothing to read for {name}: {pattern} (run the lake, then shape it)")
     is_call = (f"(h.step_type = {GENERIC} OR COALESCE(h.tool_call_id, f.tool_call_id, "
                "h.tool_name, f.tool_name) IS NOT NULL)")
+    uri = ("CASE WHEN json_valid(s.workspace_uris) THEN "
+           "NULLIF(json_extract_string(s.workspace_uris, '$[0]'), '') END")
+    path = f"rtrim(url_decode(regexp_replace({uri}, '^file://', '')), '/')"
+    project_path = f"NULLIF(regexp_replace({path}, '^/(home|Users)/[^/]+/', ''), '')"
     sql = _VIEWS.format(is_call=is_call, error=STATUS_ERROR, error_message=ERROR_MESSAGE,
+                        uri=uri, project_path=project_path,
+                        hive="hive_partitioning = true, hive_types = {'machine': VARCHAR}",
                         system_message=SYSTEM_MESSAGE, task_tools=", ".join(f"'{t}'" for t in TASK_TOOLS),
                         **{k: str(v).replace("'", "''") for k, v in globs.items()})
     for statement in sql.split(";\n"):
@@ -643,19 +662,20 @@ def create_views(conn, lake_root: Path | str) -> list[str]:
 VIEWS_DATABASE = "antigravity.duckdb"
 
 
-def write_views_database(lake_root: Path | str) -> Path:
-    """`<derived tree>/antigravity.duckdb`: a DuckDB file holding only the views.
+def write_views_database(lake_base: Path | str) -> Path:
+    """`<lake base>/antigravity.duckdb`: a DuckDB file holding only the views,
+    over every machine's directory under the base.
 
-    Rebuilt whole each time. It stores no rows, so it is as disposable as the
-    tree it sits in; the views name this lake's files by absolute path."""
+    Rebuilt whole each time. It stores no rows, so it is disposable; the
+    views name the lake's files by absolute path."""
     import duckdb
 
-    lake_root = Path(lake_root)
-    path = lake_root / SHAPED_DIR / VIEWS_DATABASE
+    lake_base = Path(lake_base)
+    path = lake_base / VIEWS_DATABASE
     tmp = path.with_name(f".{path.name}.tmp-{uuid.uuid4().hex}")
     conn = duckdb.connect(str(tmp))
     try:
-        create_views(conn, lake_root)
+        create_views(conn, lake_base)
     except BaseException:
         conn.close()
         tmp.unlink(missing_ok=True)
