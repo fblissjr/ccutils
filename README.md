@@ -193,10 +193,12 @@ GROUP BY ALL ORDER BY 3 DESC;
 
 **Run it on a schedule.** The `agy` CLI deletes old conversations on its own
 once enough newer ones exist, brain directory included, and has no setting
-for it (`docs/ANTIGRAVITY_CONTRACT.md` claim 13). The lake keeps what it has
-already read, so it only has to run more often than the app prunes; daily is
-ample. A run that changes nothing is cheap, and one that is interrupted is
-picked up by the next. With systemd (a user timer, no root):
+for it (`docs/ANTIGRAVITY_CONTRACT.md` claim 13). It also empties the body
+of old steps while a conversation is still going (claim 16), and the lake
+can only keep a body it read before that happened. So run it often: hourly
+costs little, because a run that changes nothing takes seconds and one that
+is interrupted is picked up by the next. With systemd (a user timer, no
+root):
 
 ```ini
 # ~/.config/systemd/user/ccutils-lake-antigravity.service
@@ -206,7 +208,7 @@ ExecStart=/path/to/uv run --project /path/to/ccutils ccutils lake antigravity
 
 # ~/.config/systemd/user/ccutils-lake-antigravity.timer
 [Timer]
-OnCalendar=daily
+OnCalendar=hourly
 Persistent=true
 [Install]
 WantedBy=timers.target
