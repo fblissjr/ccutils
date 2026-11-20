@@ -53,7 +53,16 @@ def _source(harness: str, stores: tuple[str, ...]):
     help="Only this store (repeatable), e.g. antigravity-cli.",
 )
 @click.option("--force", is_flag=True, help="Rewrite every unit even if its source is unchanged.")
-def lake_cmd(harness, output, source_root, stores, force):
+@click.option(
+    "--decode", is_flag=True,
+    help="After mirroring, derive readable tables and views beside the lake "
+         "(<lake root>/antigravity-decoded/, re-derivable, never inside the archive).",
+)
+@click.option(
+    "--no-thinking", "no_thinking", is_flag=True,
+    help="With --decode: write no thinking text into anything derived. The lake keeps it.",
+)
+def lake_cmd(harness, output, source_root, stores, force, decode, no_thinking):
     """EXPERIMENTAL: mirror another harness's transcript store into Parquet.
 
     A byte-faithful Tier 1 archive: every source table and file, nothing
@@ -63,6 +72,10 @@ def lake_cmd(harness, output, source_root, stores, force):
     The lake is private data (transcripts can contain secrets agents
     printed); it is never written under the current directory.
     """
+    if no_thinking and not decode:
+        raise click.UsageError(
+            "--no-thinking applies to --decode. The lake is a byte-faithful archive and keeps "
+            "thinking text; there is nothing for the flag to do without --decode.")
     lake_root = output if output is not None else default_lake_root()
     source = _source(harness, stores)
     try:
@@ -111,4 +124,36 @@ def lake_cmd(harness, output, source_root, stores, force):
         click.echo("Errors (previous lake copy kept; retried next run):", err=True)
         for o in errors:
             click.echo(f"  - {o.store}/{o.unit_kind}/{o.unit_id}: {o.error}", err=True)
+    decode_errors = _decode(lake_root, include_thinking=not no_thinking) if decode else []
+    if errors or decode_errors:
         sys.exit(1)
+
+
+def _decode(lake_root: Path, *, include_thinking: bool) -> list[str]:
+    """Derive the readable tables and the views database; returns the units that failed."""
+    from ..parsers.antigravity import shaped
+
+    shaped_result = shaped.shape_lake(lake_root, include_thinking=include_thinking)
+    click.echo(
+        f"Decoded: {shaped_result.tree}  units written {shaped_result.written}  "
+        f"unchanged {shaped_result.unchanged}  steps {shaped_result.steps:,}  "
+        f"transcript lines {shaped_result.transcript_lines:,}"
+    )
+    if shaped_result.undecoded_steps or shaped_result.unparsed_lines:
+        click.echo(
+            f"  not decoded (kept as rows with decode_error, or counted): steps "
+            f"{shaped_result.undecoded_steps:,}, transcript lines {shaped_result.unparsed_lines:,}"
+        )
+    if not include_thinking:
+        click.echo("  no thinking text was written here; the lake itself keeps thinking text.")
+    try:
+        database = shaped.write_views_database(lake_root)
+        click.echo(f"Views: {database}  (antigravity_conversations, antigravity_steps, "
+                   "antigravity_tool_calls, antigravity_usage)")
+    except FileNotFoundError as e:
+        click.echo(f"Views not written: {e}", err=True)
+    if shaped_result.errors:
+        click.echo("Decode errors (the unit keeps its previous derived copy, if any):", err=True)
+        for line in shaped_result.errors:
+            click.echo(f"  - {line}", err=True)
+    return shaped_result.errors

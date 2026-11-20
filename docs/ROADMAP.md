@@ -327,7 +327,7 @@ the run's numbers are in `_runs.parquet` and `_manifest.parquet` there.
 The command and the lake layout are outside semver until declared stable.
 Declaring them stable is a decision for after phase 1, when a consumer exists.
 
-### Phase 1 -- decode Antigravity. PARKED 2026-09-22, no DDL, can land any time
+### Phase 1 -- decode Antigravity. FIRST SLICE BUILT 2026-11-20, no DDL
 
 The owner parked this on 2026-09-22 after the format 2 fix: start it later.
 It waits on one decision, step 1's go-ahead to extract the schema from the
@@ -385,6 +385,38 @@ conversations use them.
 Order: the two lake fixes (done, lake format 4), a complete run and a
 schedule, then the shaped layer from the plain-JSON and plain-column
 sources, then the field-number decode for what those lack.
+
+**Built 2026-11-20: `ccutils lake antigravity --decode`.** The derived tree
+is `<lake_root>/antigravity-decoded/`, per conversation a `step.parquet`
+and a `transcript_line.parquet`, with its own manifest and format version
+(`shaped.SHAPED_FORMAT_VERSION`) and a DuckDB file of views. Decoding is by
+field number (`parsers/antigravity/decode.py`, `shaped.py`); the owner
+went with that route on 2026-11-20, so step 1 below is not needed and
+stays only as the fallback if a field number moves. Each reading is
+contract claim 17 or 18, measured over the whole store against the brain
+transcript and held by `TestStepFieldReadings`. Views:
+`antigravity_conversations`, `antigravity_steps`, `antigravity_tool_calls`,
+`antigravity_usage`; `README.md` says what each one settles. Of the gates
+below, the decode-failure one is met (a row with `decode_error`, counted in
+the manifest) and the text-equals-transcript one is the canary; the
+unknown-field walk is not built.
+
+Still to build, in the order they unblock questions:
+
+- `gen_metadata`: the model id string, time to first token, retry attempts,
+  context window. Usage today comes from the step's own copy, which has the
+  model only as an enum number.
+- The typed tool payload: a command's exit code, file paths for reads and
+  edits. Lost on a cleared step, so the kept fuller row matters here.
+- `trajectory_metadata_blob`: the stated root conversation, workspace, git
+  branch. `executor_metadata`: a turn and why it ended. Checkpoints.
+- The brain files that are already JSON: agent-to-agent messages with read
+  state, the `subagents/` records (child type and role), background tasks,
+  artifact versions, media references, prompt history.
+- A view of a delegation with its outcome, from the child's side.
+- Unknown-field logging per message, as the drift canary for the field map.
+- Step types the name map does not know are kept by number with a NULL
+  name; a handful exist in conversations the app has since pruned.
 
 1. **Capture the schema into the lake.** Extract the `FileDescriptorSet` from
    the installed Go binary (rodata scan for `FileDescriptorProto` bytes, walk

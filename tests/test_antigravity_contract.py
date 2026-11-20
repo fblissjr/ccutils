@@ -570,3 +570,107 @@ class TestStepCreationTimeIsStated:
     def test_oracle(self):
         rows = [(0, f_timestamp(1, 1_790_000_000)), (1, f_bytes(12, b"exec-1")), (2, None)]
         assert missing_created_at(rows) == [1, 2]
+
+
+# ---------------------------------------------------------------------------
+# Claims 17 and 18: what each step field holds, read by number
+# ---------------------------------------------------------------------------
+
+# Every reading the shaped layer makes (parsers/antigravity/shaped.py) against
+# what the brain transcript states for the same step, joined as in claim 6.
+# A sample of the databases: the readings are per-field facts, not rare
+# events, and the full scan (scripts under internal/antigravity_audit_2026-11-20)
+# agreed with the sample. Equal where the transcript states the value as is;
+# contained where the transcript wraps it. Run with -s for the counts.
+READING_SAMPLE_EVERY = 12
+MIN_EQUAL = 0.999          # type, source, response text, thinking, token counts
+MIN_CONTAINED = 0.98       # user, system and checkpoint text inside the line's content
+MIN_TOOL_OUTPUT = 0.90     # the transcript truncates some tool output (claim 6)
+MIN_STATUS = 0.95          # a line can be written before the step's last status
+
+
+def reading_comparisons(step: dict, line: dict) -> list[tuple[str, bool]]:
+    """(reading, agrees) for one decoded step and the transcript line written for it."""
+    from ccutils.parsers.antigravity import shaped
+    out = [
+        ("type", shaped.STEP_TYPE_NAMES.get(step["step_type"]) == line.get("type")),
+        ("source", shaped.SOURCE_NAMES.get(step["source"]) == line.get("source")),
+    ]
+    cleared = step["status"] == shaped.STATUS_CLEARED
+    if not cleared:
+        out.append(("status", shaped.STATUS_NAMES.get(step["status"]) == line.get("status")))
+    content = line.get("content") or ""
+    if step["step_type"] == shaped.PLANNER_RESPONSE and not cleared:
+        if step["text"] is not None or line.get("content"):
+            out.append(("response text", step["text"] == line.get("content")))
+        if step["thinking"] is not None or line.get("thinking"):
+            out.append(("thinking", step["thinking"] == line.get("thinking")))
+    if step["step_type"] == shaped.USER_INPUT and step["text"] is not None:
+        out.append(("wrapped text", step["text"] in content))
+    if step["step_type"] in (shaped.SYSTEM_MESSAGE, shaped.CHECKPOINT) and step["text"] is not None and not cleared:
+        out.append(("wrapped text", step["text"] in content))
+    if step["step_type"] == shaped.ERROR_MESSAGE and step["text"] is not None and not cleared and line.get("error"):
+        out.append(("wrapped text", step["text"] in line["error"]))
+    if step["step_type"] == shaped.GENERIC and step["tool_output"] is not None:
+        out.append(("tool output", step["tool_output"] in content))
+    for name in ("input_tokens", "output_tokens", "cache_read_tokens"):
+        if name in line and step[name] is not None:
+            out.append(("tokens", step[name] == line[name]))
+    return out
+
+
+class TestStepFieldReadings:
+    def test_corpus_holds(self, dbs):
+        from ccutils.parsers.antigravity import shaped
+        sample = sorted(dbs, key=lambda p: p.stat().st_size)[::READING_SAMPLE_EVERY]
+        seen: collections.Counter = collections.Counter()
+        agree: collections.Counter = collections.Counter()
+        steps = unparsed = tool_steps = tool_steps_named = 0
+        for db in sample:
+            lines = _transcript(db)
+            if not lines:
+                continue
+            conn = _ro(db)
+            for idx, payload in conn.execute("SELECT idx, step_payload FROM steps"):
+                steps += 1
+                try:
+                    step = shaped.read_step(payload)
+                except ValueError:
+                    unparsed += 1
+                    continue
+                if step["step_type"] == shaped.GENERIC:
+                    tool_steps += 1
+                    tool_steps_named += bool(step["tool_call_id"] and step["tool_name"])
+                mine = lines_at(lines.get(idx) or [], shaped.created_second(step["created_at"]))
+                if not mine:
+                    continue
+                for name, ok in reading_comparisons(step, mine[-1]):
+                    seen[name] += 1
+                    agree[name] += ok
+            conn.close()
+        print(f"\n{len(sample)} databases, {steps} steps, {unparsed} unparsed; tool steps with id and name "
+              f"{tool_steps_named} of {tool_steps}; " + ", ".join(f"{k} {agree[k]}/{seen[k]}" for k in sorted(seen)))
+        assert steps > 1000 and unparsed == 0
+        assert tool_steps and tool_steps_named == tool_steps
+        floors = {"type": MIN_EQUAL, "source": MIN_EQUAL, "response text": MIN_EQUAL, "thinking": MIN_EQUAL,
+                  "tokens": MIN_EQUAL, "wrapped text": MIN_CONTAINED, "tool output": MIN_TOOL_OUTPUT,
+                  "status": MIN_STATUS}
+        for name, floor in floors.items():
+            assert seen[name], f"nothing to compare for {name}"
+            assert agree[name] / seen[name] >= floor, f"{name}: {agree[name]} of {seen[name]} agree"
+
+    def test_oracle(self):
+        from ccutils.parsers.antigravity import shaped
+        step = dict.fromkeys(("text", "thinking", "tool_output", "input_tokens", "output_tokens",
+                              "cache_read_tokens"), None)
+        step.update(step_type=shaped.PLANNER_RESPONSE, status=3, source=2, text="hello", input_tokens=10)
+        line = {"type": "PLANNER_RESPONSE", "source": "MODEL", "status": "DONE", "content": "hello",
+                "input_tokens": 11}
+        assert dict(reading_comparisons(step, line)) == {
+            "type": True, "source": True, "status": True, "response text": True, "tokens": False}
+        # A cleared step is not compared on what it no longer holds.
+        step.update(status=shaped.STATUS_CLEARED, text=None, input_tokens=None)
+        assert dict(reading_comparisons(step, line)) == {"type": True, "source": True}
+        tool = dict(step, step_type=shaped.GENERIC, status=3, tool_output="out")
+        assert ("tool output", True) in reading_comparisons(tool, dict(line, type="GENERIC", content="Output:\nout\n"))
+        assert ("tool output", False) in reading_comparisons(tool, dict(line, type="GENERIC", content="cut"))

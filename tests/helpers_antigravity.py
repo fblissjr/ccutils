@@ -487,3 +487,79 @@ def unlock(home: GeminiHome) -> None:
     for p in home.decoys:
         if p.exists():
             p.chmod(0o644)
+
+
+# ---------------------------------------------------------------------------
+# Steps as the CLI writes them (measured 2026-11-20; docs/ANTIGRAVITY_CONTRACT.md
+# claims 17 and 18). Six step types, the tool call in the metadata of the
+# GENERIC step that ran it, usage in the metadata of the model response.
+# ---------------------------------------------------------------------------
+
+USER_INPUT, PLANNER_RESPONSE, CHECKPOINT, ERROR_MESSAGE, SYSTEM_MESSAGE, GENERIC = 14, 15, 23, 17, 101, 132
+DONE, CLEARED = 3, 5
+
+
+def cli_metadata(created_s: int, *, idx: int, owner: str, source: int = 2, execution_id: str = "exec-1",
+                 tool: tuple[str, str, str] | None = None, usage: dict[int, int] | None = None,
+                 generation: int | None = None, model_enum: int | None = None) -> bytes:
+    """CortexStepMetadata: 1 created_at, 3 source, 4 tool call {1 id, 2 name,
+    3 args JSON}, 9 usage, 11 model enum, 12 execution id, 20 lineage {2 step
+    idx, 3 generation idx, 4 owner conversation id}."""
+    parts = [f_timestamp(1, created_s), f_varint(3, source)]
+    if tool:
+        parts.append(f_msg(4, f_str(1, tool[0]), f_str(2, tool[1]), f_str(3, tool[2])))
+    if usage:
+        parts.append(f_msg(9, *(f_varint(k, v) for k, v in sorted(usage.items()))))
+    if model_enum is not None:
+        parts.append(f_varint(11, model_enum))
+    parts.append(f_str(12, execution_id))
+    lineage = [f_varint(2, idx)] if idx else []
+    if generation is not None:
+        lineage.append(f_varint(3, generation))
+    lineage.append(f_str(4, owner))
+    parts.append(f_msg(20, *lineage))
+    return b"".join(parts)
+
+
+def cli_body(step_type: int, *, text: str | None = None, thinking: str | None = None,
+             calls: tuple[tuple[str, str, str], ...] = (), output: str | None = None,
+             parts: tuple[str, ...] = ()) -> bytes:
+    """The body field of a step: 19 user input {2 text, 3 repeated {1 text}},
+    20 model response {1 text, 3 thinking, 7 repeated call}, 140 tool step
+    {2 {1 output}}, 114 system message {1 text}, 30 checkpoint {5 summary},
+    24 error {3 {2 message}}."""
+    if step_type == USER_INPUT:
+        return f_msg(19, *([f_str(2, text)] if text is not None else []),
+                     *(f_msg(3, f_str(1, p)) for p in parts))
+    if step_type == PLANNER_RESPONSE:
+        return f_msg(20, *([f_str(1, text)] if text is not None else []),
+                     *([f_str(3, thinking)] if thinking is not None else []),
+                     *(f_msg(7, f_str(1, c[0]), f_str(2, c[1]), f_str(3, c[2])) for c in calls))
+    if step_type == GENERIC:
+        return f_msg(140, f_msg(2, *([f_str(1, output)] if output is not None else [])))
+    if step_type == SYSTEM_MESSAGE:
+        return f_msg(114, f_str(1, text or ""))
+    if step_type == CHECKPOINT:
+        return f_msg(30, f_str(5, text or ""))
+    if step_type == ERROR_MESSAGE:
+        return f_msg(24, f_msg(3, f_str(2, text or "")))
+    raise ValueError(f"no body shape for step type {step_type}")
+
+
+def cli_step_row(idx: int, step_type: int, created_s: int, *, owner: str, status: int = DONE,
+                 cleared_keeps: bytes = b"", **kw) -> tuple:
+    """A `steps` row. status=CLEARED writes what the CLI leaves of an emptied
+    step: the envelope and metadata, plus `cleared_keeps` (a user input keeps
+    its repeated parts)."""
+    meta_kw = {k: kw.pop(k) for k in ("source", "execution_id", "tool", "usage", "generation", "model_enum") if k in kw}
+    meta = cli_metadata(created_s, idx=idx, owner=owner, **meta_kw)
+    body = cleared_keeps if status == CLEARED else cli_body(step_type, **kw)
+    return (idx, step_type, status, 0, meta, None, None, None, None,
+            step_payload(step_type, status, meta, body), 0)
+
+
+def cli_transcript_line(step_index: int, type_name: str, created_s: int, **fields) -> str:
+    from datetime import datetime, timezone
+    ts = datetime.fromtimestamp(created_s, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return json.dumps({"step_index": step_index, "type": type_name, "source": "MODEL",
+                       "status": "DONE", "created_at": ts, **fields})

@@ -2,9 +2,11 @@
 
 Last updated: 2026-11-20
 
-> **Status: PROPOSED.** One phase is built: the harness-generic lake runner
+> **Status: PROPOSED.** Phase 0 is built: the harness-generic lake runner
 > and the Antigravity lake source, shipped as the EXPERIMENTAL `ccutils lake`
-> command, outside semver. Everything after it is a plan, scheduled in
+> command, outside semver. The first slice of phase 1 is built too
+> (`--decode`: a derived tree and views, read by field number). Everything
+> after that is a plan, scheduled in
 > `docs/ROADMAP.md` under "Harnesses beyond Claude Code", and it rides on the
 > Tier 2 rewrite in `docs/ETL_ARCHITECTURE.md` (1.3.0) rather than on today's
 > staging.
@@ -102,9 +104,9 @@ The schedule, the concrete steps and the gates live in `docs/ROADMAP.md`
 under "Harnesses beyond Claude Code"; this document holds the reasoning
 behind them. In short: phase 0 (the raw Antigravity lake) is built and
 experimental, at lake format 2 since the same day's archive fix; phase 1
-decodes it (parked; waits on whether to read the app's own descriptors or
-decode by field number) and 1b decrypts the legacy files, neither touching
-the warehouse; phases 2 to 4
+decodes it into a derived tree, by field number, each reading a measured
+claim (first slice built 2026-11-20: steps, transcript lines and four
+views) and 1b decrypts the legacy files, neither touching the warehouse; phases 2 to 4
 (neutral staging, harness identity, Antigravity populators) ride on the 1.3.0
 rewrite, because building them on today's `log_entries` staging would build
 the layer that rewrite replaces; phase 5 is render and privacy.

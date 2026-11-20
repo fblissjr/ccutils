@@ -161,6 +161,7 @@ terminal UI instead, any DuckDB client works — point it at the same file.
 ```bash
 ccutils lake antigravity                    # mirror Google Antigravity's store into ~/.ccutils/lake/
 ccutils lake antigravity --store antigravity-cli -o DIR
+ccutils lake antigravity --decode           # ...then derive readable tables and views beside it
 ```
 
 Mirrors another harness's native transcript store into a Parquet lake, Tier 1
@@ -190,6 +191,39 @@ WHERE source_present          -- the source's current rows; drop it to add what 
                               -- deleted, and the fuller version of every step it emptied
 GROUP BY ALL ORDER BY 3 DESC;
 ```
+
+**Reading it: `--decode`.** The lake is bytes. `--decode` derives a second
+tree from it, `~/.ccutils/lake/antigravity-decoded/`, and never writes inside
+the archive: one `step.parquet` and one `transcript_line.parquet` per
+conversation, and `antigravity.duckdb`, a DuckDB file holding only views.
+Deleting that tree loses nothing; the next `--decode` rebuilds it, and only
+the conversations that changed. Steps are read by protobuf field number,
+each reading a measured claim in `docs/ANTIGRAVITY_CONTRACT.md` (17, 18).
+`--no-thinking` writes no thinking text into anything derived (the lake
+itself still holds it).
+
+```bash
+duckdb -readonly ~/.ccutils/lake/antigravity-decoded/antigravity.duckdb
+```
+
+| View | One row is | What it settles for you |
+|---|---|---|
+| `antigravity_conversations` | a conversation | parent, depth and agent name as the app states them; `is_pruned` for one the app has deleted and the lake still holds |
+| `antigravity_steps` | a step | one row per step however many versions the lake kept; `text`, `thinking` and `tool_output` read from the database, else the fuller row the lake kept, else the brain transcript, with a `*_source` column saying which; `is_inherited` for steps a fork replayed |
+| `antigravity_tool_calls` | a tool call with its result | keyed on the step, because a call id repeats |
+| `antigravity_usage` | a model response's token counts | a fork's inherited responses left out, so a sum counts each once |
+
+```sql antigravity
+SELECT strftime(created_at, '%Y-%m') AS month, count(*) AS responses,
+       sum(input_tokens) AS input, sum(cache_read_tokens) AS cache_read, sum(output_tokens) AS output
+FROM antigravity_usage GROUP BY 1 ORDER BY 1;
+```
+
+A value read from the transcript is the transcript's form of it: user,
+system and tool text arrive wrapped, and long values can be cut
+(`transcript_is_truncated`). Not decoded yet: exit codes, model id strings,
+agent-to-agent messages, artifacts. Experimental like the lake: the tree's
+layout and the views are outside semver.
 
 **Run it on a schedule.** The `agy` CLI deletes old conversations on its own
 once enough newer ones exist, brain directory included, and has no setting

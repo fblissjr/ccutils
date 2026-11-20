@@ -387,6 +387,61 @@ Observed step types, both stores: 15 `PLANNER_RESPONSE` 26,293 · 132 `GENERIC`
   column newly holding several storage classes is mirrored and noted as
   drift in the manifest, and nothing fails.
 
+## 17. What a step's fields hold, by number
+
+Antigravity publishes no schema, so `parsers/antigravity/shaped.py` reads a
+`step_payload` by field number. Notation: `5.4.1` is field 1 of the message
+in field 4 of the message in field 5.
+
+- Measured 2026-11-20 on the CLI corpus, every step of every database
+  against the brain transcript line written for it (claim 6's join). No
+  payload failed to parse.
+
+| Field | Reading | Against the transcript |
+|---|---|---|
+| `1` | step type: 14 `USER_INPUT`, 15 `PLANNER_RESPONSE`, 17 `ERROR_MESSAGE`, 23 `CHECKPOINT`, 101 `SYSTEM_MESSAGE`, 132 `GENERIC` | `type`, equal on every line |
+| `4` | status: 2 `RUNNING`, 3 `DONE`, 4 `INVALID`, 5 `CLEARED`, 6 `CANCELED`, 7 `ERROR` | `status`, equal on nearly all; a line can precede the step's last status |
+| `5.1` | creation time {1 seconds, 2 nanos} | `created_at`, the join itself |
+| `5.3` | source: 2 `MODEL`, 4 `USER_EXPLICIT`, 5 `SYSTEM`, 6 `SYSTEM_SDK` | `source`, equal on every line |
+| `5.9` | usage: `.2` input (uncached), `.3` output, `.5` cache-read, `.9` thinking tokens | the three token counts, equal wherever both state them |
+| `5.11` | model, as an enum number (the id string is in `gen_metadata`) | not stated there |
+| `5.12` | execution id (a turn) | not stated there |
+| `5.20` | lineage: `.3` generation index, `.4` the conversation that owns the step | not stated there |
+| `19.2` | a user input's text; a cleared one keeps it only as the repeated parts `19.3[].1` | inside `content`, which wraps it |
+| `20.1`, `20.3` | a model response's text, and its thinking text as a separate field | `content` and `thinking`, equal on every line |
+| `114.1`, `30.5` | a system message's text; a checkpoint's summary | inside `content` |
+| `24.3.2` | an error's message | `error`, equal |
+| `140.2.1` | a tool step's output text | inside `content` on most; the transcript truncates some |
+
+- A step whose `5.20.4` names another conversation was replayed into this
+  one: some conversations open with a prefix of another's steps
+  (`antigravity_steps.is_inherited` counts them). That is this harness's
+  fork cut, and it is stated.
+- Not read yet, though located by the audit: a command's exit code (inside
+  the typed payload at `140.2.6`), the model id string and per-generation
+  timings in `gen_metadata`, and the conversation's stated root. Field
+  numbers for those are in `internal/antigravity_audit_2026-11-20/FINDINGS.md`
+  and become claims here when something reads them.
+- Consequence: the shaped layer reads these fields and no others, and reads
+  an absent field as NULL, never as 0 or an empty string.
+- Canary: `TestStepFieldReadings`, on a sample of the databases with a floor
+  per reading; `-s` prints the counts. The full scan agreed with the sample.
+
+## 18. A tool call and its result are one step
+
+- Measured 2026-11-20 on the CLI corpus: every `GENERIC` step carries the
+  call in its metadata (`5.4`: `.1` id, `.2` tool name, `.3` arguments as
+  JSON) and the result in its body. A model response lists the calls it
+  made, and each has a `GENERIC` step with the same id later in the
+  conversation. A call id is not unique: the same id occurs more than once
+  inside a conversation, and a fork carries its source's ids.
+- Consequence: a tool call is keyed on its step, (conversation, idx), and the
+  call id is a column. Nothing joins on the id alone. The per-tool step
+  types of claim 11 no longer occur at the top level in this store.
+- Canary: `TestStepFieldReadings` asserts every tool step in its sample
+  states an id and a name. The repeated ids are an audit measurement with no
+  canary.
+
 ---
 
 ## Adding to this document
