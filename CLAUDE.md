@@ -12,6 +12,7 @@ Reference docs (read these instead of expanding this file):
 - `docs/STAR_SCHEMA.md` -- every table/view, lineage convention, run-metadata grains, populator order. Describes the warehouse **as built**.
 - `docs/ETL_ARCHITECTURE.md` -- the layering the ETL is **moving to**, and the three rules that decide where a new table/view/populator belongs. **DECIDED, NOT YET IMPLEMENTED**: existing populators do not conform, but anything added from now on should be born conforming. Sequence and open items in `docs/ROADMAP.md`; per-item specs in the untracked `internal/plans/etl_layer_rewrite.md`.
 - `docs/HARNESS_ARCHITECTURE.md` -- **PROPOSED**: how transcript sources other than Claude Code fit the tiers (per-harness native Tier 1, neutrality at Tier 2), and the phase plan. Read before adding any second-harness code.
+- `docs/UNIFIED_ANALYSIS_PLAN.md` -- **PLANNED, not started**: the phase that measures both harnesses on both machines together and proposes a net-new unified schema, with what waits for it. **Read before building anything that models one harness alone or joins two.**
 - `docs/ANTIGRAVITY_CONTRACT.md` -- where Google Antigravity stores everything and the measured claims `ccutils lake antigravity` relies on; the Antigravity counterpart of `JSONL_CONTRACT.md`.
 - `.claude/skills/` -- task-scoped skills (`etl-dev`, `query-warehouse`, `render-exports`, `release`) with on-demand reference files; they load the detail above progressively, so prefer triggering the matching skill over re-reading the docs wholesale.
 

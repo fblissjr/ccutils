@@ -10,6 +10,13 @@ Last updated: 2026-11-20
 > `docs/ROADMAP.md` under "Harnesses beyond Claude Code", and it rides on the
 > Tier 2 rewrite in `docs/ETL_ARCHITECTURE.md` (1.3.0) rather than on today's
 > staging.
+>
+> **2026-11-20:** the owner has directed that no harness be modelled alone
+> and that the unified schema can be net new. A unified analysis of both
+> harnesses comes before phases 2 to 4, and it may replace them:
+> `docs/UNIFIED_ANALYSIS_PLAN.md`. The neutral-staging sketch below was
+> drawn before either harness was measured against the other; it is an
+> input to that analysis.
 
 ccutils was built around one harness, Claude Code, and its Tier 1 and staging
 assume Claude Code JSONL in about twenty places: line-delimited text, the

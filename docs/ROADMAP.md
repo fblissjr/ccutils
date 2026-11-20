@@ -79,10 +79,13 @@ against; where it stands is as of that date.
 8. **Scoped when handed over.** An agent gets the named projects and
    nothing else (the rule in `CLAUDE.md`); the vision does not loosen it.
 
-Order this suggests for the Antigravity side, before more fields are
-decoded: a guide (7), turns and a project key (2), the spawn tie (4), files
-and commits (6). Decoding more fields serves 1 and 3 and continues beside
-them.
+How the remaining requirements get met is not decided here. The owner's
+direction, the same day: the harnesses are not to be built in isolation, a
+unified analysis of both comes first, and the schema that comes out of it
+can be net new. The plan for that phase, what waits for it and what does
+not, is `docs/UNIFIED_ANALYSIS_PLAN.md`. Until it has run, the levels both
+harnesses have to share (turns, files, commits, delegations, a guide) are
+not added to either side alone.
 
 ## Where things stand
 
@@ -137,6 +140,14 @@ them.
   are in `CHANGELOG.md` under 0.19.1 through 0.20.1.
 
 ## Next session
+
+**First: the unified analysis** (`docs/UNIFIED_ANALYSIS_PLAN.md`), when the
+owner starts it. It is planned and not begun. It decides what happens to
+the rest of this section, so nothing below that only makes sense if the
+current schema survives should be started before it; sorting the list into
+those two piles is one of its first steps. Meanwhile the archive keeps
+running by hand on both machines, and decoding more of what Antigravity
+states into the derived tables is fine.
 
 **From the 2026-11-13 test audit, before anything below.** Fixes and
 deletions landed (CHANGELOG, Unreleased); what is left:
@@ -334,6 +345,13 @@ tag `v1.0.0`.
 Design and principles: `docs/HARNESS_ARCHITECTURE.md` (PROPOSED). Antigravity's
 store map and measured claims: `docs/ANTIGRAVITY_CONTRACT.md`. This section is
 the schedule and the concrete next steps.
+
+**Read with `docs/UNIFIED_ANALYSIS_PLAN.md` (2026-11-20).** Phases 2 to 4
+below were scheduled to ride the 1.3.0 rewrite of the current schema. The
+owner has since said the unified schema can be net new, and that a unified
+analysis of both harnesses comes before any of it. The phases stay here as
+the earlier plan and an input to that analysis; they are not the schedule
+until its output says so.
 
 The destination is one warehouse that answers the same questions about every
 agent harness on the machine, without pretending they are the same thing. The
@@ -1099,6 +1117,13 @@ from the commit message.
 
 ## Decisions that should not be relitigated
 
+- **No harness is modelled alone, and the unified schema can be net new.**
+  The owner, 2026-11-20: do not build the harnesses in isolation; a unified
+  analysis of both comes first; the schema it produces does not have to
+  fit the star schema, and nothing is carried over unless the analysis
+  shows it is right. What that analysis must not throw away is what the two
+  contract documents record about the sources. Plan:
+  `docs/UNIFIED_ANALYSIS_PLAN.md`.
 - **A machine is a directory of the lake, named in the path and in no row.**
   `<base>/machine=<name>/` holds one machine's whole lake. Decided
   2026-11-20 with the owner ("I want unified"), against a `machine` column
