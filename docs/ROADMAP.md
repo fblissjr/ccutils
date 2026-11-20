@@ -1,6 +1,6 @@
 # Roadmap and open items
 
-Last updated: 2026-11-13
+Last updated: 2026-11-20
 
 This is the one git-tracked status board. It consolidates what used to live
 only in gitignored `internal/` notes: the release sequence, the next
@@ -332,6 +332,45 @@ the lake now mirrors it. That is text without any decoding, for hub
 conversations only, with completeness against the steps unmeasured. It does
 not replace the decode (no tool calls, tokens or models), but it may be
 enough for a first reading surface while the decision stays parked.
+
+**Re-scoped on 2026-11-20 by an audit of the CLI store; not yet agreed in
+detail with the owner.** Three things changed the plan below.
+
+- *No one source is complete.* The database is the record of steps but has
+  lost the body of every cleared step and never held a reverted branch. The
+  brain transcript is plain JSON with text, thinking, tool calls and token
+  counts, keeps most cleared bodies and every reverted branch, and omits a
+  share of steps. The summaries index is the only record of a pruned
+  conversation. A shaped layer reads all three and says which one each value
+  came from.
+- *Decoding by field number is evidenced.* Text, thinking, tool calls with
+  their ids and arguments, exit codes, usage, model ids, parent, root, depth
+  and the fork owner were read by field number and checked against the
+  transcript over the whole store (`FINDINGS.md` sections 3 and 4). The
+  app's descriptors would add names for a few enums. Step 1 below is
+  therefore optional, and the recommendation is to skip it.
+- *The grains are known.* A step is (conversation, idx, creation time),
+  because a revert re-uses indices. A tool call and its result are one
+  step, keyed on the step, never on the call id, which repeats within a
+  conversation and across forks. Usage is one row per generation, and a
+  step states its generation. Parent, depth and root are stated by the
+  conversation itself and are read, never walked. A fork's replayed steps
+  name their owner, which is this harness's `fork_cut_timestamp`.
+
+The shaped tables, in the derived tree, at the grains of phase 2's `stg_*`
+so they become the adapter's output at 1.3.0: `conversation`, `step`,
+`transcript_line`, `message`, `tool_call` (call and result), `usage`,
+`delegation` (keyed from the child, whose side is complete),
+`agent_message`, `background_task`, `artifact_version`, `media_ref`,
+`prompt_history`, and Antigravity-only `execution` (a turn and why it
+ended) and `checkpoint`. Whatever depends on another conversation's rows
+(a delegation's outcome, which steps are replays) is a view. Thinking text
+is its own column. Swarm files stay lake-only until more than a handful of
+conversations use them.
+
+Order: the two lake fixes under "Antigravity lake: known gaps" first, then
+a complete run and a schedule, then the shaped layer from the plain-JSON
+and plain-column sources, then the field-number decode for what those lack.
 
 1. **Capture the schema into the lake.** Extract the `FileDescriptorSet` from
    the installed Go binary (rodata scan for `FileDescriptorProto` bytes, walk
@@ -735,11 +774,64 @@ here and stays local.
 Found while building phase 0 (2026-09-22) or on the first default-root run
 (2026-10-09), not fixed. None blocks the lake.
 
-- **The hub's full-text tables are mirrored as drift, not declared.** Every
-  run notes seven unknown tables (contract claim 15). Declaring them in
-  `schema.SUMMARIES_TABLES` needs a notion of a table one store has and
-  another does not, since a declared table is required of every store. With
-  it goes a corpus canary for claim 15.
+Found on 2026-11-20, auditing a machine that holds only the CLI store
+(`agy` 1.5.13). Measurements and the scripts that produce them:
+`internal/antigravity_audit_2026-11-20/` (local-only). Ordered by what can
+lose data.
+
+- **The CLI prunes old conversations, and nothing configures it.** The
+  count on disk is capped; the oldest-modified conversation goes first, its
+  brain directory with it, and subagent conversations take slots like roots.
+  No settings key, flag or environment variable names a limit, and the
+  vendor's docs state none. Contract claim 13 ("there is no retention
+  setting ... conversations persist until deleted in the app") was measured
+  on the hub and is false for the CLI. The summaries row outlives the
+  conversation and is then its only trace. Consequence: the lake has to run
+  on a schedule shorter than the window, and nothing schedules it today.
+- **An interrupted run orphans what it wrote.** The manifest is written once,
+  at the end of `_run` (`parsers/lake.py`). After a run that dies part-way,
+  every unit already swapped in is on disk and in no manifest; if its source
+  then disappears, the next run neither lists it nor marks it absent, and its
+  rows still say `source_present = true`. Nothing is deleted. Reproduced on
+  the toy source (`scripts/tie/repro.py` there). The only run on that machine
+  ended this way, and the app has since pruned conversations it wrote. Fix:
+  write the manifest as units land, and adopt a unit directory the manifest
+  does not know.
+- **A cleared step would overwrite its fuller copy.** The CLI clears the
+  body of old steps in place while a conversation is live: same idx, same
+  creation time, status `CLEARED`. `supersedes`
+  (`parsers/antigravity/__init__.py`) compares the idx set and the
+  creation-time bytes, so it sees nothing, and the rewritten unit replaces
+  the full row with the cleared one. Not yet observed in a lake (the one
+  snapshot compared equal to the disk on every step), but a conversation
+  archived before a clearing and again after it would lose the bodies.
+  Fix: a step row whose payload shrank under the same creation time keeps
+  its earlier version. Contract claim 14 needs the same correction.
+- **Media is inventory only.** Generated images and video are recorded as
+  path, size and hash. They are most of a brain directory by size, and a
+  pruned conversation takes them with it. Open: archive the bytes,
+  content-addressed by the hash already computed.
+- **Brain kinds the rules do not name.** `subagents/<id>.json` (the
+  delegation tree with type and role), `swarm/`, `logs/media/`, a top-level
+  `brain/tempmediaStorage/` and a per-task inbox are archived only as
+  `unclassified`, capped at `UNCLASSIFIED_MAX_BYTES`, or not read at all.
+- **`conversation_parents` is not declared.** The CLI's summaries database
+  has the table (empty) and the full-text tables; the first is missing from
+  `schema.SUMMARIES_OPTIONAL_TABLES`, so every run notes it as drift. There
+  is still no corpus canary for claim 15.
+- **The installed version is not recorded on Linux.** `HUB_INFO_PLIST` is a
+  macOS path, and the CLI's version is read from nowhere.
+- **`TestStepNamesAreStated` is red on that corpus.** It joins transcript
+  lines to steps on the index alone, and reverts, which are common in the
+  CLI store and rare in the corpus the claim was measured on, leave stale
+  lines under re-used indices. Joining on the index and the creation second
+  gives no disagreement. The same file's `_ro` opens `immutable=1` without
+  `mode=ro`, which creates a missing file.
+- **The contract describes a corpus this machine does not have.** Claims 6,
+  9, 11, 13, 14, 15 and the store map are wrong or incomplete for the CLI
+  store; the list is section 8 of the audit's `FINDINGS.md`.
+
+Older, still open:
 - **The lake has no self-check.** The manifest records what was written, and
   the contract canaries check the SOURCE, but nothing verifies the lake
   against the source after the fact the way `ccutils audit` checks the
@@ -941,3 +1033,6 @@ Present only on the machine that wrote them; nothing above requires them.
   `2026-08-01_agent_delegation_capture_gap.md`: the longer plans for the
   items of the same names.
 - `internal/log/`: per-session logs through 2026-08-05.
+- `internal/antigravity_audit_2026-11-20/`: `FINDINGS.md` (the CLI store's
+  file kinds, the protobuf field map by number, the mapping onto the star
+  schema, where the contract is wrong) and the scripts that measured it.
